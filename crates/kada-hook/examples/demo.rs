@@ -9,16 +9,18 @@
 //! - `Ctrl+Alt+M` —— 改键演示：吞掉 M，改发 N（按住可重复）
 //! - `Ctrl+Alt+Q` —— 退出
 
-#![cfg(windows)]
-
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[cfg(windows)]
 use kada_hook::win::simulate;
+#[cfg(windows)]
 use kada_hook::win::{start, Action, KeyEvent};
+#[cfg(windows)]
 use kada_hook::{Key, Modifier};
 
+#[cfg(windows)]
 fn main() {
     println!("咔哒 M1 · Windows 钩子引擎 demo");
     println!("  Ctrl+Alt+K  输入文本「咔哒 Kada」");
@@ -63,3 +65,6 @@ fn main() {
     drop(handle);
     println!("已退出。");
 }
+
+#[cfg(not(windows))]
+fn main() {}
