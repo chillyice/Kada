@@ -1,0 +1,8 @@
+[workspace]
+resolver = "2"
+members = ["crates/kada-core", "crates/kada-hook", "src-tauri"]
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
