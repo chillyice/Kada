@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>咔哒 Kada</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>咔哒 <span class="dot">K</span></h1>
+      <span class="subtitle">快捷键 · 改键 · 自动化</span>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="shortcuts">快捷键</button>
+      <button class="tab" data-tab="remaps">改键</button>
+    </nav>
+
+    <main>
+      <!-- 快捷键 -->
+      <section id="panel-shortcuts" class="panel">
+        <div class="toolbar">
+          <button id="add-shortcut" class="primary">+ 新增快捷键</button>
+          <span id="save-status" class="status"></span>
+        </div>
+        <ul id="shortcut-list" class="list"></ul>
+
+        <div id="shortcut-editor" class="editor hidden">
+          <div class="editor-row">
+            <label>名称</label>
+            <input id="edit-name" placeholder="（可选）如：常用地址" />
+          </div>
+          <div class="editor-row">
+            <label>触发</label>
+            <div id="edit-triggers" class="chips"></div>
+            <button id="edit-capture" class="capture">录入组合键</button>
+          </div>
+          <div class="editor-row">
+            <label>动作</label>
+            <select id="edit-action-type">
+              <option value="text">输入文本</option>
+              <option value="sequence">顺序动作（宏）</option>
+            </select>
+          </div>
+          <div id="edit-action-fields" class="editor-row">
+            <textarea id="edit-text" placeholder="快捷键按下后要输入的文本……"></textarea>
+          </div>
+          <div id="edit-sequence-fields" class="editor-row hidden">
+            <button id="action-record" class="record">● 开始录制</button>
+            <textarea id="edit-steps" placeholder='宏步骤 JSON，例：[{"type":"text","text":"hi"},{"type":"tap","key":"Enter"}]' spellcheck="false"></textarea>
+            <p class="hint">录制：点开始后切到目标窗口输入，回来点停止。</p>
+          </div>
+          <div class="editor-actions">
+            <button id="save-shortcut" class="primary">保存</button>
+            <button id="cancel-shortcut">取消</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- 改键 -->
+      <section id="panel-remaps" class="panel hidden">
+        <div class="toolbar">
+          <button id="add-remap" class="primary">+ 新增改键</button>
+        </div>
+        <ul id="remap-list" class="list"></ul>
+        <p class="hint">
+          改键优先级高于快捷键。例：CapsLock 改成 Ctrl，无需重启即时生效。
+        </p>
+      </section>
+    </main>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

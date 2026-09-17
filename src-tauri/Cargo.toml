@@ -1,0 +1,19 @@
+[package]
+name = "kada"
+version = "0.1.0"
+description = "咔哒 - 轻快跨平台快捷键工具"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+kada-core = { path = "../crates/kada-core" }
+kada-hook = { path = "../crates/kada-hook" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+
+[features]
+default = []
+custom-protocol = ["tauri/custom-protocol"]
