@@ -1,4 +1,4 @@
-//! M1 冒烟 demo：手动验证钩子引擎。
+//! M1 冒烟 demo：手动验证钩子引擎（仅 Windows）。
 //!
 //! ```
 //! cargo run -p kada-hook --example demo
@@ -8,6 +8,8 @@
 //! - `Ctrl+Alt+K` —— 输入文本「咔哒 Kada」（剪贴板粘贴）
 //! - `Ctrl+Alt+M` —— 改键演示：吞掉 M，改发 N（按住可重复）
 //! - `Ctrl+Alt+Q` —— 退出
+
+#![cfg(windows)]
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
