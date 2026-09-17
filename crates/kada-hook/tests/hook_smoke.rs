@@ -1,6 +1,8 @@
 //! 钩子引擎冒烟：安装 → 消息循环跑起来 → 卸载回收。
 //! 触发路径（swallow/Replace/注入）需真人按键，由 examples/demo.rs 验证。
 
+#![cfg(windows)]
+
 use kada_hook::win::{start, Action, KeyEvent};
 
 #[test]
