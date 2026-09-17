@@ -46,7 +46,16 @@ jobs:
         run: npm --prefix ui run build
 
       - name: Cargo tests (all crates)
-        run: cargo test --workspace
+        shell: bash
+        run: |
+          set +e
+          out=$(cargo test --workspace 2>&1 | tail -80)
+          code=$?
+          if [ $code -ne 0 ]; then
+            esc=$(printf '%s' "$out" | sed 's/%/%25/g' | tr '\n' '%0A' | tr '\r' '%0D')
+            echo "::error file=ci.yml::cargo test exit=$code%0A$esc"
+          fi
+          exit $code
 
       - name: Tauri shell compiles
         run: cargo check -p kada
