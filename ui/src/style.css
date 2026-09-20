@@ -436,6 +436,12 @@ body {
   flex: 1;
 }
 
+.unit-hint {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .action-textarea {
   min-height: 60px;
   resize: vertical;
@@ -460,6 +466,35 @@ body {
 }
 
 .add-action:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* ---------- 条件判断（嵌套分支） ---------- */
+.branch-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.action-branch {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+
+.add-inline {
+  align-self: flex-start;
+  border-style: dashed;
+  color: var(--muted);
+  background: none;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.add-inline:hover {
   color: var(--text);
   border-color: var(--accent);
 }
@@ -631,6 +666,11 @@ button:disabled {
 }
 
 /* 触发气泡（toast 窗口，独立小浮层） */
+/* toast 窗口是 transparent 窗口，body 必须透明，否则会显示成实心深色矩形 */
+body:has(.toast-bubble) {
+  background: transparent;
+}
+
 .toast-bubble {
   position: fixed;
   inset: 12px;

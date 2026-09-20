@@ -53,7 +53,7 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   examples/demo.rs          # M1 冒烟 demo（仅 Windows，真人按键验证）
   tests/hook_smoke.rs       # 钩子安装/回收冒烟（仅 Windows）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
-  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻
+  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻；主窗口与气泡窗口按需懒创建（冷启动零 WebView）
   src/main.rs               # 入口
   tauri.conf.json           # 窗口/图标/构建配置
 ui/                         # Vite + TypeScript 前端（kada-ui）
@@ -70,9 +70,10 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **配置模型**（JSON 落盘，跨平台同步介质）：
   - `Config { shortcuts: Vec<ShortcutItem>, remaps: Vec<Remap>, settings: Settings }`
   - `ShortcutItem { name?, triggers: Vec<String>, actions: Vec<Action>, enabled }`（`triggers` 任一组命中即触发，`actions` 按顺序执行）
-  - `Action`：`Text / Cmd / Powershell / Launch / OpenFolder / Keys / PauseMs`（`Cmd`/`Powershell` 带 `show_output` 是否弹结果）
+  - `Action`：`Text / Cmd / Powershell / Keys / PauseMs / OpenFolder / Os / App / If`（`Cmd`/`Powershell` 带 `show_output` 是否弹结果；`Os` 文件动作、`App` 应用动作、`If` 条件判断；旧版 `Launch`/`CloseProgram` 加载时自动迁移到 `App`）
   - `Remap { from, to, enabled }`（`from` 键按下改发 `to` 键）
   - `Settings { autostart, paused, launch_minimized }`；`detect_conflicts` 检测硬/软冲突
+  - 变量占位符：`{变量名}` / `{变量名.字段}`，由 `substitute_vars` 替换（`Os::GetFileProps`/`App::Status` 写入变量，作用域=单次触发内的动作序列）；`sanitize_config` 逐条清洗坏条目（坏触发键/动作/改键单独忽略，不拖垮整份保存）
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`），加载时校验。
 - **消息中心**（内存态，重启清空）：Cmd/PowerShell 结果一律记入消息中心；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。
 

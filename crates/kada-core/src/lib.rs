@@ -6,7 +6,7 @@
 //! 键名命名参考 platform 无关的中性名（Enter/Escape），macOS 的 ⌘
 //! 由 [`Modifier::Meta`] 承载，平台层负责把 OS 键映射成 [`Key`]。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -231,6 +231,100 @@ pub fn matches(e: &RawEvent, s: &Shortcut) -> bool {
 
 use serde::{Deserialize, Serialize};
 
+/// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩或取属性。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum OsOperation {
+    /// 复制：把 `source`（文件或目录）复制到 `dest`（目录或完整路径）。
+    Copy { source: String, dest: String },
+    /// 剪切：把 `source` 移动到 `dest`。
+    Cut { source: String, dest: String },
+    /// 粘贴：把最近一次复制/剪切的来源复制到 `dest`。
+    Paste { dest: String },
+    /// 删除文件或目录。
+    Delete { path: String },
+    /// 新建空文件（自动创建父目录）。
+    NewFile { path: String },
+    /// 把 `source`（文件或目录）压缩为 `dest` 的 zip 归档。
+    Zip { source: String, dest: String },
+    /// 取文件属性，存入变量 `var`（默认 "file"），供后续动作用占位符引用。
+    GetFileProps { path: String, #[serde(default = "default_var")] var: String },
+}
+
+fn default_var() -> String {
+    "file".into()
+}
+
+/// 条件：供「条件判断」动作在触发前求值，为真才执行后续动作。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Condition {
+    /// 路径存在（文件或目录）。
+    Exists { path: String },
+    /// 路径不存在。
+    NotExists { path: String },
+    /// 路径是文件。
+    IsFile { path: String },
+    /// 路径是目录。
+    IsDir { path: String },
+    /// 变量字段等于某值（`field` 为空时比较完整路径）。
+    Equals { var: String, #[serde(default)] field: String, value: String },
+    /// 变量字段不等于某值。
+    NotEquals { var: String, #[serde(default)] field: String, value: String },
+}
+
+impl Condition {
+    /// 在当前变量上下文下求值。路径类条件支持 `{变量名}` 占位符。
+    /// 变量/字段不存在时视为「条件不成立」（返回 false）。
+    pub fn matches(&self, vars: &Vars) -> bool {
+        use Condition::*;
+        let exists = |path: &str| std::path::Path::new(&substitute_vars(path, vars)).exists();
+        match self {
+            Exists { path } => exists(path),
+            NotExists { path } => !exists(path),
+            IsFile { path } => std::path::Path::new(&substitute_vars(path, vars)).is_file(),
+            IsDir { path } => std::path::Path::new(&substitute_vars(path, vars)).is_dir(),
+            Equals { var, field, value } => var_field(var, field, vars)
+                .map(|v| v == substitute_vars(value, vars))
+                .unwrap_or(false),
+            NotEquals { var, field, value } => var_field(var, field, vars)
+                .map(|v| v != substitute_vars(value, vars))
+                .unwrap_or(false),
+        }
+    }
+
+    /// 校验条件必要字段非空。
+    pub fn validate(&self) -> Result<(), String> {
+        use Condition::*;
+        let non_empty = |label: &str, v: &str| {
+            if v.trim().is_empty() {
+                return Err(format!("{label}不能为空"));
+            }
+            Ok(())
+        };
+        match self {
+            Exists { path } | NotExists { path } | IsFile { path } | IsDir { path } => {
+                non_empty("路径", path)
+            }
+            Equals { var, .. } | NotEquals { var, .. } => non_empty("变量名", var),
+        }
+    }
+}
+
+/// 应用操作：启动、关闭、查询运行状态、重启。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum AppOperation {
+    /// 打开（启动）程序，可选参数。
+    Launch { program: String, args: Vec<String> },
+    /// 关闭程序（结束所有同名进程）。
+    Close { program: String },
+    /// 查询程序是否在运行，结果写入变量 `var`（布尔值，供后续条件判断用）。
+    Status { program: String, #[serde(default = "default_var")] var: String },
+    /// 重启程序：先关闭再重新启动。
+    Restart { program: String, #[serde(default)] args: Vec<String> },
+}
+
 /// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -241,7 +335,7 @@ pub enum Action {
     Cmd { command: String, #[serde(default)] show_output: bool },
     /// 执行 PowerShell 命令（仅 Windows）。
     Powershell { command: String, #[serde(default)] show_output: bool },
-    /// 启动可执行文件，可选参数。
+    /// 启动可执行文件，可选参数。（旧版动作，加载时自动迁移为 `App::Launch`。）
     Launch { program: String, args: Vec<String> },
     /// 在文件管理器中打开某个目录。
     OpenFolder { path: String },
@@ -250,7 +344,20 @@ pub enum Action {
     /// 暂停 ms 毫秒。
     PauseMs { ms: u64 },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
+    /// （旧版动作，加载时自动迁移为 `App::Close`。）
     CloseProgram { program: String },
+    /// 操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性）。
+    Os { operation: OsOperation },
+    /// 应用动作（打开/关闭/查询状态/重启）。
+    App { operation: AppOperation },
+    /// 条件判断：`condition` 为真时按顺序执行 `then`，否则执行 `otherwise`（可空）。
+    If {
+        condition: Condition,
+        #[serde(default)]
+        then: Vec<Action>,
+        #[serde(default)]
+        otherwise: Vec<Action>,
+    },
 }
 
 impl Action {
@@ -279,6 +386,42 @@ impl Action {
                 }
                 for k in keys {
                     check_key("组合键", k)?;
+                }
+                Ok(())
+            }
+            Action::Os { operation } => {
+                use OsOperation::*;
+                match operation {
+                    Copy { source, dest } | Cut { source, dest } => {
+                        non_empty("源路径", source)?;
+                        non_empty("目标路径", dest)?;
+                        Ok(())
+                    }
+                    Paste { dest } => non_empty("目标路径", dest),
+                    Delete { path } | NewFile { path } => non_empty("路径", path),
+                    Zip { source, dest } => {
+                        non_empty("源路径", source)?;
+                        non_empty("目标路径", dest)?;
+                        Ok(())
+                    }
+                    // 变量名允许为空（执行时回退到 "file"），只要求路径非空。
+                    GetFileProps { path, .. } => non_empty("路径", path),
+                }
+            }
+            Action::App { operation } => {
+                use AppOperation::*;
+                match operation {
+                    Launch { program, .. } | Close { program } | Restart { program, .. } => {
+                        non_empty("程序", program)
+                    }
+                    // 变量名允许为空（执行时回退到 "app"），只要求程序非空。
+                    Status { program, .. } => non_empty("程序", program),
+                }
+            }
+            Action::If { condition, then, otherwise } => {
+                condition.validate()?;
+                for a in then.iter().chain(otherwise.iter()) {
+                    a.validate()?;
                 }
                 Ok(())
             }
@@ -467,6 +610,197 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
     }
 
     out
+}
+
+/// 文件属性对象：`GetFileProps` 动作把文件/目录的属性存入变量，供后续动作引用。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct FileObject {
+    /// 文件名（含扩展名）。
+    pub name: String,
+    /// 完整路径。
+    pub path: String,
+    /// 所在目录。
+    pub dir: String,
+    /// 不含扩展名的主干名。
+    pub stem: String,
+    /// 扩展名（含点；无扩展名为空）。
+    pub ext: String,
+    /// 文件大小（字节；目录为 0）。
+    pub size: u64,
+    /// 修改时间（Unix 秒）。
+    pub modified: u64,
+    /// 是否为目录。
+    pub is_dir: bool,
+}
+
+/// 变量值：文件属性 / 布尔 / 文本，供后续动作用占位符引用。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Value {
+    /// 文件属性对象（`GetFileProps` 写入）。
+    File(FileObject),
+    /// 布尔值（如「应用是否在运行」，`App::Status` 写入）。
+    Bool(bool),
+    /// 文本值。
+    Text(String),
+}
+
+/// 变量表：变量名 → 变量值。
+pub type Vars = BTreeMap<String, Value>;
+
+/// 用变量表替换字符串中的占位符：`{name}` → 完整路径，`{name.field}` → 对应字段。
+/// 未知变量/字段保持原样（不破坏用户输入的字面 `{...}`）。
+pub fn substitute_vars(s: &str, vars: &Vars) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('}') {
+            Some(end) => {
+                let token = &after[..end];
+                match resolve_var(token, vars) {
+                    Some(v) => out.push_str(&v),
+                    None => {
+                        out.push('{');
+                        out.push_str(token);
+                        out.push('}');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn resolve_var(token: &str, vars: &Vars) -> Option<String> {
+    let (name, field) = match token.split_once('.') {
+        Some((n, f)) => (n, Some(f)),
+        None => (token, None),
+    };
+    var_field(name, field.unwrap_or(""), vars)
+}
+
+/// 读取变量 `var` 的某个字段值（`field` 为空时取变量整体值：文件→完整路径、
+/// 布尔→"true"/"false"、文本→原文）。变量或字段不存在返回 None。
+pub fn var_field(var: &str, field: &str, vars: &Vars) -> Option<String> {
+    match vars.get(var)? {
+        Value::File(obj) => file_field(obj, field),
+        Value::Bool(b) => match field {
+            "" | "value" => Some(b.to_string()),
+            _ => None,
+        },
+        Value::Text(t) => match field {
+            "" | "value" => Some(t.clone()),
+            _ => None,
+        },
+    }
+}
+
+fn file_field(obj: &FileObject, field: &str) -> Option<String> {
+    Some(match field {
+        "" | "path" => obj.path.clone(),
+        "name" => obj.name.clone(),
+        "dir" => obj.dir.clone(),
+        "stem" => obj.stem.clone(),
+        "ext" => obj.ext.clone(),
+        "size" => obj.size.to_string(),
+        "modified" => obj.modified.to_string(),
+        "is_dir" => obj.is_dir.to_string(),
+        _ => return None,
+    })
+}
+
+/// 把旧版动作迁移为新版（幂等）：`Launch` → `App::Launch`、`CloseProgram` → `App::Close`，
+/// 递归处理 `If` 的嵌套动作。
+pub fn migrate_action(a: Action) -> Action {
+    match a {
+        Action::Launch { program, args } => {
+            Action::App { operation: AppOperation::Launch { program, args } }
+        }
+        Action::CloseProgram { program } => {
+            Action::App { operation: AppOperation::Close { program } }
+        }
+        Action::If { condition, then, otherwise } => Action::If {
+            condition,
+            then: then.into_iter().map(migrate_action).collect(),
+            otherwise: otherwise.into_iter().map(migrate_action).collect(),
+        },
+        other => other,
+    }
+}
+
+impl Config {
+    /// 原地归一化：把旧版动作迁移为 `App` 动作。
+    pub fn migrate(&mut self) {
+        for s in &mut self.shortcuts {
+            s.actions = std::mem::take(&mut s.actions)
+                .into_iter()
+                .map(migrate_action)
+                .collect();
+        }
+    }
+}
+
+/// 清洗配置：先迁移旧版动作，再丢弃无法解析的触发键/动作/改键，返回可安全保存的
+/// 配置与每处被忽略内容的说明（供 UI 提示）。
+///
+/// 用于保证「单条配置有问题不影响其它配置保存」：坏条目被单独忽略，不再拖垮整份保存。
+pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
+    let mut cfg = cfg.clone();
+    cfg.migrate();
+    let mut out = Config { settings: cfg.settings.clone(), ..Default::default() };
+    let mut ignored: Vec<String> = Vec::new();
+
+    for s in &cfg.shortcuts {
+        let label = s.name.clone().unwrap_or_else(|| "（未命名）".into());
+        let mut item = s.clone();
+
+        let mut kept_triggers = Vec::new();
+        for t in &item.triggers {
+            match t.parse::<Shortcut>() {
+                Ok(_) => kept_triggers.push(t.clone()),
+                Err(e) => ignored.push(format!("快捷键「{label}」的触发键「{t}」已忽略：{e}")),
+            }
+        }
+        item.triggers = kept_triggers;
+
+        let mut kept_actions = Vec::new();
+        for a in &item.actions {
+            match a.validate() {
+                Ok(()) => kept_actions.push(a.clone()),
+                Err(e) => ignored.push(format!("快捷键「{label}」的某个动作已忽略：{e}")),
+            }
+        }
+        item.actions = kept_actions;
+
+        let has_content = !item.triggers.is_empty()
+            || !item.actions.is_empty()
+            || item.name.is_some()
+            || item.description.is_some();
+        if has_content {
+            out.shortcuts.push(item);
+        } else {
+            ignored.push(format!("快捷键「{label}」已忽略：无触发键、动作或名称"));
+        }
+    }
+
+    for r in &cfg.remaps {
+        let ok_from = r.from.parse::<Key>().is_ok();
+        let ok_to = r.to.parse::<Key>().is_ok();
+        if ok_from && ok_to {
+            out.remaps.push(r.clone());
+        } else {
+            ignored.push(format!("改键「{} → {}」已忽略：键名无法解析", r.from, r.to));
+        }
+    }
+
+    (out, ignored)
 }
 
 #[cfg(test)]
@@ -662,5 +996,300 @@ mod conflict_tests {
             ..Default::default()
         };
         assert!(detect_conflicts(&cfg).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod os_and_sanitize_tests {
+    use super::*;
+
+    #[test]
+    fn os_action_json_roundtrip_and_validate() {
+        let actions = vec![
+            Action::Os {
+                operation: OsOperation::Copy { source: "C:\\a".into(), dest: "D:\\b".into() },
+            },
+            Action::Os {
+                operation: OsOperation::GetFileProps { path: "C:\\f.txt".into(), var: "f".into() },
+            },
+        ];
+        for a in &actions {
+            assert!(a.validate().is_ok(), "动作应通过校验: {a:?}");
+        }
+        let json = serde_json::to_string(&actions).unwrap();
+        let back: Vec<Action> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, actions);
+
+        // 空路径必被拒绝；变量名允许为空（回退默认）。
+        assert!(Action::Os {
+            operation: OsOperation::Copy { source: "".into(), dest: "".into() }
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Os { operation: OsOperation::Delete { path: "  ".into() } }
+            .validate()
+            .is_err());
+        assert!(Action::Os {
+            operation: OsOperation::GetFileProps { path: "x".into(), var: "".into() }
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn substitute_vars_expands_placeholders() {
+        let mut vars = Vars::new();
+        vars.insert(
+            "f".into(),
+            Value::File(FileObject {
+                name: "a.txt".into(),
+                path: "C:\\d\\a.txt".into(),
+                dir: "C:\\d".into(),
+                stem: "a".into(),
+                ext: ".txt".into(),
+                size: 12,
+                modified: 0,
+                is_dir: false,
+            }),
+        );
+        assert_eq!(substitute_vars("{f}", &vars), "C:\\d\\a.txt");
+        assert_eq!(substitute_vars("{f.name}", &vars), "a.txt");
+        assert_eq!(substitute_vars("{f.ext}", &vars), ".txt");
+        assert_eq!(substitute_vars("{f.size}", &vars), "12");
+        assert_eq!(substitute_vars("{f.missing}", &vars), "{f.missing}");
+        assert_eq!(substitute_vars("{unknown}", &vars), "{unknown}");
+        assert_eq!(
+            substitute_vars("copy {f} to {f.dir}", &vars),
+            "copy C:\\d\\a.txt to C:\\d"
+        );
+    }
+
+    #[test]
+    fn sanitize_drops_invalid_parts_keeps_valid() {
+        let cfg = Config {
+            shortcuts: vec![
+                ShortcutItem {
+                    triggers: vec!["Ctrl+K".into()],
+                    actions: vec![Action::Text { text: "ok".into() }],
+                    enabled: true,
+                    ..Default::default()
+                },
+                ShortcutItem {
+                    triggers: vec!["Bad+Key".into()],
+                    actions: vec![Action::Text { text: "bad".into() }],
+                    enabled: true,
+                    ..Default::default()
+                },
+                ShortcutItem {
+                    triggers: vec!["Ctrl+J".into()],
+                    actions: vec![Action::Cmd { command: "  ".into(), show_output: false }],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            remaps: vec![
+                Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true },
+                Remap { from: "NotAKey".into(), to: "Ctrl".into(), enabled: true },
+            ],
+            settings: Settings::default(),
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+
+        // 三条快捷键都保留（各自至少还有有效触发键或有效动作），但坏部分被清掉。
+        assert_eq!(clean.shortcuts.len(), 3, "ignored: {}", ignored.join("; "));
+        assert_eq!(clean.shortcuts[0].triggers, vec!["Ctrl+K".to_string()]);
+        assert_eq!(clean.shortcuts[0].actions.len(), 1);
+        assert!(clean.shortcuts[1].triggers.is_empty(), "无效触发键应被清空");
+        assert_eq!(clean.shortcuts[1].actions.len(), 1);
+        assert!(clean.shortcuts[2].actions.is_empty(), "无效动作应被清空");
+        assert_eq!(clean.shortcuts[2].triggers, vec!["Ctrl+J".to_string()]);
+
+        assert_eq!(clean.remaps.len(), 1, "无效改键应被丢弃");
+        assert!(ignored.iter().any(|m| m.contains("Bad+Key")));
+        assert!(ignored.iter().any(|m| m.contains("CMD")));
+        assert!(ignored.iter().any(|m| m.contains("NotAKey")));
+    }
+
+    fn sample_vars() -> Vars {
+        let mut vars = Vars::new();
+        vars.insert(
+            "f".into(),
+            Value::File(FileObject {
+                name: "a.txt".into(),
+                path: "C:\\d\\a.txt".into(),
+                dir: "C:\\d".into(),
+                stem: "a".into(),
+                ext: ".txt".into(),
+                size: 12,
+                modified: 0,
+                is_dir: false,
+            }),
+        );
+        vars
+    }
+
+    #[test]
+    fn condition_equals_and_field_resolution() {
+        let vars = sample_vars();
+        assert!(Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() }
+            .matches(&vars));
+        assert!(Condition::NotEquals { var: "f".into(), field: "ext".into(), value: ".zip".into() }
+            .matches(&vars));
+        // field 为空 → 比较完整路径
+        assert!(Condition::Equals { var: "f".into(), field: String::new(), value: "C:\\d\\a.txt".into() }
+            .matches(&vars));
+        // 变量或字段不存在 → 条件不成立
+        assert!(!Condition::Equals { var: "f".into(), field: "nope".into(), value: "x".into() }
+            .matches(&vars));
+        assert!(!Condition::Equals { var: "missing".into(), field: String::new(), value: "x".into() }
+            .matches(&vars));
+    }
+
+    #[test]
+    fn condition_path_predicates() {
+        let mut vars = sample_vars();
+        // 当前目录（必然存在、是目录）+ 一个必不存在的路径
+        assert!(Condition::Exists { path: ".".into() }.matches(&vars));
+        assert!(Condition::IsDir { path: ".".into() }.matches(&vars));
+        assert!(!Condition::IsFile { path: ".".into() }.matches(&vars));
+        assert!(Condition::NotExists { path: "___kada_no_such_path___".into() }.matches(&vars));
+        // 路径支持变量占位符：用指向真实存在的当前目录的变量验证替换。
+        vars.insert(
+            "cur".into(),
+            Value::File(FileObject {
+                name: ".".into(),
+                path: ".".into(),
+                dir: "".into(),
+                stem: ".".into(),
+                ext: "".into(),
+                size: 0,
+                modified: 0,
+                is_dir: true,
+            }),
+        );
+        assert!(Condition::Exists { path: "{cur}".into() }.matches(&vars));
+        assert!(Condition::IsDir { path: "{cur}".into() }.matches(&vars));
+    }
+
+    #[test]
+    fn if_action_validate_recurses() {
+        assert!(Action::If {
+            condition: Condition::Exists { path: ".".into() },
+            then: vec![Action::Text { text: "ok".into() }],
+            otherwise: vec![],
+        }
+        .validate()
+        .is_ok());
+        // 条件为空 → 拒绝
+        assert!(Action::If {
+            condition: Condition::Exists { path: "  ".into() },
+            then: vec![],
+            otherwise: vec![],
+        }
+        .validate()
+        .is_err());
+        // 嵌套动作非法 → 递归拒绝
+        assert!(Action::If {
+            condition: Condition::Exists { path: ".".into() },
+            then: vec![Action::Cmd { command: "  ".into(), show_output: false }],
+            otherwise: vec![],
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn if_action_json_roundtrip() {
+        // 递归嵌套的 If 也能完整往返（校验 serde tag 与 field 默认值）。
+        let a = Action::If {
+            condition: Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() },
+            then: vec![Action::Text { text: "yes".into() }],
+            otherwise: vec![Action::If {
+                condition: Condition::Exists { path: "{f}".into() },
+                then: vec![],
+                otherwise: vec![Action::PauseMs { ms: 10 }],
+            }],
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a, "json: {json}");
+    }
+
+    #[test]
+    fn app_action_json_roundtrip_and_validate() {
+        let actions = vec![
+            Action::App {
+                operation: AppOperation::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()] },
+            },
+            Action::App {
+                operation: AppOperation::Status { program: "notepad.exe".into(), var: "running".into() },
+            },
+            Action::App {
+                operation: AppOperation::Restart { program: "notepad.exe".into(), args: vec![] },
+            },
+        ];
+        for a in &actions {
+            assert!(a.validate().is_ok(), "{a:?}");
+        }
+        let json = serde_json::to_string(&actions).unwrap();
+        let back: Vec<Action> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, actions);
+
+        // 程序为空必被拒绝；Status 变量名可空。
+        assert!(Action::App { operation: AppOperation::Close { program: "".into() } }
+            .validate()
+            .is_err());
+        assert!(Action::App {
+            operation: AppOperation::Status { program: "x".into(), var: "".into() }
+        }
+        .validate()
+        .is_ok());
+    }
+
+    #[test]
+    fn migrate_legacy_launch_and_close_program() {
+        let mut cfg = Config {
+            shortcuts: vec![ShortcutItem {
+                triggers: vec!["Ctrl+K".into()],
+                actions: vec![
+                    Action::Launch { program: "notepad.exe".into(), args: vec![] },
+                    Action::CloseProgram { program: "notepad.exe".into() },
+                    Action::If {
+                        condition: Condition::Exists { path: ".".into() },
+                        then: vec![Action::Launch { program: "x".into(), args: vec![] }],
+                        otherwise: vec![],
+                    },
+                ],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        cfg.migrate();
+        let acts = &cfg.shortcuts[0].actions;
+        assert!(matches!(acts[0], Action::App { operation: AppOperation::Launch { .. } }));
+        assert!(matches!(acts[1], Action::App { operation: AppOperation::Close { .. } }));
+        // 嵌套 If 里的旧动作也迁移
+        match &acts[2] {
+            Action::If { then, .. } => {
+                assert!(matches!(then[0], Action::App { operation: AppOperation::Launch { .. } }));
+            }
+            other => panic!("expected If, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bool_value_substitution_and_compare() {
+        let mut vars = Vars::new();
+        vars.insert("running".into(), Value::Bool(true));
+        vars.insert("text".into(), Value::Text("hello".into()));
+        assert_eq!(substitute_vars("{running}", &vars), "true");
+        assert_eq!(substitute_vars("{running.value}", &vars), "true");
+        assert_eq!(substitute_vars("{text}", &vars), "hello");
+        // 条件判断能比较布尔变量
+        assert!(Condition::Equals { var: "running".into(), field: "".into(), value: "true".into() }
+            .matches(&vars));
+        assert!(Condition::Equals { var: "text".into(), field: "".into(), value: "hello".into() }
+            .matches(&vars));
     }
 }

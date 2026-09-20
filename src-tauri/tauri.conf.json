@@ -10,16 +10,7 @@
     "frontendDist": "../ui/dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "咔哒 Kada",
-        "width": 860,
-        "height": 560,
-        "resizable": true,
-        "center": true,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
