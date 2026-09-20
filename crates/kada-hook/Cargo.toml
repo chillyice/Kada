@@ -6,7 +6,10 @@ edition = "2021"
 [dependencies]
 kada-core = { path = "../kada-core" }
 
-[target.'cfg(windows)'.dependencies]
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+
+[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
 arboard = "3"
 windows = { version = "0.61", features = [
     "Win32_Foundation",

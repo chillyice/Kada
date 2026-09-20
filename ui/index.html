@@ -7,68 +7,172 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <header>
-      <h1>咔哒 <span class="dot">K</span></h1>
-      <span class="subtitle">快捷键 · 改键 · 自动化</span>
-    </header>
+    <div class="layout">
+      <!-- 最左：图标导航栏 -->
+      <aside class="rail">
+        <div class="rail-brand" title="咔哒 Kada">K</div>
+        <nav class="rail-nav">
+          <button class="rail-item active" data-tab="shortcuts" title="快捷键">
+            <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor"/></svg>
+            <span>快捷键</span>
+          </button>
+          <button class="rail-item" data-tab="remaps" title="改键">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
+            <span>改键</span>
+          </button>
+          <button class="rail-item" data-tab="messages" title="消息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+            <span>消息</span>
+            <span id="msg-badge" class="badge hidden"></span>
+          </button>
+          <button class="rail-item" data-tab="settings" title="设置">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+            <span>设置</span>
+          </button>
+        </nav>
+      </aside>
 
-    <nav class="tabs">
-      <button class="tab active" data-tab="shortcuts">快捷键</button>
-      <button class="tab" data-tab="remaps">改键</button>
-    </nav>
-
-    <main>
-      <!-- 快捷键 -->
-      <section id="panel-shortcuts" class="panel">
-        <div class="toolbar">
-          <button id="add-shortcut" class="primary">+ 新增快捷键</button>
-          <span id="save-status" class="status"></span>
+      <!-- 中间：列表栏 -->
+      <aside class="list-pane" id="list-pane">
+        <div class="list-head">
+          <h2 id="list-title">快捷键</h2>
+          <button id="add-btn" class="primary">+ 新增</button>
         </div>
+        <input id="list-search" class="search" type="text" placeholder="搜索…" />
+        <div id="conflict-list" class="conflicts"></div>
         <ul id="shortcut-list" class="list"></ul>
+        <ul id="remap-list" class="list hidden"></ul>
+      </aside>
 
-        <div id="shortcut-editor" class="editor hidden">
-          <div class="editor-row">
-            <label>名称</label>
-            <input id="edit-name" placeholder="（可选）如：常用地址" />
+      <!-- 右侧：详情区 -->
+      <main class="detail-pane">
+        <!-- 快捷键详情 -->
+        <section id="detail-shortcuts" class="detail">
+          <header class="detail-head">
+            <span id="detail-title" class="detail-title">快捷键</span>
+            <button id="detail-close" class="detail-close" title="关闭">×</button>
+          </header>
+          <div id="detail-empty" class="detail-empty">
+            从左侧选择一个快捷键，或点「+ 新增」
           </div>
-          <div class="editor-row">
-            <label>触发</label>
-            <div id="edit-triggers" class="chips"></div>
-            <button id="edit-capture" class="capture">录入组合键</button>
+          <div id="detail-editor" class="detail-editor hidden">
+            <div class="editor-row">
+              <label>名称</label>
+              <input id="edit-name" type="text" placeholder="（可选）如：常用地址" />
+            </div>
+            <div class="editor-row">
+              <label>描述</label>
+              <input id="edit-desc" type="text" placeholder="（可选）一句话说明这个快捷键做什么" />
+            </div>
+            <div class="editor-row">
+              <label>触发组合键</label>
+              <div class="chips-wrap">
+                <div id="edit-triggers" class="chips"></div>
+                <button id="edit-capture" class="capture">录入组合键</button>
+              </div>
+            </div>
+            <div class="editor-row">
+              <label>动作</label>
+              <div id="action-list" class="action-list"></div>
+              <div class="action-foot">
+                <button id="add-action" class="add-action">+ 添加动作</button>
+                <button id="action-record" class="record">● 开始录制</button>
+              </div>
+            </div>
+            <div class="detail-actions">
+              <button id="delete-shortcut" class="danger">删除</button>
+              <span class="flex-spacer"></span>
+              <button id="cancel-shortcut">取消</button>
+              <button id="save-shortcut" class="primary">保存</button>
+            </div>
           </div>
-          <div class="editor-row">
-            <label>动作</label>
-            <select id="edit-action-type">
-              <option value="text">输入文本</option>
-              <option value="sequence">顺序动作（宏）</option>
-            </select>
-          </div>
-          <div id="edit-action-fields" class="editor-row">
-            <textarea id="edit-text" placeholder="快捷键按下后要输入的文本……"></textarea>
-          </div>
-          <div id="edit-sequence-fields" class="editor-row hidden">
-            <button id="action-record" class="record">● 开始录制</button>
-            <textarea id="edit-steps" placeholder='宏步骤 JSON，例：[{"type":"text","text":"hi"},{"type":"tap","key":"Enter"}]' spellcheck="false"></textarea>
-            <p class="hint">录制：点开始后切到目标窗口输入，回来点停止。</p>
-          </div>
-          <div class="editor-actions">
-            <button id="save-shortcut" class="primary">保存</button>
-            <button id="cancel-shortcut">取消</button>
-          </div>
-        </div>
-      </section>
+        </section>
 
-      <!-- 改键 -->
-      <section id="panel-remaps" class="panel hidden">
-        <div class="toolbar">
-          <button id="add-remap" class="primary">+ 新增改键</button>
-        </div>
-        <ul id="remap-list" class="list"></ul>
-        <p class="hint">
-          改键优先级高于快捷键。例：CapsLock 改成 Ctrl，无需重启即时生效。
-        </p>
-      </section>
-    </main>
+        <!-- 改键详情 -->
+        <section id="detail-remaps" class="detail hidden">
+          <header class="detail-head">
+            <span id="remap-title" class="detail-title">改键</span>
+            <button id="remap-close" class="detail-close" title="关闭">×</button>
+          </header>
+          <div id="remap-empty" class="detail-empty">
+            从左侧选择一个改键，或点「+ 新增」
+          </div>
+          <div id="remap-editor" class="detail-editor hidden">
+            <div class="editor-row">
+              <label>原键</label>
+              <select id="remap-from"></select>
+            </div>
+            <div class="editor-row">
+              <label>改为</label>
+              <select id="remap-to"></select>
+            </div>
+            <p class="hint">改键优先级高于快捷键。例：CapsLock 改成 Ctrl，无需重启即时生效。</p>
+            <div class="detail-actions">
+              <button id="delete-remap" class="danger">删除</button>
+              <span class="flex-spacer"></span>
+              <button id="cancel-remap">取消</button>
+              <button id="save-remap" class="primary">保存</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 设置详情 -->
+        <section id="detail-settings" class="detail hidden">
+          <header class="detail-head">
+            <span class="detail-title">设置</span>
+          </header>
+          <div class="detail-body">
+            <div class="settings-list">
+              <label class="setting-row">
+                <input type="checkbox" id="set-autostart" class="toggle" />
+                <span>开机自启（跟随系统启动）</span>
+              </label>
+              <label class="setting-row">
+                <input type="checkbox" id="set-paused" class="toggle" />
+                <span>暂停所有快捷键</span>
+              </label>
+              <label class="setting-row">
+                <input type="checkbox" id="set-launch-minimized" class="toggle" />
+                <span>启动后最小化到托盘</span>
+              </label>
+            </div>
+            <div class="settings-actions">
+              <button id="export-config">导出配置</button>
+              <button id="import-config">导入配置</button>
+            </div>
+            <p class="hint">改动即时保存并生效；导入会先校验，冲突或非法配置会被拒绝。</p>
+          </div>
+        </section>
+
+        <!-- 消息详情 -->
+        <section id="detail-messages" class="detail hidden">
+          <header class="detail-head">
+            <span class="detail-title">消息</span>
+            <button id="clear-messages" class="danger">清空</button>
+          </header>
+          <div class="msg-tabs">
+            <button id="msg-prev" class="msg-arrow" title="上一个">‹</button>
+            <div id="msg-tablist" class="msg-tablist"></div>
+            <button id="msg-next" class="msg-arrow" title="下一个">›</button>
+          </div>
+          <div id="msg-empty" class="detail-empty">暂无命令结果，触发一个 CMD / PowerShell 动作后这里会出现记录</div>
+          <div id="msg-content" class="msg-content hidden"></div>
+        </section>
+      </main>
+    </div>
+
+    <div id="result-modal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-box">
+        <header class="modal-head">
+          <span id="modal-title" class="modal-title">命令结果</span>
+          <button id="modal-close" class="detail-close" title="关闭">×</button>
+        </header>
+        <div id="modal-body" class="modal-body"></div>
+      </div>
+    </div>
+
+    <div id="save-status" class="toast"></div>
 
     <script type="module" src="/src/main.ts"></script>
   </body>

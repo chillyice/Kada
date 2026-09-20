@@ -34,7 +34,7 @@
 | Rust workspace members | `crates/kada-core` / `crates/kada-hook` / `src-tauri` |
 | Tauri crate 名（`src-tauri/Cargo.toml`） | `kada` |
 | npm 包名（`ui/package.json`） | `kada-ui` |
-| Tauri `identifier` | `com.kada.app` |
+| Tauri `identifier` | `com.kada` |
 | `productName` / 窗口标题 | `Kada` / `咔哒 Kada` |
 | 应用显示名 | 咔哒 Kada |
 
@@ -44,7 +44,7 @@
 
 ```
 crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型
-  src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Step
+  src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/冲突检测
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/lib.rs                # 按平台 re-export win / linux
   src/win.rs                # Windows: WH_KEYBOARD_LL 钩子 + swallow/Replace 状态机 + key↔VK 映射
@@ -53,11 +53,11 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   examples/demo.rs          # M1 冒烟 demo（仅 Windows，真人按键验证）
   tests/hook_smoke.rs       # 钩子安装/回收冒烟（仅 Windows）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
-  src/lib.rs                # KadaState/decide/Recorder/tauri commands/托盘常驻
+  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻
   src/main.rs               # 入口
   tauri.conf.json           # 窗口/图标/构建配置
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键/改键/宏录制
+  src/main.ts               # 配置界面：快捷键/改键/宏录制/消息中心
   src/style.css             # 深色 UI 样式
 .github/workflows/ci.yml    # CI：ubuntu + windows 双平台构建 + 测试
 ```
@@ -68,12 +68,13 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **解析**：`"Ctrl+Alt+K".parse::<Shortcut>()`，`+` 分隔，`Ctrl/Control/Cmd/Win`→Ctrl、`Alt/Option`→Alt、`Meta/Super`→Meta。裸修饰键名（如 `"Shift"`）按按键处理（改键场景）。
 - **匹配**（`matches`）：主键一致 **且** 事件修饰键 ⊇ 快捷键修饰键——按下 `Ctrl+Shift+K` 也会命中 `Ctrl+K`（宽松规则，避免多按一个 Shift 就触发失败）。
 - **配置模型**（JSON 落盘，跨平台同步介质）：
-  - `Config { shortcuts: Vec<ShortcutItem>, remaps: Vec<Remap> }`
-  - `ShortcutItem { name?, triggers: Vec<String>, action: Action, enabled }`（`triggers` 任一组命中即触发）
-  - `Action::Text { text }` 或 `Action::Sequence { steps: Vec<Step> }`（宏）
-  - `Step`：`Text / Tap { key } / Keys { keys } / Down { key } / Up { key } / PauseMs { ms }`
+  - `Config { shortcuts: Vec<ShortcutItem>, remaps: Vec<Remap>, settings: Settings }`
+  - `ShortcutItem { name?, triggers: Vec<String>, actions: Vec<Action>, enabled }`（`triggers` 任一组命中即触发，`actions` 按顺序执行）
+  - `Action`：`Text / Cmd / Powershell / Launch / OpenFolder / Keys / PauseMs`（`Cmd`/`Powershell` 带 `show_output` 是否弹结果）
   - `Remap { from, to, enabled }`（`from` 键按下改发 `to` 键）
+  - `Settings { autostart, paused, launch_minimized }`；`detect_conflicts` 检测硬/软冲突
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`），加载时校验。
+- **消息中心**（内存态，重启清空）：Cmd/PowerShell 结果一律记入消息中心；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。
 
 ## 钩子引擎
 
@@ -102,7 +103,7 @@ cargo run -p kada-hook --example demo   # M1 冒烟 demo（仅 Windows）
 |--------|------|------|
 | M0 | 工程骨架：workspace + Tauri 壳 + UI + CI + 图标 | ✅ 完成 |
 | M1 | 核心键模型 + Windows 全局钩子引擎（demo.rs 冒烟） | ✅ 完成 |
-| M2 | 配置模型与动作/宏（Action/Step/Config JSON） | ✅ 完成 |
+| M2 | 配置模型与动作/宏（Action/Config JSON） | ✅ 完成 |
 | M3 | Tauri 桌面壳 + 宏录制 + 配置界面（快捷键/改键/宏） | ✅ 完成 |
 | M4 | Linux 钩子引擎（evdev + uinput） | ✅ 完成（未提交） |
 | M5 | macOS 输入层 | ⬜ 规划 |
@@ -112,8 +113,9 @@ cargo run -p kada-hook --example demo   # M1 冒烟 demo（仅 Windows）
 
 ## 文档清单
 
-- `README.md`（项目简介，GitHub 展示）；`docs/README.md`（文档索引：每份文档一句话定位 + 新人阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 跨平台策略）；`docs/需求设计说明书.md`（功能需求唯一活文档 + 修订记录）；`docs/变更归档.md`（已实现变更归档，按里程碑的 文件-改动表 + 规则/决策）。
+- `README.md`（项目简介，GitHub 展示）；`docs/README.md`（文档索引：每份文档一句话定位 + 新人阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 跨平台策略）；`docs/安装与更新-Windows.md`（Windows 版安装步骤 + 软件更新策略，选型已定待实现）；`docs/需求设计说明书.md`（功能需求唯一活文档 + 修订记录）；`docs/变更归档.md`（已实现变更归档，按里程碑的 文件-改动表 + 规则/决策）。
 - 代码事实以 `crates/kada-core/src/lib.rs` + `crates/kada-hook/src/*.rs` + `src-tauri/src/lib.rs` 为准，如需检索先 `grep` 再动手。
+- **文档规划借鉴 ihomy 与咖啡伴侣的结构化布局**：每个变更都有固定落点（规则 → 本文件；功能需求/规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`），保证多会话衔接、新会话可直接续接。
 
 ## 环境检查（参考）
 
