@@ -231,42 +231,54 @@ pub fn matches(e: &RawEvent, s: &Shortcut) -> bool {
 
 use serde::{Deserialize, Serialize};
 
-/// 触发后执行的动作。当前支持文本输入；后续按积木扩展
-/// （按键 / 组合 / 打开程序 / 延迟 / 剪贴板 / 宏 / 内置）。
+/// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
     /// 把文本粘贴到当前焦点（中文等 Unicode 走剪贴板最稳）。
     Text { text: String },
-    /// 顺序动作链（宏）：按序执行每个步骤。
-    Sequence { steps: Vec<Step> },
+    /// 执行 CMD 命令（Windows `cmd /C`；Linux `sh -c`）。
+    Cmd { command: String, #[serde(default)] show_output: bool },
+    /// 执行 PowerShell 命令（仅 Windows）。
+    Powershell { command: String, #[serde(default)] show_output: bool },
+    /// 启动可执行文件，可选参数。
+    Launch { program: String, args: Vec<String> },
+    /// 在文件管理器中打开某个目录。
+    OpenFolder { path: String },
+    /// 同时按下若干键（组合键，如 ["Ctrl","C"]；单键即点按）。
+    Keys { keys: Vec<String> },
+    /// 暂停 ms 毫秒。
+    PauseMs { ms: u64 },
+    /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
+    CloseProgram { program: String },
 }
 
 impl Action {
-    /// 校验动作可执行：所有键名可解析。非法返回中文错误。
+    /// 校验动作可执行：键名可解析、必要字段非空。非法返回中文错误。
     pub fn validate(&self) -> Result<(), String> {
         let check_key = |label: &str, k: &str| {
             k.parse::<Key>().map_err(|e| format!("{label}「{k}」无效：{e}"))?;
             Ok::<(), String>(())
         };
+        let non_empty = |label: &str, v: &str| {
+            if v.trim().is_empty() {
+                return Err(format!("{label}不能为空"));
+            }
+            Ok(())
+        };
         match self {
-            Action::Text { .. } => Ok(()),
-            Action::Sequence { steps } => {
-                for s in steps {
-                    match s {
-                        Step::Text { .. } | Step::PauseMs { .. } => {}
-                        Step::Tap { key } => check_key("按键", key)?,
-                        Step::Down { key } => check_key("按下", key)?,
-                        Step::Up { key } => check_key("松开", key)?,
-                        Step::Keys { keys } => {
-                            if keys.is_empty() {
-                                return Err("组合动作不能为空".into());
-                            }
-                            for k in keys {
-                                check_key("组合键", k)?;
-                            }
-                        }
-                    }
+            Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            Action::Cmd { command, .. } => non_empty("CMD 命令", command),
+            Action::Powershell { command, .. } => non_empty("PowerShell 命令", command),
+            Action::Launch { program, .. } => non_empty("程序路径", program),
+            Action::CloseProgram { program } => non_empty("程序名", program),
+            Action::OpenFolder { path } => non_empty("目录", path),
+            Action::Keys { keys } => {
+                if keys.is_empty() {
+                    return Err("按键组合不能为空".into());
+                }
+                for k in keys {
+                    check_key("组合键", k)?;
                 }
                 Ok(())
             }
@@ -280,40 +292,20 @@ impl Default for Action {
     }
 }
 
-/// 动作链的一个步骤。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum Step {
-    /// 输入一段文本。
-    Text { text: String },
-    /// 点按一个键。
-    Tap { key: String },
-    /// 同时按下若干键（组合键，如 ["Ctrl","C"]）。
-    Keys { keys: Vec<String> },
-    /// 按下某键不松（直到后续 Up）。
-    Down { key: String },
-    /// 松开某键。
-    Up { key: String },
-    /// 暂停 ms 毫秒。
-    PauseMs { ms: u64 },
-}
-
-impl Default for Step {
-    fn default() -> Self {
-        Step::Text { text: String::new() }
-    }
-}
-
-/// 一条快捷键规则：一个或多个触发组合 → 一个动作。
+/// 一条快捷键规则：一个或多个触发组合 → 一串动作（按顺序执行）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct ShortcutItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 简短描述（列表/气泡展示用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// 如 ["Ctrl+Alt+K"]，可多个。
     #[serde(default)]
     pub triggers: Vec<String>,
+    /// 触发后按顺序执行的多个动作。
     #[serde(default)]
-    pub action: Action,
+    pub actions: Vec<Action>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -327,6 +319,20 @@ pub struct Remap {
     pub enabled: bool,
 }
 
+/// 应用设置（配置的一部分，随 JSON 一起落盘/跨平台同步）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Settings {
+    /// 开机自启（跟随系统启动）。
+    #[serde(default)]
+    pub autostart: bool,
+    /// 暂停所有快捷键/改键（全局开关，持久化）。
+    #[serde(default)]
+    pub paused: bool,
+    /// 启动后最小化到托盘（不弹主窗口）。
+    #[serde(default)]
+    pub launch_minimized: bool,
+}
+
 /// 根配置。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -334,6 +340,133 @@ pub struct Config {
     pub shortcuts: Vec<ShortcutItem>,
     #[serde(default)]
     pub remaps: Vec<Remap>,
+    #[serde(default)]
+    pub settings: Settings,
+}
+
+/// 冲突严重程度。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Error,
+    Warn,
+}
+
+/// 一条快捷键/改键冲突。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Conflict {
+    pub severity: Severity,
+    pub message: String,
+}
+
+/// 检测配置中的快捷键/改键冲突。
+///
+/// - 硬冲突（[`Severity::Error`]，应阻止保存）：重复触发键、重复改键来源、
+///   改键来源与快捷键主键相同（改键优先，快捷键将失效）。
+/// - 软冲突（[`Severity::Warn`]，仅提示）：触发键超集重叠（更宽松的组合会遮蔽更具体的组合）。
+pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
+    use std::collections::HashMap;
+
+    let mut out: Vec<Conflict> = Vec::new();
+
+    // 1) 重复触发键（enabled 且跨不同条目）
+    let mut seen: HashMap<(BTreeSet<Modifier>, Key), String> = HashMap::new();
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(sc) = t.parse::<Shortcut>() {
+                let k = (sc.mods, sc.key);
+                if let Some(first) = seen.get(&k) {
+                    out.push(Conflict {
+                        severity: Severity::Error,
+                        message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
+                    });
+                } else {
+                    seen.insert(k, t.clone());
+                }
+            }
+        }
+    }
+
+    // 2) 重复改键来源
+    let mut remap_from: HashMap<Key, String> = HashMap::new();
+    for r in &cfg.remaps {
+        if !r.enabled {
+            continue;
+        }
+        if let Ok(from) = r.from.parse::<Key>() {
+            if let Some(first) = remap_from.get(&from) {
+                out.push(Conflict {
+                    severity: Severity::Error,
+                    message: format!("改键来源「{first}」重复，多条改键都从「{first}」改起"),
+                });
+            } else {
+                remap_from.insert(from, r.from.clone());
+            }
+        }
+    }
+
+    // 3) 改键来源与快捷键主键相同
+    for r in &cfg.remaps {
+        if !r.enabled {
+            continue;
+        }
+        let Ok(from) = r.from.parse::<Key>() else { continue };
+        for s in &cfg.shortcuts {
+            if !s.enabled {
+                continue;
+            }
+            for t in &s.triggers {
+                if let Ok(sc) = t.parse::<Shortcut>() {
+                    if sc.key == from {
+                        out.push(Conflict {
+                            severity: Severity::Error,
+                            message: format!(
+                                "改键「{} → {}」会拦截按键「{}」，使快捷键「{t}」失效",
+                                r.from,
+                                r.to,
+                                key_name(from)
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // 4) 触发键超集重叠（软冲突）
+    let mut items: Vec<(String, BTreeSet<Modifier>, Key)> = Vec::new();
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(sc) = t.parse::<Shortcut>() {
+                items.push((t.clone(), sc.mods, sc.key));
+            }
+        }
+    }
+    for i in 0..items.len() {
+        for j in 0..items.len() {
+            if i == j {
+                continue;
+            }
+            let (ti, mi, ki) = &items[i];
+            let (tj, mj, kj) = &items[j];
+            if ki != kj || mi == mj || !mi.is_subset(mj) {
+                continue;
+            }
+            // mi ⊂ mj：更宽松的 ti 会遮蔽更具体的 tj
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: format!("「{tj}」被「{ti}」遮蔽：按下 {tj} 时会先命中更宽松的「{ti}」"),
+            });
+        }
+    }
+
+    out
 }
 
 #[cfg(test)]
@@ -401,11 +534,13 @@ mod config_tests {
         let cfg = Config {
             shortcuts: vec![ShortcutItem {
                 name: Some("地址".into()),
+                description: Some("常用收货地址".into()),
                 triggers: vec!["Ctrl+Alt+K".into(), "Alt+K".into()],
-                action: Action::Text { text: "上海市徐汇区……".into() },
+                actions: vec![Action::Text { text: "上海市徐汇区……".into() }],
                 enabled: true,
             }],
             remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true }],
+            settings: Settings::default(),
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
@@ -416,41 +551,116 @@ mod config_tests {
     fn config_missing_fields_default() {
         // 手工编辑的配置允许缺字段、带未知字段。
         let json = r#"{
-            "shortcuts": [{ "triggers": ["Ctrl+K"], "action": { "type": "text", "text": "hi" } }],
+            "shortcuts": [{ "triggers": ["Ctrl+K"], "actions": [{ "type": "text", "text": "hi" }] }],
             "extra_field": 1
         }"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
         assert_eq!(cfg.shortcuts[0].enabled, false);
-        assert_eq!(cfg.shortcuts[0].action, Action::Text { text: "hi".into() });
+        assert_eq!(cfg.shortcuts[0].actions, vec![Action::Text { text: "hi".into() }]);
     }
 
     #[test]
-    fn sequence_json_roundtrip_and_validate() {
-        let action = Action::Sequence {
-            steps: vec![
-                Step::Text { text: "你好".into() },
-                Step::Tap { key: "Enter".into() },
-                Step::Keys { keys: vec!["Ctrl".into(), "C".into()] },
-                Step::PauseMs { ms: 100 },
-                Step::Down { key: "Shift".into() },
-                Step::Up { key: "Shift".into() },
-            ],
-        };
-        let json = serde_json::to_string(&action).unwrap();
-        let back: Action = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, action);
+    fn actions_json_roundtrip_and_validate() {
+        let actions = vec![
+            Action::Text { text: "你好".into() },
+            Action::Cmd { command: "echo hi".into(), show_output: false },
+            Action::Powershell { command: "Get-Date".into(), show_output: true },
+            Action::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()] },
+            Action::OpenFolder { path: "C:\\Users".into() },
+            Action::Keys { keys: vec!["Ctrl".into(), "C".into()] },
+            Action::PauseMs { ms: 100 },
+        ];
+        for a in &actions {
+            assert!(a.validate().is_ok(), "动作应通过校验: {a:?}");
+        }
+        let json = serde_json::to_string(&actions).unwrap();
+        let back: Vec<Action> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, actions);
 
-        assert!(action.validate().is_ok());
-        // 坏键名必被拒绝
-        assert!(Action::Sequence {
-            steps: vec![Step::Tap { key: "NotAKey".into() }],
+        // 坏键名 / 空组合 / 空命令必被拒绝
+        assert!(Action::Keys { keys: vec!["NotAKey".into()] }.validate().is_err());
+        assert!(Action::Keys { keys: vec![] }.validate().is_err());
+        assert!(Action::Cmd { command: "  ".into(), show_output: false }.validate().is_err());
+        assert!(Action::Launch { program: "".into(), args: vec![] }.validate().is_err());
+    }
+}
+
+#[cfg(test)]
+mod conflict_tests {
+    use super::*;
+
+    fn item(trigger: &str) -> ShortcutItem {
+        ShortcutItem {
+            triggers: vec![trigger.into()],
+            actions: vec![Action::Text { text: String::new() }],
+            enabled: true,
+            ..Default::default()
         }
-        .validate()
-        .is_err());
-        assert!(Action::Sequence {
-            steps: vec![Step::Keys { keys: vec![] }],
-        }
-        .validate()
-        .is_err());
+    }
+
+    fn remap(from: &str, to: &str) -> Remap {
+        Remap { from: from.into(), to: to.into(), enabled: true }
+    }
+
+    fn errors(cfg: &Config) -> Vec<Conflict> {
+        detect_conflicts(cfg)
+            .into_iter()
+            .filter(|c| c.severity == Severity::Error)
+            .collect()
+    }
+
+    fn warns(cfg: &Config) -> Vec<Conflict> {
+        detect_conflicts(cfg)
+            .into_iter()
+            .filter(|c| c.severity == Severity::Warn)
+            .collect()
+    }
+
+    #[test]
+    fn duplicate_triggers_are_error() {
+        let cfg = Config {
+            shortcuts: vec![item("Ctrl+K"), item("Ctrl+K")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn duplicate_remap_from_is_error() {
+        let cfg = Config {
+            remaps: vec![remap("CapsLock", "Ctrl"), remap("CapsLock", "Esc")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn remap_from_shadowing_shortcut_is_error() {
+        let cfg = Config {
+            shortcuts: vec![item("CapsLock")],
+            remaps: vec![remap("CapsLock", "Ctrl")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn superset_overlap_is_warn_only() {
+        let cfg = Config {
+            shortcuts: vec![item("Ctrl+K"), item("Ctrl+Shift+K")],
+            ..Default::default()
+        };
+        assert!(errors(&cfg).is_empty());
+        assert!(!warns(&cfg).is_empty());
+    }
+
+    #[test]
+    fn clean_config_has_no_conflicts() {
+        let cfg = Config {
+            shortcuts: vec![item("Ctrl+K"), item("Alt+J")],
+            remaps: vec![remap("CapsLock", "Ctrl")],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&cfg).is_empty());
     }
 }

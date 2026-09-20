@@ -13,6 +13,8 @@ kada-hook = { path = "../crates/kada-hook" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-autostart = "2"
+tauri-plugin-dialog = "2"
 
 [features]
 default = []
