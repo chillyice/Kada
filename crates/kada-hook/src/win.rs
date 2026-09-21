@@ -30,7 +30,7 @@ use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use kada_core::{Key, Modifier};
+use kada_core::{Key, Modifier, Shortcut};
 
 pub mod simulate;
 
@@ -227,6 +227,11 @@ fn detect_repeat(key: Key) -> bool {
     let mut last = LAST_DOWN.lock().unwrap();
     let is_repeat = matches!(last.as_ref(), Some((k, t)) if *k == key && t.elapsed() < Duration::from_millis(250));
     *last = Some((key, Instant::now()));
+    // 修饰键 / 锁定键不产生自动重复：双击唤醒（如双击 Alt）依赖两次独立 down，
+    // 快速连按不能被 250ms 窗口误判成 repeat，否则第二击被吞、唤醒失效。
+    if key_as_modifier(key).is_some() || key == Key::CapsLock {
+        return false;
+    }
     is_repeat
 }
 
@@ -258,6 +263,36 @@ pub fn key_to_vk(k: Key) -> Option<u16> {
         ArrowUp => VK_UP, ArrowDown => VK_DOWN, ArrowLeft => VK_LEFT,
         ArrowRight => VK_RIGHT,
     }.0)
+}
+
+/// 探测某快捷键是否已被系统或其他应用注册（Windows `RegisterHotKey` 试探）。
+/// 返回 true 表示「已被占用」。组合键需至少一个修饰键且主键可映射为虚拟键码。
+pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
+    let Some(vk) = key_to_vk(shortcut.key) else { return false };
+    if shortcut.mods.is_empty() {
+        return false;
+    }
+    let mut mods: u32 = 0;
+    for m in &shortcut.mods {
+        mods |= match m {
+            Modifier::Alt => MOD_ALT.0,
+            Modifier::Ctrl => MOD_CONTROL.0,
+            Modifier::Shift => MOD_SHIFT.0,
+            Modifier::Meta => MOD_WIN.0,
+        };
+    }
+    // 瞬时试探：注册成功说明空闲，立即注销；失败且错误码 1409 = 已被占用。
+    let id = 0xB000 + vk as i32;
+    unsafe {
+        match RegisterHotKey(None, id, HOT_KEY_MODIFIERS(mods), vk as u32) {
+            Ok(()) => {
+                let _ = UnregisterHotKey(None, id);
+                false
+            }
+            // ERROR_HOTKEY_ALREADY_REGISTERED = 1409（HRESULT 低 16 位承载 Win32 错误码）
+            Err(e) => (e.code().0 as u32) & 0xFFFF == 1409,
+        }
+    }
 }
 
 /// 取 [`Key`] 名的可打印形式，未知键码返回 None（放行）。
@@ -316,5 +351,15 @@ mod tests {
     fn swallow_up_only_for_registered_keys() {
         // 未登记的 keyup 放行
         assert!(!swallow(WM_KEYUP, &KBDLLHOOKSTRUCT::default()));
+    }
+
+    #[test]
+    fn modifier_and_toggle_keys_are_never_repeat() {
+        // 快速连按修饰键/锁定键不能被 250ms 窗口误判成自动重复：
+        // 双击唤醒（如双击 Alt）需要两次独立 down 都送到 handler。
+        for k in [Key::Alt, Key::Control, Key::Shift, Key::Meta, Key::CapsLock] {
+            assert!(!detect_repeat(k), "{} 不应判为重复", key_name(k));
+            assert!(!detect_repeat(k), "{} 第二次 down 也不应判为重复", key_name(k));
+        }
     }
 }
