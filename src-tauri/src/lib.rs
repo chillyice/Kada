@@ -14,7 +14,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::menu::{Menu, MenuItem};
@@ -23,7 +23,8 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
     detect_conflicts, matches, sanitize_config, substitute_vars, Action, AppOperation, Config,
-    Conflict, FileObject, Key, Modifier, OsOperation, RawEvent, Shortcut, Value, Vars,
+    Conflict, FileObject, Key, Modifier, OsOperation, RawEvent, Severity, Shell, Shortcut,
+    TextMode, Value, Vars, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -31,7 +32,7 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 #[cfg(target_os = "windows")]
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
-    pub use kada_hook::win::{simulate, start, Action as HookAction, HookHandle, KeyEvent};
+    pub use kada_hook::win::{hotkey_occupied, simulate, start, Action as HookAction, HookHandle, KeyEvent};
 
     pub fn hooks_supported() -> bool {
         true
@@ -176,6 +177,39 @@ fn decide(ev: &Ev, cfg: &Config) -> Outcome {
             Outcome::Pass
         }
         Ev::Up { .. } => Outcome::Pass,
+    }
+}
+
+/// 快速唤醒：双击 `Settings::wake_key` 唤出主窗口。
+///
+/// 被动检测——只唤出窗口、不拦截按键：唤醒键（默认 Alt）常同时是修饰键，
+/// 拦截会破坏 Alt+Tab / Alt+字母 等组合。两次按下（非自动重复）间隔 ≤400ms
+/// 判为双击；其间按下其它键则取消上一次单击计数（视作组合键的一部分）。
+fn detect_wake(
+    cfg: &RwLock<Config>,
+    last_tap: &mut Option<Instant>,
+    app: &tauri::AppHandle,
+    ev: &Ev,
+) {
+    let Ev::Down { key, repeat, .. } = ev else { return };
+    if *repeat {
+        return;
+    }
+    let guard = cfg.read().unwrap();
+    let Some(wake) = guard.settings.wake_key.as_ref() else { return };
+    let Ok(wk) = wake.parse::<Key>() else { return };
+    if *key != wk {
+        // 按下其它键 → 上一次唤醒键单击不算数（可能是组合键的一部分）。
+        last_tap.take();
+        return;
+    }
+    let now = Instant::now();
+    match *last_tap {
+        Some(prev) if now.duration_since(prev) <= Duration::from_millis(400) => {
+            *last_tap = None;
+            show_main_window(app);
+        }
+        _ => *last_tap = Some(now),
     }
 }
 
@@ -365,10 +399,15 @@ fn run_action(
     last_copied: &mut Option<String>,
 ) -> Result<Option<CommandResult>, String> {
     match action {
-        Action::Text { text } => {
-            let text = substitute_vars(text, vars);
-            input::simulate::type_text(&text).map_err(|e| e.to_string())?;
-        }
+        Action::Text { text, mode } => match mode {
+            TextMode::Input => {
+                let text = substitute_vars(text, vars);
+                input::simulate::type_text(&text).map_err(|e| e.to_string())?;
+            }
+            TextMode::ToUpper | TextMode::ToLower => {
+                transform_case(matches!(mode, TextMode::ToUpper))?;
+            }
+        },
         Action::Keys { keys } => {
             let ks: Vec<Key> = keys
                 .iter()
@@ -384,6 +423,28 @@ fn run_action(
             }
         }
         Action::PauseMs { ms } => std::thread::sleep(Duration::from_millis(*ms)),
+        Action::Command { shell, command, show_output } => {
+            let (label, kind, is_powershell) = match shell {
+                Shell::Cmd => ("CMD", "cmd", false),
+                Shell::Powershell => ("PowerShell", "powershell", true),
+            };
+            if is_powershell && !cfg!(target_os = "windows") {
+                return Err("PowerShell 命令仅 Windows 可用".into());
+            }
+            let command = substitute_vars(command, vars);
+            let (stdout, stderr, exit_code) = run_cmd(label, is_powershell, &command)?;
+            return Ok(Some(CommandResult {
+                kind: kind.into(),
+                label: label.into(),
+                command,
+                trigger: trigger.into(),
+                name: name.into(),
+                stdout,
+                stderr,
+                exit_code,
+                show_output: *show_output,
+            }));
+        }
         Action::Cmd { command, show_output } => {
             let command = substitute_vars(command, vars);
             let (stdout, stderr, exit_code) = run_cmd("CMD", false, &command)?;
@@ -429,18 +490,8 @@ fn run_action(
             return Ok(Some(close_program(&program, trigger, name)?));
         }
         Action::OpenFolder { path } => {
-            let path = substitute_vars(path, vars);
-            if cfg!(target_os = "windows") {
-                std::process::Command::new("explorer")
-                    .arg(&path)
-                    .spawn()
-                    .map_err(|e| format!("打开目录失败: {e}"))?;
-            } else {
-                std::process::Command::new("xdg-open")
-                    .arg(&path)
-                    .spawn()
-                    .map_err(|e| format!("打开目录失败: {e}"))?;
-            }
+            // 旧版动作（正常流程已在加载时迁移到 Os::OpenFolder，此处兜底）。
+            run_os(&OsOperation::OpenFolder { path: path.clone() }, vars, last_copied)?;
         }
         Action::Os { operation } => {
             run_os(operation, vars, last_copied)?;
@@ -491,10 +542,33 @@ fn run_os(
             let p = substitute_vars(path, vars);
             new_file(&p)?;
         }
+        OsOperation::NewFolder { path } => {
+            let p = substitute_vars(path, vars);
+            std::fs::create_dir_all(&p).map_err(|e| format!("新建目录失败: {e}"))?;
+        }
+        OsOperation::OpenFolder { path } => {
+            let p = substitute_vars(path, vars);
+            if cfg!(target_os = "windows") {
+                std::process::Command::new("explorer")
+                    .arg(&p)
+                    .spawn()
+                    .map_err(|e| format!("打开目录失败: {e}"))?;
+            } else {
+                std::process::Command::new("xdg-open")
+                    .arg(&p)
+                    .spawn()
+                    .map_err(|e| format!("打开目录失败: {e}"))?;
+            }
+        }
         OsOperation::Zip { source, dest } => {
             let s = substitute_vars(source, vars);
             let d = substitute_vars(dest, vars);
             zip_path(&s, &d)?;
+        }
+        OsOperation::Unzip { source, dest } => {
+            let s = substitute_vars(source, vars);
+            let d = substitute_vars(dest, vars);
+            unzip_path(&s, &d)?;
         }
         OsOperation::GetFileProps { path, var } => {
             let p = substitute_vars(path, vars);
@@ -503,6 +577,19 @@ fn run_os(
             vars.insert(name, Value::File(obj));
         }
     }
+    Ok(())
+}
+
+/// 把当前选中/剪贴板文本转为大写或小写后粘贴回原处：
+/// 复制选中（Ctrl+C）→ 读剪贴板 → 转换 → 粘贴（Ctrl+V）。
+/// 无选中时 Ctrl+C 通常不改剪贴板，即退化为「转换剪贴板文本」。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn transform_case(upper: bool) -> Result<(), String> {
+    input::simulate::chord(&[Key::Control, Key::C]);
+    std::thread::sleep(Duration::from_millis(80));
+    let clip = input::simulate::get_clipboard_text().map_err(|e| e.to_string())?;
+    let out = if upper { clip.to_uppercase() } else { clip.to_lowercase() };
+    input::simulate::type_text(&out).map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -525,9 +612,18 @@ fn run_app(
             let program = substitute_vars(program, vars);
             Ok(Some(close_program(&program, trigger, name)?))
         }
-        AppOperation::Status { program, var } => {
+        AppOperation::Status { program, var, retries, interval_ms } => {
             let program = substitute_vars(program, vars);
-            let running = app_running(&image_name(&program));
+            let image = image_name(&program);
+            // 未运行则按 retries/interval_ms 轮询，等程序起来（如「启动后等它就绪」）。
+            let mut running = app_running(&image);
+            for _ in 0..*retries {
+                if running {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(*interval_ms));
+                running = app_running(&image);
+            }
             let name = if var.trim().is_empty() { "app".to_string() } else { var.clone() };
             vars.insert(name, Value::Bool(running));
             Ok(None)
@@ -735,6 +831,33 @@ fn zip_path(source: &str, dest: &str) -> Result<(), String> {
     }
 }
 
+/// 解压 zip：Windows 走 `Expand-Archive`，Linux 走 `unzip`。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn unzip_path(source: &str, dest: &str) -> Result<(), String> {
+    let src = Path::new(source);
+    if !src.exists() {
+        return Err(format!("解压失败：压缩包「{source}」不存在"));
+    }
+    fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败: {e}"))?;
+    let status = if cfg!(target_os = "windows") {
+        let full =
+            format!("Expand-Archive -Path '{}' -DestinationPath '{}' -Force", source, dest);
+        std::process::Command::new("powershell")
+            .args(["-NoProfile", "-Command", full.as_str()])
+            .status()
+    } else {
+        std::process::Command::new("unzip")
+            .args(["-o", source, "-d", dest])
+            .status()
+    }
+    .map_err(|e| format!("启动解压命令失败: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err("解压失败（压缩包损坏或系统缺少解压组件）".into())
+    }
+}
+
 /// 读取文件/目录属性，构造 [`FileObject`]。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn file_object(path: &str) -> Result<FileObject, String> {
@@ -767,10 +890,17 @@ fn run_cmd(label: &str, is_powershell: bool, command: &str) -> Result<(String, S
                 .args(["-NoProfile", "-Command", full.as_str()])
                 .output()
         } else {
-            let full = format!("chcp 65001>nul & {command}");
-            std::process::Command::new("cmd")
-                .args(["/C", full.as_str()])
-                .output()
+            // Windows：命令可能含嵌套引号（如 `start "" /min cmd /c "…"`），直接 `cmd /C "…"`
+            // 会被 Rust 的 argv 转义成 `\"`，而 cmd 不认反斜杠转义，导致「xxx 不是内部或外部命令」。
+            // 改为写入临时批处理文件再执行，彻底绕开引号二次解析；chcp 单独一行保证中文输出不乱码。
+            static SERIAL: AtomicU64 = AtomicU64::new(0);
+            let id = SERIAL.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!("kada_cmd_{}_{}.bat", std::process::id(), id));
+            let content = format!("@echo off\r\nchcp 65001>nul\r\n{command}\r\n");
+            let run = std::fs::write(&path, content.as_bytes())
+                .and_then(|_| std::process::Command::new("cmd").arg("/C").arg(&path).output());
+            let _ = std::fs::remove_file(&path);
+            run
         }
     } else {
         std::process::Command::new("sh").args(["-c", command]).output()
@@ -976,9 +1106,56 @@ fn sync_autostart(app: &tauri::AppHandle, enabled: bool) {
 }
 
 /// 计算给定配置的冲突列表（前端把当前正在编辑的配置传入，实时展示警告）。
+/// 三部分：① 内部冲突（重复触发键/改键遮蔽/超集重叠）；② 系统快捷键清单命中；
+/// ③ Windows 下 RegisterHotKey 探测「其他应用/系统已注册」的真实占用。
 #[tauri::command]
 fn get_conflicts(config: Config) -> Vec<Conflict> {
-    detect_conflicts(&config)
+    let mut out = detect_conflicts(&config);
+
+    // ② 系统快捷键清单（跨平台）：精确匹配；命中的触发键记下，供③跳过避免重复提示。
+    let mut sys_hits: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for s in &config.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            let Ok(sc) = t.parse::<Shortcut>() else { continue };
+            for (combo, desc) in SYSTEM_SHORTCUTS {
+                if let Ok(sys) = combo.parse::<Shortcut>() {
+                    if sys == sc {
+                        out.push(Conflict {
+                            severity: Severity::Warn,
+                            message: format!("「{t}」与系统快捷键 {combo}（{desc}）冲突"),
+                        });
+                        sys_hits.insert(t.clone());
+                    }
+                }
+            }
+        }
+    }
+
+    // ③ Windows：RegisterHotKey 探测其它应用/系统的真实占用。
+    #[cfg(windows)]
+    for s in &config.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if sys_hits.contains(t) {
+                continue;
+            }
+            if let Ok(sc) = t.parse::<Shortcut>() {
+                if input::hotkey_occupied(&sc) {
+                    out.push(Conflict {
+                        severity: Severity::Warn,
+                        message: format!("「{t}」已被系统或其他应用占用"),
+                    });
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// 导出当前配置到指定路径（JSON）。
@@ -1125,6 +1302,7 @@ pub fn run() {
                     let app_handle = app.handle().clone();
                     let results = results.clone();
                     let unread = unread.clone();
+                    let mut last_tap: Option<Instant> = None;
                     input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
@@ -1135,6 +1313,8 @@ pub fn run() {
                                 return input::HookAction::Allow;
                             }
                         }
+                        // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
+                        detect_wake(&cfg, &mut last_tap, &app_handle, &ev);
                         let guard = cfg.read().unwrap();
                         if p.load(Ordering::Relaxed) || guard.settings.paused {
                             return input::HookAction::Allow;

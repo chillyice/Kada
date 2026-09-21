@@ -114,7 +114,7 @@ cargo run -p kada-hook --example demo   # M1 冒烟 demo（仅 Windows）
 
 ## 文档清单
 
-- `README.md`（项目简介，GitHub 展示）；`docs/README.md`（文档索引：每份文档一句话定位 + 新人阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 跨平台策略）；`docs/安装与更新-Windows.md`（Windows 版安装步骤 + 软件更新策略，选型已定待实现）；`docs/需求设计说明书.md`（功能需求唯一活文档 + 修订记录）；`docs/变更归档.md`（已实现变更归档，按里程碑的 文件-改动表 + 规则/决策）。
+- `README.md`（项目简介，GitHub 展示）；`docs/README.md`（文档索引：每份文档一句话定位 + 新人阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 跨平台策略）；`docs/安装与更新-Windows.md`（Windows 版安装步骤 + 软件更新策略，选型已定待实现）；`docs/需求设计说明书.md`（功能需求唯一活文档 + 修订记录）；`docs/竞品分析与优化规划.md`（竞品横向对比 + 差距清单 + P0~P3 优化路线图）；`docs/变更归档.md`（已实现变更归档，按里程碑的 文件-改动表 + 规则/决策）。
 - 代码事实以 `crates/kada-core/src/lib.rs` + `crates/kada-hook/src/*.rs` + `src-tauri/src/lib.rs` 为准，如需检索先 `grep` 再动手。
 - **文档规划借鉴 ihomy 与咖啡伴侣的结构化布局**：每个变更都有固定落点（规则 → 本文件；功能需求/规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`），保证多会话衔接、新会话可直接续接。
 

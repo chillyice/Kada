@@ -408,6 +408,12 @@ pub mod simulate {
         }
         Ok(())
     }
+
+    /// 读取剪贴板文本（用于「转大小写」动作：复制选中 → 读剪贴板 → 转换 → 粘贴）。
+    pub fn get_clipboard_text() -> io::Result<String> {
+        let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
+        cb.get_text().map_err(io::Error::other)
+    }
 }
 
 #[cfg(test)]
