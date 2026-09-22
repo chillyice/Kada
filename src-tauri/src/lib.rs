@@ -22,9 +22,10 @@ use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
-    detect_conflicts, matches, sanitize_config, substitute_vars, Action, AppOperation, Config,
-    Conflict, FileObject, Key, Modifier, OsOperation, RawEvent, Severity, Shell, Shortcut,
-    TextMode, Value, Vars, SYSTEM_SHORTCUTS,
+    detect_conflicts, is_hotstring_terminator, key_to_char, match_expansion, matches,
+    sanitize_config, substitute_vars, Action, AppOperation, Config, Conflict, FileObject,
+    FrontmostContext, Key, Modifier, OsOperation, RawEvent, Remap, Severity, Shell, Shortcut,
+    TextExpansion, TextMode, TextValue, Value, Vars, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -32,7 +33,10 @@ use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 #[cfg(target_os = "windows")]
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
-    pub use kada_hook::win::{hotkey_occupied, simulate, start, Action as HookAction, HookHandle, KeyEvent};
+    pub use kada_hook::win::{
+        frontmost_context, hotkey_occupied, simulate, start, Action as HookAction, HookHandle,
+        KeyEvent,
+    };
 
     pub fn hooks_supported() -> bool {
         true
@@ -42,7 +46,7 @@ mod input {
 #[cfg(target_os = "linux")]
 mod input {
     //! Linux：evdev + uinput 全局钩子（kada-hook），X11 / Wayland 通用。
-    pub use kada_hook::linux::{simulate, start, Action as HookAction, HookHandle, KeyEvent};
+    pub use kada_hook::linux::{frontmost_context, simulate, start, Action as HookAction, HookHandle, KeyEvent};
 
     pub fn hooks_supported() -> bool {
         true
@@ -102,6 +106,8 @@ struct CommandResult {
     exit_code: Option<i32>,
     /// 是否弹出结果弹窗（仅影响展示，不影响记录）。
     show_output: bool,
+    /// 执行时间（本地时区，"YYYY-MM-DD HH:MM:SS"）。
+    time: String,
 }
 
 /// 触发气泡载荷：名称 + 触发组合键。
@@ -143,41 +149,324 @@ enum Outcome {
     Pass,
 }
 
-fn decide(ev: &Ev, cfg: &Config) -> Outcome {
-    match ev {
-        Ev::Down { key, mods, repeat } => {
-            // 改键优先于快捷键：先消耗掉原生键，避免改键后键再触发快捷键。
-            for r in &cfg.remaps {
-                if !r.enabled {
-                    continue;
+/// 层语义匹配普通改键（非 tap-hold）：激活层条目优先、基层层条目兜底。
+fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Option<Key> {
+    for r in &cfg.remaps {
+        if !r.enabled || r.is_tap_hold() || r.layer.as_deref() != active_layer {
+            continue;
+        }
+        if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
+            if from == key {
+                return Some(to);
+            }
+        }
+    }
+    if active_layer.is_some() {
+        for r in &cfg.remaps {
+            if !r.enabled || r.is_tap_hold() || r.layer.is_some() {
+                continue;
+            }
+            if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
+                if from == key {
+                    return Some(to);
                 }
-                if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
-                    if from == *key {
-                        return Outcome::Replace(to);
+            }
+        }
+    }
+    None
+}
+
+/// 层语义匹配快捷键：激活层条目优先、基层层条目兜底。返回 (动作, 触发键, 名称)。
+fn match_shortcut(
+    cfg: &Config,
+    raw: &RawEvent,
+    active_layer: Option<&str>,
+) -> Option<(Vec<Action>, String, String)> {
+    for s in &cfg.shortcuts {
+        if !s.enabled || s.layer.as_deref() != active_layer {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(sc) = t.parse::<Shortcut>() {
+                if matches(raw, &sc) {
+                    return Some((s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                }
+            }
+        }
+    }
+    if active_layer.is_some() {
+        for s in &cfg.shortcuts {
+            if !s.enabled || s.layer.is_some() {
+                continue;
+            }
+            for t in &s.triggers {
+                if let Ok(sc) = t.parse::<Shortcut>() {
+                    if matches(raw, &sc) {
+                        return Some((
+                            s.actions.clone(),
+                            t.clone(),
+                            s.name.clone().unwrap_or_default(),
+                        ));
                     }
                 }
             }
-            let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
-            for s in &cfg.shortcuts {
-                if !s.enabled || *repeat {
-                    continue;
-                }
-                for t in &s.triggers {
-                    if let Ok(sc) = t.parse::<Shortcut>() {
-                        if matches(&raw, &sc) {
-                            return Outcome::Shortcut {
-                                actions: s.actions.clone(),
-                                trigger: t.clone(),
-                                name: s.name.clone().unwrap_or_default(),
-                            };
-                        }
-                    }
+        }
+    }
+    None
+}
+
+fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
+    match ev {
+        Ev::Down { key, mods, repeat } => {
+            // 改键优先于快捷键：先消耗掉原生键，避免改键后键再触发快捷键。
+            if let Some(to) = match_plain_remap(cfg, *key, active_layer) {
+                return Outcome::Replace(to);
+            }
+            if !*repeat {
+                let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
+                if let Some((actions, trigger, name)) = match_shortcut(cfg, &raw, active_layer) {
+                    return Outcome::Shortcut { actions, trigger, name };
                 }
             }
             Outcome::Pass
         }
         Ev::Up { .. } => Outcome::Pass,
     }
+}
+
+/// tap-hold 改键的待定状态：按下 `from` 键后，等待判定「短按（tap）/ 长按（hold）」。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct TapHoldPending {
+    from: Key,
+    tap: Option<Key>,
+    hold: Option<Key>,
+    /// 长按进入的层（momentary 切层）；与 `hold`（输出键）互斥。
+    hold_layer: Option<String>,
+    timeout: Duration,
+    down_at: Instant,
+    hold_active: bool,
+}
+
+/// `Key`（裸修饰键）→ `Modifier`。hold 是修饰键时，长按期间后续键的 mods 要补上它。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn key_as_modifier(k: Key) -> Option<Modifier> {
+    match k {
+        Key::Control => Some(Modifier::Ctrl),
+        Key::Alt => Some(Modifier::Alt),
+        Key::Shift => Some(Modifier::Shift),
+        Key::Meta => Some(Modifier::Meta),
+        _ => None,
+    }
+}
+
+/// tap-hold 状态机单步推进。
+///
+/// 返回 `None` 表示事件被吞掉（原键不泄给目标程序）；返回 `Some(ev)` 表示继续走
+/// 普通 [`decide`]，其中 `ev.mods` 已并入「hold 修饰键」。判定规则：
+/// - 按下 `from` → 吞掉并进入待定；短按（阈值内松开）输出 tap、长按输出 hold。
+/// - 待定期间按下其它键 → 立即判 hold（roll 判定，缩短等待）。
+/// - 自动重复的 `from` down 被吞掉、不推进判定。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn taphold_step(
+    ev: &Ev,
+    cfg: &Config,
+    pending: &mut Option<TapHoldPending>,
+    active_hold_mods: &mut BTreeSet<Modifier>,
+    active_layer: &mut Option<String>,
+) -> Option<Ev> {
+    match ev {
+        Ev::Down { key, mods, repeat } => {
+            let is_pending_from = pending.as_ref().map(|p| p.from == *key).unwrap_or(false);
+            if is_pending_from {
+                return None; // 原键的重复 down：吞掉。
+            }
+            if pending.is_some() {
+                activate_hold(pending, active_hold_mods, active_layer); // 不同键 down → roll 判定 hold。
+            }
+            if pending.is_none() {
+                if let Some(r) = find_taphold_rule(cfg, *key, active_layer.as_deref()) {
+                    *pending = Some(TapHoldPending {
+                        from: *key,
+                        tap: r.tap_key(),
+                        hold: r.hold_key(),
+                        hold_layer: r.hold_layer_id().map(String::from),
+                        timeout: Duration::from_millis(r.tap_timeout()),
+                        down_at: Instant::now(),
+                        hold_active: false,
+                    });
+                    return None;
+                }
+            }
+            let mut m = mods.clone();
+            m.extend(active_hold_mods.iter().copied());
+            Some(Ev::Down { key: *key, mods: m, repeat: *repeat })
+        }
+        Ev::Up { key } => {
+            if pending.as_ref().map(|p| p.from == *key).unwrap_or(false) {
+                finish_taphold(pending, active_hold_mods, active_layer);
+                return None;
+            }
+            Some(Ev::Up { key: *key })
+        }
+    }
+}
+
+/// 按层语义查找命中的 tap-hold/切层规则（激活层优先、基层层兜底）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) -> Option<&'a Remap> {
+    for r in &cfg.remaps {
+        if !r.enabled || !r.is_tap_hold() || r.layer.as_deref() != active_layer {
+            continue;
+        }
+        if r.from.parse::<Key>().ok() == Some(key) {
+            return Some(r);
+        }
+    }
+    if active_layer.is_some() {
+        for r in &cfg.remaps {
+            if !r.enabled || !r.is_tap_hold() || r.layer.is_some() {
+                continue;
+            }
+            if r.from.parse::<Key>().ok() == Some(key) {
+                return Some(r);
+            }
+        }
+    }
+    None
+}
+
+/// 判定 hold：注入 hold 键 down，或进入切层；hold 是修饰键时记入 `active_hold_mods`。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn activate_hold(
+    pending: &mut Option<TapHoldPending>,
+    active_hold_mods: &mut BTreeSet<Modifier>,
+    active_layer: &mut Option<String>,
+) {
+    let Some(p) = pending.as_mut() else { return };
+    if p.hold_active {
+        return;
+    }
+    p.hold_active = true;
+    if let Some(hk) = p.hold {
+        input::simulate::down(hk);
+        if let Some(md) = key_as_modifier(hk) {
+            active_hold_mods.insert(md);
+        }
+    } else if let Some(layer) = &p.hold_layer {
+        *active_layer = Some(layer.clone());
+    }
+}
+
+/// 结束待定：hold 已激活则释放 hold 键 / 退出切层；否则按时长判定 tap 或 hold。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn finish_taphold(
+    pending: &mut Option<TapHoldPending>,
+    active_hold_mods: &mut BTreeSet<Modifier>,
+    active_layer: &mut Option<String>,
+) {
+    let Some(p) = pending.take() else { return };
+    if p.hold_active {
+        if let Some(hk) = p.hold {
+            input::simulate::up(hk);
+            if let Some(md) = key_as_modifier(hk) {
+                active_hold_mods.remove(&md);
+            }
+        } else if p.hold_layer.is_some() {
+            *active_layer = None; // 松开切层键 → 退回基层层。
+        }
+    } else if p.down_at.elapsed() >= p.timeout {
+        if let Some(hk) = p.hold {
+            input::simulate::tap(hk); // 长按后松开：hold 键短促输出一次。
+        }
+        // 切层键长按后松开（未 roll）：短暂进入又退出，无净效果，无需操作。
+    } else if let Some(tk) = p.tap {
+        input::simulate::tap(tk); // 短按：tap 键。
+    }
+}
+
+/// 热串输入缓冲最大长度（触发词都很短，64 字符足够）。
+const MAX_HOTSTRING_BUFFER: usize = 64;
+
+/// 处理一个放行的事件用于文本扩展：累积可打印字符、命中触发词时异步回删并注入。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn on_hotstring(ev: &Ev, buffer: &mut String, expansions: &[TextExpansion]) {
+    let Ev::Down { key, mods, repeat } = ev else { return };
+    if *repeat {
+        return;
+    }
+    // 修饰键不打断缓冲（输入大写字母需要 Shift 按下）。
+    if matches!(key, Key::Shift | Key::Control | Key::Alt | Key::Meta) {
+        return;
+    }
+    if is_hotstring_terminator(*key) {
+        if let Some(exp) = match_expansion(buffer, expansions) {
+            let backspaces = exp.trigger.chars().count();
+            let replace = exp.replace.clone();
+            std::thread::spawn(move || {
+                for _ in 0..backspaces {
+                    input::simulate::tap(Key::Backspace);
+                }
+                let expanded = resolve_hotstring(&replace);
+                let _ = input::simulate::type_text(&expanded);
+            });
+        }
+        buffer.clear();
+        return;
+    }
+    if *key == Key::Backspace {
+        buffer.pop();
+        return;
+    }
+    // 可打印字符累积；其余键（方向键/功能键等）打断缓冲。
+    let shift = mods.contains(&Modifier::Shift);
+    match key_to_char(*key, shift) {
+        Some(c) => {
+            buffer.push(c);
+            if buffer.chars().count() > MAX_HOTSTRING_BUFFER {
+                let skip = buffer.chars().count() - MAX_HOTSTRING_BUFFER;
+                *buffer = buffer.chars().skip(skip).collect();
+            }
+        }
+        None => buffer.clear(),
+    }
+}
+
+/// 展开热串替换文本的动态片段：`{date}` / `{time}` / `{clipboard}`。
+/// 未知占位符保持原样（不破坏用户输入的字面 `{...}`）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn resolve_hotstring(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 1..];
+        match after.find('}') {
+            Some(end) => {
+                let token = &after[..end];
+                let val = match token {
+                    "date" => Some(chrono::Local::now().format("%Y-%m-%d").to_string()),
+                    "time" => Some(chrono::Local::now().format("%H:%M:%S").to_string()),
+                    "clipboard" => input::simulate::get_clipboard_text().ok(),
+                    _ => None,
+                };
+                match val {
+                    Some(v) => out.push_str(&v),
+                    None => {
+                        out.push('{');
+                        out.push_str(token);
+                        out.push('}');
+                    }
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// 快速唤醒：双击 `Settings::wake_key` 唤出主窗口。
@@ -227,7 +516,18 @@ fn fire(
     std::thread::spawn(move || {
         let mut vars: Vars = BTreeMap::new();
         let mut last_copied: Option<String> = None;
-        run_actions(&app, &results, &unread, &actions, &trigger, &name, &mut vars, &mut last_copied);
+        let frontmost = input::frontmost_context();
+        run_actions(
+            &app,
+            &results,
+            &unread,
+            &actions,
+            &trigger,
+            &name,
+            &mut vars,
+            &mut last_copied,
+            frontmost.as_ref(),
+        );
     });
 }
 
@@ -361,6 +661,7 @@ fn set_tray_unread(app: &tauri::AppHandle, unread: bool) {
 
 /// 递归执行一串动作：遇到「条件判断」动作时按条件求值选择 `then` / `otherwise` 分支继续。
 /// 命令类动作的结果沿既有通道进入消息中心。
+/// `frontmost` 为触发时的前台窗口上下文（供「前台应用/窗口」类条件求值）。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn run_actions(
     app: &tauri::AppHandle,
@@ -371,11 +672,12 @@ fn run_actions(
     name: &str,
     vars: &mut Vars,
     last_copied: &mut Option<String>,
+    frontmost: Option<&FrontmostContext>,
 ) {
     for action in actions {
-        if let Action::If { condition, then, otherwise } = action {
-            let branch = if condition.matches(vars) { then } else { otherwise };
-            run_actions(app, results, unread, branch, trigger, name, vars, last_copied);
+        if let Action::If { condition, then, otherwise, .. } = action {
+            let branch = if condition.matches(vars, frontmost) { then } else { otherwise };
+            run_actions(app, results, unread, branch, trigger, name, vars, last_copied, frontmost);
             continue;
         }
         match run_action(action, trigger, name, vars, last_copied) {
@@ -388,7 +690,8 @@ fn run_actions(
 
 /// 顺序执行一个动作。文本/按键走模拟输入，进程类走 std::process，文件类走 std::fs。
 /// 命令类动作（CMD/PowerShell/关闭程序）捕获输出并返回 `Some(CommandResult)`，其余返回 `None`。
-/// `vars` 承载本次触发内的文件属性变量（`GetFileProps` 写入、后续动作用占位符引用）；
+/// `vars` 承载本次触发内的变量（`GetFileProps` 写 File、`App::Status` 写 Bool、
+/// 命令动作 `var` 非空时写 Text），供后续动作用占位符引用；
 /// `last_copied` 记录最近一次复制/剪切的来源，供「粘贴」动作使用。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn run_action(
@@ -399,7 +702,7 @@ fn run_action(
     last_copied: &mut Option<String>,
 ) -> Result<Option<CommandResult>, String> {
     match action {
-        Action::Text { text, mode } => match mode {
+        Action::Text { text, mode, .. } => match mode {
             TextMode::Input => {
                 let text = substitute_vars(text, vars);
                 input::simulate::type_text(&text).map_err(|e| e.to_string())?;
@@ -408,7 +711,7 @@ fn run_action(
                 transform_case(matches!(mode, TextMode::ToUpper))?;
             }
         },
-        Action::Keys { keys } => {
+        Action::Keys { keys, .. } => {
             let ks: Vec<Key> = keys
                 .iter()
                 .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
@@ -422,8 +725,8 @@ fn run_action(
                 input::simulate::up(*k);
             }
         }
-        Action::PauseMs { ms } => std::thread::sleep(Duration::from_millis(*ms)),
-        Action::Command { shell, command, show_output } => {
+        Action::PauseMs { ms, .. } => std::thread::sleep(Duration::from_millis(*ms)),
+        Action::Command { shell, command, show_output, var, .. } => {
             let (label, kind, is_powershell) = match shell {
                 Shell::Cmd => ("CMD", "cmd", false),
                 Shell::Powershell => ("PowerShell", "powershell", true),
@@ -433,6 +736,9 @@ fn run_action(
             }
             let command = substitute_vars(command, vars);
             let (stdout, stderr, exit_code) = run_cmd(label, is_powershell, &command)?;
+            if !var.trim().is_empty() {
+                vars.insert(var.trim().to_string(), Value::Text(TextValue { text: stdout.trim().to_string(), exit_code }));
+            }
             return Ok(Some(CommandResult {
                 kind: kind.into(),
                 label: label.into(),
@@ -443,11 +749,15 @@ fn run_action(
                 stderr,
                 exit_code,
                 show_output: *show_output,
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             }));
         }
-        Action::Cmd { command, show_output } => {
+        Action::Cmd { command, show_output, var, .. } => {
             let command = substitute_vars(command, vars);
             let (stdout, stderr, exit_code) = run_cmd("CMD", false, &command)?;
+            if !var.trim().is_empty() {
+                vars.insert(var.trim().to_string(), Value::Text(TextValue { text: stdout.trim().to_string(), exit_code }));
+            }
             return Ok(Some(CommandResult {
                 kind: "cmd".into(),
                 label: "CMD".into(),
@@ -458,14 +768,18 @@ fn run_action(
                 stderr,
                 exit_code,
                 show_output: *show_output,
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             }));
         }
-        Action::Powershell { command, show_output } => {
+        Action::Powershell { command, show_output, var, .. } => {
             if !cfg!(target_os = "windows") {
                 return Err("PowerShell 动作仅 Windows 可用".into());
             }
             let command = substitute_vars(command, vars);
             let (stdout, stderr, exit_code) = run_cmd("PowerShell", true, &command)?;
+            if !var.trim().is_empty() {
+                vars.insert(var.trim().to_string(), Value::Text(TextValue { text: stdout.trim().to_string(), exit_code }));
+            }
             return Ok(Some(CommandResult {
                 kind: "powershell".into(),
                 label: "PowerShell".into(),
@@ -476,27 +790,28 @@ fn run_action(
                 stderr,
                 exit_code,
                 show_output: *show_output,
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             }));
         }
-        Action::Launch { program, args } => {
+        Action::Launch { program, args, .. } => {
             // 旧版动作（正常流程已在加载时迁移到 App，此处兜底）。
             let program = substitute_vars(program, vars);
             let args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
             launch_program(&program, &args)?;
         }
-        Action::CloseProgram { program } => {
+        Action::CloseProgram { program, .. } => {
             // 旧版动作（正常流程已在加载时迁移到 App，此处兜底）。
             let program = substitute_vars(program, vars);
             return Ok(Some(close_program(&program, trigger, name)?));
         }
-        Action::OpenFolder { path } => {
+        Action::OpenFolder { path, .. } => {
             // 旧版动作（正常流程已在加载时迁移到 Os::OpenFolder，此处兜底）。
             run_os(&OsOperation::OpenFolder { path: path.clone() }, vars, last_copied)?;
         }
-        Action::Os { operation } => {
+        Action::Os { operation, .. } => {
             run_os(operation, vars, last_copied)?;
         }
-        Action::App { operation } => {
+        Action::App { operation, .. } => {
             return run_app(operation, trigger, name, vars);
         }
         Action::If { .. } => {
@@ -667,6 +982,7 @@ fn close_program(program: &str, trigger: &str, name: &str) -> Result<CommandResu
         stderr,
         exit_code,
         show_output: false,
+        time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
     })
 }
 
@@ -974,7 +1290,7 @@ impl Recorder {
         if down {
             // 一组新组合键的开始（之前无按住的键）：先记下间隔
             if self.held.is_empty() && gap >= 20 {
-                self.actions.push(Action::PauseMs { ms: gap });
+                self.actions.push(Action::PauseMs { ms: gap, description: None });
             }
             self.held.push(key);
             self.chord.push(key);
@@ -984,7 +1300,7 @@ impl Recorder {
             if self.held.is_empty() {
                 let keys: Vec<String> = self.chord.drain(..).map(|k| key_name(k).to_string()).collect();
                 if !keys.is_empty() {
-                    self.actions.push(Action::Keys { keys });
+                    self.actions.push(Action::Keys { keys, description: None });
                 }
             }
         }
@@ -994,7 +1310,7 @@ impl Recorder {
     fn finish(mut self) -> Vec<Action> {
         if !self.chord.is_empty() {
             let keys: Vec<String> = self.chord.drain(..).map(|k| key_name(k).to_string()).collect();
-            self.actions.push(Action::Keys { keys });
+            self.actions.push(Action::Keys { keys, description: None });
         }
         self.actions
     }
@@ -1026,7 +1342,7 @@ mod tests {
         let combos: Vec<&Vec<String>> = actions
             .iter()
             .filter_map(|a| match a {
-                Action::Keys { keys } => Some(keys),
+                Action::Keys { keys, .. } => Some(keys),
                 _ => None,
             })
             .collect();
@@ -1041,7 +1357,7 @@ mod tests {
         let ctrl = r
             .finish()
             .iter()
-            .filter(|a| matches!(a, Action::Keys { keys } if keys == &vec!["Ctrl".to_string()]))
+            .filter(|a| matches!(a, Action::Keys { keys, .. } if keys == &vec!["Ctrl".to_string()]))
             .count();
         assert_eq!(ctrl, 1, "重复 down 必须折叠");
     }
@@ -1103,6 +1419,12 @@ fn sync_autostart(app: &tauri::AppHandle, enabled: bool) {
     if let Err(e) = res {
         eprintln!("同步开机自启失败: {e}");
     }
+}
+
+/// 本次进程是否由「开机自启」拉起（autostart 插件注册的命令带 `--autostart` 参数）。
+/// 用于区分「双击 exe 手动启动」（默认打开主窗口）与「随系统启动」（静默到托盘）。
+fn launched_by_autostart() -> bool {
+    std::env::args().any(|a| a == "--autostart")
 }
 
 /// 计算给定配置的冲突列表（前端把当前正在编辑的配置传入，实时展示警告）。
@@ -1258,7 +1580,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
-            None,
+            Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
@@ -1303,6 +1625,10 @@ pub fn run() {
                     let results = results.clone();
                     let unread = unread.clone();
                     let mut last_tap: Option<Instant> = None;
+                    let mut hotstring_buffer = String::new();
+                    let mut taphold: Option<TapHoldPending> = None;
+                    let mut active_hold_mods: BTreeSet<Modifier> = BTreeSet::new();
+                    let mut active_layer: Option<String> = None;
                     input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
@@ -1319,7 +1645,17 @@ pub fn run() {
                         if p.load(Ordering::Relaxed) || guard.settings.paused {
                             return input::HookAction::Allow;
                         }
-                        match decide(&ev, &guard) {
+                        // tap-hold 状态机（改键优先于快捷键）：被吞掉的键不进 decide。
+                        let Some(ev) = taphold_step(
+                            &ev,
+                            &guard,
+                            &mut taphold,
+                            &mut active_hold_mods,
+                            &mut active_layer,
+                        ) else {
+                            return input::HookAction::Block;
+                        };
+                        match decide(&ev, &guard, active_layer.as_deref()) {
                             Outcome::Shortcut { actions, trigger, name } => {
                                 fire(
                                     app_handle.clone(),
@@ -1332,7 +1668,10 @@ pub fn run() {
                                 input::HookAction::Block
                             }
                             Outcome::Replace(to) => input::HookAction::Replace(to),
-                            Outcome::Pass => input::HookAction::Allow,
+                            Outcome::Pass => {
+                                on_hotstring(&ev, &mut hotstring_buffer, &guard.expansions);
+                                input::HookAction::Allow
+                            }
                         }
                     })
                 }
@@ -1357,15 +1696,18 @@ pub fn run() {
             };
             app.manage(state);
 
-            // 主窗口按需创建：未开启「启动最小化」时才在冷启动时建出并显示；
-            // 气泡窗口则等到第一次触发快捷键时才懒创建（见 ensure_toast）。
-            let launch_minimized = app
+            // 确保开机自启注册项带 `--autostart` 参数（旧版注册的是裸 exe 路径，无法区分启动来源）。
+            let autostart_enabled = app
                 .state::<KadaState>()
                 .config
                 .read()
-                .map(|c| c.settings.launch_minimized)
+                .map(|c| c.settings.autostart)
                 .unwrap_or(false);
-            if !launch_minimized {
+            sync_autostart(app.handle(), autostart_enabled);
+
+            // 主窗口按需创建：双击 exe 手动启动时默认打开页面；开机自启（带 --autostart 参数）时静默到托盘。
+            // 气泡窗口则等到第一次触发快捷键时才懒创建（见 ensure_toast）。
+            if !launched_by_autostart() {
                 show_main_window(app.handle());
             }
 

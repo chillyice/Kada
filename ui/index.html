@@ -20,6 +20,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
             <span>改键</span>
           </button>
+          <button class="rail-item" data-tab="expansions" title="文本扩展">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>
+            <span>文本扩展</span>
+          </button>
           <button class="rail-item" data-tab="messages" title="消息">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span>消息</span>
@@ -28,6 +32,10 @@
           <button class="rail-item" data-tab="settings" title="设置">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             <span>设置</span>
+          </button>
+          <button class="rail-item" data-tab="help" title="帮助">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+            <span>帮助</span>
           </button>
         </nav>
       </aside>
@@ -43,6 +51,7 @@
         <div id="conflict-list" class="conflicts"></div>
         <ul id="shortcut-list" class="list"></ul>
         <ul id="remap-list" class="list hidden"></ul>
+        <ul id="expansion-list" class="list hidden"></ul>
       </aside>
 
       <!-- 右侧：详情区 -->
@@ -60,6 +69,10 @@
             <div class="editor-row">
               <label>描述</label>
               <input id="edit-desc" type="text" placeholder="（可选）一句话说明这个快捷键做什么" />
+            </div>
+            <div class="editor-row">
+              <label>所属层</label>
+              <select id="edit-layer"></select>
             </div>
             <div class="editor-row">
               <label>触发组合键</label>
@@ -100,15 +113,66 @@
               <select id="remap-from"></select>
             </div>
             <div class="editor-row">
-              <label>改为</label>
+              <label>所属层</label>
+              <select id="remap-layer"></select>
+            </div>
+            <div class="editor-row">
+              <label>短按（可选）</label>
+              <select id="remap-tap"></select>
+            </div>
+            <div class="editor-row">
+              <label>长按（可选）</label>
+              <select id="remap-hold"></select>
+            </div>
+            <div class="editor-row">
+              <label>长按进入层（切层键，可选）</label>
+              <select id="remap-hold-layer"></select>
+            </div>
+            <div class="editor-row" id="remap-timeout-row">
+              <label>长按阈值</label>
+              <div class="action-line">
+                <input id="remap-timeout" class="action-input action-input-num" type="number" min="50" max="2000" step="10" />
+                <span class="unit-hint">毫秒（按住超过此值 = 长按）</span>
+              </div>
+            </div>
+            <div class="editor-row" id="remap-to-row">
+              <label>改为（普通改键）</label>
               <select id="remap-to"></select>
             </div>
-            <p class="hint">改键优先级高于快捷键。例：CapsLock 改成 Ctrl，无需重启即时生效。</p>
+            <p class="hint">短按 = 快速点击输出该键；长按 = 按住超过阈值输出该键（常设修饰键）。短按/长按都留空则退化为普通改键（用「改为」）。例：CapsLock 短按 Esc、长按 Ctrl。</p>
             <div class="detail-actions">
               <button id="delete-remap" class="danger">删除</button>
               <span class="flex-spacer"></span>
               <button id="cancel-remap">取消</button>
               <button id="save-remap" class="primary">保存</button>
+            </div>
+          </div>
+        </section>
+
+        <!-- 文本扩展详情 -->
+        <section id="detail-expansions" class="detail hidden">
+          <header class="detail-head">
+            <span id="expansion-title" class="detail-title">文本扩展</span>
+            <button id="expansion-close" class="detail-close" title="关闭">×</button>
+          </header>
+          <div id="expansion-empty" class="detail-empty">
+            从左侧选择一个文本扩展，或点「+ 新增」
+          </div>
+          <div id="expansion-editor" class="detail-editor hidden">
+            <div class="editor-row">
+              <label>触发词</label>
+              <input id="edit-exp-trigger" type="text" placeholder="如 :addr、;sig（不含空格/回车/Tab）" />
+            </div>
+            <div class="editor-row">
+              <label>展开为</label>
+              <textarea id="edit-exp-replace" class="action-textarea" placeholder="要替换成的文本，支持 {date} / {time} / {clipboard} 动态片段……"></textarea>
+            </div>
+            <p class="hint">输入触发词后按 空格 / 回车 / Tab 自动回删并展开；留空替换文本 = 删除该触发词。</p>
+            <div class="detail-actions">
+              <button id="delete-expansion" class="danger">删除</button>
+              <span class="flex-spacer"></span>
+              <button id="cancel-expansion">取消</button>
+              <button id="save-expansion" class="primary">保存</button>
             </div>
           </div>
         </section>
@@ -129,10 +193,6 @@
                 <span>暂停所有快捷键</span>
               </label>
               <label class="setting-row">
-                <input type="checkbox" id="set-launch-minimized" class="toggle" />
-                <span>启动后最小化到托盘</span>
-              </label>
-              <label class="setting-row">
                 <span>快速唤醒</span>
                 <select id="set-wake-key">
                   <option value="">关闭</option>
@@ -143,6 +203,14 @@
                   <option value="CapsLock">双击 CapsLock</option>
                 </select>
               </label>
+            </div>
+            <div class="settings-section">
+              <div class="settings-section-head">
+                <span>键位层</span>
+                <button id="add-layer-btn" class="ghost">＋ 新建层</button>
+              </div>
+              <div id="layer-list" class="layer-list"></div>
+              <p class="hint">层让同一按键在不同状态下干不同事：按住「切层键」进入某层，该层的快捷键/改键才生效；归属「基层层」的条目始终生效。切层键 = 改键里设「长按进入层」。</p>
             </div>
             <div class="settings-actions">
               <button id="export-config">导出配置</button>
@@ -165,6 +233,70 @@
           </div>
           <div id="msg-empty" class="detail-empty">暂无命令结果，触发一个 CMD / PowerShell 动作后这里会出现记录</div>
           <div id="msg-content" class="msg-content hidden"></div>
+        </section>
+
+        <!-- 帮助详情 -->
+        <section id="detail-help" class="detail hidden">
+          <header class="detail-head">
+            <span class="detail-title">帮助</span>
+          </header>
+          <div class="help-body">
+            <h2>变量：提取与引用</h2>
+            <p>一条快捷键可挂多个动作，<strong>按顺序执行</strong>。有的动作会把结果「存成变量」，后面的动作用 <code>{变量名}</code> 或 <code>{变量名.字段}</code> 引用。变量只在本次触发内有效，触发结束即清空，不落盘、不跨触发。</p>
+
+            <h3>三种提取方式</h3>
+            <table>
+              <tr><th>动作</th><th>存成什么</th><th>怎么引用</th></tr>
+              <tr><td>执行命令（填「存为变量」）</td><td>文本：标准输出 + 退出码</td><td><code>{变量名}</code> 得输出全文、<code>{变量名.exit_code}</code> 得退出码</td></tr>
+              <tr><td>操作系统 → 获取文件属性</td><td>文件对象（多个字段）</td><td><code>{变量名}</code> 得完整路径、<code>{变量名.字段}</code> 得字段</td></tr>
+              <tr><td>应用 → 查询运行状态</td><td>布尔 true / false</td><td><code>{变量名}</code></td></tr>
+            </table>
+
+            <h3>引用语法</h3>
+            <ul>
+              <li><code>{变量名}</code>：取整体值——文件属性得完整路径、布尔得 <code>true</code>/<code>false</code>、命令结果得输出全文。</li>
+              <li><code>{变量名.字段}</code>：取字段。文件属性有 <code>name/path/dir/stem/ext/size/modified/is_dir</code>；命令结果有 <code>exit_code</code>（0=成功）。</li>
+              <li>未知变量/字段原样保留成 <code>{...}</code>，不会报错、不会中断。</li>
+            </ul>
+
+            <h3>文件属性字段</h3>
+            <ul>
+              <li><code>name</code> 文件名、<code>path</code> 完整路径、<code>dir</code> 所在目录、<code>stem</code> 主名、<code>ext</code> 扩展名、<code>size</code> 大小(字节)、<code>modified</code> 修改时间、<code>is_dir</code> 是否目录。</li>
+            </ul>
+
+            <h2>实战：把文件复制到「盘符不定」的移动硬盘</h2>
+            <p>盘符每次插上都不固定（今天 E:、明天 F:），但你知道硬盘卷标。思路：先按卷标查盘符 → 存变量 → 复制动作里用变量拼路径。</p>
+
+            <h3>第 1 步：执行命令，按卷标取盘符</h3>
+            <p>动作类型「执行命令」→ PowerShell，命令：</p>
+            <pre><code>(Get-Volume -FileSystemLabel '我的硬盘').DriveLetter</code></pre>
+            <p>「存为变量」填 <code>drive</code>。卷标 <code>'我的硬盘'</code> 换成你硬盘的实际卷标（资源管理器里看到的名字）。这句只输出一个字母，如 <code>E</code>。</p>
+
+            <h3>第 2 步：复制文件，用变量拼目标路径</h3>
+            <p>动作类型「操作系统 → 复制」：原始路径 <code>C:\工作\待备份</code>，目标路径 <code>{drive}:\备份\</code>。</p>
+            <p>触发后 <code>{drive}</code> 被替换成当天盘符，实际执行 <code>E:\备份\</code>。</p>
+
+            <h3>更稳的写法：先确认硬盘在，再复制</h3>
+            <ol>
+              <li>执行命令取盘符 → 存入 <code>drive</code>。</li>
+              <li>条件判断：<strong>变量字段不等于</strong>，变量名 <code>drive</code>、字段留空、值留空（盘符查到才继续）。</li>
+              <li>复制 → 目标路径 <code>{drive}:\备份\</code>。</li>
+            </ol>
+
+            <h2>常见问题</h2>
+            <p class="qa-q">变量能跨快捷键、或下次触发再用吗？</p>
+            <p class="qa-a">不能。变量只在当前这一次触发、按顺序执行的动作里有效，触发结束即清空。</p>
+            <p class="qa-q">命令输出带了换行或空格，会影响路径吗？</p>
+            <p class="qa-a">不会。「存为变量」会去掉命令输出的首尾空白与换行，只留内容本身。</p>
+            <p class="qa-q">取盘符的命令在 CMD 里怎么写？</p>
+            <p class="qa-a">可用 <code>wmic logicaldisk where "VolumeName='我的硬盘'" get DeviceID</code>，但输出带表头需自行清洗；推荐用 PowerShell。</p>
+            <p class="qa-q">命令的退出码（成功/失败）能拿到吗？</p>
+            <p class="qa-a">能。<code>{变量名.exit_code}</code> 得到退出码（0=成功，非 0=失败）；<code>{变量名}</code> 仍是标准输出全文。可配合「条件判断」做「命令失败则…」的分支。</p>
+            <p class="qa-q">占位符写错了（变量不存在）会怎样？</p>
+            <p class="qa-a">不会报错，<code>{写错的变量名}</code> 会原样保留在字符串里，等于没替换。执行后到「消息」页看结果即可排查。</p>
+            <p class="qa-q">变量名有什么限制？</p>
+            <p class="qa-a">任意非空字符串即可，别含 <code>{}</code>、<code>.</code>、空白；建议用简单英文/拼音（如 <code>drive</code>、<code>f</code>）。</p>
+          </div>
         </section>
       </main>
     </div>

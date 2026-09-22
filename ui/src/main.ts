@@ -20,7 +20,10 @@ type Condition =
   | { kind: "is_dir"; path: string }
   | { kind: "equals"; var: string; field: string; value: string }
   | { kind: "not_equals"; var: string; field: string; value: string }
-  | { kind: "modified_within"; path: string; minutes: number };
+  | { kind: "modified_within"; path: string; minutes: number }
+  | { kind: "frontmost_app"; app: string }
+  | { kind: "not_frontmost_app"; app: string }
+  | { kind: "window_title_contains"; text: string };
 type AppOperation =
   | { op: "launch"; program: string; args: string[] }
   | { op: "close"; program: string }
@@ -29,27 +32,39 @@ type AppOperation =
 type TextMode = "input" | "to_upper" | "to_lower";
 type Shell = "cmd" | "powershell";
 type Action =
-  | { type: "text"; text: string; mode: TextMode }
-  | { type: "command"; shell: Shell; command: string; show_output: boolean }
-  | { type: "keys"; keys: string[] }
-  | { type: "pause_ms"; ms: number }
-  | { type: "os"; operation: OsOperation }
-  | { type: "app"; operation: AppOperation }
-  | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[] };
+  | { type: "text"; text: string; mode: TextMode; description?: string }
+  | { type: "command"; shell: Shell; command: string; show_output: boolean; var: string; description?: string }
+  | { type: "keys"; keys: string[]; description?: string }
+  | { type: "pause_ms"; ms: number; description?: string }
+  | { type: "os"; operation: OsOperation; description?: string }
+  | { type: "app"; operation: AppOperation; description?: string }
+  | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
+type Layer = { id: string; name: string };
 type ShortcutItem = {
   name?: string | null;
   description?: string | null;
   folder?: string | null;
+  layer?: string | null;
   triggers: string[];
   actions: Action[];
   enabled: boolean;
 };
-type Remap = { from: string; to: string; enabled: boolean };
-type Settings = { autostart: boolean; paused: boolean; launch_minimized: boolean; wake_key?: string | null };
-type Config = { folders: Folder[]; shortcuts: ShortcutItem[]; remaps: Remap[]; settings: Settings };
+type Remap = {
+  from: string;
+  to: string;
+  tap: string | null;
+  hold: string | null;
+  layer: string | null;
+  hold_layer: string | null;
+  tap_timeout_ms: number;
+  enabled: boolean;
+};
+type TextExpansion = { trigger: string; replace: string; enabled: boolean };
+type Settings = { autostart: boolean; paused: boolean; wake_key?: string | null };
+type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 type Conflict = { severity: "error" | "warn"; message: string };
-type Section = "shortcuts" | "remaps" | "messages" | "settings";
+type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
 type CommandResult = {
   kind: string;
   label: string;
@@ -60,6 +75,7 @@ type CommandResult = {
   stderr: string;
   exit_code: number | null;
   show_output: boolean;
+  time: string;
 };
 
 // ---- 动作类型预设 ----
@@ -73,6 +89,17 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "if", label: "条件判断" },
 ];
 
+// 动作类型图标（收起态展示用）。
+const ACTION_ICONS: Record<Action["type"], string> = {
+  text: "✏️",
+  command: "💻",
+  keys: "⌨️",
+  pause_ms: "⏱️",
+  os: "📁",
+  app: "🚀",
+  if: "🔀",
+};
+
 // ---- 条件判断的子条件 ----
 const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
   { value: "exists", label: "路径存在" },
@@ -82,6 +109,9 @@ const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
   { value: "modified_within", label: "修改时间在…分钟内" },
   { value: "equals", label: "变量字段等于" },
   { value: "not_equals", label: "变量字段不等于" },
+  { value: "frontmost_app", label: "前台应用是" },
+  { value: "not_frontmost_app", label: "前台应用不是" },
+  { value: "window_title_contains", label: "窗口标题包含" },
 ];
 
 function newCondition(kind: Condition["kind"]): Condition {
@@ -96,6 +126,11 @@ function newCondition(kind: Condition["kind"]): Condition {
     case "equals":
     case "not_equals":
       return { kind, var: "", field: "", value: "" };
+    case "frontmost_app":
+    case "not_frontmost_app":
+      return { kind, app: "" };
+    case "window_title_contains":
+      return { kind, text: "" };
   }
   return { kind: "exists", path: "" };
 }
@@ -166,7 +201,7 @@ function newAction(type: Action["type"]): Action {
     case "text":
       return { type: "text", text: "", mode: "input" };
     case "command":
-      return { type: "command", shell: "cmd", command: "", show_output: false };
+      return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
     case "keys":
       return { type: "keys", keys: [] };
     case "pause_ms":
@@ -211,6 +246,11 @@ function condHasContent(c: Condition): boolean {
     case "equals":
     case "not_equals":
       return c.var.trim().length > 0;
+    case "frontmost_app":
+    case "not_frontmost_app":
+      return c.app.trim().length > 0;
+    case "window_title_contains":
+      return c.text.trim().length > 0;
   }
   return false;
 }
@@ -288,6 +328,12 @@ function condSummary(c: Condition): string {
       return `${c.var}${c.field ? "." + c.field : ""} == ${c.value}`;
     case "not_equals":
       return `${c.var}${c.field ? "." + c.field : ""} != ${c.value}`;
+    case "frontmost_app":
+      return `前台应用是：${c.app}`;
+    case "not_frontmost_app":
+      return `前台应用不是：${c.app}`;
+    case "window_title_contains":
+      return `窗口标题包含：${c.text}`;
   }
   return "";
 }
@@ -312,8 +358,10 @@ function actionSummary(a: Action): string {
       if (a.mode === "to_upper") return "文本转大写（选中/剪贴板）";
       if (a.mode === "to_lower") return "文本转小写（选中/剪贴板）";
       return a.text ? `输入文本：${a.text}` : "输入文本";
-    case "command":
-      return `${a.shell === "cmd" ? "CMD" : "PowerShell"}：${a.command}`;
+    case "command": {
+      const v = a.var ? ` → ${a.var}` : "";
+      return `${a.shell === "cmd" ? "CMD" : "PowerShell"}：${a.command}${v}`;
+    }
     case "keys":
       return `按键：${a.keys.join("+")}`;
     case "pause_ms":
@@ -328,18 +376,27 @@ function actionSummary(a: Action): string {
   return "";
 }
 
+// 收起态显示的描述：优先用用户填写的描述，否则回退到自动生成的动作摘要。
+function actionDescription(a: Action): string {
+  const d = a.description?.trim();
+  return d ? d : actionSummary(a);
+}
+
 // ---- 状态 ----
 let cfg: Config = {
   folders: [],
+  layers: [],
   shortcuts: [],
   remaps: [],
-  settings: { autostart: false, paused: false, launch_minimized: false },
+  expansions: [],
+  settings: { autostart: false, paused: false },
 };
 let section: Section = "shortcuts";
 let selected: number | null = null; // 当前列表中的选中下标
 let draftNew = false; // 当前编辑是否为“新增”未保存项
 let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保存才写回 cfg）
 let remapDraft: Remap | null = null; // 改键编辑草稿
+let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
 let recording = false;
 let conflicts: Conflict[] = [];
 let search = "";
@@ -348,6 +405,7 @@ let msgIndex = 0; // 当前选中的结果 tab
 let unread = false; // 未读红点
 let clipboard: { kind: "shortcut"; srcIndex: number; cut: boolean } | null = null; // 剪切/复制板
 let editingFolderId: string | null = null; // 正在行内改名的目录 id
+let editingLayerId: string | null = null; // 正在行内改名的层 id
 
 // ---- 拖拽排序/移动 ----
 type DragPayload = { kind: "shortcut"; idx: number } | { kind: "folder"; id: string };
@@ -358,6 +416,7 @@ type DropZone =
 let dragPayload: DragPayload | null = null; // 拖拽源
 let dragOverEl: HTMLElement | null = null; // 当前高亮目标（用于清 class）
 let collapsedFolders = new Set<string>(); // 折叠的目录 id（内存态，重启恢复全展开）
+let collapsedActions = new WeakSet<Action>(); // 收起态的动作（按对象引用，重绘/重排后仍保持）
 
 // pointer events 拖拽状态（不依赖 WebView2 的 HTML5 DnD，避免其兼容性抖动）。
 interface DragState {
@@ -369,6 +428,17 @@ interface DragState {
 }
 let dragState: DragState | null = null;
 let suppressClick = false; // 拖拽结束后抑制一次 click，避免误触「打开详情/折叠」
+
+// 动作拖拽（详情编辑器内）：改变动作顺序或逻辑纵深（拖进/拖出条件分支）。
+interface ActionDragState {
+  list: Action[]; // 源动作所在列表（数组引用）
+  index: number; // 源动作在列表中的下标
+  startX: number;
+  startY: number;
+  active: boolean; // 越过启动阈值后才算真正在拖拽
+  sourceEl: HTMLElement;
+}
+let actionDrag: ActionDragState | null = null;
 
 // ---- 键名选项（改键下拉用），对齐 kada-core 的 key_name ----
 const KEY_OPTIONS = [
@@ -401,6 +471,7 @@ async function save() {
   cfg.shortcuts = cfg.shortcuts.filter(
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
+  cfg.expansions = cfg.expansions.filter((e) => e.trigger.trim().length > 0);
   let ignored: string[] = [];
   try {
     ignored = await invoke<string[]>("set_config", { config: cfg });
@@ -534,32 +605,47 @@ function helpIcon(tip: string): HTMLElement {
   return s;
 }
 
+// 内联可见的变量引用说明：把「有哪些字段、怎么引用」直接列在输入框旁，替代 hover 才显示的问号。
+function varUsage(tip: string): HTMLElement {
+  return el("div", "var-usage", tip);
+}
+
 function render() {
   renderListPane();
   renderConflicts();
   renderDetail();
   renderMessages();
+  if (section === "settings") renderLayers();
 }
 
 function renderListPane() {
   document.getElementById("list-pane")!.classList.toggle(
     "hidden",
-    section === "settings" || section === "messages",
+    section === "settings" || section === "messages" || section === "help",
   );
   document.getElementById("add-folder-btn")!.classList.toggle("hidden", section !== "shortcuts");
   const title = document.getElementById("list-title")!;
   const shortcutList = document.getElementById("shortcut-list")!;
   const remapList = document.getElementById("remap-list")!;
+  const expansionList = document.getElementById("expansion-list")!;
   if (section === "shortcuts") {
     title.textContent = "快捷键";
     shortcutList.classList.remove("hidden");
     remapList.classList.add("hidden");
+    expansionList.classList.add("hidden");
     renderShortcuts();
   } else if (section === "remaps") {
     title.textContent = "改键";
     shortcutList.classList.add("hidden");
     remapList.classList.remove("hidden");
+    expansionList.classList.add("hidden");
     renderRemaps();
+  } else if (section === "expansions") {
+    title.textContent = "文本扩展";
+    shortcutList.classList.add("hidden");
+    remapList.classList.add("hidden");
+    expansionList.classList.remove("hidden");
+    renderExpansions();
   }
 }
 
@@ -619,7 +705,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   if (s.triggers.length === 0) trig.classList.add("row-trigger-empty");
   const name = el("span", "row-name", s.name || "（未命名）");
 
-  const more = moreButton(() => showRowMenu(li, { kind: "shortcut", idx }));
+  const more = moreButton((btn) => showRowMenu(btn, { kind: "shortcut", idx }));
   li.append(on, trig, name, more);
   li.addEventListener("click", (e) => {
     if ((e.target as HTMLElement).closest("input, button")) return; // 开关/菜单不打开详情
@@ -674,7 +760,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   } else {
     li.append(el("span", "folder-name", f.name));
   }
-  const more = moreButton(() => showRowMenu(li, { kind: "folder", id: f.id }));
+  const more = moreButton((btn) => showRowMenu(btn, { kind: "folder", id: f.id }));
   li.append(more);
 
   // 点击目录行切换展开/收缩（重命名态与三点菜单/输入框除外）。
@@ -689,12 +775,12 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   return li;
 }
 
-function moreButton(onClick: () => void): HTMLButtonElement {
+function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
   const b = el("button", "row-more", "⋯") as HTMLButtonElement;
   b.title = "更多";
   b.addEventListener("click", (e) => {
     e.stopPropagation();
-    onClick();
+    onClick(b);
   });
   return b;
 }
@@ -711,7 +797,6 @@ function showRowMenu(
     items.push(
       { label: "剪切", run: () => cutShortcut(target.idx) },
       { label: "复制", run: () => copyShortcut(target.idx) },
-      { label: "粘贴到其后", run: () => pasteAfterShortcut(target.idx) },
       { label: "删除", run: () => deleteShortcutAt(target.idx) },
     );
   } else {
@@ -730,10 +815,12 @@ function showRowMenu(
     });
     menu.append(b);
   }
-  const rect = anchor.getBoundingClientRect();
-  menu.style.top = `${rect.bottom + 2}px`;
-  menu.style.left = `${rect.left}px`;
+  // 菜单紧贴三点按钮：先显示再测宽，右缘对齐按钮右缘（贴近按钮、避免右溢出）。
   menu.classList.remove("hidden");
+  const rect = anchor.getBoundingClientRect();
+  const w = menu.offsetWidth;
+  menu.style.left = `${Math.max(8, rect.right - w)}px`;
+  menu.style.top = `${rect.bottom + 4}px`;
   setTimeout(() => document.addEventListener("click", hideRowMenu, { once: true }), 0);
 }
 
@@ -823,21 +910,6 @@ function pasteIntoFolder(folderId: string | null) {
   const copy = deepClone(src);
   copy.folder = folderId;
   cfg.shortcuts.push(copy);
-  if (clipboard.cut) {
-    const at = cfg.shortcuts.indexOf(src);
-    if (at >= 0) cfg.shortcuts.splice(at, 1);
-    clipboard = null;
-  }
-  void save();
-}
-
-function pasteAfterShortcut(idx: number) {
-  if (!clipboard) return toast("剪贴板为空");
-  const src = cfg.shortcuts[clipboard.srcIndex];
-  if (!src) return;
-  const copy = deepClone(src);
-  copy.folder = cfg.shortcuts[idx].folder ?? null;
-  cfg.shortcuts.splice(idx + 1, 0, copy);
   if (clipboard.cut) {
     const at = cfg.shortcuts.indexOf(src);
     if (at >= 0) cfg.shortcuts.splice(at, 1);
@@ -1037,6 +1109,16 @@ function updateDropTarget(x: number, y: number) {
 }
 
 function onPointerMove(e: PointerEvent) {
+  if (actionDrag) {
+    if (!actionDrag.active) {
+      if (Math.hypot(e.clientX - actionDrag.startX, e.clientY - actionDrag.startY) < 6) return;
+      actionDrag.active = true;
+      actionDrag.sourceEl.classList.add("dragging");
+      actionDrag.sourceEl.style.pointerEvents = "none"; // 让 elementFromPoint 穿透源行
+    }
+    updateActionDropTarget(e.clientX, e.clientY);
+    return;
+  }
   if (!dragState) return;
   if (!dragState.active) {
     if (Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) < 6) return;
@@ -1049,6 +1131,24 @@ function onPointerMove(e: PointerEvent) {
 }
 
 function onPointerUp(e: PointerEvent) {
+  if (actionDrag) {
+    const { active, sourceEl, list, index } = actionDrag;
+    if (active) {
+      const res = actionDropAt(e.clientX, e.clientY);
+      clearActionDropIndicators();
+      if (res) applyActionDrop(list, index, res.target);
+    } else {
+      // 未拖拽：单击手柄 → 切换展开/收起
+      const a = list[index];
+      if (collapsedActions.has(a)) collapsedActions.delete(a);
+      else collapsedActions.add(a);
+    }
+    sourceEl.classList.remove("dragging");
+    sourceEl.style.pointerEvents = "";
+    actionDrag = null;
+    if (draft) renderActions(draft);
+    return;
+  }
   if (!dragState) return;
   const { active, sourceEl } = dragState;
   if (active) {
@@ -1070,7 +1170,7 @@ function renderRemaps() {
   list.replaceChildren();
   const q = search.trim().toLowerCase();
   cfg.remaps.forEach((r, i) => {
-    const hay = `${r.from} ${r.to}`.toLowerCase();
+    const hay = `${r.from} ${r.to} ${r.tap ?? ""} ${r.hold ?? ""} ${layerName(r.hold_layer)}`.toLowerCase();
     if (q && !hay.includes(q)) return;
 
     const li = el("li", "row" + (selected === i ? " selected" : ""));
@@ -1084,11 +1184,18 @@ function renderRemaps() {
       void save();
     });
 
+    const tapHold = !!(r.tap || r.hold);
+    const layerKey = !!r.hold_layer;
+    const toText = layerKey
+      ? `进层「${layerName(r.hold_layer)}」`
+      : tapHold
+        ? `短 ${r.tap || "—"} · 长 ${r.hold || "—"}`
+        : r.to;
     li.append(
       on,
       el("span", "triggers", r.from),
-      el("span", "arrow", "→"),
-      el("span", "triggers", r.to),
+      el("span", "arrow", tapHold || layerKey ? "⇥" : "→"),
+      el("span", "triggers", toText),
     );
     li.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest("input, button")) return;
@@ -1098,11 +1205,46 @@ function renderRemaps() {
   });
 }
 
+function renderExpansions() {
+  const list = document.getElementById("expansion-list")!;
+  list.replaceChildren();
+  const q = search.trim().toLowerCase();
+  cfg.expansions.forEach((e, i) => {
+    const hay = `${e.trigger} ${e.replace}`.toLowerCase();
+    if (q && !hay.includes(q)) return;
+
+    const li = el("li", "row" + (selected === i ? " selected" : ""));
+    li.dataset.idx = String(i);
+    const on = el("input", "toggle") as HTMLInputElement;
+    on.type = "checkbox";
+    on.checked = e.enabled;
+    on.addEventListener("change", (ev) => {
+      ev.stopPropagation();
+      e.enabled = on.checked;
+      void save();
+    });
+
+    li.append(
+      on,
+      el("span", "triggers", e.trigger),
+      el("span", "arrow", "→"),
+      el("span", "row-name", e.replace || "（删除触发词）"),
+    );
+    li.addEventListener("click", (ev) => {
+      if ((ev.target as HTMLElement).closest("input, button")) return;
+      openDetail(i);
+    });
+    list.append(li);
+  });
+}
+
 function renderDetail() {
   document.getElementById("detail-shortcuts")!.classList.toggle("hidden", section !== "shortcuts");
   document.getElementById("detail-remaps")!.classList.toggle("hidden", section !== "remaps");
+  document.getElementById("detail-expansions")!.classList.toggle("hidden", section !== "expansions");
   document.getElementById("detail-settings")!.classList.toggle("hidden", section !== "settings");
   document.getElementById("detail-messages")!.classList.toggle("hidden", section !== "messages");
+  document.getElementById("detail-help")!.classList.toggle("hidden", section !== "help");
 
   if (section === "shortcuts") {
     const has = draft !== null;
@@ -1114,6 +1256,11 @@ function renderDetail() {
     document.getElementById("remap-empty")!.classList.toggle("hidden", has);
     document.getElementById("remap-editor")!.classList.toggle("hidden", !has);
     if (!has) document.getElementById("remap-title")!.textContent = "改键";
+  } else if (section === "expansions") {
+    const has = expansionDraft !== null;
+    document.getElementById("expansion-empty")!.classList.toggle("hidden", has);
+    document.getElementById("expansion-editor")!.classList.toggle("hidden", !has);
+    if (!has) document.getElementById("expansion-title")!.textContent = "文本扩展";
   }
 }
 
@@ -1152,21 +1299,47 @@ function openDetail(i: number, isNew = false) {
   draftNew = isNew;
   if (section === "shortcuts") {
     draft = isNew
-      ? { name: "", description: "", folder: null, triggers: [], actions: [newAction("text")], enabled: true }
+      ? { name: "", description: "", folder: null, layer: null, triggers: [], actions: [newAction("text")], enabled: true }
       : deepClone(cfg.shortcuts[i]);
+    // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
+    if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
     (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
+    fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
     renderTriggers(draft);
     renderActions(draft);
     setShortcutTitle();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { from: "CapsLock", to: "Ctrl", enabled: true }
+      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, tap_timeout_ms: 200, enabled: true }
       : deepClone(cfg.remaps[i]);
     (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
     (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
+    (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
+    (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
+    fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
+    fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
+    (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
+      remapDraft.tap_timeout_ms || 200,
+    );
+    syncRemapEditor();
     document.getElementById("remap-title")!.textContent = draftNew
       ? "新增改键"
-      : `${remapDraft.from} → ${remapDraft.to}`;
+      : remapDraft.hold_layer
+        ? `${remapDraft.from}：长按进层「${layerName(remapDraft.hold_layer)}」`
+        : remapDraft.tap || remapDraft.hold
+          ? `${remapDraft.from}：短按 ${remapDraft.tap || "—"} / 长按 ${remapDraft.hold || "—"}`
+          : `${remapDraft.from} → ${remapDraft.to}`;
+  } else if (section === "expansions") {
+    expansionDraft = isNew
+      ? { trigger: "", replace: "", enabled: true }
+      : deepClone(cfg.expansions[i]);
+    (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
+      expansionDraft.trigger;
+    (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
+      expansionDraft.replace;
+    document.getElementById("expansion-title")!.textContent = draftNew
+      ? "新增文本扩展"
+      : expansionDraft.trigger || "（未命名）";
   }
   renderListPane();
   renderDetail();
@@ -1181,9 +1354,10 @@ function closeDetail() {
 }
 
 function discardDraft() {
-  // 草稿隔离：编辑只改 draft/remapDraft，取消/关闭/切换直接丢弃，cfg 不受影响。
+  // 草稿隔离：编辑只改 draft/remapDraft/expansionDraft，取消/关闭/切换直接丢弃，cfg 不受影响。
   draft = null;
   remapDraft = null;
+  expansionDraft = null;
 }
 
 function flashRow(i: number, listId: string) {
@@ -1218,8 +1392,20 @@ function renderActions(s: ShortcutItem) {
   renderActionList(wrap, s.actions, () => renderActions(s));
 }
 
-// 把一个动作列表渲染进 container；任何结构变化（增删/移动/改类型）都通过 rerender()
+// 递归把某个动作列表的所有动作标记为收起（打开已有多动作的快捷键时用）。
+function collapseAllActions(actions: Action[]) {
+  for (const a of actions) {
+    collapsedActions.add(a);
+    if (a.type === "if") {
+      collapseAllActions(a.then);
+      collapseAllActions(a.otherwise);
+    }
+  }
+}
+
+// 把一个动作列表渲染进 container；任何结构变化（增删/移动/改类型/拖拽）都通过 rerender()
 // 触发整体重绘。嵌套的「条件判断」动作同样用它递归渲染 then/otherwise 分支。
+// 收起态只显示 序号 + 类型图标 + 描述；展开态为三行：标题行 / 类型筛选行 / 输入行。
 function renderActionList(
   container: HTMLElement,
   actions: Action[],
@@ -1227,58 +1413,197 @@ function renderActionList(
 ): void {
   container.replaceChildren();
   actions.forEach((a, i) => {
-    const row = el("div", "action-row");
+    const collapsed = collapsedActions.has(a);
+    const row = el("div", "action-row" + (collapsed ? " collapsed" : ""));
     row.dataset.idx = String(i);
+    // 拖拽命中计算用：把「所在列表 + 下标」直接挂在元素上（非序列化属性）。
+    (row as unknown as { _dropList?: Action[] })._dropList = actions;
+    (row as unknown as { _dropIndex?: number })._dropIndex = i;
 
+    // 第一行：拖动手柄 + 序号 + 图标 + 标题（描述） + 删除
     const head = el("div", "action-head");
 
-    const up = el("button", "move", "↑") as HTMLButtonElement;
-    up.disabled = i === 0;
-    up.title = "上移";
-    up.addEventListener("click", () => {
-      [actions[i - 1], actions[i]] = [actions[i], actions[i - 1]];
-      rerender();
-    });
-    const down = el("button", "move", "↓") as HTMLButtonElement;
-    down.disabled = i === actions.length - 1;
-    down.title = "下移";
-    down.addEventListener("click", () => {
-      [actions[i + 1], actions[i]] = [actions[i], actions[i + 1]];
-      rerender();
-    });
-    head.append(up, down, el("span", "action-label", `动作 ${i + 1}`));
+    const grip = el("span", "action-grip", "⋮⋮");
+    grip.title = "拖动排序 / 嵌套；点击展开或收起";
+    head.append(grip);
 
-    const sel = el("select", "action-type") as HTMLSelectElement;
-    for (const t of ACTION_TYPES) {
-      const o = el("option") as HTMLOptionElement;
-      o.value = t.value;
-      o.textContent = t.label;
-      sel.append(o);
+    const seq = el("span", "action-seq", String(i + 1));
+    head.append(seq);
+
+    const ico = el("span", "action-ico", ACTION_ICONS[a.type]);
+    head.append(ico);
+
+    // 拖拽 + 点击展开/收起：手柄、序号、图标都可触发（扩大命中范围）。
+    for (const handle of [grip, seq, ico]) {
+      attachActionDragStart(handle, row, actions, i);
     }
-    sel.value = a.type;
-    sel.addEventListener("change", () => {
-      actions[i] = newAction(sel.value as Action["type"]);
-      rerender();
-    });
-    head.append(sel);
 
-    const del = el("button", "danger", "删除");
-    del.addEventListener("click", () => {
-      actions.splice(i, 1);
-      rerender();
-    });
-    head.append(del);
+    if (collapsed) {
+      const title = el("span", "action-title", actionDescription(a));
+      title.title = "点击展开";
+      title.addEventListener("click", () => {
+        toggleActionCollapsed(a);
+        rerender();
+      });
+      head.append(title);
+    } else {
+      const titleInput = el("input", "action-input action-title-input") as HTMLInputElement;
+      titleInput.type = "text";
+      titleInput.value = a.description ?? "";
+      titleInput.placeholder = "动作标题（可选）";
+      titleInput.addEventListener("input", () => {
+        a.description = titleInput.value.trim() || undefined;
+      });
+      head.append(titleInput);
+
+      const del = el("button", "action-del") as HTMLButtonElement;
+      del.title = "删除动作";
+      del.innerHTML =
+        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+      del.addEventListener("click", () => {
+        actions.splice(i, 1);
+        collapsedActions.delete(a);
+        rerender();
+      });
+      head.append(del);
+    }
 
     row.append(head);
-    row.append(actionFields(a, rerender));
+
+    if (!collapsed) {
+      // 第二行：动作类型 + 子类型
+      const typeRow = el("div", "action-type-row");
+      typeRow.append(makeActionTypeSelect(a, actions, i, rerender));
+      const sub = actionSubtypeSelect(a, rerender);
+      if (sub) typeRow.append(sub);
+      row.append(typeRow);
+      // 第三行：其他输入内容
+      row.append(actionFields(a, rerender));
+    }
+
     container.append(row);
   });
 }
 
-function actionFields(a: Action, rerender: () => void): HTMLElement {
-  const body = el("div", "action-body");
+function toggleActionCollapsed(a: Action) {
+  if (collapsedActions.has(a)) collapsedActions.delete(a);
+  else collapsedActions.add(a);
+}
+
+function makeActionTypeSelect(
+  a: Action,
+  actions: Action[],
+  i: number,
+  rerender: () => void,
+): HTMLElement {
+  const sel = el("select", "action-type") as HTMLSelectElement;
+  for (const t of ACTION_TYPES) {
+    const o = el("option") as HTMLOptionElement;
+    o.value = t.value;
+    o.textContent = t.label;
+    sel.append(o);
+  }
+  sel.value = a.type;
+  sel.addEventListener("change", () => {
+    const next = newAction(sel.value as Action["type"]);
+    next.description = a.description;
+    actions[i] = next;
+    collapsedActions.delete(a);
+    rerender();
+  });
+  return sel;
+}
+
+// 给动作的「摘要区」绑定拖拽启动：pointerdown 记录起点，移动越过阈值后进入拖拽。
+function attachActionDragStart(
+  handle: HTMLElement,
+  row: HTMLElement,
+  list: Action[],
+  index: number,
+) {
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    actionDrag = { list, index, startX: e.clientX, startY: e.clientY, active: false, sourceEl: row };
+  });
+}
+
+type ActionDropTarget =
+  | { kind: "before"; list: Action[]; index: number }
+  | { kind: "after"; list: Action[]; index: number }
+  | { kind: "into"; list: Action[] };
+
+// 命中计算：从指针下的元素向上找，先碰到动作行按 before/after 处理，先碰到分支按追加处理。
+function actionDropAt(
+  x: number,
+  y: number,
+): { target: ActionDropTarget; el: HTMLElement } | null {
+  if (!actionDrag) return null;
+  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
+  if (!hit) return null;
+  let node: HTMLElement | null = hit;
+  while (node && node !== document.body) {
+    if (node.classList.contains("action-row")) {
+      const list = (node as unknown as { _dropList?: Action[] })._dropList;
+      const index = (node as unknown as { _dropIndex?: number })._dropIndex;
+      if (list && index !== undefined) {
+        const r = node.getBoundingClientRect();
+        const before = y - r.top < r.height / 2;
+        return {
+          el: node,
+          target: { kind: before ? "before" : "after", list, index: before ? index : index + 1 },
+        };
+      }
+      return null;
+    }
+    if (node.classList.contains("action-branch")) {
+      const list = (node as unknown as { _dropList?: Action[] })._dropList;
+      return list ? { el: node, target: { kind: "into", list } } : null;
+    }
+    node = node.parentElement;
+  }
+  return null;
+}
+
+let actionDropEl: HTMLElement | null = null;
+function clearActionDropIndicators() {
+  if (actionDropEl) {
+    actionDropEl.classList.remove("drop-before", "drop-after", "drop-into");
+    actionDropEl = null;
+  }
+}
+
+function updateActionDropTarget(x: number, y: number) {
+  const res = actionDropAt(x, y);
+  clearActionDropIndicators();
+  if (!res) return;
+  const cls =
+    res.target.kind === "into"
+      ? "drop-into"
+      : res.target.kind === "before"
+        ? "drop-before"
+        : "drop-after";
+  res.el.classList.add(cls);
+  actionDropEl = res.el;
+}
+
+function applyActionDrop(srcList: Action[], srcIndex: number, target: ActionDropTarget) {
+  const [moved] = srcList.splice(srcIndex, 1);
+  if (!moved) return;
+  if (target.kind === "into") {
+    target.list.push(moved);
+  } else {
+    let idx = target.index;
+    if (srcList === target.list && idx > srcIndex) idx -= 1;
+    target.list.splice(idx, 0, moved);
+  }
+}
+
+// 第二行的「子类型」筛选：随动作类型变化的二级下拉（文本方式 / Shell / OS 操作 / 应用操作 / 条件类型）。
+// 无子类型的动作（按键、延迟）返回 null。
+function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | null {
   if (a.type === "text") {
-    const modeSel = el("select", "action-type") as HTMLSelectElement;
+    const sel = el("select", "action-type") as HTMLSelectElement;
     for (const m of [
       { value: "input" as TextMode, label: "输入文本" },
       { value: "to_upper" as TextMode, label: "小写转大写（选中/剪贴板）" },
@@ -1287,15 +1612,87 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       const opt = el("option") as HTMLOptionElement;
       opt.value = m.value;
       opt.textContent = m.label;
-      modeSel.append(opt);
+      sel.append(opt);
     }
-    modeSel.value = a.mode;
-    modeSel.addEventListener("change", () => {
-      a.mode = modeSel.value as TextMode;
+    sel.value = a.mode;
+    sel.addEventListener("change", () => {
+      a.mode = sel.value as TextMode;
       rerender();
     });
-    body.append(modeSel);
+    return sel;
+  }
+  if (a.type === "command") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const s of [
+      { value: "cmd" as Shell, label: "CMD" },
+      { value: "powershell" as Shell, label: "PowerShell" },
+    ]) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = s.value;
+      opt.textContent = s.label;
+      sel.append(opt);
+    }
+    sel.value = a.shell;
+    sel.addEventListener("change", () => {
+      a.shell = sel.value as Shell;
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "os") {
+    const op = a.operation;
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of OS_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = op.op;
+    sel.addEventListener("change", () => {
+      a.operation = newOsOp(sel.value as OsOperation["op"]);
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "app") {
+    const op = a.operation;
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of APP_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = op.op;
+    sel.addEventListener("change", () => {
+      a.operation = newAppOp(sel.value as AppOperation["op"]);
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "if") {
+    const cond = a.condition;
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const c of CONDITION_TYPES) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = c.value;
+      opt.textContent = c.label;
+      sel.append(opt);
+    }
+    sel.value = cond.kind;
+    sel.addEventListener("change", () => {
+      a.condition = newCondition(sel.value as Condition["kind"]);
+      rerender();
+    });
+    return sel;
+  }
+  return null;
+}
 
+function actionFields(a: Action, rerender: () => void): HTMLElement {
+  const body = el("div", "action-body");
+  if (a.type === "text") {
     if (a.mode === "input") {
       const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
       ta.value = a.text;
@@ -1316,23 +1713,6 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       );
     }
   } else if (a.type === "command") {
-    const shellSel = el("select", "action-type") as HTMLSelectElement;
-    for (const s of [
-      { value: "cmd" as Shell, label: "CMD" },
-      { value: "powershell" as Shell, label: "PowerShell" },
-    ]) {
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = s.value;
-      opt.textContent = s.label;
-      shellSel.append(opt);
-    }
-    shellSel.value = a.shell;
-    shellSel.addEventListener("change", () => {
-      a.shell = shellSel.value as Shell;
-      rerender();
-    });
-    body.append(shellSel);
-
     const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
     ta.value = a.command;
     ta.placeholder =
@@ -1353,6 +1733,22 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     });
     popup.append(cb, el("span", undefined, "弹窗显示结果"));
     body.append(popup);
+
+    const vline = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = "变量名（可选），留空则只进消息中心";
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    vline.append(el("span", "unit-hint", "存为变量"), vname);
+    body.append(vline);
+    body.append(
+      varUsage(
+        "填写后把命令标准输出存入该变量：{变量名} 得到输出全文、{变量名.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。",
+      ),
+    );
   } else if (a.type === "keys") {
     const line = el("div", "action-line");
     const keys = el("input", "action-input") as HTMLInputElement;
@@ -1389,71 +1785,59 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     body.append(line);
   } else if (a.type === "os") {
     const op = a.operation;
-    const opSel = el("select", "action-type") as HTMLSelectElement;
-    for (const o of OS_OPS) {
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = o.value;
-      opt.textContent = o.label;
-      opSel.append(opt);
-    }
-    opSel.value = op.op;
-    opSel.addEventListener("change", () => {
-      a.operation = newOsOp(opSel.value as OsOperation["op"]);
-      rerender();
-    });
-    body.append(opSel);
-
-    if (op.op === "copy" || op.op === "cut" || op.op === "zip") {
-      body.append(pathField(op.source, (v) => (op.source = v), { file: true, dir: true }));
-      body.append(pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true }));
+    if (op.op === "copy" || op.op === "cut") {
+      body.append(
+        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: "原始路径" }),
+      );
+      body.append(
+        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: "目标路径" }),
+      );
+    } else if (op.op === "zip") {
+      body.append(
+        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: "待压缩路径" }),
+      );
+      body.append(
+        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: "压缩文件路径" }),
+      );
     } else if (op.op === "unzip") {
-      body.append(pathField(op.source, (v) => (op.source = v), { file: true }));
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true }));
+      body.append(
+        pathField(op.source, (v) => (op.source = v), { file: true, label: "压缩包路径" }),
+      );
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: "解压到目录" }));
     } else if (op.op === "paste") {
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true }));
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: "目标目录" }));
     } else if (op.op === "delete") {
-      body.append(pathField(op.path, (v) => (op.path = v), { file: true, dir: true }));
+      body.append(
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: "待删除路径" }),
+      );
     } else if (op.op === "new_file") {
-      body.append(pathField(op.path, (v) => (op.path = v), { file: true }));
+      body.append(pathField(op.path, (v) => (op.path = v), { file: true, label: "新建文件路径" }));
     } else if (op.op === "new_folder") {
-      body.append(pathField(op.path, (v) => (op.path = v), { dir: true }));
+      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: "新建文件夹路径" }));
     } else if (op.op === "open_folder") {
-      body.append(pathField(op.path, (v) => (op.path = v), { dir: true }));
+      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: "打开目录" }));
     } else if (op.op === "get_file_props") {
-      body.append(pathField(op.path, (v) => (op.path = v), { file: true, dir: true }));
+      body.append(
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: "文件路径" }),
+      );
       const line = el("div", "action-line");
       const vname = el("input", "action-input") as HTMLInputElement;
       vname.type = "text";
       vname.value = op.var;
-      vname.placeholder = "变量名，后续用 {变量名} 或 {变量名.字段} 引用";
+      vname.placeholder = "变量名，如 file";
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
-      line.append(
-        el("span", "unit-hint", "变量名"),
-        vname,
-        helpIcon(
-          "写入文件属性变量。可用字段：name 文件名、path 完整路径、dir 所在目录、stem 主名、ext 扩展名、size 大小(字节)、modified 修改时间、is_dir 是否目录。引用 {变量名.字段}；单独 {变量名} 得到完整路径。",
+      line.append(el("span", "unit-hint", "变量名"), vname);
+      body.append(line);
+      body.append(
+        varUsage(
+          "写入文件属性变量。引用：{变量名} 得完整路径；可用 {变量名.name} 文件名 / {变量名.dir} 所在目录 / {变量名.stem} 主名 / {变量名.ext} 扩展名 / {变量名.size} 大小(字节) / {变量名.modified} 修改时间 / {变量名.is_dir} 是否目录。",
         ),
       );
-      body.append(line);
     }
   } else if (a.type === "app") {
     const op = a.operation;
-    const opSel = el("select", "action-type") as HTMLSelectElement;
-    for (const o of APP_OPS) {
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = o.value;
-      opt.textContent = o.label;
-      opSel.append(opt);
-    }
-    opSel.value = op.op;
-    opSel.addEventListener("change", () => {
-      a.operation = newAppOp(opSel.value as AppOperation["op"]);
-      rerender();
-    });
-    body.append(opSel);
-
     if (op.op === "launch" || op.op === "restart") {
       const progWrap = el("div", "action-line");
       const prog = el("input", "action-input") as HTMLInputElement;
@@ -1503,18 +1887,17 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       const vname = el("input", "action-input") as HTMLInputElement;
       vname.type = "text";
       vname.value = op.var;
-      vname.placeholder = "变量名，写入 true/false，后续用 {变量名} 引用";
+      vname.placeholder = "变量名，如 app";
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
-      vline.append(
-        el("span", "unit-hint", "变量名"),
-        vname,
-        helpIcon(
+      vline.append(el("span", "unit-hint", "变量名"), vname);
+      body.append(vline);
+      body.append(
+        varUsage(
           "写入布尔变量：程序在运行则为 true，否则 false。引用 {变量名} 得到 true/false，可配合「条件判断」动作使用。",
         ),
       );
-      body.append(vline);
 
       const rline = el("div", "action-line");
       const retries = el("input", "action-input action-input-num") as HTMLInputElement;
@@ -1546,20 +1929,6 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
   } else if (a.type === "if") {
     const cond = a.condition;
 
-    const condSel = el("select", "action-type") as HTMLSelectElement;
-    for (const c of CONDITION_TYPES) {
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = c.value;
-      opt.textContent = c.label;
-      condSel.append(opt);
-    }
-    condSel.value = cond.kind;
-    condSel.addEventListener("change", () => {
-      a.condition = newCondition(condSel.value as Condition["kind"]);
-      rerender();
-    });
-    body.append(condSel);
-
     if (
       cond.kind === "exists" ||
       cond.kind === "not_exists" ||
@@ -1578,6 +1947,28 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
         cond.minutes = parseInt(mins.value, 10) || 0;
       });
       line.append(el("span", "unit-hint", "修改时间在"), mins, el("span", "unit-hint", "分钟内为真"));
+      body.append(line);
+    } else if (cond.kind === "frontmost_app" || cond.kind === "not_frontmost_app") {
+      const line = el("div", "action-line");
+      const app = el("input", "action-input") as HTMLInputElement;
+      app.type = "text";
+      app.value = cond.app;
+      app.placeholder = "进程名，如 chrome.exe（含 * / ? 走通配，否则子串匹配）";
+      app.addEventListener("input", () => {
+        cond.app = app.value;
+      });
+      line.append(el("span", "unit-hint", "进程名"), app);
+      body.append(line);
+    } else if (cond.kind === "window_title_contains") {
+      const line = el("div", "action-line");
+      const text = el("input", "action-input") as HTMLInputElement;
+      text.type = "text";
+      text.value = cond.text;
+      text.placeholder = "窗口标题包含的文本（不区分大小写）";
+      text.addEventListener("input", () => {
+        cond.text = text.value;
+      });
+      line.append(el("span", "unit-hint", "包含文本"), text);
       body.append(line);
     } else {
       const lineVar = el("div", "action-line");
@@ -1616,6 +2007,7 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
 
     body.append(el("div", "branch-label", "满足条件时执行"));
     const thenList = el("div", "action-branch");
+    (thenList as unknown as { _dropList?: Action[] })._dropList = a.then;
     renderActionList(thenList, a.then, rerender);
     const addThen = el("button", "add-inline", "＋ 添加动作");
     addThen.addEventListener("click", () => {
@@ -1626,6 +2018,7 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
 
     body.append(el("div", "branch-label", "否则执行（可空）"));
     const elseList = el("div", "action-branch");
+    (elseList as unknown as { _dropList?: Action[] })._dropList = a.otherwise;
     renderActionList(elseList, a.otherwise, rerender);
     const addElse = el("button", "add-inline", "＋ 添加动作");
     addElse.addEventListener("click", () => {
@@ -1641,13 +2034,13 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
 function pathField(
   value: string,
   onInput: (v: string) => void,
-  opts: { file?: boolean; dir?: boolean } = { file: true },
+  opts: { file?: boolean; dir?: boolean; label?: string } = { file: true },
 ): HTMLElement {
   const line = el("div", "action-line");
   const input = el("input", "action-input") as HTMLInputElement;
   input.type = "text";
   input.value = value;
-  input.placeholder = "路径（可用 {变量名} 占位符）";
+  input.placeholder = opts.label ? `${opts.label}（可用 {变量名}）` : "路径（可用 {变量名} 占位符）";
   input.addEventListener("input", () => onInput(input.value));
   line.append(input);
   if (opts.file) {
@@ -1696,15 +2089,12 @@ function renderConflicts() {
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
-  (document.getElementById("set-launch-minimized") as HTMLInputElement).checked =
-    cfg.settings.launch_minimized;
   (document.getElementById("set-wake-key") as HTMLSelectElement).value = cfg.settings.wake_key ?? "";
 }
 
 function bindSettings() {
   const autostart = document.getElementById("set-autostart") as HTMLInputElement;
   const paused = document.getElementById("set-paused") as HTMLInputElement;
-  const minimized = document.getElementById("set-launch-minimized") as HTMLInputElement;
   const wakeKey = document.getElementById("set-wake-key") as HTMLSelectElement;
   autostart.addEventListener("change", () => {
     cfg.settings.autostart = autostart.checked;
@@ -1712,10 +2102,6 @@ function bindSettings() {
   });
   paused.addEventListener("change", () => {
     cfg.settings.paused = paused.checked;
-    void save();
-  });
-  minimized.addEventListener("change", () => {
-    cfg.settings.launch_minimized = minimized.checked;
     void save();
   });
   wakeKey.addEventListener("change", () => {
@@ -1755,8 +2141,14 @@ async function importConfig() {
 }
 
 // ---- 改键下拉 ----
-function fillKeySelect(sel: HTMLSelectElement, value: string) {
+function fillKeySelect(sel: HTMLSelectElement, value: string, withEmpty = false) {
   sel.replaceChildren();
+  if (withEmpty) {
+    const o = document.createElement("option");
+    o.value = "";
+    o.textContent = "（无）";
+    sel.append(o);
+  }
   for (const k of KEY_OPTIONS) {
     const o = document.createElement("option");
     o.value = k;
@@ -1764,6 +2156,112 @@ function fillKeySelect(sel: HTMLSelectElement, value: string) {
     sel.append(o);
   }
   sel.value = value;
+}
+
+// 根据短按/长按是否为空，切换「短按/长按 + 阈值」与「普通改键」两套表单的显示。
+function syncRemapEditor() {
+  if (!remapDraft) return;
+  const isTapHold = !!(remapDraft.tap || remapDraft.hold);
+  const isLayerKey = !!remapDraft.hold_layer;
+  document.getElementById("remap-timeout-row")!.classList.toggle("hidden", !isTapHold);
+  document.getElementById("remap-to-row")!.classList.toggle("hidden", isTapHold || isLayerKey);
+}
+
+// 填充「所属层」（assign）/「长按进入层」（hold）下拉。
+function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "assign" | "hold") {
+  sel.replaceChildren();
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = mode === "hold" ? "（不切层）" : "基层层（始终生效）";
+  sel.append(empty);
+  for (const l of cfg.layers) {
+    const o = document.createElement("option");
+    o.value = l.id;
+    o.textContent = l.name;
+    sel.append(o);
+  }
+  sel.value = value ?? "";
+}
+
+function layerName(id: string | null | undefined): string {
+  if (!id) return "基层层";
+  return cfg.layers.find((l) => l.id === id)?.name ?? "基层层";
+}
+
+function renderLayers() {
+  const list = document.getElementById("layer-list")!;
+  list.replaceChildren();
+  cfg.layers.forEach((l) => {
+    const row = el("div", "layer-row");
+    if (editingLayerId === l.id) {
+      const inp = el("input", "folder-input") as HTMLInputElement;
+      inp.value = l.name;
+      inp.placeholder = "层名";
+      let done = false;
+      const commit = () => {
+        if (done) return;
+        done = true;
+        const v = inp.value.trim();
+        if (v) l.name = v;
+        else cfg.layers = cfg.layers.filter((x) => x.id !== l.id);
+        editingLayerId = null;
+        void save();
+        renderLayers();
+        renderDetail();
+      };
+      inp.addEventListener("keydown", (e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          done = true;
+          editingLayerId = null;
+          renderLayers();
+        }
+      });
+      inp.addEventListener("blur", commit);
+      row.append(inp);
+      setTimeout(() => inp.focus(), 0);
+    } else {
+      row.append(el("span", "layer-name", l.name));
+    }
+    const del = el("button", "row-more", "×") as HTMLButtonElement;
+    del.title = "删除层";
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      void deleteLayer(l.id);
+    });
+    row.append(del);
+    list.append(row);
+  });
+}
+
+function addLayer() {
+  const l: Layer = { id: newFolderId(), name: "" };
+  cfg.layers.push(l);
+  editingLayerId = l.id;
+  renderLayers();
+}
+
+async function deleteLayer(id: string) {
+  const target = cfg.layers.find((l) => l.id === id);
+  if (!target) return;
+  const ok = await ask(`删除层「${target.name}」？该层的快捷键/改键会回到基层层，指向它的切层键会失效。`, {
+    title: "删除层",
+    kind: "warning",
+  });
+  if (!ok) return;
+  cfg.layers = cfg.layers.filter((l) => l.id !== id);
+  cfg.shortcuts.forEach((s) => {
+    if (s.layer === id) s.layer = null;
+  });
+  cfg.remaps.forEach((r) => {
+    if (r.layer === id) r.layer = null;
+    if (r.hold_layer === id) r.hold_layer = null;
+  });
+  if (editingLayerId === id) editingLayerId = null;
+  void save();
 }
 
 // ---- 事件绑定 ----
@@ -1777,12 +2275,16 @@ function bind() {
       openDetail(-1, true);
     } else if (section === "remaps") {
       openDetail(-1, true);
+    } else if (section === "expansions") {
+      openDetail(-1, true);
     }
   });
 
   document.getElementById("add-folder-btn")!.addEventListener("click", () => {
     if (section === "shortcuts") addFolder(null);
   });
+
+  document.getElementById("add-layer-btn")!.addEventListener("click", addLayer);
 
   document.getElementById("list-search")!.addEventListener("input", (e) => {
     search = (e.target as HTMLInputElement).value;
@@ -1834,13 +2336,18 @@ function bind() {
     if (section !== "shortcuts" || !draft) return;
     void stopRecIfAny();
     draft.description = (document.getElementById("edit-desc") as HTMLInputElement).value || null;
+    draft.layer = (document.getElementById("edit-layer") as HTMLSelectElement).value || null;
     if (draftNew) cfg.shortcuts.unshift(draft);
     else if (selected !== null) cfg.shortcuts[selected] = draft;
-    const saved = draft;
-    draft = null;
     draftNew = false;
-    selected = null;
+    const saved = draft;
     void save().then(() => flashRow(cfg.shortcuts.indexOf(saved), "shortcut-list"));
+    // 保存后留在编辑页（不清空 draft）；若空的新条目被保存清洗剔除，则回落到关闭编辑页。
+    selected = cfg.shortcuts.indexOf(saved);
+    if (selected < 0) {
+      draft = null;
+      selected = null;
+    }
   });
 
   document.getElementById("cancel-shortcut")!.addEventListener("click", closeDetail);
@@ -1865,7 +2372,17 @@ function bind() {
   document.getElementById("save-remap")!.addEventListener("click", () => {
     if (section !== "remaps" || !remapDraft) return;
     remapDraft.from = (document.getElementById("remap-from") as HTMLSelectElement).value;
-    remapDraft.to = (document.getElementById("remap-to") as HTMLSelectElement).value;
+    remapDraft.tap = (document.getElementById("remap-tap") as HTMLSelectElement).value || null;
+    remapDraft.hold = (document.getElementById("remap-hold") as HTMLSelectElement).value || null;
+    remapDraft.layer = (document.getElementById("remap-layer") as HTMLSelectElement).value || null;
+    remapDraft.hold_layer =
+      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value || null;
+    remapDraft.tap_timeout_ms =
+      parseInt((document.getElementById("remap-timeout") as HTMLInputElement).value, 10) || 200;
+    // tap-hold/切层时清空「改为」（避免残留）；普通改键用「改为」。
+    remapDraft.to = remapDraft.tap || remapDraft.hold || remapDraft.hold_layer
+      ? ""
+      : (document.getElementById("remap-to") as HTMLSelectElement).value;
     if (draftNew) cfg.remaps.unshift(remapDraft);
     else if (selected !== null) cfg.remaps[selected] = remapDraft;
     const saved = remapDraft;
@@ -1893,8 +2410,67 @@ function bind() {
     void save();
   });
 
+  document.getElementById("save-expansion")!.addEventListener("click", () => {
+    if (section !== "expansions" || !expansionDraft) return;
+    expansionDraft.trigger = (
+      document.getElementById("edit-exp-trigger") as HTMLInputElement
+    ).value.trim();
+    expansionDraft.replace = (document.getElementById("edit-exp-replace") as HTMLTextAreaElement)
+      .value;
+    if (draftNew) cfg.expansions.unshift(expansionDraft);
+    else if (selected !== null) cfg.expansions[selected] = expansionDraft;
+    const saved = expansionDraft;
+    expansionDraft = null;
+    draftNew = false;
+    selected = null;
+    void save().then(() => flashRow(cfg.expansions.indexOf(saved), "expansion-list"));
+  });
+
+  document.getElementById("cancel-expansion")!.addEventListener("click", closeDetail);
+  document.getElementById("expansion-close")!.addEventListener("click", closeDetail);
+  document.getElementById("delete-expansion")!.addEventListener("click", () => {
+    if (section !== "expansions" || !expansionDraft) return;
+    if (draftNew) {
+      discardDraft();
+      draftNew = false;
+      selected = null;
+      render();
+      return;
+    }
+    if (selected !== null) cfg.expansions.splice(selected, 1);
+    expansionDraft = null;
+    draftNew = false;
+    selected = null;
+    void save();
+  });
+
   fillKeySelect(document.getElementById("remap-from") as HTMLSelectElement, "CapsLock");
   fillKeySelect(document.getElementById("remap-to") as HTMLSelectElement, "Ctrl");
+  fillKeySelect(document.getElementById("remap-tap") as HTMLSelectElement, "", true);
+  fillKeySelect(document.getElementById("remap-hold") as HTMLSelectElement, "", true);
+  document.getElementById("remap-tap")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.tap = (e.target as HTMLSelectElement).value || null;
+    syncRemapEditor();
+  });
+  document.getElementById("remap-hold")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.hold = (e.target as HTMLSelectElement).value || null;
+    if (remapDraft.hold) {
+      remapDraft.hold_layer = null; // 长按输出键与切层互斥
+      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
+    }
+    syncRemapEditor();
+  });
+  document.getElementById("remap-hold-layer")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.hold_layer = (e.target as HTMLSelectElement).value || null;
+    if (remapDraft.hold_layer) {
+      remapDraft.hold = null;
+      (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
+    }
+    syncRemapEditor();
+  });
 
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", onPointerUp);
@@ -1955,6 +2531,7 @@ function resultCard(r: CommandResult): HTMLElement {
   const card = el("div", "msg-card");
   card.append(msgField("快捷键", r.trigger));
   if (r.name) card.append(msgField("名称", r.name));
+  card.append(msgField("时间", r.time));
   card.append(msgField("命令", r.command, true));
   card.append(msgField("stdout", r.stdout, true));
   if (r.stderr) card.append(msgField("stderr", r.stderr, true));
