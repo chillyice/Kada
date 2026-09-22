@@ -259,7 +259,7 @@ fn forward_raw(code: u16, value: i32) {
 /// [`Key`] → evdev 键码。通用修饰键归一到左键（与 Windows 的 VK_* 归一一致）。
 pub fn key_to_code(k: Key) -> Option<u16> {
     use Key::*;
-    Some(match k {
+    let code = match k {
         A => KeyCode::KEY_A, B => KeyCode::KEY_B, C => KeyCode::KEY_C,
         D => KeyCode::KEY_D, E => KeyCode::KEY_E, F => KeyCode::KEY_F,
         G => KeyCode::KEY_G, H => KeyCode::KEY_H, I => KeyCode::KEY_I,
@@ -294,7 +294,25 @@ pub fn key_to_code(k: Key) -> Option<u16> {
         PageUp => KeyCode::KEY_PAGEUP, PageDown => KeyCode::KEY_PAGEDOWN,
         ArrowUp => KeyCode::KEY_UP, ArrowDown => KeyCode::KEY_DOWN,
         ArrowLeft => KeyCode::KEY_LEFT, ArrowRight => KeyCode::KEY_RIGHT,
-    }.0)
+        F13 => KeyCode::KEY_F13, F14 => KeyCode::KEY_F14, F15 => KeyCode::KEY_F15,
+        F16 => KeyCode::KEY_F16, F17 => KeyCode::KEY_F17, F18 => KeyCode::KEY_F18,
+        F19 => KeyCode::KEY_F19, F20 => KeyCode::KEY_F20, F21 => KeyCode::KEY_F21,
+        F22 => KeyCode::KEY_F22, F23 => KeyCode::KEY_F23, F24 => KeyCode::KEY_F24,
+        MediaPlayPause => KeyCode::KEY_PLAYPAUSE, MediaPrev => KeyCode::KEY_PREVIOUSSONG,
+        MediaNext => KeyCode::KEY_NEXTSONG, VolumeMute => KeyCode::KEY_MUTE,
+        VolumeDown => KeyCode::KEY_VOLUMEDOWN, VolumeUp => KeyCode::KEY_VOLUMEUP,
+        Numpad0 => KeyCode::KEY_KP0, Numpad1 => KeyCode::KEY_KP1, Numpad2 => KeyCode::KEY_KP2,
+        Numpad3 => KeyCode::KEY_KP3, Numpad4 => KeyCode::KEY_KP4, Numpad5 => KeyCode::KEY_KP5,
+        Numpad6 => KeyCode::KEY_KP6, Numpad7 => KeyCode::KEY_KP7, Numpad8 => KeyCode::KEY_KP8,
+        Numpad9 => KeyCode::KEY_KP9,
+        NumpadAdd => KeyCode::KEY_KPPLUS, NumpadSubtract => KeyCode::KEY_KPMINUS,
+        NumpadMultiply => KeyCode::KEY_KPASTERISK, NumpadDivide => KeyCode::KEY_KPSLASH,
+        NumpadDecimal => KeyCode::KEY_KPDOT, NumpadEnter => KeyCode::KEY_KPENTER,
+        NumLock => KeyCode::KEY_NUMLOCK,
+        // 鼠标键注入需虚拟鼠标设备（uinput REL/BTN），Linux 侧暂未实现，返回 None。
+        MouseMiddle | MouseBack | MouseForward => return None,
+    };
+    Some(code.0)
 }
 
 /// evdev 键码 → [`Key`]（左右修饰键归一）。
@@ -345,6 +363,30 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::KEY_PAGEUP.0 => PageUp, c if c == KeyCode::KEY_PAGEDOWN.0 => PageDown,
         c if c == KeyCode::KEY_UP.0 => ArrowUp, c if c == KeyCode::KEY_DOWN.0 => ArrowDown,
         c if c == KeyCode::KEY_LEFT.0 => ArrowLeft, c if c == KeyCode::KEY_RIGHT.0 => ArrowRight,
+        c if c == KeyCode::KEY_F13.0 => F13, c if c == KeyCode::KEY_F14.0 => F14,
+        c if c == KeyCode::KEY_F15.0 => F15, c if c == KeyCode::KEY_F16.0 => F16,
+        c if c == KeyCode::KEY_F17.0 => F17, c if c == KeyCode::KEY_F18.0 => F18,
+        c if c == KeyCode::KEY_F19.0 => F19, c if c == KeyCode::KEY_F20.0 => F20,
+        c if c == KeyCode::KEY_F21.0 => F21, c if c == KeyCode::KEY_F22.0 => F22,
+        c if c == KeyCode::KEY_F23.0 => F23, c if c == KeyCode::KEY_F24.0 => F24,
+        c if c == KeyCode::KEY_PLAYPAUSE.0 => MediaPlayPause,
+        c if c == KeyCode::KEY_PREVIOUSSONG.0 => MediaPrev,
+        c if c == KeyCode::KEY_NEXTSONG.0 => MediaNext,
+        c if c == KeyCode::KEY_MUTE.0 => VolumeMute,
+        c if c == KeyCode::KEY_VOLUMEDOWN.0 => VolumeDown,
+        c if c == KeyCode::KEY_VOLUMEUP.0 => VolumeUp,
+        c if c == KeyCode::KEY_KP0.0 => Numpad0, c if c == KeyCode::KEY_KP1.0 => Numpad1,
+        c if c == KeyCode::KEY_KP2.0 => Numpad2, c if c == KeyCode::KEY_KP3.0 => Numpad3,
+        c if c == KeyCode::KEY_KP4.0 => Numpad4, c if c == KeyCode::KEY_KP5.0 => Numpad5,
+        c if c == KeyCode::KEY_KP6.0 => Numpad6, c if c == KeyCode::KEY_KP7.0 => Numpad7,
+        c if c == KeyCode::KEY_KP8.0 => Numpad8, c if c == KeyCode::KEY_KP9.0 => Numpad9,
+        c if c == KeyCode::KEY_KPPLUS.0 => NumpadAdd,
+        c if c == KeyCode::KEY_KPMINUS.0 => NumpadSubtract,
+        c if c == KeyCode::KEY_KPASTERISK.0 => NumpadMultiply,
+        c if c == KeyCode::KEY_KPSLASH.0 => NumpadDivide,
+        c if c == KeyCode::KEY_KPDOT.0 => NumpadDecimal,
+        c if c == KeyCode::KEY_KPENTER.0 => NumpadEnter,
+        c if c == KeyCode::KEY_NUMLOCK.0 => NumLock,
         _ => return None,
     })
 }
@@ -428,10 +470,16 @@ mod tests {
             Key::Alt, Key::Shift, Key::Meta, Key::Enter, Key::Escape, Key::Space,
             Key::Backspace, Key::Comma, Key::Minus, Key::Slash, Key::BracketLeft,
             Key::Quote, Key::ArrowUp, Key::PageDown,
+            Key::F13, Key::F24, Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
+            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp, Key::NumLock,
+            Key::Numpad0, Key::Numpad9, Key::NumpadAdd, Key::NumpadSubtract,
+            Key::NumpadMultiply, Key::NumpadDivide, Key::NumpadDecimal, Key::NumpadEnter,
         ] {
             let code = key_to_code(k).unwrap();
             assert_eq!(code_to_key(code), Some(k), "roundtrip {}", key_name(k));
         }
+        // 鼠标键在 Linux 侧暂未实现注入（需虚拟鼠标设备），返回 None。
+        assert_eq!(key_to_code(Key::MouseBack), None);
     }
 
     #[test]

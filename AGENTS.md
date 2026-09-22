@@ -47,7 +47,7 @@ crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/�
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/冲突检测
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/lib.rs                # 按平台 re-export win / linux
-  src/win.rs                # Windows: WH_KEYBOARD_LL 钩子 + swallow/Replace 状态机 + key↔VK 映射
+  src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL 钩子 + swallow/Replace 状态机 + key↔VK 映射
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate 子模块
   examples/demo.rs          # M1 冒烟 demo（仅 Windows，真人按键验证）
@@ -64,7 +64,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 ## 键模型与配置（核心概念）
 
-- **键模型**（`kada-core`）：`Key`（字母/数字/F1-F12/标点/功能键/方向键）、`Modifier`（Ctrl/Alt/Shift/Meta）、`RawEvent { key, mods, pressed }`、`Shortcut { mods, key }`。
+- **键模型**（`kada-core`）：`Key`（字母/数字/F1-F24/标点/功能键/方向键/媒体键/NumPad 区/NumLock/鼠标键）、`Modifier`（Ctrl/Alt/Shift/Meta）、`RawEvent { key, mods, pressed }`、`Shortcut { mods, key }`。鼠标键（`MouseMiddle/MouseBack/MouseForward`，即中键/侧键 MB4/MB5）可作触发键与改键 from/to。
 - **解析**：`"Ctrl+Alt+K".parse::<Shortcut>()`，`+` 分隔，`Ctrl/Control/Cmd/Win`→Ctrl、`Alt/Option`→Alt、`Meta/Super`→Meta。裸修饰键名（如 `"Shift"`）按按键处理（改键场景）。
 - **匹配**（`matches`）：主键一致 **且** 事件修饰键 ⊇ 快捷键修饰键——按下 `Ctrl+Shift+K` 也会命中 `Ctrl+K`（宽松规则，避免多按一个 Shift 就触发失败）。
 - **配置模型**（JSON 落盘，跨平台同步介质）：
@@ -79,7 +79,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 ## 钩子引擎
 
-- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL)`，独立线程跑消息循环；处理函数直接跑在回调内（不做跨线程调度，保证顺序与低延迟）。修饰键用 `GetKeyState` 实时读；自动重复按同键 250ms 内再次 down 识别；`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键；注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持"按下-抬起"配对（按住原键 = 按住目标键）。
+- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)`，同一线程跑消息循环；处理函数直接跑在回调内（不做跨线程调度，保证顺序与低延迟）。修饰键用 `GetKeyState` 实时读；自动重复按同键 250ms 内再次 down 识别；`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键；注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持"按下-抬起"配对（按住原键 = 按住目标键）。鼠标钩子只翻译中键/侧键（MB4/MB5），左右键与滚轮一律放行；小键盘 Enter 与主 Enter 共用 `VK_RETURN`，靠 `LLKHF_EXTENDED` 扩展位区分。
 - **Linux**（`kada-hook::linux`）：evdev + uinput（内核输入层），`EVIOCGRAB` 独占抓取 `/dev/input/event*` 键盘设备、`/dev/uinput` 建虚拟键盘 `kada-virtual-keyboard` 转发；X11 / Wayland 通用；需要 root 或 `input` 组 + udev 放开 `/dev/uinput`。修饰键按事件流维护（`MODS_DOWN`），与 Windows `GetKeyState` 语义对齐。
 - **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V`（中文等 Unicode 最稳，会短暂占用并恢复剪贴板）；组合键全部按下 → 稍停 → 逆序松开。
 - **已知天花板（升级路径）**：低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截（Interception）；Linux 热插拔键盘不在监听列表（重启应用即可）。

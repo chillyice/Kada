@@ -13,11 +13,19 @@ use kada_core::Key;
 use crate::win::key_to_vk;
 
 pub fn down(k: Key) {
-    send_one(k, KEYBD_EVENT_FLAGS(0));
+    if is_mouse_button(k) {
+        mouse_button(k, false);
+    } else {
+        send_one(k, KEYBD_EVENT_FLAGS(0));
+    }
 }
 
 pub fn up(k: Key) {
-    send_one(k, KEYEVENTF_KEYUP);
+    if is_mouse_button(k) {
+        mouse_button(k, true);
+    } else {
+        send_one(k, KEYEVENTF_KEYUP);
+    }
 }
 
 pub fn tap(k: Key) {
@@ -28,6 +36,46 @@ pub fn tap(k: Key) {
 fn send_one(k: Key, flags: KEYBD_EVENT_FLAGS) {
     let Some(vk) = key_to_vk(k) else { return };
     let input = keyboard_input(vk, flags);
+    unsafe {
+        SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// 鼠标键（中键/侧键）不是虚拟键码，注入走 `SendInput` 的鼠标事件。
+fn is_mouse_button(k: Key) -> bool {
+    matches!(k, Key::MouseMiddle | Key::MouseBack | Key::MouseForward)
+}
+
+/// 发送鼠标按钮按下/抬起。`mouseData` 高 16 位为 X 按钮号（1=MB4/后退，2=MB5/前进）。
+fn mouse_button(k: Key, up: bool) {
+    let (flags, x_button) = match k {
+        Key::MouseMiddle => (
+            if up { MOUSEEVENTF_MIDDLEUP } else { MOUSEEVENTF_MIDDLEDOWN },
+            0u32,
+        ),
+        Key::MouseBack => (
+            if up { MOUSEEVENTF_XUP } else { MOUSEEVENTF_XDOWN },
+            1u32,
+        ),
+        Key::MouseForward => (
+            if up { MOUSEEVENTF_XUP } else { MOUSEEVENTF_XDOWN },
+            2u32,
+        ),
+        _ => return,
+    };
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: x_button << 16,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
     unsafe {
         SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
