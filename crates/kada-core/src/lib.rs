@@ -27,12 +27,22 @@ pub enum Key {
     Digit0, Digit1, Digit2, Digit3, Digit4,
     Digit5, Digit6, Digit7, Digit8, Digit9,
     F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24,
     Comma, Period, Slash, Backslash, Semicolon, Quote, Backquote,
     Minus, Equal, BracketLeft, BracketRight,
     Enter, Escape, Tab, Space, Backspace, Delete, Insert,
     CapsLock, Shift, Control, Alt, Meta,
     Home, End, PageUp, PageDown,
     ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+    // 媒体键（音量/播放控制）。
+    MediaPlayPause, MediaPrev, MediaNext, VolumeMute, VolumeDown, VolumeUp,
+    // 小键盘数字区 + NumLock（独立映射，与主键区数字键区分）。
+    Numpad0, Numpad1, Numpad2, Numpad3, Numpad4, Numpad5, Numpad6, Numpad7,
+    Numpad8, Numpad9, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide,
+    NumpadDecimal, NumpadEnter, NumLock,
+    // 鼠标键（中键 / 侧键，作为触发键与改键目标；左右键与滚轮不纳入，
+    // 避免全局误拦截点击）。
+    MouseMiddle, MouseBack, MouseForward,
 }
 
 /// 一次键盘事件（钩子层产出）。
@@ -136,9 +146,32 @@ mod parse {
             "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4,
             "F5" => F5, "F6" => F6, "F7" => F7, "F8" => F8,
             "F9" => F9, "F10" => F10, "F11" => F11, "F12" => F12,
+            "F13" => F13, "F14" => F14, "F15" => F15, "F16" => F16,
+            "F17" => F17, "F18" => F18, "F19" => F19, "F20" => F20,
+            "F21" => F21, "F22" => F22, "F23" => F23, "F24" => F24,
             "," => Comma, "." => Period, "/" => Slash, "\\" => Backslash,
             ";" => Semicolon, "\"" => Quote, "`" => Backquote,
             "-" => Minus, "=" => Equal, "[" => BracketLeft, "]" => BracketRight,
+            "MediaPlayPause" | "PlayPause" => MediaPlayPause,
+            "MediaPrev" | "PrevTrack" => MediaPrev,
+            "MediaNext" | "NextTrack" => MediaNext,
+            "VolumeMute" | "Mute" => VolumeMute,
+            "VolumeDown" | "VolDown" => VolumeDown,
+            "VolumeUp" | "VolUp" => VolumeUp,
+            "NumLock" => NumLock,
+            "Numpad0" => Numpad0, "Numpad1" => Numpad1, "Numpad2" => Numpad2,
+            "Numpad3" => Numpad3, "Numpad4" => Numpad4, "Numpad5" => Numpad5,
+            "Numpad6" => Numpad6, "Numpad7" => Numpad7, "Numpad8" => Numpad8,
+            "Numpad9" => Numpad9,
+            "NumpadAdd" | "NumpadPlus" => NumpadAdd,
+            "NumpadSubtract" | "NumpadMinus" => NumpadSubtract,
+            "NumpadMultiply" | "NumpadStar" => NumpadMultiply,
+            "NumpadDivide" | "NumpadSlash" => NumpadDivide,
+            "NumpadDecimal" | "NumpadDot" => NumpadDecimal,
+            "NumpadEnter" => NumpadEnter,
+            "MouseMiddle" | "MB3" | "Middle" => MouseMiddle,
+            "MouseBack" | "MB4" | "XButton1" | "X1" => MouseBack,
+            "MouseForward" | "MB5" | "XButton2" | "X2" => MouseForward,
             _ => letter_or_digit(s).ok_or(ParseError::UnknownKey(s.to_string()))?,
         })
     }
@@ -214,6 +247,17 @@ pub fn key_name(k: Key) -> &'static str {
         Shift => "Shift", Control => "Ctrl", Alt => "Alt", Meta => "Meta",
         Home => "Home", End => "End", PageUp => "PageUp", PageDown => "PageDown",
         ArrowUp => "Up", ArrowDown => "Down", ArrowLeft => "Left", ArrowRight => "Right",
+        F13 => "F13", F14 => "F14", F15 => "F15", F16 => "F16", F17 => "F17", F18 => "F18",
+        F19 => "F19", F20 => "F20", F21 => "F21", F22 => "F22", F23 => "F23", F24 => "F24",
+        MediaPlayPause => "MediaPlayPause", MediaPrev => "MediaPrev", MediaNext => "MediaNext",
+        VolumeMute => "VolumeMute", VolumeDown => "VolumeDown", VolumeUp => "VolumeUp",
+        Numpad0 => "Numpad0", Numpad1 => "Numpad1", Numpad2 => "Numpad2", Numpad3 => "Numpad3",
+        Numpad4 => "Numpad4", Numpad5 => "Numpad5", Numpad6 => "Numpad6", Numpad7 => "Numpad7",
+        Numpad8 => "Numpad8", Numpad9 => "Numpad9",
+        NumpadAdd => "NumpadAdd", NumpadSubtract => "NumpadSubtract",
+        NumpadMultiply => "NumpadMultiply", NumpadDivide => "NumpadDivide",
+        NumpadDecimal => "NumpadDecimal", NumpadEnter => "NumpadEnter", NumLock => "NumLock",
+        MouseMiddle => "MouseMiddle", MouseBack => "MouseBack", MouseForward => "MouseForward",
     }
 }
 
@@ -1034,6 +1078,32 @@ mod tests {
         assert!(matches!("+".parse::<Shortcut>(), Err(ParseError::Empty)));
         assert!(matches!("Foo+K".parse::<Shortcut>(), Err(_)));
         assert!(matches!("Ctrl+K+J".parse::<Shortcut>(), Err(_)));
+    }
+
+    #[test]
+    fn new_keys_roundtrip_and_aliases() {
+        // 新增键：解析 → 渲染回环必须一致。
+        let cases = [
+            "F13", "F24", "MediaPlayPause", "MediaPrev", "MediaNext",
+            "VolumeMute", "VolumeDown", "VolumeUp", "NumLock",
+            "Numpad0", "Numpad9", "NumpadAdd", "NumpadSubtract",
+            "NumpadMultiply", "NumpadDivide", "NumpadDecimal", "NumpadEnter",
+            "MouseMiddle", "MouseBack", "MouseForward",
+        ];
+        for s in cases {
+            let k: Key = s.parse().unwrap();
+            assert_eq!(key_name(k), s, "roundtrip {s}");
+        }
+        // 别名解析到同一键，且主键名渲染为规范名。
+        assert_eq!("MB4".parse::<Key>().unwrap(), Key::MouseBack);
+        assert_eq!(key_name("XButton2".parse::<Key>().unwrap()), "MouseForward");
+        assert_eq!("NumpadPlus".parse::<Key>().unwrap(), Key::NumpadAdd);
+        assert_eq!("VolUp".parse::<Key>().unwrap(), Key::VolumeUp);
+        // 组合键触发：无修饰的鼠标键与带修饰的媒体键都能解析。
+        let m: Shortcut = "Ctrl+VolumeUp".parse().unwrap();
+        assert_eq!(format_shortcut(&m), "Ctrl+VolumeUp");
+        let bare: Shortcut = "MouseBack".parse().unwrap();
+        assert_eq!(format_shortcut(&bare), "MouseBack");
     }
 
     #[test]

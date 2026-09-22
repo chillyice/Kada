@@ -56,6 +56,8 @@ type Handler = Box<dyn FnMut(KeyEvent) -> Action + Send>;
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
 static HOOK: AtomicIsize = AtomicIsize::new(0);
+/// 鼠标低层钩子句柄（与键盘钩子同一线程、同一消息循环）。
+static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
@@ -78,7 +80,7 @@ impl Drop for HookHandle {
     }
 }
 
-/// 安装全局键盘钩子。处理函数在钩子线程回调内同步执行。
+/// 安装全局键盘与鼠标钩子（同一线程跑消息循环）。处理函数在钩子线程回调内同步执行。
 pub fn start<F>(handler: F) -> io::Result<HookHandle>
 where
     F: FnMut(KeyEvent) -> Action + Send + 'static,
@@ -100,9 +102,12 @@ where
 
 fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     let tid = unsafe { GetCurrentThreadId() };
-    let hhook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
-        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 失败: {e}")))?;
-    HOOK.store(hhook.0 as isize, Ordering::Relaxed);
+    let kbd_hhook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
+        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 键盘钩子失败: {e}")))?;
+    let mouse_hhook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) }
+        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")))?;
+    HOOK.store(kbd_hhook.0 as isize, Ordering::Relaxed);
+    MOUSE_HOOK.store(mouse_hhook.0 as isize, Ordering::Relaxed);
     let _ = ready_tx.send(tid);
 
     let mut msg = MSG::default();
@@ -115,9 +120,11 @@ fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     }
 
     unsafe {
-        _ = UnhookWindowsHookEx(hhook);
+        _ = UnhookWindowsHookEx(kbd_hhook);
+        _ = UnhookWindowsHookEx(mouse_hhook);
     }
     HOOK.store(0, Ordering::Relaxed);
+    MOUSE_HOOK.store(0, Ordering::Relaxed);
     *SWALLOWED.lock().unwrap() = HashSet::new();
     *REPLACED_DOWN.lock().unwrap() = HashMap::new();
     *HANDLER.lock().unwrap() = None;
@@ -138,7 +145,8 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 }
 
 fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
-    let Some(key) = vk_to_key(VIRTUAL_KEY(kb.vkCode as u16)) else {
+    let extended = kb.flags.0 & LLKHF_EXTENDED.0 != 0;
+    let Some(key) = vk_to_key(VIRTUAL_KEY(kb.vkCode as u16), extended) else {
         return false;
     };
     let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
@@ -192,6 +200,78 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
     }
 }
 
+unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if code >= 0 {
+        let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
+        // 注入事件一律放行，防回环。
+        if ms.flags & LLMHF_INJECTED == 0 && swallow_mouse(wparam.0 as u32, ms) {
+            return LRESULT(1);
+        }
+    }
+    let hook = MOUSE_HOOK.load(Ordering::Relaxed);
+    let hhook = if hook == 0 { None } else { Some(HHOOK(hook as *mut std::ffi::c_void)) };
+    unsafe { CallNextHookEx(hhook, code, wparam, lparam) }
+}
+
+/// 鼠标侧键/中键事件 → 决定吞掉/改键/放行。只处理中键与 X 侧键（MB4/MB5），
+/// 左右键、滚轮、移动一律放行（不纳入键模型，避免全局误拦截点击）。
+fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
+    // mouseData 高 16 位承载 X 按钮号：1 = XBUTTON1（后退/MB4），2 = XBUTTON2（前进/MB5）。
+    let x_button = |ms: &MSLLHOOKSTRUCT| ms.mouseData >> 16;
+    let (key, down) = match wparam {
+        WM_MBUTTONDOWN => (Key::MouseMiddle, true),
+        WM_MBUTTONUP => (Key::MouseMiddle, false),
+        WM_XBUTTONDOWN => match x_button(ms) {
+            1 => (Key::MouseBack, true),
+            2 => (Key::MouseForward, true),
+            _ => return false,
+        },
+        WM_XBUTTONUP => match x_button(ms) {
+            1 => (Key::MouseBack, false),
+            2 => (Key::MouseForward, false),
+            _ => return false,
+        },
+        _ => return false,
+    };
+
+    if !down {
+        // keyup：只吞掉之前登记的键；否则纯观察地通知 handler（返回值忽略）。
+        if SWALLOWED.lock().unwrap().remove(&key) {
+            if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
+                simulate::up(target);
+            }
+            return true;
+        }
+        if let Some(f) = HANDLER.lock().unwrap().as_mut() {
+            let _ = f(KeyEvent::Up { key, mods: current_mods() });
+        }
+        return false;
+    }
+
+    let mods = current_mods();
+    let action = {
+        let mut h = HANDLER.lock().unwrap();
+        match h.as_mut() {
+            Some(f) => f(KeyEvent::Down { key, mods, repeat: false }),
+            None => Action::Allow,
+        }
+    };
+
+    match action {
+        Action::Allow => false,
+        Action::Block => {
+            SWALLOWED.lock().unwrap().insert(key);
+            true
+        }
+        Action::Replace(target) => {
+            SWALLOWED.lock().unwrap().insert(key);
+            REPLACED_DOWN.lock().unwrap().insert(key, target);
+            simulate::down(target);
+            true
+        }
+    }
+}
+
 fn current_mods() -> BTreeSet<Modifier> {
     let mut mods = BTreeSet::new();
     if key_is_down(VK_SHIFT) {
@@ -229,7 +309,7 @@ fn detect_repeat(key: Key) -> bool {
     *last = Some((key, Instant::now()));
     // 修饰键 / 锁定键不产生自动重复：双击唤醒（如双击 Alt）依赖两次独立 down，
     // 快速连按不能被 250ms 窗口误判成 repeat，否则第二击被吞、唤醒失效。
-    if key_as_modifier(key).is_some() || key == Key::CapsLock {
+    if key_as_modifier(key).is_some() || key == Key::CapsLock || key == Key::NumLock {
         return false;
     }
     is_repeat
@@ -237,9 +317,10 @@ fn detect_repeat(key: Key) -> bool {
 
 /// 虚拟键码 ↔ [`Key`]。映射使用 US 布局语义，OEM 标点键的实际位置因
 /// 键盘布局而异（中文键盘 Shift 后字符不同，但键码相同）。
+/// 鼠标键（中键/侧键）不是虚拟键码，返回 `None`——注入走 `simulate` 的鼠标事件。
 pub fn key_to_vk(k: Key) -> Option<u16> {
     use Key::*;
-    Some(match k {
+    let vk = match k {
         A => VK_A, B => VK_B, C => VK_C, D => VK_D, E => VK_E, F => VK_F,
         G => VK_G, H => VK_H, I => VK_I, J => VK_J, K => VK_K, L => VK_L,
         M => VK_M, N => VK_N, O => VK_O, P => VK_P, Q => VK_Q, R => VK_R,
@@ -251,6 +332,9 @@ pub fn key_to_vk(k: Key) -> Option<u16> {
         F1 => VK_F1, F2 => VK_F2, F3 => VK_F3, F4 => VK_F4,
         F5 => VK_F5, F6 => VK_F6, F7 => VK_F7, F8 => VK_F8,
         F9 => VK_F9, F10 => VK_F10, F11 => VK_F11, F12 => VK_F12,
+        F13 => VK_F13, F14 => VK_F14, F15 => VK_F15, F16 => VK_F16,
+        F17 => VK_F17, F18 => VK_F18, F19 => VK_F19, F20 => VK_F20,
+        F21 => VK_F21, F22 => VK_F22, F23 => VK_F23, F24 => VK_F24,
         Comma => VK_OEM_COMMA, Period => VK_OEM_PERIOD, Slash => VK_OEM_2,
         Backslash => VK_OEM_5, Semicolon => VK_OEM_1, Quote => VK_OEM_7,
         Backquote => VK_OEM_3, Minus => VK_OEM_MINUS, Equal => VK_OEM_PLUS,
@@ -262,7 +346,20 @@ pub fn key_to_vk(k: Key) -> Option<u16> {
         Home => VK_HOME, End => VK_END, PageUp => VK_PRIOR, PageDown => VK_NEXT,
         ArrowUp => VK_UP, ArrowDown => VK_DOWN, ArrowLeft => VK_LEFT,
         ArrowRight => VK_RIGHT,
-    }.0)
+        MediaPlayPause => VK_MEDIA_PLAY_PAUSE, MediaPrev => VK_MEDIA_PREV_TRACK,
+        MediaNext => VK_MEDIA_NEXT_TRACK, VolumeMute => VK_VOLUME_MUTE,
+        VolumeDown => VK_VOLUME_DOWN, VolumeUp => VK_VOLUME_UP,
+        Numpad0 => VK_NUMPAD0, Numpad1 => VK_NUMPAD1, Numpad2 => VK_NUMPAD2,
+        Numpad3 => VK_NUMPAD3, Numpad4 => VK_NUMPAD4, Numpad5 => VK_NUMPAD5,
+        Numpad6 => VK_NUMPAD6, Numpad7 => VK_NUMPAD7, Numpad8 => VK_NUMPAD8,
+        Numpad9 => VK_NUMPAD9,
+        NumpadAdd => VK_ADD, NumpadSubtract => VK_SUBTRACT,
+        NumpadMultiply => VK_MULTIPLY, NumpadDivide => VK_DIVIDE,
+        NumpadDecimal => VK_DECIMAL, NumpadEnter => VK_RETURN, NumLock => VK_NUMLOCK,
+        // 鼠标键注入走 SendInput 鼠标事件（simulate），非虚拟键码。
+        MouseMiddle | MouseBack | MouseForward => return None,
+    };
+    Some(vk.0)
 }
 
 /// 探测某快捷键是否已被系统或其他应用注册（Windows `RegisterHotKey` 试探）。
@@ -296,7 +393,9 @@ pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
 }
 
 /// 取 [`Key`] 名的可打印形式，未知键码返回 None（放行）。
-fn vk_to_key(vk: VIRTUAL_KEY) -> Option<Key> {
+/// `extended` 为钩子结构里的 `LLKHF_EXTENDED`：Windows 上主键区 Enter 与小键盘
+/// Enter 共用 `VK_RETURN`，靠扩展位区分。
+fn vk_to_key(vk: VIRTUAL_KEY, extended: bool) -> Option<Key> {
     use Key::*;
     Some(match vk {
         VK_LSHIFT | VK_RSHIFT | VK_SHIFT => Shift,
@@ -314,16 +413,30 @@ fn vk_to_key(vk: VIRTUAL_KEY) -> Option<Key> {
         VK_F1 => F1, VK_F2 => F2, VK_F3 => F3, VK_F4 => F4,
         VK_F5 => F5, VK_F6 => F6, VK_F7 => F7, VK_F8 => F8,
         VK_F9 => F9, VK_F10 => F10, VK_F11 => F11, VK_F12 => F12,
+        VK_F13 => F13, VK_F14 => F14, VK_F15 => F15, VK_F16 => F16,
+        VK_F17 => F17, VK_F18 => F18, VK_F19 => F19, VK_F20 => F20,
+        VK_F21 => F21, VK_F22 => F22, VK_F23 => F23, VK_F24 => F24,
         VK_OEM_COMMA => Comma, VK_OEM_PERIOD => Period, VK_OEM_2 => Slash,
         VK_OEM_5 => Backslash, VK_OEM_1 => Semicolon, VK_OEM_7 => Quote,
         VK_OEM_3 => Backquote, VK_OEM_MINUS => Minus, VK_OEM_PLUS => Equal,
         VK_OEM_4 => BracketLeft, VK_OEM_6 => BracketRight,
-        VK_RETURN => Enter, VK_ESCAPE => Escape, VK_TAB => Tab, VK_SPACE => Space,
+        VK_RETURN => if extended { NumpadEnter } else { Enter },
+        VK_ESCAPE => Escape, VK_TAB => Tab, VK_SPACE => Space,
         VK_BACK => Backspace, VK_DELETE => Delete, VK_INSERT => Insert,
         VK_CAPITAL => CapsLock,
         VK_HOME => Home, VK_END => End, VK_PRIOR => PageUp, VK_NEXT => PageDown,
         VK_UP => ArrowUp, VK_DOWN => ArrowDown, VK_LEFT => ArrowLeft,
         VK_RIGHT => ArrowRight,
+        VK_MEDIA_PLAY_PAUSE => MediaPlayPause, VK_MEDIA_PREV_TRACK => MediaPrev,
+        VK_MEDIA_NEXT_TRACK => MediaNext, VK_VOLUME_MUTE => VolumeMute,
+        VK_VOLUME_DOWN => VolumeDown, VK_VOLUME_UP => VolumeUp,
+        VK_NUMPAD0 => Numpad0, VK_NUMPAD1 => Numpad1, VK_NUMPAD2 => Numpad2,
+        VK_NUMPAD3 => Numpad3, VK_NUMPAD4 => Numpad4, VK_NUMPAD5 => Numpad5,
+        VK_NUMPAD6 => Numpad6, VK_NUMPAD7 => Numpad7, VK_NUMPAD8 => Numpad8,
+        VK_NUMPAD9 => Numpad9,
+        VK_ADD => NumpadAdd, VK_SUBTRACT => NumpadSubtract,
+        VK_MULTIPLY => NumpadMultiply, VK_DIVIDE => NumpadDivide,
+        VK_DECIMAL => NumpadDecimal, VK_NUMLOCK => NumLock,
         _ => return None,
     })
 }
@@ -340,11 +453,22 @@ mod tests {
             Key::Alt, Key::Shift, Key::Meta, Key::Enter, Key::Escape, Key::Space,
             Key::Comma, Key::Minus, Key::Slash, Key::BracketLeft, Key::Quote,
             Key::ArrowUp, Key::PageDown,
+            Key::F13, Key::F24, Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
+            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp, Key::NumLock,
+            Key::Numpad0, Key::Numpad9, Key::NumpadAdd, Key::NumpadSubtract,
+            Key::NumpadMultiply, Key::NumpadDivide, Key::NumpadDecimal,
         ] {
             let vk = key_to_vk(k).unwrap();
             let name = key_name(k);
-            assert_eq!(vk_to_key(VIRTUAL_KEY(vk)), Some(k), "vk roundtrip {name}");
+            assert_eq!(vk_to_key(VIRTUAL_KEY(vk), false), Some(k), "vk roundtrip {name}");
         }
+        // NumpadEnter 与主键区 Enter 共用 VK_RETURN，靠扩展位区分。
+        assert_eq!(key_to_vk(Key::NumpadEnter), Some(VK_RETURN.0));
+        assert_eq!(vk_to_key(VK_RETURN, true), Some(Key::NumpadEnter));
+        assert_eq!(vk_to_key(VK_RETURN, false), Some(Key::Enter));
+        // 鼠标键不是虚拟键码。
+        assert_eq!(key_to_vk(Key::MouseBack), None);
+        assert_eq!(key_to_vk(Key::MouseMiddle), None);
     }
 
     #[test]

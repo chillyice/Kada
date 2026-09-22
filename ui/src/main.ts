@@ -374,11 +374,17 @@ let suppressClick = false; // 拖拽结束后抑制一次 click，避免误触�
 const KEY_OPTIONS = [
   ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
   ..."0123456789".split(""),
-  ...Array.from({ length: 12 }, (_, i) => `F${i + 1}`),
+  ...Array.from({ length: 24 }, (_, i) => `F${i + 1}`),
   ",", ".", "/", "\\", ";", '"', "`", "-", "=", "[", "]",
   "Enter", "Esc", "Tab", "Space", "Backspace", "Delete", "Insert", "CapsLock",
   "Shift", "Ctrl", "Alt", "Meta",
   "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
+  "NumLock", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4",
+  "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9",
+  "NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide",
+  "NumpadDecimal", "NumpadEnter",
+  "MediaPlayPause", "MediaPrev", "MediaNext", "VolumeMute", "VolumeDown", "VolumeUp",
+  "MouseMiddle", "MouseBack", "MouseForward",
 ];
 
 // ---- IPC ----
@@ -449,6 +455,16 @@ const CODE_TABLE: Record<string, string> = {
   Backspace: "Backspace", Delete: "Delete", Insert: "Insert", CapsLock: "CapsLock",
   Home: "Home", End: "End", PageUp: "PageUp", PageDown: "PageDown",
   ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right",
+  NumLock: "NumLock",
+  Numpad0: "Numpad0", Numpad1: "Numpad1", Numpad2: "Numpad2",
+  Numpad3: "Numpad3", Numpad4: "Numpad4", Numpad5: "Numpad5",
+  Numpad6: "Numpad6", Numpad7: "Numpad7", Numpad8: "Numpad8", Numpad9: "Numpad9",
+  NumpadAdd: "NumpadAdd", NumpadSubtract: "NumpadSubtract",
+  NumpadMultiply: "NumpadMultiply", NumpadDivide: "NumpadDivide",
+  NumpadDecimal: "NumpadDecimal", NumpadEnter: "NumpadEnter",
+  MediaPlayPause: "MediaPlayPause", MediaTrackPrevious: "MediaPrev",
+  MediaTrackNext: "MediaNext", AudioVolumeMute: "VolumeMute",
+  AudioVolumeDown: "VolumeDown", AudioVolumeUp: "VolumeUp",
 };
 const CODE_PUNCT: Record<string, string> = {
   Comma: ",", Period: ".", Slash: "/", Backslash: "\\", Semicolon: ";",
@@ -459,7 +475,7 @@ const CODE_PUNCT: Record<string, string> = {
 function codeToKey(code: string): string | null {
   if (/^Key[A-Z]$/.test(code)) return code.slice(3);
   if (/^Digit[0-9]$/.test(code)) return code.slice(5);
-  if (/^F(1[0-2]|[1-9])$/.test(code)) return code;
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
   return CODE_PUNCT[code] ?? CODE_TABLE[code] ?? null;
 }
 
