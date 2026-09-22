@@ -25,12 +25,16 @@ use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::core::PWSTR;
+use windows::Win32::Foundation::{CloseHandle, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::Threading::{
+    GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
+    PROCESS_QUERY_LIMITED_INFORMATION,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use kada_core::{Key, Modifier, Shortcut};
+use kada_core::{FrontmostContext, Key, Modifier, Shortcut};
 
 pub mod simulate;
 
@@ -152,18 +156,18 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
     let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
 
     if !down {
-        // keyup：只吞掉之前登记的键；否则纯观察地通知 handler（录制用，
-        // 返回值忽略，keyup 永远放行）。
-        if SWALLOWED.lock().unwrap().remove(&key) {
+        // keyup：被吞掉的键仍吞掉（防幽灵），但也会以观察者身份回调 handler
+        // （tap-hold 需要在 keyup 时判定 tap/hold）；其余纯观察通知、放行。
+        let swallowed = SWALLOWED.lock().unwrap().remove(&key);
+        if swallowed {
             if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
                 simulate::up(target);
             }
-            return true;
         }
         if let Some(f) = HANDLER.lock().unwrap().as_mut() {
             let _ = f(KeyEvent::Up { key, mods: current_mods() });
         }
-        return false;
+        return swallowed;
     }
 
     let mut mods = current_mods();
@@ -390,6 +394,43 @@ pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
             Err(e) => (e.code().0 as u32) & 0xFFFF == 1409,
         }
     }
+}
+
+/// 取当前前台窗口上下文（进程名 + 窗口标题），供「按前台应用/窗口」类条件求值。
+/// 无前台窗口或权限不足时返回 None。
+pub fn frontmost_context() -> Option<FrontmostContext> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        return None;
+    }
+    // 窗口标题（无标题时为空串）。
+    let mut title_buf = [0u16; 512];
+    let title_len = unsafe { GetWindowTextW(hwnd, &mut title_buf) };
+    let window_title = String::from_utf16_lossy(&title_buf[..title_len.max(0) as usize]);
+    // 进程名：窗口句柄 → 进程 id → 完整镜像路径 → 文件名。
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    let process_name = process_name_of(pid).unwrap_or_default();
+    Some(FrontmostContext { process_name, window_title })
+}
+
+/// 由进程 id 取可执行文件名（如 `chrome.exe`）；失败返回 None。
+fn process_name_of(pid: u32) -> Option<String> {
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let mut buf = [0u16; 1024];
+    let mut len = buf.len() as u32;
+    let ok = unsafe {
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
+    };
+    let _ = unsafe { CloseHandle(handle) };
+    ok.ok()?;
+    let full = String::from_utf16_lossy(&buf[..len as usize]);
+    full.rsplit(['\\', '/']).next().map(str::to_string)
 }
 
 /// 取 [`Key`] 名的可打印形式，未知键码返回 None（放行）。

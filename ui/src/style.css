@@ -443,6 +443,104 @@ body {
   padding: 20px;
 }
 
+/* 帮助页：内嵌的变量指南排版 */
+.help-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+  line-height: 1.7;
+  font-size: 14px;
+  color: var(--text);
+}
+
+.help-body h2 {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 24px 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.help-body h2:first-child {
+  margin-top: 0;
+}
+
+.help-body h3 {
+  font-size: 14px;
+  font-weight: 600;
+  margin: 16px 0 6px;
+}
+
+.help-body p {
+  margin: 8px 0;
+}
+
+.help-body code {
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-size: 13px;
+}
+
+.help-body pre {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 10px 0;
+}
+
+.help-body pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  line-height: 1.5;
+}
+
+.help-body ul,
+.help-body ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.help-body li {
+  margin: 4px 0;
+}
+
+.help-body table {
+  border-collapse: collapse;
+  margin: 10px 0;
+  width: 100%;
+  font-size: 13px;
+}
+
+.help-body th,
+.help-body td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.help-body th {
+  background: var(--panel);
+  font-weight: 600;
+}
+
+.help-body .qa-q {
+  font-weight: 600;
+  margin-top: 12px;
+}
+
+.help-body .qa-a {
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .editor-row {
   display: flex;
   flex-direction: column;
@@ -513,11 +611,127 @@ body {
   margin-bottom: 8px;
 }
 
-.action-label {
+/* 动作组件：收起态只显示 序号 + 图标 + 描述；展开态为三行（标题行 / 类型筛选行 / 输入行） */
+.action-grip {
+  flex-shrink: 0;
   color: var(--muted);
   font-size: 12px;
+  line-height: 1;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  padding: 4px 3px;
+}
+
+.action-grip:hover {
+  color: var(--text);
+}
+
+.action-grip:active {
+  cursor: grabbing;
+}
+
+.action-seq {
+  flex-shrink: 0;
+  min-width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 11px;
   font-weight: 600;
-  min-width: 44px;
+  cursor: grab;
+  user-select: none;
+}
+
+.action-seq:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.action-ico {
+  flex-shrink: 0;
+  font-size: 13px;
+  cursor: grab;
+  user-select: none;
+}
+
+.action-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.action-title:hover {
+  color: var(--accent);
+}
+
+.action-title-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.action-del {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  padding: 4px;
+  border: none;
+  background: none;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.action-del:hover {
+  color: #ff5a5a;
+  background: var(--bg);
+}
+
+.action-del svg {
+  width: 100%;
+  height: 100%;
+}
+
+.action-type-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.action-row.collapsed .action-head {
+  margin-bottom: 0;
+}
+
+.action-row.dragging {
+  opacity: 0.4;
+}
+
+.action-row.drop-before {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+
+.action-row.drop-after {
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.action-row.drop-into,
+.action-branch.drop-into {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .move {
@@ -572,6 +786,13 @@ body {
   color: var(--muted);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.var-usage {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+  word-break: break-all;
 }
 
 .help {
@@ -656,6 +877,7 @@ body {
   gap: 8px;
   padding-left: 12px;
   border-left: 2px solid var(--line);
+  min-height: 14px; /* 空分支也留出可悬停的落点，便于拖入动作 */
 }
 
 .add-inline {
@@ -807,6 +1029,45 @@ button:disabled {
   display: flex;
   gap: 8px;
   margin-bottom: 12px;
+}
+
+.settings-section {
+  margin-bottom: 16px;
+  max-width: 480px;
+}
+
+.settings-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.layer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.layer-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.layer-name {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- 提示 / 冲突 / 通用 ---------- */

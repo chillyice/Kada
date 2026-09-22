@@ -27,7 +27,7 @@ use std::time::Duration;
 
 use evdev::{AttributeSet, Device, EventType, InputEvent, KeyCode, VirtualDevice};
 
-use kada_core::{Key, Modifier};
+use kada_core::{FrontmostContext, Key, Modifier};
 
 /// 一次键盘事件。
 #[derive(Clone, Debug)]
@@ -187,18 +187,21 @@ fn release(code: u16, key: Key) {
     if key_as_modifier(key).is_some() {
         MODS_DOWN.lock().unwrap().remove(&code);
     }
-    if SWALLOWED.lock().unwrap().remove(&key) {
+    let swallowed = SWALLOWED.lock().unwrap().remove(&key);
+    if swallowed {
         if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
             if let Some(tc) = key_to_code(target) {
                 forward_raw(tc, 0);
             }
         }
-        return; // 吞掉原键的 keyup，防止幽灵
     }
+    // 无论吞掉与否都回调 handler（观察者）：tap-hold 需要在 keyup 时判定 tap/hold。
     if let Some(f) = HANDLER.lock().unwrap().as_mut() {
         let _ = f(KeyEvent::Up { key, mods: current_mods(key) });
     }
-    forward_raw(code, 0);
+    if !swallowed {
+        forward_raw(code, 0);
+    }
 }
 
 /// 当前按下的修饰键集合；`event_key` 若是修饰键则包含其自身
@@ -389,6 +392,15 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::KEY_NUMLOCK.0 => NumLock,
         _ => return None,
     })
+}
+
+/// 取当前前台窗口上下文（进程名 + 窗口标题），供「按前台应用/窗口」类条件求值。
+///
+/// Linux 下取前台窗口依赖桌面环境：X11 可用 `_NET_ACTIVE_WINDOW`（需 `xprop`），
+/// Wayland 无通用查询协议。当前返回 None（前台类条件在此平台恒不成立），后续
+/// 按规划接 X11 + 已知 WM 适配（见 `docs/竞品分析与优化规划.md` 阶段二第 3 项）。
+pub fn frontmost_context() -> Option<FrontmostContext> {
+    None
 }
 
 /// 输入注入：按键/组合键/文本（与 Windows 后端同接口）。
