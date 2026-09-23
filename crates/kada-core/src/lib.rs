@@ -477,6 +477,7 @@ pub fn key_to_char(key: Key, shift: bool) -> Option<char> {
 use serde::{Deserialize, Serialize};
 
 /// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩或取属性。
+#[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum OsOperation {
@@ -502,10 +503,12 @@ pub enum OsOperation {
     GetFileProps { path: String, #[serde(default = "default_var")] var: String },
 }
 
+#[cfg(feature = "automation")]
 fn default_var() -> String {
     "file".into()
 }
 
+#[cfg(feature = "automation")]
 fn default_status_interval_ms() -> u64 {
     1000
 }
@@ -520,6 +523,7 @@ pub struct FrontmostContext {
 }
 
 /// 条件：供「条件判断」动作在触发前求值，为真才执行后续动作。
+#[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Condition {
@@ -545,6 +549,7 @@ pub enum Condition {
     WindowTitleContains { text: String },
 }
 
+#[cfg(feature = "automation")]
 impl Condition {
     /// 在当前变量上下文 + 前台窗口上下文下求值。路径类条件支持 `{变量名}` 占位符。
     /// 变量/字段不存在时视为「条件不成立」（返回 false）；前台类条件在无前台上下文
@@ -603,6 +608,7 @@ impl Condition {
 }
 
 /// 前台进程名匹配：不区分大小写；模式含 `*`/`?` 时按通配匹配，否则按子串匹配。
+#[cfg(feature = "automation")]
 fn match_name(pattern: &str, name: &str) -> bool {
     let p = pattern.to_lowercase();
     let n = name.to_lowercase();
@@ -614,6 +620,7 @@ fn match_name(pattern: &str, name: &str) -> bool {
 }
 
 /// 通配匹配：`*` 匹配任意序列、`?` 匹配单个字符。`pattern`/`text` 均已转小写。
+#[cfg(feature = "automation")]
 fn wildcard_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -642,6 +649,7 @@ fn wildcard_match(pattern: &str, text: &str) -> bool {
 }
 
 /// 距今多少秒（文件修改时间在未来时视为 0 秒，即「刚修改」）。
+#[cfg(feature = "automation")]
 fn elapsed_since_now(t: std::time::SystemTime) -> u64 {
     match std::time::SystemTime::now().duration_since(t) {
         Ok(d) => d.as_secs(),
@@ -650,6 +658,7 @@ fn elapsed_since_now(t: std::time::SystemTime) -> u64 {
 }
 
 /// 应用操作：启动、关闭、查询运行状态、重启。
+#[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum AppOperation {
@@ -683,6 +692,7 @@ pub enum TextMode {
 }
 
 /// 执行命令动作所用的 Shell。
+#[cfg(feature = "automation")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Shell {
@@ -699,14 +709,19 @@ pub enum Action {
     /// 文本动作：原样输入文本，或把当前选中/剪贴板文本转大小写后粘贴。
     Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行命令（CMD 或 PowerShell），结果进消息中心；`var` 非空时把标准输出（去首尾空白）写入该变量。
+    #[cfg(feature = "automation")]
     Command { shell: Shell, command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行 CMD 命令（旧版动作，加载时自动迁移为 `Command(Cmd)`）。
+    #[cfg(feature = "automation")]
     Cmd { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行 PowerShell 命令（旧版动作，加载时自动迁移为 `Command(Powershell)`）。
+    #[cfg(feature = "automation")]
     Powershell { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 启动可执行文件，可选参数。（旧版动作，加载时自动迁移为 `App::Launch`。）
+    #[cfg(feature = "automation")]
     Launch { program: String, args: Vec<String>, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 在文件管理器中打开某个目录。（旧版动作，加载时自动迁移为 `Os::OpenFolder`。）
+    #[cfg(feature = "automation")]
     OpenFolder { path: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 同时按下若干键（组合键，如 ["Ctrl","C"]；单键即点按）。
     Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -714,18 +729,36 @@ pub enum Action {
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
+    #[cfg(feature = "automation")]
     CloseProgram { program: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性）。
+    #[cfg(feature = "automation")]
     Os { operation: OsOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 应用动作（打开/关闭/查询状态/重启）。
+    #[cfg(feature = "automation")]
     App { operation: AppOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 条件判断：`condition` 为真时按顺序执行 `then`，否则执行 `otherwise`（可空）。
+    #[cfg(feature = "automation")]
     If {
         condition: Condition,
         #[serde(default)]
         then: Vec<Action>,
         #[serde(default)]
         otherwise: Vec<Action>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 执行脚本文件（可选解释器，如 python/node/bash）。`path` 支持 `{变量名}` 占位符；
+    /// 通过环境变量注入 `KADA_TRIGGER`/`KADA_NAME`/`KADA_VARS`（变量表 JSON），结果进消息中心。
+    #[cfg(feature = "automation")]
+    Script {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interpreter: Option<String>,
+        #[serde(default)]
+        show_output: bool,
+        #[serde(default)]
+        var: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -738,6 +771,7 @@ impl Action {
             k.parse::<Key>().map_err(|e| format!("{label}「{k}」无效：{e}"))?;
             Ok::<(), String>(())
         };
+        #[cfg(feature = "automation")]
         let non_empty = |label: &str, v: &str| {
             if v.trim().is_empty() {
                 return Err(format!("{label}不能为空"));
@@ -746,11 +780,17 @@ impl Action {
         };
         match self {
             Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            #[cfg(feature = "automation")]
             Action::Command { command, .. } => non_empty("命令", command),
+            #[cfg(feature = "automation")]
             Action::Cmd { command, .. } => non_empty("CMD 命令", command),
+            #[cfg(feature = "automation")]
             Action::Powershell { command, .. } => non_empty("PowerShell 命令", command),
+            #[cfg(feature = "automation")]
             Action::Launch { program, .. } => non_empty("程序路径", program),
+            #[cfg(feature = "automation")]
             Action::CloseProgram { program, .. } => non_empty("程序名", program),
+            #[cfg(feature = "automation")]
             Action::OpenFolder { path, .. } => non_empty("目录", path),
             Action::Keys { keys, .. } => {
                 if keys.is_empty() {
@@ -761,6 +801,7 @@ impl Action {
                 }
                 Ok(())
             }
+            #[cfg(feature = "automation")]
             Action::Os { operation, .. } => {
                 use OsOperation::*;
                 match operation {
@@ -782,6 +823,7 @@ impl Action {
                     GetFileProps { path, .. } => non_empty("路径", path),
                 }
             }
+            #[cfg(feature = "automation")]
             Action::App { operation, .. } => {
                 use AppOperation::*;
                 match operation {
@@ -792,6 +834,7 @@ impl Action {
                     Status { program, .. } => non_empty("程序", program),
                 }
             }
+            #[cfg(feature = "automation")]
             Action::If { condition, then, otherwise, .. } => {
                 condition.validate()?;
                 for a in then.iter().chain(otherwise.iter()) {
@@ -799,6 +842,8 @@ impl Action {
                 }
                 Ok(())
             }
+            #[cfg(feature = "automation")]
+            Action::Script { path, .. } => non_empty("脚本路径", path),
         }
     }
 }
@@ -1440,12 +1485,15 @@ fn file_field(obj: &FileObject, field: &str) -> Option<String> {
 /// 递归处理 `If` 的嵌套动作。
 pub fn migrate_action(a: Action) -> Action {
     match a {
+        #[cfg(feature = "automation")]
         Action::Launch { program, args, description } => {
             Action::App { operation: AppOperation::Launch { program, args }, description }
         }
+        #[cfg(feature = "automation")]
         Action::CloseProgram { program, description } => {
             Action::App { operation: AppOperation::Close { program }, description }
         }
+        #[cfg(feature = "automation")]
         Action::Cmd { command, show_output, var, description } => Action::Command {
             shell: Shell::Cmd,
             command,
@@ -1453,6 +1501,7 @@ pub fn migrate_action(a: Action) -> Action {
             var,
             description,
         },
+        #[cfg(feature = "automation")]
         Action::Powershell { command, show_output, var, description } => Action::Command {
             shell: Shell::Powershell,
             command,
@@ -1460,9 +1509,11 @@ pub fn migrate_action(a: Action) -> Action {
             var,
             description,
         },
+        #[cfg(feature = "automation")]
         Action::OpenFolder { path, description } => {
             Action::Os { operation: OsOperation::OpenFolder { path }, description }
         }
+        #[cfg(feature = "automation")]
         Action::If { condition, then, otherwise, description } => Action::If {
             condition,
             then: then.into_iter().map(migrate_action).collect(),
@@ -1843,6 +1894,7 @@ mod config_tests {
         );
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn actions_json_roundtrip_and_validate() {
         let actions = vec![
@@ -1985,6 +2037,7 @@ mod conflict_tests {
 mod os_and_sanitize_tests {
     use super::*;
 
+    #[cfg(feature = "automation")]
     #[test]
     fn os_action_json_roundtrip_and_validate() {
         let actions = vec![
@@ -2022,6 +2075,7 @@ mod os_and_sanitize_tests {
         .is_ok());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn substitute_vars_expands_placeholders() {
         let mut vars = Vars::new();
@@ -2050,6 +2104,7 @@ mod os_and_sanitize_tests {
         );
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn sanitize_drops_invalid_parts_keeps_valid() {
         let cfg = Config {
@@ -2132,6 +2187,7 @@ mod os_and_sanitize_tests {
         }
     }
 
+    #[cfg(feature = "automation")]
     fn sample_vars() -> Vars {
         let mut vars = Vars::new();
         vars.insert(
@@ -2150,6 +2206,7 @@ mod os_and_sanitize_tests {
         vars
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn condition_equals_and_field_resolution() {
         let vars = sample_vars();
@@ -2167,6 +2224,7 @@ mod os_and_sanitize_tests {
             .matches(&vars, None));
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn condition_path_predicates() {
         let mut vars = sample_vars();
@@ -2193,6 +2251,7 @@ mod os_and_sanitize_tests {
         assert!(Condition::IsDir { path: "{cur}".into() }.matches(&vars, None));
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn condition_modified_within() {
         let vars = sample_vars();
@@ -2215,6 +2274,7 @@ mod os_and_sanitize_tests {
         assert!(Condition::ModifiedWithin { path: tmp_path, minutes: 10 }.validate().is_ok());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn condition_frontmost_matching() {
         let ctx = |name: &str, title: &str| FrontmostContext {
@@ -2247,6 +2307,7 @@ mod os_and_sanitize_tests {
         assert!(!Condition::WindowTitleContains { text: "x".into() }.matches(&Vars::new(), none.as_ref()));
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn if_action_validate_recurses() {
         assert!(Action::If {
@@ -2277,6 +2338,7 @@ mod os_and_sanitize_tests {
         .is_err());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn if_action_json_roundtrip() {
         // 递归嵌套的 If 也能完整往返（校验 serde tag 与 field 默认值）。
@@ -2296,6 +2358,7 @@ mod os_and_sanitize_tests {
         assert_eq!(back, a, "json: {json}");
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn app_action_json_roundtrip_and_validate() {
         let actions = vec![
@@ -2341,6 +2404,7 @@ mod os_and_sanitize_tests {
         .is_ok());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn migrate_legacy_launch_and_close_program() {
         let mut cfg = Config {
@@ -2374,6 +2438,7 @@ mod os_and_sanitize_tests {
         }
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn bool_value_substitution_and_compare() {
         let mut vars = Vars::new();
@@ -2398,6 +2463,7 @@ mod os_and_sanitize_tests {
 mod new_action_and_folder_tests {
     use super::*;
 
+    #[cfg(feature = "automation")]
     #[test]
     fn text_mode_and_shell_json_roundtrip() {
         let actions = vec![
@@ -2422,6 +2488,7 @@ mod new_action_and_folder_tests {
             .is_err());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn migrate_cmd_powershell_open_folder() {
         let mut cfg = Config {
@@ -2444,6 +2511,7 @@ mod new_action_and_folder_tests {
         assert!(matches!(acts[2], Action::Os { operation: OsOperation::OpenFolder { .. }, description: _ }));
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn os_open_folder_new_folder_validate() {
         assert!(Action::Os { operation: OsOperation::OpenFolder { path: "C:\\".into() }, description: None }
@@ -2458,6 +2526,44 @@ mod new_action_and_folder_tests {
         assert!(Action::Os { operation: OsOperation::NewFolder { path: "".into() }, description: None }
             .validate()
             .is_err());
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn script_action_json_roundtrip_and_validate() {
+        let actions = vec![
+            Action::Script {
+                path: "C:\\scripts\\do.ps1".into(),
+                interpreter: None,
+                show_output: false,
+                var: "".into(),
+                description: None,
+            },
+            Action::Script {
+                path: "backup.py".into(),
+                interpreter: Some("python".into()),
+                show_output: true,
+                var: "out".into(),
+                description: None,
+            },
+        ];
+        for a in &actions {
+            assert!(a.validate().is_ok(), "{a:?}");
+        }
+        let json = serde_json::to_string(&actions).unwrap();
+        let back: Vec<Action> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, actions);
+
+        // 脚本路径为空必被拒绝。
+        assert!(Action::Script {
+            path: "  ".into(),
+            interpreter: None,
+            show_output: false,
+            var: "".into(),
+            description: None,
+        }
+        .validate()
+        .is_err());
     }
 
     #[test]

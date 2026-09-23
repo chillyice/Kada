@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/kada-core", "crates/kada-hook", "src-tauri"]
+members = ["crates/kada-core", "crates/kada-hook", "crates/kada-actions", "src-tauri"]
 
 [profile.release]
 lto = true

@@ -8,8 +8,9 @@ edition = "2021"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-kada-core = { path = "../crates/kada-core" }
+kada-core = { path = "../crates/kada-core", default-features = false }
 kada-hook = { path = "../crates/kada-hook" }
+kada-actions = { path = "../crates/kada-actions", default-features = false }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
@@ -18,5 +19,6 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 
 [features]
-default = []
+default = ["automation"]
 custom-protocol = ["tauri/custom-protocol"]
+automation = ["kada-core/automation", "kada-actions/automation"]

@@ -1,0 +1,16 @@
+[package]
+name = "kada-actions"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kada-core = { path = "../kada-core", default-features = false }
+kada-hook = { path = "../kada-hook" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = "0.4"
+
+[features]
+# 与 kada-core 的 `automation` 对齐：命令 / 文件 / 应用 / 条件 / 脚本 等执行逻辑。
+default = ["automation"]
+automation = ["kada-core/automation"]

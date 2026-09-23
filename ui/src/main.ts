@@ -38,7 +38,8 @@ type Action =
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
-  | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string };
+  | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
+  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string };
 type ShortcutItem = {
@@ -86,6 +87,7 @@ type CommandResult = {
 const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "text", label: "文本（输入 / 转大小写）" },
   { value: "command", label: "执行命令" },
+  { value: "script", label: "执行脚本" },
   { value: "keys", label: "按键组合" },
   { value: "pause_ms", label: "延迟" },
   { value: "os", label: "操作系统（文件/目录）" },
@@ -97,6 +99,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
 const ACTION_ICONS: Record<Action["type"], string> = {
   text: "✏️",
   command: "💻",
+  script: "📜",
   keys: "⌨️",
   pause_ms: "⏱️",
   os: "📁",
@@ -206,6 +209,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "text", text: "", mode: "input" };
     case "command":
       return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
+    case "script":
+      return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
     case "keys":
       return { type: "keys", keys: [] };
     case "pause_ms":
@@ -276,6 +281,8 @@ function actionHasContent(a: Action): boolean {
       return a.mode === "input" ? a.text.trim().length > 0 : true;
     case "command":
       return a.command.trim().length > 0;
+    case "script":
+      return a.path.trim().length > 0;
     case "keys":
       return a.keys.length > 0;
     case "pause_ms":
@@ -365,6 +372,11 @@ function actionSummary(a: Action): string {
     case "command": {
       const v = a.var ? ` → ${a.var}` : "";
       return `${a.shell === "cmd" ? "CMD" : "PowerShell"}：${a.command}${v}`;
+    }
+    case "script": {
+      const v = a.var ? ` → ${a.var}` : "";
+      const target = a.interpreter ? `${a.interpreter} ${a.path}` : a.path;
+      return `脚本：${target}${v}`;
     }
     case "keys":
       return `按键：${a.keys.join("+")}`;
@@ -1778,6 +1790,46 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     body.append(
       varUsage(
         "填写后把命令标准输出存入该变量：{变量名} 得到输出全文、{变量名.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。",
+      ),
+    );
+  } else if (a.type === "script") {
+    body.append(pathField(a.path, (v) => (a.path = v), { file: true, label: "脚本路径" }));
+
+    const iline = el("div", "action-line");
+    const interp = el("input", "action-input") as HTMLInputElement;
+    interp.type = "text";
+    interp.value = a.interpreter ?? "";
+    interp.placeholder = "解释器（可选），如 python / node / bash；留空则直接执行脚本本身";
+    interp.addEventListener("input", () => {
+      const v = interp.value.trim();
+      a.interpreter = v.length > 0 ? v : null;
+    });
+    iline.append(el("span", "unit-hint", "解释器"), interp);
+    body.append(iline);
+
+    const popup = el("label", "action-check") as HTMLLabelElement;
+    const cb = el("input", "toggle") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = a.show_output;
+    cb.addEventListener("change", () => {
+      a.show_output = cb.checked;
+    });
+    popup.append(cb, el("span", undefined, "弹窗显示结果"));
+    body.append(popup);
+
+    const vline = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = "变量名（可选），留空则只进消息中心";
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    vline.append(el("span", "unit-hint", "存为变量"), vname);
+    body.append(vline);
+    body.append(
+      varUsage(
+        "脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存入该变量：{变量名} 得输出全文、{变量名.exit_code} 得退出码。",
       ),
     );
   } else if (a.type === "keys") {

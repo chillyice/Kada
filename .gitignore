@@ -6,3 +6,4 @@
 src-tauri/gen/schemas
 *.log
 .zcode/
+.idea/
