@@ -244,13 +244,22 @@
             <span class="detail-title">消息</span>
             <button id="clear-messages" class="danger">清空</button>
           </header>
-          <div class="msg-tabs">
-            <button id="msg-prev" class="msg-arrow" title="上一个">‹</button>
-            <div id="msg-tablist" class="msg-tablist"></div>
-            <button id="msg-next" class="msg-arrow" title="下一个">›</button>
+          <div class="msg-view-tabs">
+            <button id="msg-view-results" class="msg-view-tab active">命令结果</button>
+            <button id="msg-view-conflicts" class="msg-view-tab">冲突<span id="msg-conflict-count" class="msg-conflict-count hidden"></span></button>
           </div>
-          <div id="msg-empty" class="detail-empty">暂无命令结果，触发一个 CMD / PowerShell 动作后这里会出现记录</div>
-          <div id="msg-content" class="msg-content hidden"></div>
+          <div id="msg-results-view" class="msg-view">
+            <div class="msg-tabs">
+              <button id="msg-prev" class="msg-arrow" title="上一个">‹</button>
+              <div id="msg-tablist" class="msg-tablist"></div>
+              <button id="msg-next" class="msg-arrow" title="下一个">›</button>
+            </div>
+            <div id="msg-empty" class="detail-empty">暂无命令结果，触发一个 CMD / PowerShell 动作后这里会出现记录</div>
+            <div id="msg-content" class="msg-content hidden"></div>
+          </div>
+          <div id="msg-conflicts-view" class="msg-view hidden">
+            <div id="msg-conflict-list" class="conflicts"></div>
+          </div>
         </section>
 
         <!-- 帮助详情 -->

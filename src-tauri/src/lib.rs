@@ -758,34 +758,41 @@ fn chord_step(
 const MAX_HOTSTRING_BUFFER: usize = 64;
 
 /// 处理一个放行的事件用于文本扩展：累积可打印字符、命中触发词时异步回删并注入。
+/// 返回 `true` 表示「事件被消费」（命中触发词的后缀键被吞掉，改由后台线程
+/// 回删 + 注入 + 补回后缀，避免后缀先落盘与回删并发产生竞态/错位）。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-fn on_hotstring(ev: &Ev, buffer: &mut String, expansions: &[TextExpansion]) {
-    let Ev::Down { key, mods, repeat } = ev else { return };
+fn on_hotstring(ev: &Ev, buffer: &mut String, expansions: &[TextExpansion]) -> bool {
+    let Ev::Down { key, mods, repeat } = ev else { return false };
     if *repeat {
-        return;
+        return false;
     }
     // 修饰键不打断缓冲（输入大写字母需要 Shift 按下）。
     if matches!(key, Key::Shift | Key::Control | Key::Alt | Key::Meta) {
-        return;
+        return false;
     }
     if is_hotstring_terminator(*key) {
         if let Some(exp) = match_expansion(buffer, expansions) {
             let backspaces = exp.trigger.chars().count();
             let replace = exp.replace.clone();
+            let terminator = *key;
             std::thread::spawn(move || {
                 for _ in 0..backspaces {
                     input::simulate::tap(Key::Backspace);
                 }
                 let expanded = resolve_hotstring(&replace);
                 let _ = input::simulate::type_text(&expanded);
+                // 后缀键（空格/回车/Tab）已被吞掉，这里补回，保证「sig␣ → signature␣」。
+                input::simulate::tap(terminator);
             });
+            buffer.clear();
+            return true;
         }
         buffer.clear();
-        return;
+        return false;
     }
     if *key == Key::Backspace {
         buffer.pop();
-        return;
+        return false;
     }
     // 可打印字符累积；其余键（方向键/功能键等）打断缓冲。
     let shift = mods.contains(&Modifier::Shift);
@@ -799,6 +806,7 @@ fn on_hotstring(ev: &Ev, buffer: &mut String, expansions: &[TextExpansion]) {
         }
         None => buffer.clear(),
     }
+    false
 }
 
 /// 展开热串替换文本的动态片段：`{date}` / `{time}` / `{clipboard}`。
@@ -882,8 +890,19 @@ fn fire(
     trigger: String,
     name: String,
 ) {
-    show_toast(&app, &name, &trigger);
+    // 气泡窗口首次懒创建较慢（WebView 冷启动），放后台线程，避免阻塞钩子回调——
+    // WH_KEYBOARD_LL 回调超时会被系统摘除，导致后续快捷键/热串/改键全部失效。
+    {
+        let app = app.clone();
+        let name = name.clone();
+        let trigger = trigger.clone();
+        std::thread::spawn(move || show_toast(&app, &name, &trigger));
+    }
     std::thread::spawn(move || {
+        // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，直接注入会被污染成
+        // Ctrl+Alt+<键>（粘贴 Ctrl+V 变成 Ctrl+Alt+V）。等修饰键全部释放后再执行动作，
+        // 保证文本/按键能正确落到目标程序。
+        input::simulate::wait_modifiers_released(300);
         let mut vars: Vars = BTreeMap::new();
         let mut last_copied: Option<String> = None;
         let frontmost = input::frontmost_context();
@@ -1251,6 +1270,7 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Warn,
                             message: format!("「{t}」与系统快捷键 {combo}（{desc}）冲突"),
+                            name: s.name.clone().unwrap_or_default(),
                         });
                         sys_hits.insert(t.clone());
                     }
@@ -1274,6 +1294,7 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
                     out.push(Conflict {
                         severity: Severity::Warn,
                         message: format!("「{t}」已被系统或其他应用占用"),
+                        name: s.name.clone().unwrap_or_default(),
                     });
                 }
             }
@@ -1500,8 +1521,13 @@ pub fn run() {
                             }
                             Outcome::Replace(to) => input::HookAction::Replace(to),
                             Outcome::Pass => {
-                                on_hotstring(&ev, &mut hotstring_buffer, &guard.expansions);
-                                input::HookAction::Allow
+                                // 命中文本扩展时后缀键（空格/回车/Tab）被吞掉，改由后台线程
+                                // 回删 + 注入 + 补回后缀（避免后缀先落盘与回删并发产生错位）。
+                                if on_hotstring(&ev, &mut hotstring_buffer, &guard.expansions) {
+                                    input::HookAction::Block
+                                } else {
+                                    input::HookAction::Allow
+                                }
                             }
                         }
                     })

@@ -38,6 +38,7 @@ type Action =
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
+  | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
@@ -68,7 +69,7 @@ type Remap = {
 type TextExpansion = { trigger: string; replace: string; enabled: boolean };
 type Settings = { autostart: boolean; paused: boolean; wake_key?: string | null };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
-type Conflict = { severity: "error" | "warn"; message: string };
+type Conflict = { severity: "error" | "warn"; message: string; name: string };
 type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
 type CommandResult = {
   kind: string;
@@ -85,13 +86,14 @@ type CommandResult = {
 
 // ---- 动作类型预设 ----
 const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
-  { value: "text", label: "文本（输入 / 转大小写）" },
+  { value: "text", label: "文本操作" },
   { value: "command", label: "执行命令" },
   { value: "script", label: "执行脚本" },
+  { value: "app", label: "应用操作" },
+  { value: "open_url", label: "打开网址" },
+  { value: "os", label: "文件/目录操作" },
   { value: "keys", label: "按键组合" },
   { value: "pause_ms", label: "延迟" },
-  { value: "os", label: "操作系统（文件/目录）" },
-  { value: "app", label: "应用（打开/关闭/状态/重启）" },
   { value: "if", label: "条件判断" },
 ];
 
@@ -104,6 +106,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   pause_ms: "⏱️",
   os: "📁",
   app: "🚀",
+  open_url: "🌐",
   if: "🔀",
 };
 
@@ -219,6 +222,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "os", operation: newOsOp("copy") };
     case "app":
       return { type: "app", operation: newAppOp("launch") };
+    case "open_url":
+      return { type: "open_url", url: "" };
     case "if":
       return { type: "if", condition: newCondition("exists"), then: [], otherwise: [] };
   }
@@ -291,6 +296,8 @@ function actionHasContent(a: Action): boolean {
       return osHasContent(a.operation);
     case "app":
       return appHasContent(a.operation);
+    case "open_url":
+      return a.url.trim().length > 0;
     case "if":
       return condHasContent(a.condition) || a.then.length > 0 || a.otherwise.length > 0;
   }
@@ -386,6 +393,8 @@ function actionSummary(a: Action): string {
       return osSummary(a.operation);
     case "app":
       return appSummary(a.operation);
+    case "open_url":
+      return a.url ? `打开网址：${a.url}` : "打开网址";
     case "if":
       return `如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? `，否则 ${a.otherwise.length} 个` : ""}）`;
   }
@@ -419,6 +428,8 @@ let search = "";
 let messages: CommandResult[] = []; // 消息中心（最新在前）
 let msgIndex = 0; // 当前选中的结果 tab
 let unread = false; // 未读红点
+let conflictBubbleDismissed = false; // 快捷键列表里的冲突气泡是否已被用户消除
+let msgView: "results" | "conflicts" = "results"; // 消息页标签：命令结果 / 冲突
 let clipboard: { kind: "shortcut"; srcIndex: number; cut: boolean } | null = null; // 剪切/复制板
 let editingFolderId: string | null = null; // 正在行内改名的目录 id
 let editingLayerId: string | null = null; // 正在行内改名的层 id
@@ -522,9 +533,12 @@ function currentConfigForConflicts(): Config {
 
 async function refreshConflicts() {
   try {
-    conflicts = await invoke<Conflict[]>("get_conflicts", {
+    const next = await invoke<Conflict[]>("get_conflicts", {
       config: currentConfigForConflicts(),
     });
+    // 冲突集合变化时，重新弹出气泡（用户消除过旧冲突、又出现新冲突时能再次被提醒）。
+    if (JSON.stringify(next) !== JSON.stringify(conflicts)) conflictBubbleDismissed = false;
+    conflicts = next;
   } catch {
     conflicts = [];
   }
@@ -706,7 +720,7 @@ function varUsage(tip: string): HTMLElement {
 
 function render() {
   renderListPane();
-  renderConflicts();
+  renderConflictBubble();
   renderDetail();
   renderMessages();
   if (section === "settings") renderLayers();
@@ -782,7 +796,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   const li = el("li", "row" + (selected === idx ? " selected" : ""));
   li.dataset.idx = String(idx);
   // 缩进用 margin 而非 padding：整行盒子随层级右移，层级关系和边框范围都对齐。
-  li.style.marginLeft = `${depth * 14}px`;
+  li.style.marginLeft = `${depth * 20}px`;
   attachDragStart(li, { kind: "shortcut", idx });
   const on = el("input", "toggle") as HTMLInputElement;
   on.type = "checkbox";
@@ -812,7 +826,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
 function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   const li = el("li", "folder-row");
   li.dataset.folderId = f.id;
-  li.style.marginLeft = `${depth * 14}px`;
+  li.style.marginLeft = `${depth * 20}px`;
   if (editingFolderId !== f.id) {
     attachDragStart(li, { kind: "folder", id: f.id });
   }
@@ -909,12 +923,20 @@ function showRowMenu(
     });
     menu.append(b);
   }
-  // 菜单紧贴三点按钮：先显示再测宽，右缘对齐按钮右缘（贴近按钮、避免右溢出）。
+  // 菜单紧贴三点按钮：先显示再测宽，右缘对齐按钮右缘（贴近按钮、避免右溢出）；
+  // 底部放不下则向上翻转，避免列表末尾的行菜单被裁到页面底下看不到。
   menu.classList.remove("hidden");
   const rect = anchor.getBoundingClientRect();
   const w = menu.offsetWidth;
-  menu.style.left = `${Math.max(8, rect.right - w)}px`;
-  menu.style.top = `${rect.bottom + 4}px`;
+  const h = menu.offsetHeight;
+  const vw = window.innerWidth;
+  const vh = window.innerHeight;
+  menu.style.left = `${Math.min(Math.max(8, rect.right - w), Math.max(8, vw - w - 8))}px`;
+  let top = rect.bottom + 4;
+  if (top + h > vh - 4) {
+    top = Math.max(4, rect.top - h - 4);
+  }
+  menu.style.top = `${top}px`;
   setTimeout(() => document.addEventListener("click", hideRowMenu, { once: true }), 0);
 }
 
@@ -1467,7 +1489,7 @@ function renderTriggers(s: ShortcutItem) {
     x.addEventListener("click", () => {
       s.triggers.splice(i, 1);
       renderTriggers(s);
-      void refreshConflicts().then(renderConflicts);
+      void refreshConflicts().then(renderConflictBubble);
     });
     chip.append(x);
     wrap.append(chip);
@@ -2054,6 +2076,18 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       );
       body.append(rline);
     }
+  } else if (a.type === "open_url") {
+    const line = el("div", "action-line");
+    const url = el("input", "action-input") as HTMLInputElement;
+    url.type = "text";
+    url.value = a.url;
+    url.placeholder = "网址，如 https://example.com（支持 {变量名} 占位符）";
+    url.addEventListener("input", () => {
+      a.url = url.value.trim();
+    });
+    line.append(url);
+    body.append(line);
+    body.append(el("div", "unit-hint", "用系统默认浏览器打开该网页。"));
   } else if (a.type === "if") {
     const cond = a.condition;
 
@@ -2200,17 +2234,52 @@ async function pickDir(input: HTMLInputElement) {
 }
 
 // ---- 冲突提示 ----
-function renderConflicts() {
-  const listEl = document.getElementById("conflict-list")!;
-  listEl.replaceChildren();
-  if (conflicts.length === 0) return;
-  listEl.append(el("div", "conflict-head", "⚠ 冲突提醒"));
-  for (const c of conflicts) {
-    const d = document.createElement("div");
-    d.className = "conflict " + (c.severity === "error" ? "error" : "warn");
-    d.textContent = c.message;
-    listEl.append(d);
+// 快捷键列表里只显示一个可点击、可消除的气泡（冲突清单不常驻列表）；冲突详情常驻「消息 → 冲突」标签。
+function renderConflictBubble() {
+  const box = document.getElementById("conflict-list")!;
+  box.replaceChildren();
+  const show = section === "shortcuts" && conflicts.length > 0 && !conflictBubbleDismissed;
+  box.classList.toggle("hidden", !show);
+  if (!show) return;
+  const errs = conflicts.filter((c) => c.severity === "error").length;
+  const bubble = el("div", "conflict-bubble");
+  bubble.addEventListener("click", openConflictView);
+  bubble.append(
+    el("span", "conflict-bubble-text", `⚠ ${conflicts.length} 处冲突${errs ? `（${errs} 处需处理）` : ""}`),
+    el("span", "conflict-bubble-hint", "点击查看"),
+  );
+  const close = el("button", "conflict-bubble-close", "×") as HTMLButtonElement;
+  close.title = "消除提醒";
+  close.addEventListener("click", (e) => {
+    e.stopPropagation();
+    conflictBubbleDismissed = true;
+    renderConflictBubble();
+  });
+  bubble.append(close);
+  box.append(bubble);
+}
+
+// 冲突详情（常驻「消息 → 冲突」标签）：显示是哪个快捷键 + 冲突说明。
+function renderConflictList() {
+  const box = document.getElementById("msg-conflict-list")!;
+  box.replaceChildren();
+  if (conflicts.length === 0) {
+    box.append(el("div", "detail-empty", "暂无冲突"));
+    return;
   }
+  box.append(el("div", "conflict-head", `⚠ 冲突提醒（${conflicts.length} 处）`));
+  for (const c of conflicts) {
+    const d = el("div", "conflict " + (c.severity === "error" ? "error" : "warn"));
+    if (c.name) d.append(el("div", "conflict-name", c.name));
+    d.append(el("div", "conflict-msg", c.message));
+    box.append(d);
+  }
+}
+
+// 跳到「消息 → 冲突」标签查看冲突详情。
+function openConflictView() {
+  msgView = "conflicts";
+  switchSection("messages");
 }
 
 // ---- 设置 ----
@@ -2471,7 +2540,7 @@ function bind() {
     startCapture((combo) => {
       if (!d.triggers.includes(combo)) d.triggers.push(combo);
       renderTriggers(d);
-      void refreshConflicts().then(renderConflicts);
+      void refreshConflicts().then(renderConflictBubble);
     }, btn);
   });
 
@@ -2482,7 +2551,7 @@ function bind() {
     startSequenceCapture((seq) => {
       if (!d.triggers.includes(seq)) d.triggers.push(seq);
       renderTriggers(d);
-      void refreshConflicts().then(renderConflicts);
+      void refreshConflicts().then(renderConflictBubble);
     }, btn);
   });
 
@@ -2493,7 +2562,7 @@ function bind() {
     startChordCapture((chord) => {
       if (!d.triggers.includes(chord)) d.triggers.push(chord);
       renderTriggers(d);
-      void refreshConflicts().then(renderConflicts);
+      void refreshConflicts().then(renderConflictBubble);
     }, btn);
   });
 
@@ -2773,6 +2842,22 @@ function resultCard(r: CommandResult): HTMLElement {
 
 function renderMessages() {
   renderBadge();
+
+  // 冲突标签角标 + 冲突清单（常驻刷新，无论当前在哪个标签）。
+  const conflictCount = document.getElementById("msg-conflict-count")!;
+  conflictCount.textContent = String(conflicts.length);
+  conflictCount.classList.toggle("hidden", conflicts.length === 0);
+  renderConflictList();
+
+  // 视图切换：命令结果 / 冲突。
+  const onResults = msgView === "results";
+  document.getElementById("msg-results-view")!.classList.toggle("hidden", !onResults);
+  document.getElementById("msg-conflicts-view")!.classList.toggle("hidden", onResults);
+  document.getElementById("msg-view-results")!.classList.toggle("active", onResults);
+  document.getElementById("msg-view-conflicts")!.classList.toggle("active", !onResults);
+  document.getElementById("clear-messages")!.classList.toggle("hidden", !onResults);
+
+  // 命令结果视图内容（tablist / 空态 / 内容卡）。
   const tablist = document.getElementById("msg-tablist")!;
   const empty = document.getElementById("msg-empty")!;
   const content = document.getElementById("msg-content")!;
@@ -2809,6 +2894,14 @@ function hideResultModal() {
 }
 
 function bindMessages() {
+  document.getElementById("msg-view-results")!.addEventListener("click", () => {
+    msgView = "results";
+    renderMessages();
+  });
+  document.getElementById("msg-view-conflicts")!.addEventListener("click", () => {
+    msgView = "conflicts";
+    renderMessages();
+  });
   document.getElementById("msg-prev")!.addEventListener("click", () => {
     if (!messages.length) return;
     msgIndex = (msgIndex - 1 + messages.length) % messages.length;
