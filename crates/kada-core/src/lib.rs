@@ -849,6 +849,9 @@ pub enum Action {
     /// 应用动作（打开/关闭/查询状态/重启）。
     #[cfg(feature = "automation")]
     App { operation: AppOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 用系统默认浏览器打开网址。
+    #[cfg(feature = "automation")]
+    OpenUrl { url: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 条件判断：`condition` 为真时按顺序执行 `then`，否则执行 `otherwise`（可空）。
     #[cfg(feature = "automation")]
     If {
@@ -946,6 +949,8 @@ impl Action {
                     Status { program, .. } => non_empty("程序", program),
                 }
             }
+            #[cfg(feature = "automation")]
+            Action::OpenUrl { url, .. } => non_empty("网址", url),
             #[cfg(feature = "automation")]
             Action::If { condition, then, otherwise, .. } => {
                 condition.validate()?;
@@ -1273,6 +1278,9 @@ pub enum Severity {
 pub struct Conflict {
     pub severity: Severity,
     pub message: String,
+    /// 涉及的主要快捷键名称（无名称为空字符串），供 UI「消息→冲突」页标识是哪个快捷键。
+    #[serde(default)]
+    pub name: String,
 }
 
 /// 检测配置中的快捷键/改键冲突。
@@ -1303,6 +1311,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Error,
                             message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
+                            name: s.name.clone().unwrap_or_default(),
                         });
                     } else {
                         seen_combo.insert(k, t.clone());
@@ -1313,6 +1322,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Error,
                             message: format!("触发序列「{t}」重复，多个快捷键共用同一序列"),
+                            name: s.name.clone().unwrap_or_default(),
                         });
                     }
                 }
@@ -1324,6 +1334,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Error,
                             message: format!("触和弦「{t}」与「{first}」重复，多个快捷键共用同一和弦"),
+                            name: s.name.clone().unwrap_or_default(),
                         });
                     } else {
                         seen_chord.insert(k, t.clone());
@@ -1376,6 +1387,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                                     "序列「{t}」的 leader「{0}」会吞掉该键，使组合键「{ct}」失效",
                                     format_shortcut(leader)
                                 ),
+                                name: s.name.clone().unwrap_or_default(),
                             });
                         }
                     }
@@ -1400,6 +1412,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                                         "和弦「{t}」的成员「{0}」会吞掉该键，使组合键「{ct}」失效",
                                         key_name(m.key)
                                     ),
+                                    name: s.name.clone().unwrap_or_default(),
                                 });
                             }
                         }
@@ -1413,6 +1426,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                                         "和弦「{t}」的成员「{0}」会吞掉该键，使序列「{st}」的 leader 失效",
                                         key_name(m.key)
                                     ),
+                                    name: s.name.clone().unwrap_or_default(),
                                 });
                             }
                         }
@@ -1434,6 +1448,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                 out.push(Conflict {
                     severity: Severity::Error,
                     message: format!("改键来源「{first}」重复，多条改键都从「{first}」改起"),
+                    name: String::new(),
                 });
             } else {
                 remap_from.insert(k, r.from.clone());
@@ -1462,6 +1477,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                                 r.from,
                                 key_name(from)
                             ),
+                            name: s.name.clone().unwrap_or_default(),
                         });
                     }
                 }
@@ -1495,6 +1511,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
             out.push(Conflict {
                 severity: Severity::Warn,
                 message: format!("「{tj}」被「{ti}」遮蔽：按下 {tj} 时会先命中更宽松的「{ti}」"),
+                name: String::new(),
             });
         }
     }
@@ -2615,6 +2632,19 @@ mod os_and_sanitize_tests {
         }
         .validate()
         .is_ok());
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn open_url_json_roundtrip_and_validate() {
+        let a = Action::OpenUrl { url: "https://example.com?a=1&b=2".into(), description: None };
+        assert!(a.validate().is_ok());
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""type":"open_url""#), "json: {json}");
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a);
+        // 网址为空必被拒绝。
+        assert!(Action::OpenUrl { url: "".into(), description: None }.validate().is_err());
     }
 
     #[cfg(feature = "automation")]

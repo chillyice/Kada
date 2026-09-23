@@ -409,6 +409,7 @@ pub mod simulate {
     //! 副作用是短暂占用并恢复剪贴板。粘贴被吞的极端场景后续可加直发兜底。
 
     use std::io;
+    use std::time::Duration;
 
     use evdev::{EventType, InputEvent};
 
@@ -433,6 +434,8 @@ pub mod simulate {
         for k in keys {
             down(*k);
         }
+        // 全部按下后稍停再逆序松开，避免组合键太快导致目标程序收不到。
+        std::thread::sleep(Duration::from_millis(30));
         for k in keys.iter().rev() {
             up(*k);
         }
@@ -457,6 +460,8 @@ pub mod simulate {
         let prev = cb.get_text().ok();
         cb.set_text(text.to_string()).map_err(io::Error::other)?;
         chord(&[Key::Control, Key::V]);
+        // 等目标程序处理完粘贴再恢复剪贴板，避免竞态（同 Windows 版）。
+        std::thread::sleep(Duration::from_millis(80));
         if let Some(p) = prev {
             let _ = cb.set_text(p);
         }
@@ -467,6 +472,13 @@ pub mod simulate {
     pub fn get_clipboard_text() -> io::Result<String> {
         let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
         cb.get_text().map_err(io::Error::other)
+    }
+
+    /// Linux 版无需等待修饰键释放：物理键盘被 evdev 独占抓取（`EVIOCGRAB`），目标程序
+    /// 看不到物理修饰键、只看到注入的虚拟设备事件，不存在「修饰键污染注入」的问题。
+    /// 占位接口与 Windows 对齐（`fire` 两平台统一调用）。
+    pub fn wait_modifiers_released(_timeout_ms: u64) -> bool {
+        true
     }
 }
 

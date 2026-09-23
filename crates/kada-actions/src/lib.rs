@@ -216,6 +216,11 @@ fn run_action(
             return run_app(operation, trigger, name, vars);
         }
         #[cfg(feature = "automation")]
+        Action::OpenUrl { url, .. } => {
+            let url = substitute_vars(url, vars);
+            open_url(&url)?;
+        }
+        #[cfg(feature = "automation")]
         Action::If { .. } => {
             // 条件判断动作由 run_actions 拦截处理，不会到达这里。
             return Err("内部错误：条件判断动作应在运行器内处理".into());
@@ -387,6 +392,18 @@ fn launch_program(program: &str, args: &[String]) -> Result<(), String> {
         .spawn()
         .map_err(|e| format!("启动程序「{program}」失败: {e}"))?;
     Ok(())
+}
+
+/// 用系统默认浏览器打开网址。Windows 走 `explorer`（直接以参数传入，不经 shell，
+/// 避免 URL 里的 `&`/`?` 等被 cmd 二次解析）；Linux 走 `xdg-open`。
+#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+fn open_url(url: &str) -> Result<(), String> {
+    let res = if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer").arg(url).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(url).spawn()
+    };
+    res.map(|_| ()).map_err(|e| format!("打开网址「{url}」失败: {e}"))
 }
 
 /// 关闭程序（结束所有同名进程），返回命令结果供消息中心展示。
