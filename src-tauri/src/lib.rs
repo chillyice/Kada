@@ -24,8 +24,9 @@ use tauri::{Emitter, Manager, WindowEvent};
 use kada_core::{
     detect_conflicts, is_hotstring_terminator, key_to_char, match_expansion, matches,
     sanitize_config, substitute_vars, Action, AppOperation, Config, Conflict, FileObject,
-    FrontmostContext, Key, Modifier, OsOperation, RawEvent, Remap, Severity, Shell, Shortcut,
-    TextExpansion, TextMode, TextValue, Value, Vars, SYSTEM_SHORTCUTS,
+    FrontmostContext, Key, Modifier, OsOperation, RawEvent, Remap, SeqAdvance, SequenceTracker,
+    Severity, Shell, Shortcut, TextExpansion, TextMode, TextValue, Trigger, Value, Vars,
+    DEFAULT_SEQUENCE_TIMEOUT_MS, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -381,6 +382,108 @@ fn finish_taphold(
         // 切层键长按后松开（未 roll）：短暂进入又退出，无净效果，无需操作。
     } else if let Some(tk) = p.tap {
         input::simulate::tap(tk); // 短按：tap 键。
+    }
+}
+
+/// 键序列（leader key）运行态：承载 [`SequenceTracker`] 与超时判据。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct SequenceState {
+    tracker: SequenceTracker,
+    last_activity: Instant,
+    timeout: Duration,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl SequenceState {
+    fn new() -> Self {
+        Self {
+            tracker: SequenceTracker::new(),
+            last_activity: Instant::now(),
+            timeout: Duration::from_millis(DEFAULT_SEQUENCE_TIMEOUT_MS),
+        }
+    }
+}
+
+/// 收集「当前层生效」的键序列触发条目：(步骤, 动作, 触发键文本, 名称)。
+/// 层语义与 [`match_shortcut`] 一致：激活层条目优先、基层层条目兜底。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn collect_sequence_items(
+    cfg: &Config,
+    active_layer: Option<&str>,
+) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
+    let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
+    for s in &cfg.shortcuts {
+        if !s.enabled || s.layer.as_deref() != active_layer {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
+                out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+            }
+        }
+    }
+    if active_layer.is_some() {
+        for s in &cfg.shortcuts {
+            if !s.enabled || s.layer.is_some() {
+                continue;
+            }
+            for t in &s.triggers {
+                if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
+                    out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 键序列状态机单步推进（在 tap-hold 之后、普通 [`decide`] 之前调用）。
+///
+/// 返回 `Some(ev)` 表示事件继续走普通 [`decide`]（断链的键仍可触发单组合）；
+/// 返回 `None` 表示事件被吞掉（Block）：leader 已进入等待下一键，或序列已命中。
+/// 只处理非重复 Down；`Escape` 取消进行中的序列并吞掉。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn sequence_step(
+    app: &tauri::AppHandle,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    ev: &Ev,
+    cfg: &Config,
+    state: &mut SequenceState,
+    active_layer: Option<&str>,
+) -> Option<Ev> {
+    let Ev::Down { key, mods, repeat } = ev else { return Some(ev.clone()) };
+    if *repeat {
+        return Some(ev.clone());
+    }
+
+    // 超时：过期则重置，事件照走。
+    if state.tracker.is_active() && state.last_activity.elapsed() >= state.timeout {
+        state.tracker.reset();
+    }
+
+    // Escape 取消进行中的序列并吞掉。
+    if *key == Key::Escape && state.tracker.is_active() {
+        state.tracker.reset();
+        return None;
+    }
+
+    let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
+    let items = collect_sequence_items(cfg, active_layer);
+    let steps: Vec<Vec<Shortcut>> = items.iter().map(|(s, ..)| s.clone()).collect();
+    match state.tracker.advance(&raw, &steps) {
+        SeqAdvance::NoMatch => Some(ev.clone()),
+        SeqAdvance::Advance => {
+            state.last_activity = Instant::now();
+            None
+        }
+        SeqAdvance::Complete(i) => {
+            state.tracker.reset();
+            if let Some((_, actions, trigger, name)) = items.get(i) {
+                fire(app.clone(), results, unread, actions.clone(), trigger.clone(), name.clone());
+            }
+            None
+        }
     }
 }
 
@@ -1629,6 +1732,7 @@ pub fn run() {
                     let mut taphold: Option<TapHoldPending> = None;
                     let mut active_hold_mods: BTreeSet<Modifier> = BTreeSet::new();
                     let mut active_layer: Option<String> = None;
+                    let mut sequence_state = SequenceState::new();
                     input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
@@ -1652,6 +1756,18 @@ pub fn run() {
                             &mut taphold,
                             &mut active_hold_mods,
                             &mut active_layer,
+                        ) else {
+                            return input::HookAction::Block;
+                        };
+                        // 键序列（leader key）：吞掉进入等待/命中的键，放行断链的键继续走 decide。
+                        let Some(ev) = sequence_step(
+                            &app_handle,
+                            results.clone(),
+                            unread.clone(),
+                            &ev,
+                            &guard,
+                            &mut sequence_state,
+                            active_layer.as_deref(),
                         ) else {
                             return input::HookAction::Block;
                         };
