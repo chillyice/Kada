@@ -23,8 +23,8 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
     detect_conflicts, is_hotstring_terminator, key_to_char, match_expansion, matches,
-    sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent, Remap, SeqAdvance,
-    SequenceTracker, Severity, Shortcut, TextExpansion, Trigger, Vars,
+    sanitize_config, Action, ChordAdvance, ChordTracker, Config, Conflict, Key, Modifier, RawEvent,
+    Remap, SeqAdvance, SequenceTracker, Severity, Shortcut, TextExpansion, Trigger, Vars,
     DEFAULT_SEQUENCE_TIMEOUT_MS, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{run_actions, CommandResult};
@@ -575,6 +575,25 @@ impl SequenceState {
     }
 }
 
+/// 和弦（同时按住多个键）运行态：承载 [`ChordTracker`] 与超时判据。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct ChordState {
+    tracker: ChordTracker,
+    last_activity: Instant,
+    timeout: Duration,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl ChordState {
+    fn new() -> Self {
+        Self {
+            tracker: ChordTracker::new(),
+            last_activity: Instant::now(),
+            timeout: Duration::from_millis(DEFAULT_SEQUENCE_TIMEOUT_MS),
+        }
+    }
+}
+
 /// 收集「当前层生效」的键序列触发条目：(步骤, 动作, 触发键文本, 名称)。
 /// 层语义与 [`match_shortcut`] 一致：激活层条目优先、基层层条目兜底。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
@@ -601,6 +620,39 @@ fn collect_sequence_items(
             for t in &s.triggers {
                 if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
                     out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 收集「当前层生效」的和弦触发条目：(成员键, 动作, 触发键文本, 名称)。
+/// 层语义与 [`match_shortcut`] 一致：激活层条目优先、基层层条目兜底。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn collect_chord_items(
+    cfg: &Config,
+    active_layer: Option<&str>,
+) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
+    let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
+    for s in &cfg.shortcuts {
+        if !s.enabled || s.layer.as_deref() != active_layer {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
+                out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+            }
+        }
+    }
+    if active_layer.is_some() {
+        for s in &cfg.shortcuts {
+            if !s.enabled || s.layer.is_some() {
+                continue;
+            }
+            for t in &s.triggers {
+                if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
+                    out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
                 }
             }
         }
@@ -649,6 +701,50 @@ fn sequence_step(
             None
         }
         SeqAdvance::Complete(i) => {
+            state.tracker.reset();
+            if let Some((_, actions, trigger, name)) = items.get(i) {
+                fire(app.clone(), results, unread, actions.clone(), trigger.clone(), name.clone());
+            }
+            None
+        }
+    }
+}
+
+/// 和弦状态机单步推进（在 tap-hold 之后、键序列之前调用）。
+///
+/// 返回 `Some(ev)` 表示事件继续走键序列 / 普通 [`decide`]；返回 `None` 表示事件被吞掉
+/// （Block）：成员键等待其它成员凑齐，或和弦已命中。只处理非重复 Down；
+/// 成员键的 keyup 被钩子层一并吞掉，集合靠「凑齐触发」或「超时」清空，不依赖 Up。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn chord_step(
+    app: &tauri::AppHandle,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    ev: &Ev,
+    cfg: &Config,
+    state: &mut ChordState,
+    active_layer: Option<&str>,
+) -> Option<Ev> {
+    let Ev::Down { key, mods, repeat } = ev else { return Some(ev.clone()) };
+    if *repeat {
+        return Some(ev.clone());
+    }
+
+    // 超时：过期则重置（丢弃已按下的成员键），事件照走。
+    if state.tracker.is_active() && state.last_activity.elapsed() >= state.timeout {
+        state.tracker.reset();
+    }
+
+    let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
+    let items = collect_chord_items(cfg, active_layer);
+    let chords: Vec<Vec<Shortcut>> = items.iter().map(|(c, ..)| c.clone()).collect();
+    match state.tracker.advance(&raw, &chords) {
+        ChordAdvance::NoMatch => Some(ev.clone()),
+        ChordAdvance::Await => {
+            state.last_activity = Instant::now();
+            None
+        }
+        ChordAdvance::Complete(i) => {
             state.tracker.reset();
             if let Some((_, actions, trigger, name)) = items.get(i) {
                 fire(app.clone(), results, unread, actions.clone(), trigger.clone(), name.clone());
@@ -1338,6 +1434,7 @@ pub fn run() {
                     let mut mods_state = ModsState::new();
                     let mut active_layer: Option<String> = None;
                     let mut sequence_state = SequenceState::new();
+                    let mut chord_state = ChordState::new();
                     input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
@@ -1362,6 +1459,18 @@ pub fn run() {
                             &mut tap_dance,
                             &mut mods_state,
                             &mut active_layer,
+                        ) else {
+                            return input::HookAction::Block;
+                        };
+                        // 和弦（同时按住多个键）：吞掉成员键，凑齐触发、超时丢弃。
+                        let Some(ev) = chord_step(
+                            &app_handle,
+                            results.clone(),
+                            unread.clone(),
+                            &ev,
+                            &guard,
+                            &mut chord_state,
+                            active_layer.as_deref(),
                         ) else {
                             return input::HookAction::Block;
                         };

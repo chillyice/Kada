@@ -45,6 +45,14 @@ pub enum Key {
     MouseMiddle, MouseBack, MouseForward,
 }
 
+impl Key {
+    /// 是否为修饰键（`Shift`/`Control`/`Alt`/`Meta`）。和弦成员不允许是修饰键，
+    /// 因为修饰键的「按住」由 mods 状态跟踪，而非「普通键按下集合」。
+    pub fn is_modifier(&self) -> bool {
+        matches!(self, Key::Shift | Key::Control | Key::Alt | Key::Meta)
+    }
+}
+
 /// 一次键盘事件（钩子层产出）。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct RawEvent {
@@ -65,6 +73,8 @@ pub enum ParseError {
     Empty,
     UnknownModifier(String),
     UnknownKey(String),
+    /// 和弦触发键非法（成员为空 / 成员不足 / 成员含修饰键）。
+    ChordInvalid(String),
 }
 
 impl fmt::Display for ParseError {
@@ -73,6 +83,7 @@ impl fmt::Display for ParseError {
             ParseError::Empty => write!(f, "快捷键为空"),
             ParseError::UnknownModifier(s) => write!(f, "未知修饰键: {s}"),
             ParseError::UnknownKey(s) => write!(f, "未知按键: {s}"),
+            ParseError::ChordInvalid(s) => write!(f, "和弦触发键无效: {s}"),
         }
     }
 }
@@ -273,24 +284,32 @@ pub fn matches(e: &RawEvent, s: &Shortcut) -> bool {
 // 核心只放纯逻辑（解析 + 匹配时序），超时/Esc 判定与注入由壳层负责。
 // ---------------------------------------------------------------------------
 
-/// 触发键单元：单个组合键，或一串按键序列（顺序按下，如 leader 键序列）。
+/// 触发键单元：单个组合键，一串按键序列，或一组同时按住的键（和弦）。
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Trigger {
     /// 单次组合键（如 `Ctrl+K`）。
     Combo(Shortcut),
     /// 按键序列（如 `F9 J K`：依次按下 F9 → J → K）。首步即 leader 键。
     Sequence(Vec<Shortcut>),
+    /// 和弦（如 `F&J`：同时按住 F 和 J）。成员必须是非修饰的裸键，无序。
+    Chord(Vec<Shortcut>),
 }
 
 impl Trigger {
-    /// 解析触发键字符串：单个 token → 组合键，多个 token（空白分隔）→ 序列。
-    /// 约定：组合键用 `+` 且不含空格；序列步之间用空格。`"Space"`（空格键）是
-    /// 单 token 仍为组合，`"F9 Space"` 则是「F9 后接空格」的序列。
+    /// 解析触发键字符串：单个 token → 组合键，多个 token（空白分隔）→ 序列，
+    /// 含 `&` 的单个 token → 和弦。约定：组合键用 `+` 且不含空格；序列步之间
+    /// 用空格；和弦成员之间用 `&`。`"Space"`（空格键）是单 token 仍为组合，
+    /// `"F9 Space"` 则是「F9 后接空格」的序列。
     pub fn parse(s: &str) -> Result<Trigger, ParseError> {
         let tokens: Vec<&str> = s.split_whitespace().collect();
         match tokens.as_slice() {
             [] => Err(ParseError::Empty),
-            [one] => Ok(Trigger::Combo(one.parse()?)),
+            [one] => {
+                if one.contains('&') {
+                    return parse_chord(one);
+                }
+                Ok(Trigger::Combo(one.parse()?))
+            }
             _ => {
                 let steps = tokens
                     .iter()
@@ -306,11 +325,17 @@ impl Trigger {
         matches!(self, Trigger::Sequence(_))
     }
 
+    /// 是否为和弦（同时按住多个键）。
+    pub fn is_chord(&self) -> bool {
+        matches!(self, Trigger::Chord(_))
+    }
+
     /// 各步（组合键返回单元素切片，便于统一遍历）。
     pub fn steps(&self) -> &[Shortcut] {
         match self {
             Trigger::Combo(s) => std::slice::from_ref(s),
             Trigger::Sequence(steps) => steps,
+            Trigger::Chord(members) => members,
         }
     }
 
@@ -318,6 +343,36 @@ impl Trigger {
     pub fn first(&self) -> &Shortcut {
         &self.steps()[0]
     }
+}
+
+/// 解析和弦触发键（`&` 分隔同时按住的键，如 `F&J`）。成员必须是非修饰的裸键。
+fn parse_chord(s: &str) -> Result<Trigger, ParseError> {
+    let raw: Vec<&str> = s.split('&').collect();
+    if raw.iter().any(|m| m.trim().is_empty()) {
+        return Err(ParseError::ChordInvalid("和弦成员不能为空".into()));
+    }
+    let members: Vec<Shortcut> = raw
+        .iter()
+        .map(|m| m.parse::<Shortcut>())
+        .collect::<Result<_, _>>()?;
+    if members.len() < 2 {
+        return Err(ParseError::ChordInvalid("和弦至少需要两个键".into()));
+    }
+    for m in &members {
+        if !m.mods.is_empty() {
+            return Err(ParseError::ChordInvalid(format!(
+                "和弦成员「{}」不能带修饰键",
+                format_shortcut(m)
+            )));
+        }
+        if m.key.is_modifier() {
+            return Err(ParseError::ChordInvalid(format!(
+                "和弦成员「{}」不能是修饰键",
+                key_name(m.key)
+            )));
+        }
+    }
+    Ok(Trigger::Chord(members))
 }
 
 /// 键序列匹配的结果。
@@ -397,6 +452,63 @@ impl SequenceTracker {
         }
         self.candidates = advanced;
         SeqAdvance::Advance
+    }
+}
+
+/// 和弦匹配的结果。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChordAdvance {
+    /// 事件与任何和弦无关（未按和弦成员 / 断链后丢弃）。
+    NoMatch,
+    /// 事件是某和弦成员但尚未凑齐（应吞掉，继续等待其它成员）。
+    Await,
+    /// 事件凑齐了某和弦，`usize` 为命中和弦在传入列表中的下标（应吞掉并触发）。
+    Complete(usize),
+}
+
+/// 和弦（同时按住多个键）匹配的运行时状态（纯逻辑，时序由壳层驱动）。
+/// 记录当前按住的成员键集合，凑齐某和弦的所有成员即触发。成员键按下即被吞，
+/// 壳层收不到其 keyup，故集合靠「凑齐触发」或「超时」清空，不依赖 Up 事件。
+#[derive(Clone, Debug, Default)]
+pub struct ChordTracker {
+    /// 当前按住、尚未凑齐的成员键。
+    held: BTreeSet<Key>,
+}
+
+impl ChordTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 是否有正在等待凑齐的和弦。
+    pub fn is_active(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// 清空和弦状态（超时 / 触发完成后由壳层调用）。
+    pub fn reset(&mut self) {
+        self.held.clear();
+    }
+
+    /// 喂入一个按键事件，返回匹配结果。`chords` 是当前层生效的所有和弦成员集合，
+    /// 顺序与调用方的触发器列表一致（`Complete(usize)` 的 `usize` 即其下标）。
+    /// 和弦成员是无序的「同时按住」：只要所有成员键都在 held 中即命中。
+    pub fn advance(&mut self, ev: &RawEvent, chords: &[Vec<Shortcut>]) -> ChordAdvance {
+        // 事件键不是任何和弦成员：若已有待凑齐的成员则断链丢弃（成员键不回放）。
+        let is_member = chords.iter().any(|c| c.iter().any(|m| m.key == ev.key));
+        if !is_member {
+            self.held.clear();
+            return ChordAdvance::NoMatch;
+        }
+
+        self.held.insert(ev.key);
+        for (idx, chord) in chords.iter().enumerate() {
+            if chord.iter().all(|m| self.held.contains(&m.key)) {
+                self.held.clear();
+                return ChordAdvance::Complete(idx);
+            }
+        }
+        ChordAdvance::Await
     }
 }
 
@@ -1174,9 +1286,11 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
     let mut out: Vec<Conflict> = Vec::new();
 
     // 1) 重复触发键（同层内 enabled 且跨不同条目；不同层可共用同键）。
-    //    单组合按 (层, mods, key) 判重；序列按 (层, 完整字符串) 判重。
+    //    单组合按 (层, mods, key) 判重；序列按 (层, 完整字符串) 判重；
+    //    和弦按 (层, 排序后的成员键列表) 判重（F&J 与 J&F 等价）。
     let mut seen_combo: HashMap<(Option<String>, BTreeSet<Modifier>, Key), String> = HashMap::new();
     let mut seen_seq: HashMap<(Option<String>, String), ()> = HashMap::new();
+    let mut seen_chord: HashMap<(Option<String>, Vec<Key>), String> = HashMap::new();
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
@@ -1202,23 +1316,50 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                         });
                     }
                 }
+                Ok(Trigger::Chord(members)) => {
+                    let mut keys: Vec<Key> = members.iter().map(|m| m.key).collect();
+                    keys.sort();
+                    let k = (s.layer.clone(), keys);
+                    if let Some(first) = seen_chord.get(&k) {
+                        out.push(Conflict {
+                            severity: Severity::Error,
+                            message: format!("触和弦「{t}」与「{first}」重复，多个快捷键共用同一和弦"),
+                        });
+                    } else {
+                        seen_chord.insert(k, t.clone());
+                    }
+                }
                 Err(_) => {}
             }
         }
     }
 
-    // 1b) 序列 leader 遮蔽单组合（同层内）：序列首步吞掉该键，使同名组合键失效。
+    // 1b) 序列 leader / 和弦成员遮蔽单组合或序列（同层内）：二者都会吞掉成员键的
+    //     down，使「主键 = 该成员键」的单组合或序列 leader 失效。
     let mut combos_by_layer: HashMap<Option<String>, Vec<(String, Shortcut)>> = HashMap::new();
+    let mut seq_leaders_by_layer: HashMap<Option<String>, Vec<(String, Shortcut)>> = HashMap::new();
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
         }
         for t in &s.triggers {
-            if let Ok(Trigger::Combo(sc)) = Trigger::parse(t) {
-                combos_by_layer.entry(s.layer.clone()).or_default().push((t.clone(), sc));
+            match Trigger::parse(t) {
+                Ok(Trigger::Combo(sc)) => {
+                    combos_by_layer.entry(s.layer.clone()).or_default().push((t.clone(), sc));
+                }
+                Ok(Trigger::Sequence(steps)) => {
+                    if let Some(leader) = steps.first() {
+                        seq_leaders_by_layer
+                            .entry(s.layer.clone())
+                            .or_default()
+                            .push((t.clone(), leader.clone()));
+                    }
+                }
+                _ => {}
             }
         }
     }
+    // 序列 leader 遮蔽单组合。
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
@@ -1236,6 +1377,44 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
                                     format_shortcut(leader)
                                 ),
                             });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // 和弦成员遮蔽单组合 / 序列 leader。
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
+                for m in &members {
+                    if let Some(combos) = combos_by_layer.get(&s.layer) {
+                        for (ct, csc) in combos {
+                            if csc.key == m.key {
+                                out.push(Conflict {
+                                    severity: Severity::Error,
+                                    message: format!(
+                                        "和弦「{t}」的成员「{0}」会吞掉该键，使组合键「{ct}」失效",
+                                        key_name(m.key)
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                    if let Some(leaders) = seq_leaders_by_layer.get(&s.layer) {
+                        for (st, leader) in leaders {
+                            if leader.key == m.key {
+                                out.push(Conflict {
+                                    severity: Severity::Error,
+                                    message: format!(
+                                        "和弦「{t}」的成员「{0}」会吞掉该键，使序列「{st}」的 leader 失效",
+                                        key_name(m.key)
+                                    ),
+                                });
+                            }
                         }
                     }
                 }
@@ -2030,6 +2209,40 @@ mod conflict_tests {
             ..Default::default()
         };
         assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
+    }
+
+    #[test]
+    fn chord_duplicate_is_error_unordered() {
+        // F&J 与 J&F 等价（无序），判重。
+        let cfg = Config {
+            shortcuts: vec![item("F&J"), item("J&F")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn chord_member_shadows_combo_is_error() {
+        // 和弦成员 F 会吞掉 F，使同名组合键 F 失效。
+        let cfg = Config {
+            shortcuts: vec![item("F&J"), item("F")],
+            ..Default::default()
+        };
+        let errs = errors(&cfg);
+        assert_eq!(errs.len(), 1, "errs: {errs:?}");
+        assert!(errs[0].message.contains("吞掉"), "msg: {}", errs[0].message);
+    }
+
+    #[test]
+    fn chord_member_shadows_sequence_leader_is_error() {
+        // 和弦成员 F 会吞掉 F，使序列「F G」的 leader 失效。
+        let cfg = Config {
+            shortcuts: vec![item("F&J"), item("F G")],
+            ..Default::default()
+        };
+        let errs = errors(&cfg);
+        assert_eq!(errs.len(), 1, "errs: {errs:?}");
+        assert!(errs[0].message.contains("吞掉"), "msg: {}", errs[0].message);
     }
 }
 
@@ -3018,6 +3231,137 @@ mod sequence_tests {
         assert_eq!(clean.shortcuts[0].triggers, vec!["F9 J K".to_string()]);
         assert!(clean.shortcuts[1].triggers.is_empty());
         assert!(ignored.iter().any(|m| m.contains("F9 BadStep")));
+    }
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::*;
+
+    fn ev(key: Key, mods: &[Modifier]) -> RawEvent {
+        RawEvent { key, mods: mods.iter().copied().collect(), pressed: true }
+    }
+
+    /// 把 "F&J" 解析成一组成员键。
+    fn chord(s: &str) -> Vec<Shortcut> {
+        s.split('&').map(|t| t.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn trigger_parse_chord() {
+        // F&J → Chord（2 成员，无序）。
+        let t = Trigger::parse("F&J").unwrap();
+        assert!(matches!(t, Trigger::Chord(ref m) if m.len() == 2));
+        assert!(t.is_chord());
+        assert!(!t.is_sequence());
+        assert_eq!(t.steps().len(), 2);
+        assert_eq!(t.first(), &"F".parse::<Shortcut>().unwrap());
+
+        // 三成员和弦。
+        assert!(matches!(Trigger::parse("D&F&J").unwrap(), Trigger::Chord(ref m) if m.len() == 3));
+
+        // 单键不含 & 仍是 Combo。
+        assert!(matches!(Trigger::parse("F").unwrap(), Trigger::Combo(_)));
+
+        // 坏输入：空成员。
+        assert!(matches!(Trigger::parse("F&"), Err(ParseError::ChordInvalid(_))));
+        assert!(matches!(Trigger::parse("F&&J"), Err(ParseError::ChordInvalid(_))));
+        // 成员是修饰键。
+        assert!(matches!(Trigger::parse("F&Ctrl"), Err(ParseError::ChordInvalid(_))));
+        assert!(matches!(Trigger::parse("F&Shift"), Err(ParseError::ChordInvalid(_))));
+        // 成员带修饰。
+        assert!(matches!(Trigger::parse("Ctrl+K&J"), Err(ParseError::ChordInvalid(_))));
+        // 成员全是修饰无主键（parse 阶段即失败）。
+        assert!(Trigger::parse("Ctrl+Alt&J").is_err());
+    }
+
+    #[test]
+    fn chord_tracker_await_then_complete() {
+        let chords = vec![chord("F&J")];
+        let mut tr = ChordTracker::new();
+        assert!(!tr.is_active());
+        // F 是成员 → Await（吞掉），未凑齐。
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert!(tr.is_active());
+        // J 凑齐 → Complete(0)，状态清空。
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn chord_tracker_unordered() {
+        // 先按 J 再按 F 也命中（无序）。
+        let chords = vec![chord("F&J")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Complete(0));
+    }
+
+    #[test]
+    fn chord_tracker_three_members() {
+        let chords = vec![chord("D&F&J")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::D, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+    }
+
+    #[test]
+    fn chord_tracker_chain_break_resets() {
+        let chords = vec![chord("F&J")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert!(tr.is_active());
+        // 无关键 → NoMatch 并清空（成员键不回放）。
+        assert_eq!(tr.advance(&ev(Key::X, &[]), &chords), ChordAdvance::NoMatch);
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn chord_tracker_shared_member() {
+        let chords = vec![chord("F&J"), chord("F&K")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.advance(&ev(Key::K, &[]), &chords), ChordAdvance::Complete(1));
+
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+    }
+
+    #[test]
+    fn chord_tracker_no_match_when_idle() {
+        let chords = vec![chord("F&J")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.advance(&ev(Key::A, &[]), &chords), ChordAdvance::NoMatch);
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_chord_drops_invalid() {
+        let cfg = Config {
+            shortcuts: vec![
+                ShortcutItem {
+                    triggers: vec!["F&J".into()],
+                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+                    enabled: true,
+                    ..Default::default()
+                },
+                ShortcutItem {
+                    triggers: vec!["F&Ctrl".into()],
+                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, description: None }],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.shortcuts.len(), 2, "ignored: {}", ignored.join("; "));
+        // 合法和弦保留；坏和弦（成员是修饰键）被清空并提示。
+        assert_eq!(clean.shortcuts[0].triggers, vec!["F&J".to_string()]);
+        assert!(clean.shortcuts[1].triggers.is_empty());
+        assert!(ignored.iter().any(|m| m.contains("F&Ctrl")));
     }
 }
 
