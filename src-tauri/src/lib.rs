@@ -153,7 +153,7 @@ enum Outcome {
 /// 层语义匹配普通改键（非 tap-hold）：激活层条目优先、基层层条目兜底。
 fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Option<Key> {
     for r in &cfg.remaps {
-        if !r.enabled || r.is_tap_hold() || r.layer.as_deref() != active_layer {
+        if !r.enabled || r.needs_timing_state() || r.layer.as_deref() != active_layer {
             continue;
         }
         if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
@@ -164,7 +164,7 @@ fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Opti
     }
     if active_layer.is_some() {
         for r in &cfg.remaps {
-            if !r.enabled || r.is_tap_hold() || r.layer.is_some() {
+            if !r.enabled || r.needs_timing_state() || r.layer.is_some() {
                 continue;
             }
             if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
@@ -235,12 +235,21 @@ fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
     }
 }
 
-/// tap-hold 改键的待定状态：按下 `from` 键后，等待判定「短按（tap）/ 长按（hold）」。
+/// tap-hold 改键的待定状态：按下 `from` 键后，等待判定「短按（tap）/ 长按（hold）/
+/// 单次（oneshot）/ 粘滞（sticky）」。字段由命中规则 `Remap` 解析而来。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 struct TapHoldPending {
     from: Key,
     tap: Option<Key>,
     hold: Option<Key>,
+    /// 双击输出键（tap-dance）。
+    tap2: Option<Key>,
+    /// 三击输出键（tap-dance）。
+    tap3: Option<Key>,
+    /// 单次修饰键（单击武装、下一个非修饰键后释放）。
+    oneshot: Option<Key>,
+    /// 粘滞修饰键（单击锁定、再击解锁）。
+    sticky: Option<Key>,
     /// 长按进入的层（momentary 切层）；与 `hold`（输出键）互斥。
     hold_layer: Option<String>,
     timeout: Duration,
@@ -248,7 +257,46 @@ struct TapHoldPending {
     hold_active: bool,
 }
 
-/// `Key`（裸修饰键）→ `Modifier`。hold 是修饰键时，长按期间后续键的 mods 要补上它。
+/// tap-dance（连击）等待态：短按释放后不立即输出，等待后续连击或超时。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct TapDanceState {
+    from: Key,
+    /// 已累计击数（1..=3）。
+    tap_count: u8,
+    /// 等待下一击的截止时刻（懒提交：下一次事件到来时判定过期）。
+    deadline: Instant,
+    timeout: Duration,
+    /// 击数 1/2/3 对应的输出键（已按缺省回落），`None` = 该击数无输出。
+    outputs: [Option<Key>; 3],
+    /// 当前连击键是否仍「按下待抬起」（down 已吞、up 待吞）——按住期间不因超时提交。
+    holding: bool,
+}
+
+/// 运行时注入的修饰键状态：分「长按 hold / 粘滞 / 单次」三类，释放时机各不相同，
+/// 但都走同一「物理注入（simulate）+ 后续键 mods 补全」通道。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct ModsState {
+    /// tap-hold `hold` 修饰键（`from` 松开时释放）。
+    hold: BTreeSet<Modifier>,
+    /// 粘滞修饰键（再次单击 `from` 时解锁）。
+    sticky: BTreeSet<Modifier>,
+    /// 单次修饰键（下一个非修饰键松开时释放）。
+    oneshot: BTreeSet<Modifier>,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl ModsState {
+    fn new() -> Self {
+        Self { hold: BTreeSet::new(), sticky: BTreeSet::new(), oneshot: BTreeSet::new() }
+    }
+
+    /// 全部当前注入的修饰键（供后续键的 mods 补全）。
+    fn all(&self) -> impl Iterator<Item = Modifier> + '_ {
+        self.hold.iter().chain(self.sticky.iter()).chain(self.oneshot.iter()).copied()
+    }
+}
+
+/// `Key`（裸修饰键）→ `Modifier`。hold/oneshot/sticky 是修饰键时，后续键的 mods 要补上它。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn key_as_modifier(k: Key) -> Option<Modifier> {
     match k {
@@ -260,52 +308,85 @@ fn key_as_modifier(k: Key) -> Option<Modifier> {
     }
 }
 
+/// `Modifier` → 裸修饰键 `Key`（释放 oneshot/sticky 时把集合里的修饰键映射回可注入的键）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn modifier_as_key(m: Modifier) -> Key {
+    match m {
+        Modifier::Ctrl => Key::Control,
+        Modifier::Alt => Key::Alt,
+        Modifier::Shift => Key::Shift,
+        Modifier::Meta => Key::Meta,
+    }
+}
+
 /// tap-hold 状态机单步推进。
 ///
 /// 返回 `None` 表示事件被吞掉（原键不泄给目标程序）；返回 `Some(ev)` 表示继续走
-/// 普通 [`decide`]，其中 `ev.mods` 已并入「hold 修饰键」。判定规则：
-/// - 按下 `from` → 吞掉并进入待定；短按（阈值内松开）输出 tap、长按输出 hold。
+/// 普通 [`decide`]，其中 `ev.mods` 已并入当前注入的修饰键（hold ∪ sticky ∪ oneshot）。
+/// 判定规则：
+/// - 按下 `from` → 吞掉并进入待定；短按（阈值内松开）按模式输出 tap / 进入连击 /
+///   武装 oneshot / 切换 sticky，长按（≥阈值或 roll）输出 hold。
 /// - 待定期间按下其它键 → 立即判 hold（roll 判定，缩短等待）。
 /// - 自动重复的 `from` down 被吞掉、不推进判定。
+/// - 连击（tap-dance）等待窗内再次 down 累计击数，超时懒提交。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn taphold_step(
     ev: &Ev,
     cfg: &Config,
     pending: &mut Option<TapHoldPending>,
-    active_hold_mods: &mut BTreeSet<Modifier>,
+    tap_dance: &mut Option<TapDanceState>,
+    mods: &mut ModsState,
     active_layer: &mut Option<String>,
 ) -> Option<Ev> {
+    // 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
+    commit_expired_dance(tap_dance);
+
     match ev {
-        Ev::Down { key, mods, repeat } => {
+        Ev::Down { key, mods: ev_mods, repeat } => {
+            // 连击等待中：同键 down → 累计击数并吞掉；异键 down → 提交连击后照常处理。
+            if let Some(d) = tap_dance.as_ref() {
+                if d.from == *key {
+                    if !*repeat {
+                        count_dance_tap(tap_dance);
+                    }
+                    return None;
+                }
+                commit_dance(tap_dance);
+            }
+
             let is_pending_from = pending.as_ref().map(|p| p.from == *key).unwrap_or(false);
             if is_pending_from {
                 return None; // 原键的重复 down：吞掉。
             }
             if pending.is_some() {
-                activate_hold(pending, active_hold_mods, active_layer); // 不同键 down → roll 判定 hold。
+                activate_hold(pending, mods, active_layer); // 不同键 down → roll 判定 hold。
             }
             if pending.is_none() {
                 if let Some(r) = find_taphold_rule(cfg, *key, active_layer.as_deref()) {
-                    *pending = Some(TapHoldPending {
-                        from: *key,
-                        tap: r.tap_key(),
-                        hold: r.hold_key(),
-                        hold_layer: r.hold_layer_id().map(String::from),
-                        timeout: Duration::from_millis(r.tap_timeout()),
-                        down_at: Instant::now(),
-                        hold_active: false,
-                    });
+                    *pending = Some(make_pending(*key, r));
                     return None;
                 }
             }
-            let mut m = mods.clone();
-            m.extend(active_hold_mods.iter().copied());
+            let mut m = ev_mods.clone();
+            m.extend(mods.all());
             Some(Ev::Down { key: *key, mods: m, repeat: *repeat })
         }
         Ev::Up { key } => {
+            // 连击等待中的同键 up：吞掉并解除「按住中」。
+            if let Some(d) = tap_dance.as_ref() {
+                if d.from == *key {
+                    release_dance_tap(tap_dance);
+                    return None;
+                }
+            }
+            // pending 同键 up：结束待定（tap/hold/oneshot 武装/sticky 切换/进入连击）。
             if pending.as_ref().map(|p| p.from == *key).unwrap_or(false) {
-                finish_taphold(pending, active_hold_mods, active_layer);
+                finish_taphold(pending, tap_dance, mods, active_layer);
                 return None;
+            }
+            // oneshot 消费：下一个非修饰键 up 时释放武装修饰。
+            if !mods.oneshot.is_empty() && key_as_modifier(*key).is_none() {
+                release_oneshot(mods);
             }
             Some(Ev::Up { key: *key })
         }
@@ -316,7 +397,7 @@ fn taphold_step(
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) -> Option<&'a Remap> {
     for r in &cfg.remaps {
-        if !r.enabled || !r.is_tap_hold() || r.layer.as_deref() != active_layer {
+        if !r.enabled || !r.needs_timing_state() || r.layer.as_deref() != active_layer {
             continue;
         }
         if r.from.parse::<Key>().ok() == Some(key) {
@@ -325,7 +406,7 @@ fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) 
     }
     if active_layer.is_some() {
         for r in &cfg.remaps {
-            if !r.enabled || !r.is_tap_hold() || r.layer.is_some() {
+            if !r.enabled || !r.needs_timing_state() || r.layer.is_some() {
                 continue;
             }
             if r.from.parse::<Key>().ok() == Some(key) {
@@ -336,11 +417,29 @@ fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) 
     None
 }
 
-/// 判定 hold：注入 hold 键 down，或进入切层；hold 是修饰键时记入 `active_hold_mods`。
+/// 由命中的 [`Remap`] 规则构造待定状态（各字段解析为 `Key`/层 id）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn make_pending(key: Key, r: &Remap) -> TapHoldPending {
+    TapHoldPending {
+        from: key,
+        tap: r.tap_key(),
+        hold: r.hold_key(),
+        tap2: r.tap2_key(),
+        tap3: r.tap3_key(),
+        oneshot: r.oneshot_key(),
+        sticky: r.sticky_key(),
+        hold_layer: r.hold_layer_id().map(String::from),
+        timeout: Duration::from_millis(r.tap_timeout()),
+        down_at: Instant::now(),
+        hold_active: false,
+    }
+}
+
+/// 判定 hold：注入 hold 键 down，或进入切层；hold 是修饰键时记入 `mods.hold`。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn activate_hold(
     pending: &mut Option<TapHoldPending>,
-    active_hold_mods: &mut BTreeSet<Modifier>,
+    mods: &mut ModsState,
     active_layer: &mut Option<String>,
 ) {
     let Some(p) = pending.as_mut() else { return };
@@ -351,18 +450,26 @@ fn activate_hold(
     if let Some(hk) = p.hold {
         input::simulate::down(hk);
         if let Some(md) = key_as_modifier(hk) {
-            active_hold_mods.insert(md);
+            mods.hold.insert(md);
         }
     } else if let Some(layer) = &p.hold_layer {
         *active_layer = Some(layer.clone());
+    } else if let Some(ok) = p.oneshot {
+        // oneshot 的 roll：按住 `from` 期间当普通 hold 修饰按下（松开 `from` 时释放）。
+        input::simulate::down(ok);
+        if let Some(md) = key_as_modifier(ok) {
+            mods.hold.insert(md);
+        }
     }
 }
 
-/// 结束待定：hold 已激活则释放 hold 键 / 退出切层；否则按时长判定 tap 或 hold。
+/// 结束待定：hold 已激活则释放 hold 键 / 退出切层；否则按时长判定 tap/hold，或按模式
+/// 分发到「短按输出 / 进入连击 / 武装 oneshot / 切换 sticky」。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn finish_taphold(
     pending: &mut Option<TapHoldPending>,
-    active_hold_mods: &mut BTreeSet<Modifier>,
+    tap_dance: &mut Option<TapDanceState>,
+    mods: &mut ModsState,
     active_layer: &mut Option<String>,
 ) {
     let Some(p) = pending.take() else { return };
@@ -370,19 +477,108 @@ fn finish_taphold(
         if let Some(hk) = p.hold {
             input::simulate::up(hk);
             if let Some(md) = key_as_modifier(hk) {
-                active_hold_mods.remove(&md);
+                mods.hold.remove(&md);
             }
         } else if p.hold_layer.is_some() {
             *active_layer = None; // 松开切层键 → 退回基层层。
+        } else if let Some(ok) = p.oneshot {
+            input::simulate::up(ok); // oneshot roll 的 hold：松开 `from` 释放。
+            if let Some(md) = key_as_modifier(ok) {
+                mods.hold.remove(&md);
+            }
         }
     } else if p.down_at.elapsed() >= p.timeout {
         if let Some(hk) = p.hold {
             input::simulate::tap(hk); // 长按后松开：hold 键短促输出一次。
         }
         // 切层键长按后松开（未 roll）：短暂进入又退出，无净效果，无需操作。
+    } else if let Some(sk) = p.sticky {
+        toggle_sticky(mods, sk); // 快速 tap：切换粘滞修饰。
+    } else if let Some(ok) = p.oneshot {
+        arm_oneshot(mods, ok); // 快速 tap：武装单次修饰。
+    } else if p.tap2.is_some() || p.tap3.is_some() {
+        // 快速 tap 且含双击/三击 → 进入连击等待（单/双/三击不同义）。
+        *tap_dance = Some(TapDanceState {
+            from: p.from,
+            tap_count: 1,
+            deadline: Instant::now() + p.timeout,
+            timeout: p.timeout,
+            outputs: [p.tap, p.tap2.or(p.tap), p.tap3.or(p.tap2).or(p.tap)],
+            holding: false,
+        });
     } else if let Some(tk) = p.tap {
         input::simulate::tap(tk); // 短按：tap 键。
     }
+}
+
+/// 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn commit_expired_dance(tap_dance: &mut Option<TapDanceState>) {
+    let expired = tap_dance.as_ref().is_some_and(|d| !d.holding && Instant::now() >= d.deadline);
+    if expired {
+        commit_dance(tap_dance);
+    }
+}
+
+/// 立即提交连击：输出当前击数对应的键并清空等待态。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn commit_dance(tap_dance: &mut Option<TapDanceState>) {
+    let Some(d) = tap_dance.take() else { return };
+    if let Some(k) = d.outputs[(d.tap_count - 1) as usize] {
+        input::simulate::tap(k);
+    }
+}
+
+/// 连击等待窗内再次按下同键：累计击数（≤3）、重置等待窗、标记「按住中」。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn count_dance_tap(tap_dance: &mut Option<TapDanceState>) {
+    let Some(d) = tap_dance.as_mut() else { return };
+    if d.tap_count < 3 {
+        d.tap_count += 1;
+    }
+    d.deadline = Instant::now() + d.timeout;
+    d.holding = true;
+}
+
+/// 连击键抬起：解除「按住中」（其 down 已被吞掉，up 一并吞掉）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn release_dance_tap(tap_dance: &mut Option<TapDanceState>) {
+    if let Some(d) = tap_dance.as_mut() {
+        d.holding = false;
+    }
+}
+
+/// 武装单次修饰：物理按下修饰键并记入 `mods.oneshot`，供后续键 mods 补全。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn arm_oneshot(mods: &mut ModsState, key: Key) {
+    if let Some(m) = key_as_modifier(key) {
+        input::simulate::down(key);
+        mods.oneshot.insert(m);
+    }
+}
+
+/// 切换粘滞修饰：锁定则物理按下并记入 `mods.sticky`，解锁则物理抬起并移除。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn toggle_sticky(mods: &mut ModsState, key: Key) {
+    if let Some(m) = key_as_modifier(key) {
+        if mods.sticky.contains(&m) {
+            input::simulate::up(key);
+            mods.sticky.remove(&m);
+        } else {
+            input::simulate::down(key);
+            mods.sticky.insert(m);
+        }
+    }
+}
+
+/// 释放全部武装中的单次修饰（下一个非修饰键 up 时调用）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn release_oneshot(mods: &mut ModsState) {
+    let ones: Vec<Modifier> = mods.oneshot.iter().copied().collect();
+    for m in ones {
+        input::simulate::up(modifier_as_key(m));
+    }
+    mods.oneshot.clear();
 }
 
 /// 键序列（leader key）运行态：承载 [`SequenceTracker`] 与超时判据。
@@ -1730,7 +1926,8 @@ pub fn run() {
                     let mut last_tap: Option<Instant> = None;
                     let mut hotstring_buffer = String::new();
                     let mut taphold: Option<TapHoldPending> = None;
-                    let mut active_hold_mods: BTreeSet<Modifier> = BTreeSet::new();
+                    let mut tap_dance: Option<TapDanceState> = None;
+                    let mut mods_state = ModsState::new();
                     let mut active_layer: Option<String> = None;
                     let mut sequence_state = SequenceState::new();
                     input::start(move |ev: input::KeyEvent| {
@@ -1754,7 +1951,8 @@ pub fn run() {
                             &ev,
                             &guard,
                             &mut taphold,
-                            &mut active_hold_mods,
+                            &mut tap_dance,
+                            &mut mods_state,
                             &mut active_layer,
                         ) else {
                             return input::HookAction::Block;

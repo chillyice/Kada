@@ -117,15 +117,31 @@
               <label>所属层</label>
               <select id="remap-layer"></select>
             </div>
-            <div class="editor-row">
+            <div class="editor-row" id="remap-oneshot-row">
+              <label>单次修饰（可选）</label>
+              <select id="remap-oneshot"></select>
+            </div>
+            <div class="editor-row" id="remap-sticky-row">
+              <label>粘滞修饰（可选）</label>
+              <select id="remap-sticky"></select>
+            </div>
+            <div class="editor-row" id="remap-tap-row">
               <label>短按（可选）</label>
               <select id="remap-tap"></select>
             </div>
-            <div class="editor-row">
+            <div class="editor-row" id="remap-tap2-row">
+              <label>双击（可选）</label>
+              <select id="remap-tap2"></select>
+            </div>
+            <div class="editor-row" id="remap-tap3-row">
+              <label>三击（可选）</label>
+              <select id="remap-tap3"></select>
+            </div>
+            <div class="editor-row" id="remap-hold-row">
               <label>长按（可选）</label>
               <select id="remap-hold"></select>
             </div>
-            <div class="editor-row">
+            <div class="editor-row" id="remap-hold-layer-row">
               <label>长按进入层（切层键，可选）</label>
               <select id="remap-hold-layer"></select>
             </div>
@@ -140,7 +156,7 @@
               <label>改为（普通改键）</label>
               <select id="remap-to"></select>
             </div>
-            <p class="hint">短按 = 快速点击输出该键；长按 = 按住超过阈值输出该键（常设修饰键）。短按/长按都留空则退化为普通改键（用「改为」）。例：CapsLock 短按 Esc、长按 Ctrl。</p>
+            <p class="hint">单次修饰 = 单击后修饰键应用到下一个按键；粘滞修饰 = 单击锁定、再击解锁。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。</p>
             <div class="detail-actions">
               <button id="delete-remap" class="danger">删除</button>
               <span class="flex-spacer"></span>
