@@ -634,6 +634,51 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   update();
 }
 
+// 和弦录入：按住多个普通键，松开时提交（成员用 & 连接、按字典序，至少 2 键）。Esc 取消。
+// 和弦成员只允许普通键（非修饰键 / 非锁定键），与后端 Trigger::parse 的约束一致。
+function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonElement) {
+  const held: string[] = [];
+  btn.disabled = true;
+  void invoke("set_paused", { paused: true });
+  const update = () => {
+    btn.textContent = held.length
+      ? `和弦：${held.join("&")}（松开提交，Esc 取消）`
+      : "请同时按住多个键…（松开提交，Esc 取消）";
+  };
+  const EXCLUDED = new Set([
+    "ControlLeft", "ControlRight", "AltLeft", "AltRight",
+    "ShiftLeft", "ShiftRight", "MetaLeft", "MetaRight", "CapsLock",
+  ]);
+  const onKey = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === "Escape") return finish();
+    if (e.type === "keyup") {
+      // 松开任一键即提交：至少 2 键才成立，否则视为取消。
+      if (held.length >= 2) onCommit([...held].sort().join("&"));
+      finish();
+      return;
+    }
+    // keydown（忽略自动重复）。
+    if (e.repeat) return;
+    const k = codeToKey(e.code);
+    if (k && !EXCLUDED.has(e.code) && !held.includes(k)) {
+      held.push(k);
+      update();
+    }
+  };
+  const finish = () => {
+    window.removeEventListener("keydown", onKey, true);
+    window.removeEventListener("keyup", onKey, true);
+    void invoke("set_paused", { paused: false });
+    btn.disabled = false;
+    btn.textContent = "录入和弦";
+  };
+  window.addEventListener("keydown", onKey, true);
+  window.addEventListener("keyup", onKey, true);
+  update();
+}
+
 // ---- 渲染 ----
 function el(tag: string, cls?: string, text?: string): HTMLElement {
   const n = document.createElement(tag);
@@ -2436,6 +2481,17 @@ function bind() {
     const d = draft;
     startSequenceCapture((seq) => {
       if (!d.triggers.includes(seq)) d.triggers.push(seq);
+      renderTriggers(d);
+      void refreshConflicts().then(renderConflicts);
+    }, btn);
+  });
+
+  document.getElementById("edit-chord")!.addEventListener("click", (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    if (section !== "shortcuts" || !draft) return;
+    const d = draft;
+    startChordCapture((chord) => {
+      if (!d.triggers.includes(chord)) d.triggers.push(chord);
       renderTriggers(d);
       void refreshConflicts().then(renderConflicts);
     }, btn);
