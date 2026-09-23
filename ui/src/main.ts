@@ -585,6 +585,39 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
   window.addEventListener("keydown", handler, true);
 }
 
+// 键序列录入：逐键累积 comboFromEvent 出的组合（空格拼接实时预览），Enter 提交、Esc 取消。
+// 序列至少 2 步（单步就是普通组合键，走「录入组合键」）。
+function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonElement) {
+  const steps: string[] = [];
+  btn.disabled = true;
+  void invoke("set_paused", { paused: true });
+  const update = () => {
+    btn.textContent = steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键序列…（Enter 提交，Esc 取消）";
+  };
+  const handler = (e: KeyboardEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.code === "Enter") {
+      if (steps.length >= 2) onCommit(steps.join(" "));
+      return finish();
+    }
+    if (e.code === "Escape") return finish();
+    const combo = comboFromEvent(e);
+    if (combo) {
+      steps.push(combo);
+      update();
+    }
+  };
+  const finish = () => {
+    window.removeEventListener("keydown", handler, true);
+    void invoke("set_paused", { paused: false });
+    btn.disabled = false;
+    btn.textContent = "录入序列";
+  };
+  window.addEventListener("keydown", handler, true);
+  update();
+}
+
 // ---- 渲染 ----
 function el(tag: string, cls?: string, text?: string): HTMLElement {
   const n = document.createElement(tag);
@@ -2303,6 +2336,17 @@ function bind() {
     const d = draft;
     startCapture((combo) => {
       if (!d.triggers.includes(combo)) d.triggers.push(combo);
+      renderTriggers(d);
+      void refreshConflicts().then(renderConflicts);
+    }, btn);
+  });
+
+  document.getElementById("edit-sequence")!.addEventListener("click", (e) => {
+    const btn = e.currentTarget as HTMLButtonElement;
+    if (section !== "shortcuts" || !draft) return;
+    const d = draft;
+    startSequenceCapture((seq) => {
+      if (!d.triggers.includes(seq)) d.triggers.push(seq);
       renderTriggers(d);
       void refreshConflicts().then(renderConflicts);
     }, btn);

@@ -269,6 +269,138 @@ pub fn matches(e: &RawEvent, s: &Shortcut) -> bool {
 }
 
 // ---------------------------------------------------------------------------
+// 键序列（leader key）触发：触发键从「单次组合」扩展为「组合 或 按键序列」。
+// 核心只放纯逻辑（解析 + 匹配时序），超时/Esc 判定与注入由壳层负责。
+// ---------------------------------------------------------------------------
+
+/// 触发键单元：单个组合键，或一串按键序列（顺序按下，如 leader 键序列）。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum Trigger {
+    /// 单次组合键（如 `Ctrl+K`）。
+    Combo(Shortcut),
+    /// 按键序列（如 `F9 J K`：依次按下 F9 → J → K）。首步即 leader 键。
+    Sequence(Vec<Shortcut>),
+}
+
+impl Trigger {
+    /// 解析触发键字符串：单个 token → 组合键，多个 token（空白分隔）→ 序列。
+    /// 约定：组合键用 `+` 且不含空格；序列步之间用空格。`"Space"`（空格键）是
+    /// 单 token 仍为组合，`"F9 Space"` 则是「F9 后接空格」的序列。
+    pub fn parse(s: &str) -> Result<Trigger, ParseError> {
+        let tokens: Vec<&str> = s.split_whitespace().collect();
+        match tokens.as_slice() {
+            [] => Err(ParseError::Empty),
+            [one] => Ok(Trigger::Combo(one.parse()?)),
+            _ => {
+                let steps = tokens
+                    .iter()
+                    .map(|t| t.parse::<Shortcut>())
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Trigger::Sequence(steps))
+            }
+        }
+    }
+
+    /// 是否为序列（≥2 步）。
+    pub fn is_sequence(&self) -> bool {
+        matches!(self, Trigger::Sequence(_))
+    }
+
+    /// 各步（组合键返回单元素切片，便于统一遍历）。
+    pub fn steps(&self) -> &[Shortcut] {
+        match self {
+            Trigger::Combo(s) => std::slice::from_ref(s),
+            Trigger::Sequence(steps) => steps,
+        }
+    }
+
+    /// 首步（leader 键）。
+    pub fn first(&self) -> &Shortcut {
+        &self.steps()[0]
+    }
+}
+
+/// 键序列匹配的结果。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SeqAdvance {
+    /// 事件与任何序列无关（未开始 / 断链后重置）。
+    NoMatch,
+    /// 事件推进了某条序列（应吞掉，继续等待下一键）。
+    Advance,
+    /// 事件完成了一条序列，`usize` 为命中序列在传入列表中的下标（应吞掉并触发）。
+    Complete(usize),
+}
+
+/// 键序列匹配的运行时状态（纯逻辑，时序由壳层驱动）。记录当前激活的候选序列
+/// 及其已匹配步数，天然支持共享前缀（如 `F9 J K` 与 `F9 J L` 并存）。
+#[derive(Clone, Debug, Default)]
+pub struct SequenceTracker {
+    /// (序列下标, 完整步骤, 已匹配步数)。空 = 未处于序列模式。
+    candidates: Vec<(usize, Vec<Shortcut>, usize)>,
+}
+
+/// 键序列超时的默认毫秒数（leader 后超过该时长未按下一步即回退）。
+pub const DEFAULT_SEQUENCE_TIMEOUT_MS: u64 = 1000;
+
+impl SequenceTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 是否有正在进行的序列。
+    pub fn is_active(&self) -> bool {
+        !self.candidates.is_empty()
+    }
+
+    /// 清空序列状态（超时 / Esc / 触发完成后由壳层调用）。
+    pub fn reset(&mut self) {
+        self.candidates.clear();
+    }
+
+    /// 喂入一个按键事件，返回推进结果。`sequences` 是当前层生效的所有序列步骤，
+    /// 顺序与调用方的触发器列表一致（`Complete(usize)` 的 `usize` 即其下标）。
+    pub fn advance(&mut self, ev: &RawEvent, sequences: &[Vec<Shortcut>]) -> SeqAdvance {
+        if self.candidates.is_empty() {
+            // 以本事件作为某序列首步（leader）开启序列。共享同一 leader 的多条序列
+            // （如「F9 J K」与「F9 J L」）必须一并建立候选，否则只有第一条能走到下一步。
+            for (idx, steps) in sequences.iter().enumerate() {
+                let Some(first) = steps.first() else { continue };
+                if matches(ev, first) {
+                    self.candidates.push((idx, steps.clone(), 1));
+                }
+            }
+            return if self.candidates.is_empty() {
+                SeqAdvance::NoMatch
+            } else {
+                SeqAdvance::Advance
+            };
+        }
+
+        // 推进所有命中下一步的候选；任一走完即完成，全都不命中则断链重置。
+        let mut advanced: Vec<(usize, Vec<Shortcut>, usize)> = Vec::new();
+        for (idx, steps, progress) in self.candidates.iter() {
+            let idx = *idx;
+            let progress = *progress;
+            let Some(next) = steps.get(progress) else { continue };
+            if matches(ev, next) {
+                if progress + 1 == steps.len() {
+                    self.reset();
+                    return SeqAdvance::Complete(idx);
+                }
+                advanced.push((idx, steps.clone(), progress + 1));
+            }
+        }
+        if advanced.is_empty() {
+            // 所有候选都断链：重置，事件放行给普通 decide。
+            self.reset();
+            return SeqAdvance::NoMatch;
+        }
+        self.candidates = advanced;
+        SeqAdvance::Advance
+    }
+}
+
+// ---------------------------------------------------------------------------
 // 文本扩展（hotstring）：输入触发词 + 后缀自动展开。核心只放纯逻辑（键→字符
 // 映射、后缀判定、触发词匹配），缓冲与注入由壳层负责。
 // ---------------------------------------------------------------------------
@@ -878,30 +1010,79 @@ pub struct Conflict {
 
 /// 检测配置中的快捷键/改键冲突。
 ///
-/// - 硬冲突（[`Severity::Error`]，应阻止保存）：重复触发键、重复改键来源、
-///   改键来源与快捷键主键相同（改键优先，快捷键将失效）。
+/// - 硬冲突（[`Severity::Error`]，应阻止保存）：重复触发键（组合/序列）、
+///   序列 leader 遮蔽单组合、重复改键来源、改键来源与快捷键主键相同（改键优先，快捷键将失效）。
 /// - 软冲突（[`Severity::Warn`]，仅提示）：触发键超集重叠（更宽松的组合会遮蔽更具体的组合）。
 pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
     use std::collections::HashMap;
 
     let mut out: Vec<Conflict> = Vec::new();
 
-    // 1) 重复触发键（同层内 enabled 且跨不同条目；不同层可共用同键）
-    let mut seen: HashMap<(Option<String>, BTreeSet<Modifier>, Key), String> = HashMap::new();
+    // 1) 重复触发键（同层内 enabled 且跨不同条目；不同层可共用同键）。
+    //    单组合按 (层, mods, key) 判重；序列按 (层, 完整字符串) 判重。
+    let mut seen_combo: HashMap<(Option<String>, BTreeSet<Modifier>, Key), String> = HashMap::new();
+    let mut seen_seq: HashMap<(Option<String>, String), ()> = HashMap::new();
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
         }
         for t in &s.triggers {
-            if let Ok(sc) = t.parse::<Shortcut>() {
-                let k = (s.layer.clone(), sc.mods, sc.key);
-                if let Some(first) = seen.get(&k) {
-                    out.push(Conflict {
-                        severity: Severity::Error,
-                        message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
-                    });
-                } else {
-                    seen.insert(k, t.clone());
+            match Trigger::parse(t) {
+                Ok(Trigger::Combo(sc)) => {
+                    let k = (s.layer.clone(), sc.mods, sc.key);
+                    if let Some(first) = seen_combo.get(&k) {
+                        out.push(Conflict {
+                            severity: Severity::Error,
+                            message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
+                        });
+                    } else {
+                        seen_combo.insert(k, t.clone());
+                    }
+                }
+                Ok(Trigger::Sequence(_)) => {
+                    if seen_seq.insert((s.layer.clone(), t.clone()), ()).is_some() {
+                        out.push(Conflict {
+                            severity: Severity::Error,
+                            message: format!("触发序列「{t}」重复，多个快捷键共用同一序列"),
+                        });
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    // 1b) 序列 leader 遮蔽单组合（同层内）：序列首步吞掉该键，使同名组合键失效。
+    let mut combos_by_layer: HashMap<Option<String>, Vec<(String, Shortcut)>> = HashMap::new();
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(Trigger::Combo(sc)) = Trigger::parse(t) {
+                combos_by_layer.entry(s.layer.clone()).or_default().push((t.clone(), sc));
+            }
+        }
+    }
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        for t in &s.triggers {
+            if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
+                let Some(leader) = steps.first() else { continue };
+                if let Some(combos) = combos_by_layer.get(&s.layer) {
+                    for (ct, csc) in combos {
+                        if csc == leader {
+                            out.push(Conflict {
+                                severity: Severity::Error,
+                                message: format!(
+                                    "序列「{t}」的 leader「{0}」会吞掉该键，使组合键「{ct}」失效",
+                                    format_shortcut(leader)
+                                ),
+                            });
+                        }
+                    }
                 }
             }
         }
@@ -1312,7 +1493,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
 
         let mut kept_triggers = Vec::new();
         for t in &item.triggers {
-            match t.parse::<Shortcut>() {
+            match Trigger::parse(t) {
                 Ok(_) => kept_triggers.push(t.clone()),
                 Err(e) => ignored.push(format!("快捷键「{label}」的触发键「{t}」已忽略：{e}")),
             }
@@ -1632,6 +1813,38 @@ mod conflict_tests {
             ..Default::default()
         };
         assert!(detect_conflicts(&cfg).is_empty());
+    }
+
+    #[test]
+    fn sequence_duplicate_is_error() {
+        let cfg = Config {
+            shortcuts: vec![item("F9 J K"), item("F9 J K")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg).len(), 1);
+    }
+
+    #[test]
+    fn sequence_leader_shadows_combo_is_error() {
+        // 序列「F9 J K」的 leader「F9」会吞掉 F9，使同名组合键「F9」失效。
+        let cfg = Config {
+            shortcuts: vec![item("F9 J K"), item("F9")],
+            ..Default::default()
+        };
+        let errs = errors(&cfg);
+        assert_eq!(errs.len(), 1, "errs: {errs:?}");
+        assert!(errs[0].message.contains("吞掉"), "msg: {}", errs[0].message);
+    }
+
+    #[test]
+    fn sequence_no_superset_warn() {
+        // 超集软冲突仅对单组合生效，序列跳过：F9 序列 + F9 组合应只有硬冲突（leader 遮蔽），
+        // 不应额外产生超集 Warn。
+        let cfg = Config {
+            shortcuts: vec![item("F9 J K"), item("F9")],
+            ..Default::default()
+        };
+        assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
     }
 }
 
@@ -2438,5 +2651,133 @@ mod layer_tests {
         assert_eq!(clean.remaps.len(), 1);
         assert_eq!(clean.remaps[0].hold_layer.as_deref(), Some("symbols"));
         assert!(ignored.iter().any(|m| m.contains("层")));
+    }
+}
+
+#[cfg(test)]
+mod sequence_tests {
+    use super::*;
+
+    fn ev(key: Key, mods: &[Modifier]) -> RawEvent {
+        RawEvent { key, mods: mods.iter().copied().collect(), pressed: true }
+    }
+
+    /// 把 "F9 J K" 解析成一串步骤。
+    fn seq(s: &str) -> Vec<Shortcut> {
+        s.split_whitespace().map(|t| t.parse().unwrap()).collect()
+    }
+
+    #[test]
+    fn trigger_parse_single_sequence_empty_bad() {
+        // 单 token → Combo。
+        let t = Trigger::parse("Ctrl+K").unwrap();
+        assert!(matches!(t, Trigger::Combo(_)));
+        assert!(!t.is_sequence());
+        assert_eq!(t.steps().len(), 1);
+
+        // 多 token → Sequence。
+        let t = Trigger::parse("F9 J K").unwrap();
+        assert!(matches!(t, Trigger::Sequence(ref steps) if steps.len() == 3));
+        assert!(t.is_sequence());
+        assert_eq!(t.first(), &"F9".parse::<Shortcut>().unwrap());
+
+        // "Space" 单 token 仍是 Combo；"F9 Space" 是序列。
+        assert!(matches!(Trigger::parse("Space").unwrap(), Trigger::Combo(_)));
+        assert!(matches!(
+            Trigger::parse("F9 Space").unwrap(),
+            Trigger::Sequence(ref steps) if steps.len() == 2
+        ));
+
+        // 组合键可作为序列步（"F9 Ctrl+K"）。
+        assert!(matches!(
+            Trigger::parse("F9 Ctrl+K").unwrap(),
+            Trigger::Sequence(ref steps) if steps.len() == 2
+        ));
+
+        // 空串 / 纯空白 → Empty。
+        assert!(matches!(Trigger::parse(""), Err(ParseError::Empty)));
+        assert!(matches!(Trigger::parse("   "), Err(ParseError::Empty)));
+
+        // 坏步 → 解析失败（任一坏步都不保留）。
+        assert!(Trigger::parse("F9 NotAKey").is_err());
+    }
+
+    #[test]
+    fn sequence_tracker_start_advance_complete() {
+        let seqs = vec![seq("F9 J K")];
+        let mut tr = SequenceTracker::new();
+        assert!(!tr.is_active());
+
+        // F9 → 建立候选（leader 吞掉）。
+        assert_eq!(tr.advance(&ev(Key::F9, &[]), &seqs), SeqAdvance::Advance);
+        assert!(tr.is_active());
+
+        // J → 推进。
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &seqs), SeqAdvance::Advance);
+        assert!(tr.is_active());
+
+        // K → 完成（下标 0），状态清空。
+        assert_eq!(tr.advance(&ev(Key::K, &[]), &seqs), SeqAdvance::Complete(0));
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn sequence_tracker_shared_prefix() {
+        let seqs = vec![seq("F9 J K"), seq("F9 J L")];
+        let mut tr = SequenceTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F9, &[]), &seqs), SeqAdvance::Advance);
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &seqs), SeqAdvance::Advance);
+        assert_eq!(tr.advance(&ev(Key::K, &[]), &seqs), SeqAdvance::Complete(0));
+
+        let mut tr = SequenceTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F9, &[]), &seqs), SeqAdvance::Advance);
+        assert_eq!(tr.advance(&ev(Key::J, &[]), &seqs), SeqAdvance::Advance);
+        assert_eq!(tr.advance(&ev(Key::L, &[]), &seqs), SeqAdvance::Complete(1));
+    }
+
+    #[test]
+    fn sequence_tracker_chain_break_resets() {
+        let seqs = vec![seq("F9 J K")];
+        let mut tr = SequenceTracker::new();
+        assert_eq!(tr.advance(&ev(Key::F9, &[]), &seqs), SeqAdvance::Advance);
+        assert!(tr.is_active());
+        // 断链：按下无关键 → NoMatch 并重置。
+        assert_eq!(tr.advance(&ev(Key::X, &[]), &seqs), SeqAdvance::NoMatch);
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn sequence_tracker_no_match_when_idle() {
+        let seqs = vec![seq("F9 J K")];
+        let mut tr = SequenceTracker::new();
+        assert_eq!(tr.advance(&ev(Key::A, &[]), &seqs), SeqAdvance::NoMatch);
+        assert!(!tr.is_active());
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_sequence_drops_invalid() {
+        let cfg = Config {
+            shortcuts: vec![
+                ShortcutItem {
+                    triggers: vec!["F9 J K".into()],
+                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+                    enabled: true,
+                    ..Default::default()
+                },
+                ShortcutItem {
+                    triggers: vec!["F9 BadStep".into()],
+                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, description: None }],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.shortcuts.len(), 2, "ignored: {}", ignored.join("; "));
+        // 合法序列保留；坏步序列被清空并提示。
+        assert_eq!(clean.shortcuts[0].triggers, vec!["F9 J K".to_string()]);
+        assert!(clean.shortcuts[1].triggers.is_empty());
+        assert!(ignored.iter().any(|m| m.contains("F9 BadStep")));
     }
 }

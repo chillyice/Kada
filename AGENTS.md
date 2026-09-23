@@ -70,11 +70,12 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **配置模型**（JSON 落盘，跨平台同步介质）：
   - `Config { folders, layers, shortcuts, remaps, expansions, settings }`
   - `ShortcutItem { name?, description?, folder?, layer?, triggers, actions, enabled }`（`triggers` 任一组命中即触发，`actions` 按顺序执行；`folder` 目录分组、`layer` 归属层、`None`=基层层始终生效）
+  - `Trigger`（`kada-core`）：触发键单元 = `Combo(Shortcut)` 单组合（`"Ctrl+K"`）或 `Sequence(Vec<Shortcut>)` 按键序列（`"F9 J K"` 依次按下 F9→J→K，首步即 leader 键进入等待态）；`Trigger::parse` 按空白切分（1 token=Combo、≥2=Sequence，每步用 `Shortcut::parse`，坏步整条丢弃）；纯逻辑 `SequenceTracker`（时序状态机，支持共享前缀 `"F9 J K"`/`"F9 J L"` 并存）+ `DEFAULT_SEQUENCE_TIMEOUT_MS = 1000`
   - `Action`：`Text / Command / Keys / PauseMs / Os / App / If`（`Command` 带 `shell`(Cmd/Powershell)/`show_output` 是否弹结果/`var` 非空则把标准输出写入文本变量；`Os` 文件动作、`App` 应用动作、`If` 条件判断；旧版 `Cmd`/`Powershell`/`Launch`/`CloseProgram`/`OpenFolder` 加载时自动迁移）
   - `Condition`：路径/变量/时间（`Exists/NotExists/IsFile/IsDir/Equals/NotEquals/ModifiedWithin`）+ 前台应用/窗口（`FrontmostApp/NotFrontmostApp` 按进程名、`WindowTitleContains` 按窗口标题；含 `*`/`?` 走通配否则子串匹配，不区分大小写；Windows 取前台窗口、Linux 暂受限恒不成立）
   - `Remap { from, to, tap, hold, layer, hold_layer, tap_timeout_ms, enabled }`：普通改键用 `to`；tap-hold 用 `tap`（短按）/`hold`（长按，常设修饰键）；`hold_layer` 长按进入层（momentary 切层）；`tap_timeout_ms` 判定阈值默认 200ms
   - `Layer { id, name }` 键位层（快捷键/改键可归属某层，仅该层激活时生效）+ `TextExpansion { trigger, replace, enabled }` 文本扩展（输入触发词+后缀自动展开，`replace` 支持 `{date}`/`{time}`/`{clipboard}`）
-  - `Settings { autostart, paused, wake_key }`；`detect_conflicts` 检测硬/软冲突；启动显隐按来源区分（双击 exe 显示主窗口、开机自启带 `--autostart` 参数静默到托盘）
+  - `Settings { autostart, paused, wake_key }`；`detect_conflicts` 检测硬/软冲突（序列按完整字符串判重；序列 leader 遮蔽同层单组合=硬冲突；超集软冲突仅对单组合生效）；启动显隐按来源区分（双击 exe 显示主窗口、开机自启带 `--autostart` 参数静默到托盘）
   - 变量占位符：`{变量名}` / `{变量名.字段}`，由 `substitute_vars` 替换（`Os::GetFileProps` 写 File、`App::Status` 写 Bool、命令动作 `var` 非空写 Text，Text 带退出码 `{变量名.exit_code}`，作用域=单次触发内的动作序列）；`sanitize_config` 逐条清洗坏条目（坏触发键/动作/改键单独忽略，不拖垮整份保存）
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`），加载时校验。
 - **消息中心**（内存态，重启清空）：Cmd/PowerShell 结果一律记入消息中心；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。
@@ -84,7 +85,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)`，同一线程跑消息循环；处理函数直接跑在回调内（不做跨线程调度，保证顺序与低延迟）。修饰键用 `GetKeyState` 实时读；自动重复按同键 250ms 内再次 down 识别；`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键；注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持"按下-抬起"配对（按住原键 = 按住目标键）。鼠标钩子只翻译中键/侧键（MB4/MB5），左右键与滚轮一律放行；小键盘 Enter 与主 Enter 共用 `VK_RETURN`，靠 `LLKHF_EXTENDED` 扩展位区分。
 - **Linux**（`kada-hook::linux`）：evdev + uinput（内核输入层），`EVIOCGRAB` 独占抓取 `/dev/input/event*` 键盘设备、`/dev/uinput` 建虚拟键盘 `kada-virtual-keyboard` 转发；X11 / Wayland 通用；需要 root 或 `input` 组 + udev 放开 `/dev/uinput`。修饰键按事件流维护（`MODS_DOWN`），与 Windows `GetKeyState` 语义对齐。
 - **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V`（中文等 Unicode 最稳，会短暂占用并恢复剪贴板）；组合键全部按下 → 稍停 → 逆序松开。
-- **壳层决策扩展**（`src-tauri`）：`taphold_step` 状态机在 `decide` 前吞掉 tap-hold 键并延迟判定短按/长按/长按切层（roll 判定：待定期间按其它键立即判 hold）；层语义=激活层条目优先、基层层条目兜底（`active_layer` 由切层键驱动、momentary）；`on_hotstring` 在放行事件上累积热串缓冲、命中触发词后异步回删+注入。
+- **壳层决策扩展**（`src-tauri`）：`taphold_step` 状态机在 `decide` 前吞掉 tap-hold 键并延迟判定短按/长按/长按切层（roll 判定：待定期间按其它键立即判 hold）；层语义=激活层条目优先、基层层条目兜底（`active_layer` 由切层键驱动、momentary）；`sequence_step` 键序列状态机在 `taphold_step` 之后、`decide` 之前——leader 键吞掉进入等待、命中后 `fire` 触发、`Escape` 取消、超时（1000ms）/断链重置且断链键继续流到 `decide`；`on_hotstring` 在放行事件上累积热串缓冲、命中触发词后异步回删+注入。
 - **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow` 窗口标题 + 进程名（`QueryFullProcessImageNameW`）；Linux 暂返回 None（Wayland 受限），前台类条件在该平台恒不成立。
 - **已知天花板（升级路径）**：低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截（Interception）；Linux 热插拔键盘不在监听列表（重启应用即可）。
 
