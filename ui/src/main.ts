@@ -58,6 +58,10 @@ type Remap = {
   layer: string | null;
   hold_layer: string | null;
   tap_timeout_ms: number;
+  oneshot: string | null;
+  sticky: string | null;
+  tap2: string | null;
+  tap3: string | null;
   enabled: boolean;
 };
 type TextExpansion = { trigger: string; replace: string; enabled: boolean };
@@ -1203,7 +1207,7 @@ function renderRemaps() {
   list.replaceChildren();
   const q = search.trim().toLowerCase();
   cfg.remaps.forEach((r, i) => {
-    const hay = `${r.from} ${r.to} ${r.tap ?? ""} ${r.hold ?? ""} ${layerName(r.hold_layer)}`.toLowerCase();
+    const hay = `${r.from} ${remapSummary(r)} ${layerName(r.hold_layer)}`.toLowerCase();
     if (q && !hay.includes(q)) return;
 
     const li = el("li", "row" + (selected === i ? " selected" : ""));
@@ -1217,18 +1221,12 @@ function renderRemaps() {
       void save();
     });
 
-    const tapHold = !!(r.tap || r.hold);
-    const layerKey = !!r.hold_layer;
-    const toText = layerKey
-      ? `进层「${layerName(r.hold_layer)}」`
-      : tapHold
-        ? `短 ${r.tap || "—"} · 长 ${r.hold || "—"}`
-        : r.to;
+    const isTiming = !!(r.tap || r.hold || r.hold_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
     li.append(
       on,
       el("span", "triggers", r.from),
-      el("span", "arrow", tapHold || layerKey ? "⇥" : "→"),
-      el("span", "triggers", toText),
+      el("span", "arrow", isTiming ? "⇥" : "→"),
+      el("span", "triggers", remapSummary(r)),
     );
     li.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest("input, button")) return;
@@ -1343,12 +1341,16 @@ function openDetail(i: number, isNew = false) {
     setShortcutTitle();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, tap_timeout_ms: 200, enabled: true }
+      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
     (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
     (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
     (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
     (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
+    (document.getElementById("remap-oneshot") as HTMLSelectElement).value = remapDraft.oneshot ?? "";
+    (document.getElementById("remap-sticky") as HTMLSelectElement).value = remapDraft.sticky ?? "";
+    (document.getElementById("remap-tap2") as HTMLSelectElement).value = remapDraft.tap2 ?? "";
+    (document.getElementById("remap-tap3") as HTMLSelectElement).value = remapDraft.tap3 ?? "";
     fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
     fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
     (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
@@ -1357,11 +1359,7 @@ function openDetail(i: number, isNew = false) {
     syncRemapEditor();
     document.getElementById("remap-title")!.textContent = draftNew
       ? "新增改键"
-      : remapDraft.hold_layer
-        ? `${remapDraft.from}：长按进层「${layerName(remapDraft.hold_layer)}」`
-        : remapDraft.tap || remapDraft.hold
-          ? `${remapDraft.from}：短按 ${remapDraft.tap || "—"} / 长按 ${remapDraft.hold || "—"}`
-          : `${remapDraft.from} → ${remapDraft.to}`;
+      : `${remapDraft.from} → ${remapSummary(remapDraft)}`;
   } else if (section === "expansions") {
     expansionDraft = isNew
       ? { trigger: "", replace: "", enabled: true }
@@ -2191,13 +2189,38 @@ function fillKeySelect(sel: HTMLSelectElement, value: string, withEmpty = false)
   sel.value = value;
 }
 
-// 根据短按/长按是否为空，切换「短按/长按 + 阈值」与「普通改键」两套表单的显示。
+// 修饰键下拉（单次/粘滞只接受 Ctrl/Alt/Shift/Meta）。
+const MOD_OPTIONS = ["Ctrl", "Alt", "Shift", "Meta"];
+
+function fillModifierSelect(sel: HTMLSelectElement, value: string | null) {
+  sel.replaceChildren();
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "（无）";
+  sel.append(empty);
+  for (const m of MOD_OPTIONS) {
+    const o = document.createElement("option");
+    o.value = m;
+    o.textContent = m;
+    sel.append(o);
+  }
+  sel.value = value ?? "";
+}
+
+// 根据所选形态，切换「单次/粘滞修饰」「短按/双击/三击/长按/切层 + 阈值」与「普通改键」表单显示。
 function syncRemapEditor() {
   if (!remapDraft) return;
-  const isTapHold = !!(remapDraft.tap || remapDraft.hold);
+  const isModifier = !!(remapDraft.oneshot || remapDraft.sticky);
+  const isTapHold = !!(remapDraft.tap || remapDraft.hold || remapDraft.tap2 || remapDraft.tap3);
   const isLayerKey = !!remapDraft.hold_layer;
-  document.getElementById("remap-timeout-row")!.classList.toggle("hidden", !isTapHold);
-  document.getElementById("remap-to-row")!.classList.toggle("hidden", isTapHold || isLayerKey);
+  // 修饰模式与 tap-hold/切层/普通改键互斥：隐藏后者；反之隐藏修饰下拉无意义（保留可见）。
+  document.getElementById("remap-tap-row")!.classList.toggle("hidden", isModifier);
+  document.getElementById("remap-hold-row")!.classList.toggle("hidden", isModifier);
+  document.getElementById("remap-hold-layer-row")!.classList.toggle("hidden", isModifier);
+  document.getElementById("remap-tap2-row")!.classList.toggle("hidden", isModifier || !isTapHold);
+  document.getElementById("remap-tap3-row")!.classList.toggle("hidden", isModifier || !isTapHold);
+  document.getElementById("remap-timeout-row")!.classList.toggle("hidden", isModifier || !isTapHold);
+  document.getElementById("remap-to-row")!.classList.toggle("hidden", isModifier || isTapHold || isLayerKey);
 }
 
 // 填充「所属层」（assign）/「长按进入层」（hold）下拉。
@@ -2219,6 +2242,20 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
 function layerName(id: string | null | undefined): string {
   if (!id) return "基层层";
   return cfg.layers.find((l) => l.id === id)?.name ?? "基层层";
+}
+
+// 改键形态的人类可读摘要（列表行 + 详情标题共用），与 kada-core 的 Remap::describe 对齐。
+function remapSummary(r: Remap): string {
+  if (r.sticky) return `粘滞 ${r.sticky}`;
+  if (r.oneshot) return `单击 ${r.oneshot}`;
+  if (r.hold_layer) return `长按进层「${layerName(r.hold_layer)}」`;
+  const parts: string[] = [];
+  if (r.tap) parts.push(`单击 ${r.tap}`);
+  if (r.tap2) parts.push(`双击 ${r.tap2}`);
+  if (r.tap3) parts.push(`三击 ${r.tap3}`);
+  if (r.hold) parts.push(`长按 ${r.hold}`);
+  if (parts.length) return parts.join(" · ");
+  return r.to;
 }
 
 function renderLayers() {
@@ -2418,13 +2455,24 @@ function bind() {
     remapDraft.from = (document.getElementById("remap-from") as HTMLSelectElement).value;
     remapDraft.tap = (document.getElementById("remap-tap") as HTMLSelectElement).value || null;
     remapDraft.hold = (document.getElementById("remap-hold") as HTMLSelectElement).value || null;
+    remapDraft.oneshot =
+      (document.getElementById("remap-oneshot") as HTMLSelectElement).value || null;
+    remapDraft.sticky = (document.getElementById("remap-sticky") as HTMLSelectElement).value || null;
+    remapDraft.tap2 = (document.getElementById("remap-tap2") as HTMLSelectElement).value || null;
+    remapDraft.tap3 = (document.getElementById("remap-tap3") as HTMLSelectElement).value || null;
     remapDraft.layer = (document.getElementById("remap-layer") as HTMLSelectElement).value || null;
     remapDraft.hold_layer =
       (document.getElementById("remap-hold-layer") as HTMLSelectElement).value || null;
     remapDraft.tap_timeout_ms =
       parseInt((document.getElementById("remap-timeout") as HTMLInputElement).value, 10) || 200;
-    // tap-hold/切层时清空「改为」（避免残留）；普通改键用「改为」。
-    remapDraft.to = remapDraft.tap || remapDraft.hold || remapDraft.hold_layer
+    // 任一非普通改键形态（tap-hold/切层/单次/粘滞/连击）→ 清空「改为」；否则用「改为」。
+    remapDraft.to = remapDraft.tap ||
+      remapDraft.hold ||
+      remapDraft.hold_layer ||
+      remapDraft.oneshot ||
+      remapDraft.sticky ||
+      remapDraft.tap2 ||
+      remapDraft.tap3
       ? ""
       : (document.getElementById("remap-to") as HTMLSelectElement).value;
     if (draftNew) cfg.remaps.unshift(remapDraft);
@@ -2492,6 +2540,10 @@ function bind() {
   fillKeySelect(document.getElementById("remap-to") as HTMLSelectElement, "Ctrl");
   fillKeySelect(document.getElementById("remap-tap") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-hold") as HTMLSelectElement, "", true);
+  fillModifierSelect(document.getElementById("remap-oneshot") as HTMLSelectElement, "");
+  fillModifierSelect(document.getElementById("remap-sticky") as HTMLSelectElement, "");
+  fillKeySelect(document.getElementById("remap-tap2") as HTMLSelectElement, "", true);
+  fillKeySelect(document.getElementById("remap-tap3") as HTMLSelectElement, "", true);
   document.getElementById("remap-tap")!.addEventListener("change", (e) => {
     if (!remapDraft) return;
     remapDraft.tap = (e.target as HTMLSelectElement).value || null;
@@ -2513,6 +2565,34 @@ function bind() {
       remapDraft.hold = null;
       (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
     }
+    syncRemapEditor();
+  });
+  document.getElementById("remap-oneshot")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.oneshot = (e.target as HTMLSelectElement).value || null;
+    if (remapDraft.oneshot) {
+      remapDraft.sticky = null; // 单次与粘滞互斥
+      (document.getElementById("remap-sticky") as HTMLSelectElement).value = "";
+    }
+    syncRemapEditor();
+  });
+  document.getElementById("remap-sticky")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.sticky = (e.target as HTMLSelectElement).value || null;
+    if (remapDraft.sticky) {
+      remapDraft.oneshot = null;
+      (document.getElementById("remap-oneshot") as HTMLSelectElement).value = "";
+    }
+    syncRemapEditor();
+  });
+  document.getElementById("remap-tap2")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.tap2 = (e.target as HTMLSelectElement).value || null;
+    syncRemapEditor();
+  });
+  document.getElementById("remap-tap3")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.tap3 = (e.target as HTMLSelectElement).value || null;
     syncRemapEditor();
   });
 

@@ -858,15 +858,19 @@ pub struct ShortcutItem {
 
 /// 一条改键规则。
 ///
-/// 三种形态：
-/// - **普通改键**：`from` 按下改发 `to` 键（`tap`/`hold`/`hold_layer` 都留空时）。
+/// 形态（互斥，运行时按优先级 `sticky > oneshot > tap-hold > 普通 to` 判定）：
+/// - **普通改键**：`from` 按下改发 `to` 键（其余形态字段都留空时）。
 /// - **tap-hold**：`tap`（短按）/ `hold`（长按 ≥ `tap_timeout_ms`）至少一个非空时启用，
 ///   短按输出 `tap` 键、长按输出 `hold` 键；两者可只填其一。
+/// - **tap-dance**：`tap2`（双击）/ `tap3`（三击）非空时，短按升级为「连击不同义」，
+///   单击/双击/三击分别输出 `tap`/`tap2`/`tap3`（缺省回落上一级）。
 /// - **切层键**：`hold_layer` 非空时，长按 `from` 进入该层、松开退回（momentary）。
+/// - **单次修饰**：`oneshot` 非空时，单击 `from` 武装该修饰键、应用到下一个非修饰键后自动释放。
+/// - **粘滞修饰**：`sticky` 非空时，单击 `from` 锁定该修饰键、再次单击解锁。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Remap {
     pub from: String,
-    /// 普通改键目标（`tap`/`hold`/`hold_layer` 留空时使用）。
+    /// 普通改键目标（其余形态字段留空时使用）。
     pub to: String,
     /// 短按输出键（tap-hold；空 = 无短按行为）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -883,6 +887,18 @@ pub struct Remap {
     /// tap-hold 判定阈值（毫秒）；0 视为默认 200。
     #[serde(default = "default_tap_timeout_ms")]
     pub tap_timeout_ms: u64,
+    /// 单次修饰键（`Ctrl/Alt/Shift/Meta`）：单击 `from` 武装、下一个非修饰键后自动释放。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oneshot: Option<String>,
+    /// 粘滞修饰键（`Ctrl/Alt/Shift/Meta`）：单击 `from` 锁定、再次单击解锁。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sticky: Option<String>,
+    /// 双击输出键（tap-dance）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap2: Option<String>,
+    /// 三击输出键（tap-dance）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tap3: Option<String>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -895,10 +911,37 @@ fn default_tap_timeout_ms() -> u64 {
 }
 
 impl Remap {
-    /// 是否需要 tap-hold 状态机（短按/长按/长按切层 任一非空白）。
+    /// 是否有 tap-hold / tap-dance / 切层 行为（短按/长按/双击/三击/长按切层 任一非空白）。
+    /// 不含 oneshot/sticky（那些是修饰键模式，见 [`Remap::is_oneshot`] / [`Remap::is_sticky`]）。
     pub fn is_tap_hold(&self) -> bool {
         let nonempty = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.trim().is_empty());
-        nonempty(&self.tap) || nonempty(&self.hold) || nonempty(&self.hold_layer)
+        nonempty(&self.tap)
+            || nonempty(&self.hold)
+            || nonempty(&self.hold_layer)
+            || nonempty(&self.tap2)
+            || nonempty(&self.tap3)
+    }
+
+    /// 是否单次修饰模式。
+    pub fn is_oneshot(&self) -> bool {
+        self.oneshot.as_deref().is_some_and(|v| !v.trim().is_empty())
+    }
+
+    /// 是否粘滞修饰模式。
+    pub fn is_sticky(&self) -> bool {
+        self.sticky.as_deref().is_some_and(|v| !v.trim().is_empty())
+    }
+
+    /// 是否需要时序状态机（tap-hold / 单次 / 粘滞 任一）。壳层据此决定把 `from` 交给
+    /// tap-hold 状态机，而非当普通改键。
+    pub fn needs_timing_state(&self) -> bool {
+        self.is_tap_hold() || self.is_oneshot() || self.is_sticky()
+    }
+
+    /// 是否 tap-dance（双击/三击输出，短按升级为连击不同义）。
+    pub fn is_multi_tap(&self) -> bool {
+        let nonempty = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.trim().is_empty());
+        nonempty(&self.tap2) || nonempty(&self.tap3)
     }
 
     /// 短按输出键（解析失败返回 None）。
@@ -914,6 +957,73 @@ impl Remap {
     /// 长按进入的层 id（空白视为无）。
     pub fn hold_layer_id(&self) -> Option<&str> {
         self.hold_layer.as_deref().filter(|s| !s.trim().is_empty())
+    }
+
+    /// 单次修饰键（解析失败返回 None）。
+    pub fn oneshot_key(&self) -> Option<Key> {
+        self.oneshot.as_deref().and_then(|s| s.parse::<Key>().ok())
+    }
+
+    /// 粘滞修饰键（解析失败返回 None）。
+    pub fn sticky_key(&self) -> Option<Key> {
+        self.sticky.as_deref().and_then(|s| s.parse::<Key>().ok())
+    }
+
+    /// 双击输出键（解析失败返回 None）。
+    pub fn tap2_key(&self) -> Option<Key> {
+        self.tap2.as_deref().and_then(|s| s.parse::<Key>().ok())
+    }
+
+    /// 三击输出键（解析失败返回 None）。
+    pub fn tap3_key(&self) -> Option<Key> {
+        self.tap3.as_deref().and_then(|s| s.parse::<Key>().ok())
+    }
+
+    /// 击数 1/2/3 对应的输出键（含缺省回落）：`[tap, tap2|tap, tap3|tap2|tap]`。
+    pub fn tap_outputs(&self) -> [Option<Key>; 3] {
+        let tap = self.tap_key();
+        let tap2 = self.tap2_key().or(tap);
+        let tap3 = self.tap3_key().or(tap2).or(tap);
+        [tap, tap2, tap3]
+    }
+
+    /// 按击数取短按输出（1=单击、2=双击、3=三击），缺省回落上一级。
+    pub fn tap_output(&self, count: u8) -> Option<Key> {
+        match count {
+            3 => self.tap_outputs()[2],
+            2 => self.tap_outputs()[1],
+            _ => self.tap_outputs()[0],
+        }
+    }
+
+    /// 人类可读的改键形态描述（冲突提示 / 列表摘要用）。
+    pub fn describe(&self) -> String {
+        if let Some(s) = self.sticky_key() {
+            return format!("粘滞 {}", key_name(s));
+        }
+        if let Some(o) = self.oneshot_key() {
+            return format!("单击 {}", key_name(o));
+        }
+        if self.is_tap_hold() {
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(t) = self.tap_key() {
+                parts.push(format!("单击 {}", key_name(t)));
+            }
+            if let Some(t) = self.tap2_key() {
+                parts.push(format!("双击 {}", key_name(t)));
+            }
+            if let Some(t) = self.tap3_key() {
+                parts.push(format!("三击 {}", key_name(t)));
+            }
+            if let Some(h) = self.hold_key() {
+                parts.push(format!("长按 {}", key_name(h)));
+            }
+            if self.hold_layer_id().is_some() {
+                parts.push("长按进层".into());
+            }
+            return parts.join(" · ");
+        }
+        self.to.clone()
     }
 
     /// tap-hold 判定阈值（毫秒）：0 归一化为默认 200。
@@ -1113,15 +1223,7 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
             continue;
         }
         let Ok(from) = r.from.parse::<Key>() else { continue };
-        let desc = if r.is_tap_hold() {
-            format!(
-                "短按 {} / 长按 {}",
-                r.tap.as_deref().unwrap_or("—"),
-                r.hold.as_deref().unwrap_or("—")
-            )
-        } else {
-            r.to.clone()
-        };
+        let desc = r.describe();
         for s in &cfg.shortcuts {
             if !s.enabled {
                 continue;
@@ -1542,7 +1644,38 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
 
-        if item.is_tap_hold() {
+        // 单次/粘滞/双击/三击键名逐项校验（坏键名单独清空并提示）。
+        let mut clear_key = |field: &mut Option<String>, label: &str| {
+            if let Some(v) = field {
+                if v.parse::<Key>().is_err() {
+                    ignored.push(format!("改键「{}」的{label}「{v}」已忽略：键名无法解析", r.from));
+                    *field = None;
+                }
+            }
+        };
+        clear_key(&mut item.oneshot, "单次修饰键");
+        clear_key(&mut item.sticky, "粘滞修饰键");
+        clear_key(&mut item.tap2, "双击键");
+        clear_key(&mut item.tap3, "三击键");
+
+        // 归一化（优先级 sticky > oneshot > tap-hold > 普通 to）：修饰模式清掉其它形态字段。
+        if item.is_sticky() || item.is_oneshot() {
+            if item.is_sticky() && item.is_oneshot() {
+                ignored.push(format!("改键「{}」同时设了粘滞与单次修饰，保留粘滞", r.from));
+                item.oneshot = None;
+            }
+            let mode = if item.is_sticky() { "粘滞" } else { "单次" };
+            if item.is_tap_hold() || !item.to.trim().is_empty() {
+                ignored.push(format!("改键「{}」已归一化为{mode}修饰（忽略短按/长按/双击/三击/切层/普通改键）", r.from));
+            }
+            item.tap = None;
+            item.hold = None;
+            item.tap2 = None;
+            item.tap3 = None;
+            item.hold_layer = None;
+            item.to = String::new();
+            out.remaps.push(item);
+        } else if item.is_tap_hold() {
             // tap-hold / 切层：短按/长按键名逐项校验，坏的单独清空并提示。
             if let Some(t) = &item.tap {
                 if t.parse::<Key>().is_err() {
@@ -2779,5 +2912,196 @@ mod sequence_tests {
         assert_eq!(clean.shortcuts[0].triggers, vec!["F9 J K".to_string()]);
         assert!(clean.shortcuts[1].triggers.is_empty());
         assert!(ignored.iter().any(|m| m.contains("F9 BadStep")));
+    }
+}
+
+#[cfg(test)]
+mod advanced_modifier_tests {
+    use super::*;
+
+    fn remap(fields: impl FnOnce(&mut Remap)) -> Remap {
+        let mut r = Remap {
+            from: "CapsLock".into(),
+            to: "Ctrl".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        fields(&mut r);
+        r
+    }
+
+    #[test]
+    fn oneshot_sticky_detection_and_needs_timing() {
+        let plain = remap(|_| {});
+        assert!(!plain.is_oneshot());
+        assert!(!plain.is_sticky());
+        assert!(!plain.needs_timing_state());
+
+        let oneshot = remap(|r| {
+            r.to = String::new();
+            r.oneshot = Some("Ctrl".into());
+        });
+        assert!(oneshot.is_oneshot());
+        assert!(!oneshot.is_sticky());
+        assert!(oneshot.needs_timing_state());
+        assert_eq!(oneshot.oneshot_key(), Some(Key::Control));
+
+        let sticky = remap(|r| {
+            r.to = String::new();
+            r.sticky = Some("Shift".into());
+        });
+        assert!(sticky.is_sticky());
+        assert!(!sticky.is_oneshot());
+        assert!(sticky.needs_timing_state());
+        assert_eq!(sticky.sticky_key(), Some(Key::Shift));
+    }
+
+    #[test]
+    fn multi_tap_detection_and_output_fallback() {
+        // 只有 tap：单击/双击/三击都回落 tap。
+        let tap_only = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+        });
+        assert!(!tap_only.is_multi_tap());
+        assert_eq!(tap_only.tap_output(1), Some(Key::Escape));
+        assert_eq!(tap_only.tap_output(2), Some(Key::Escape));
+        assert_eq!(tap_only.tap_output(3), Some(Key::Escape));
+
+        // tap + tap2：双击 tap2、三击回落 tap2。
+        let tap2 = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.tap2 = Some("Backspace".into());
+        });
+        assert!(tap2.is_multi_tap());
+        assert_eq!(tap2.tap_output(1), Some(Key::Escape));
+        assert_eq!(tap2.tap_output(2), Some(Key::Backspace));
+        assert_eq!(tap2.tap_output(3), Some(Key::Backspace));
+
+        // tap + tap2 + tap3：三击 tap3。
+        let tap3 = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.tap2 = Some("Backspace".into());
+            r.tap3 = Some("Delete".into());
+        });
+        assert!(tap3.is_multi_tap());
+        assert_eq!(tap3.tap_output(1), Some(Key::Escape));
+        assert_eq!(tap3.tap_output(2), Some(Key::Backspace));
+        assert_eq!(tap3.tap_output(3), Some(Key::Delete));
+    }
+
+    #[test]
+    fn tap_outputs_returns_fallback_array() {
+        let r = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.tap2 = Some("Backspace".into());
+        });
+        assert_eq!(r.tap_outputs(), [Some(Key::Escape), Some(Key::Backspace), Some(Key::Backspace)]);
+        // 只有 tap：三击都回落 tap。
+        let t = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+        });
+        assert_eq!(t.tap_outputs(), [Some(Key::Escape), Some(Key::Escape), Some(Key::Escape)]);
+    }
+
+    #[test]
+    fn describe_covers_all_modes() {
+        assert_eq!(remap(|_| {}).describe(), "Ctrl");
+        assert_eq!(remap(|r| { r.oneshot = Some("Ctrl".into()); r.to = String::new(); }).describe(), "单击 Ctrl");
+        assert_eq!(remap(|r| { r.sticky = Some("Shift".into()); r.to = String::new(); }).describe(), "粘滞 Shift");
+        assert_eq!(remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.hold = Some("Ctrl".into());
+        }).describe(), "单击 Esc · 长按 Ctrl");
+        assert_eq!(remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.tap2 = Some("Backspace".into());
+        }).describe(), "单击 Esc · 双击 Backspace");
+    }
+
+    #[test]
+    fn remap_json_roundtrip_new_fields() {
+        let r = remap(|r| {
+            r.to = String::new();
+            r.tap = Some("Esc".into());
+            r.tap2 = Some("Backspace".into());
+            r.tap3 = Some("Delete".into());
+            r.oneshot = Some("Ctrl".into());
+            r.sticky = Some("Shift".into());
+        });
+        let json = serde_json::to_string(&r).unwrap();
+        let back: Remap = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, r);
+        // 旧配置（无新字段）反序列化 → 新字段全为 None。
+        let legacy = r#"{"from":"CapsLock","to":"Ctrl","enabled":true}"#;
+        let l: Remap = serde_json::from_str(legacy).unwrap();
+        assert!(l.oneshot.is_none() && l.sticky.is_none() && l.tap2.is_none() && l.tap3.is_none());
+    }
+
+    #[test]
+    fn sanitize_oneshot_sticky_normalizes_and_drops_invalid() {
+        let cfg = Config {
+            remaps: vec![
+                // 粘滞 + 单次同时设 → 保留粘滞、清掉单次与 tap-hold 字段。
+                Remap {
+                    from: "CapsLock".into(),
+                    to: "".into(),
+                    sticky: Some("Shift".into()),
+                    oneshot: Some("Ctrl".into()),
+                    tap: Some("Esc".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+                // 单次修饰合法 → 保留；普通 to 清空。
+                Remap {
+                    from: "A".into(),
+                    to: "B".into(),
+                    oneshot: Some("Alt".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+                // 坏键名 → 清空后无形态 → 整条忽略。
+                Remap {
+                    from: "B".into(),
+                    to: "".into(),
+                    oneshot: Some("NotAKey".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+                // 坏 tap2 → 清空；tap 仍保留为 tap-hold。
+                Remap {
+                    from: "C".into(),
+                    to: "".into(),
+                    tap: Some("Esc".into()),
+                    tap2: Some("Bad".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.remaps.len(), 3, "remaps: {:?}\nignored: {:?}", clean.remaps, ignored);
+
+        // 第 0 条：粘滞 Shift，其它清空。
+        assert_eq!(clean.remaps[0].sticky.as_deref(), Some("Shift"));
+        assert!(clean.remaps[0].oneshot.is_none());
+        assert!(clean.remaps[0].tap.is_none());
+        // 第 1 条：单次 Alt，to 清空。
+        assert_eq!(clean.remaps[1].oneshot.as_deref(), Some("Alt"));
+        assert_eq!(clean.remaps[1].to, "");
+        // 第 2 条：坏 tap2 清空，保留 tap。
+        assert_eq!(clean.remaps[2].tap.as_deref(), Some("Esc"));
+        assert!(clean.remaps[2].tap2.is_none());
+        // 提示信息覆盖坏键名与归一化。
+        assert!(ignored.iter().any(|m| m.contains("NotAKey")));
+        assert!(ignored.iter().any(|m| m.contains("Bad")));
+        assert!(ignored.iter().any(|m| m.contains("保留粘滞")));
     }
 }
