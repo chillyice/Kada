@@ -1843,6 +1843,7 @@ name = "kada"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "kada-actions",
  "kada-core",
  "kada-hook",
  "serde",
@@ -1851,6 +1852,17 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-autostart",
  "tauri-plugin-dialog",
+]
+
+[[package]]
+name = "kada-actions"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "kada-core",
+ "kada-hook",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

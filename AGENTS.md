@@ -52,8 +52,10 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate 子模块
   examples/demo.rs          # M1 冒烟 demo（仅 Windows，真人按键验证）
   tests/hook_smoke.rs       # 钩子安装/回收冒烟（仅 Windows）
+crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult（从壳迁出，不依赖 Tauri）
+  src/lib.rs                # 触发 → 执行动作串的执行逻辑（命令/文件/应用/条件/脚本）+ 消息中心结果结构
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
-  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻；主窗口与气泡窗口按需懒创建（冷启动零 WebView）
+  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻；动作执行调 kada_actions::run_actions；主窗口与气泡窗口按需懒创建（冷启动零 WebView）
   src/main.rs               # 入口
   tauri.conf.json           # 窗口/图标/构建配置
 ui/                         # Vite + TypeScript 前端（kada-ui）
@@ -71,12 +73,13 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   - `Config { folders, layers, shortcuts, remaps, expansions, settings }`
   - `ShortcutItem { name?, description?, folder?, layer?, triggers, actions, enabled }`（`triggers` 任一组命中即触发，`actions` 按顺序执行；`folder` 目录分组、`layer` 归属层、`None`=基层层始终生效）
   - `Trigger`（`kada-core`）：触发键单元 = `Combo(Shortcut)` 单组合（`"Ctrl+K"`）或 `Sequence(Vec<Shortcut>)` 按键序列（`"F9 J K"` 依次按下 F9→J→K，首步即 leader 键进入等待态）；`Trigger::parse` 按空白切分（1 token=Combo、≥2=Sequence，每步用 `Shortcut::parse`，坏步整条丢弃）；纯逻辑 `SequenceTracker`（时序状态机，支持共享前缀 `"F9 J K"`/`"F9 J L"` 并存）+ `DEFAULT_SEQUENCE_TIMEOUT_MS = 1000`
-  - `Action`：`Text / Command / Keys / PauseMs / Os / App / If`（`Command` 带 `shell`(Cmd/Powershell)/`show_output` 是否弹结果/`var` 非空则把标准输出写入文本变量；`Os` 文件动作、`App` 应用动作、`If` 条件判断；旧版 `Cmd`/`Powershell`/`Launch`/`CloseProgram`/`OpenFolder` 加载时自动迁移）
+  - `Action`：`Text / Command / Keys / PauseMs / Os / App / If / Script`（`Command` 带 `shell`(Cmd/Powershell)/`show_output` 是否弹结果/`var` 非空则把标准输出写入文本变量；`Os` 文件动作、`App` 应用动作、`If` 条件判断；`Script` 脚本动作带 `path`/`interpreter`(可选解释器)/`show_output`/`var`，执行时注入 `KADA_TRIGGER`/`KADA_NAME`/`KADA_VARS` 环境变量；旧版 `Cmd`/`Powershell`/`Launch`/`CloseProgram`/`OpenFolder` 加载时自动迁移）
   - `Condition`：路径/变量/时间（`Exists/NotExists/IsFile/IsDir/Equals/NotEquals/ModifiedWithin`）+ 前台应用/窗口（`FrontmostApp/NotFrontmostApp` 按进程名、`WindowTitleContains` 按窗口标题；含 `*`/`?` 走通配否则子串匹配，不区分大小写；Windows 取前台窗口、Linux 暂受限恒不成立）
   - `Remap { from, to, tap, hold, layer, hold_layer, tap_timeout_ms, oneshot, sticky, tap2, tap3, enabled }`：普通改键用 `to`；tap-hold 用 `tap`（短按）/`hold`（长按，常设修饰键）；`hold_layer` 长按进入层（momentary 切层）；`oneshot` 单次修饰（单击 `from` 武装、应用到下一个非修饰键后自动释放）/`sticky` 粘滞修饰（单击锁定、再击解锁，值域均只 `Ctrl/Alt/Shift/Meta`）/`tap2`/`tap3` 双击/三击（tap-dance 连击不同义，缺省回落上一级）；`tap_timeout_ms` 判定阈值默认 200ms。形态互斥，运行时优先级 `sticky > oneshot > tap-hold > 普通 to`
   - `Layer { id, name }` 键位层（快捷键/改键可归属某层，仅该层激活时生效）+ `TextExpansion { trigger, replace, enabled }` 文本扩展（输入触发词+后缀自动展开，`replace` 支持 `{date}`/`{time}`/`{clipboard}`）
   - `Settings { autostart, paused, wake_key }`；`detect_conflicts` 检测硬/软冲突（序列按完整字符串判重；序列 leader 遮蔽同层单组合=硬冲突；超集软冲突仅对单组合生效）；启动显隐按来源区分（双击 exe 显示主窗口、开机自启带 `--autostart` 参数静默到托盘）
   - 变量占位符：`{变量名}` / `{变量名.字段}`，由 `substitute_vars` 替换（`Os::GetFileProps` 写 File、`App::Status` 写 Bool、命令动作 `var` 非空写 Text，Text 带退出码 `{变量名.exit_code}`，作用域=单次触发内的动作序列）；`sanitize_config` 逐条清洗坏条目（坏触发键/动作/改键单独忽略，不拖垮整份保存）
+  - feature 门控（`automation`，`kada-core`/`kada-actions`/`src-tauri` 三 crate 均 `default = ["automation"]`）：`Command`/`Os`/`App`/`If`/`Script`/`Condition`/`Vars` 属自动化动作，关闭 feature（`--no-default-features`）得「基础版」= 改键全形态/层/键序列/文本扩展/Text·Keys·PauseMs 注入；`Action::Script` 是脚本扩展的「逃生舱」（先指向脚本文件，不嵌 Rhai/Lua，生态起来再补 wasm/动态库）
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`），加载时校验。
 - **消息中心**（内存态，重启清空）：Cmd/PowerShell 结果一律记入消息中心；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。
 
@@ -92,8 +95,9 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 ## 构建与验证命令
 
 ```powershell
-cargo test --workspace      # 全 workspace 测试（kada-core/kada-hook/src-tauri）
-cargo check -p kada         # 验证 Tauri 壳编译
+cargo test --workspace      # 全 workspace 测试（kada-core/kada-hook/kada-actions/src-tauri）
+cargo check -p kada         # 验证 Tauri 壳编译（完整版，default features）
+cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation 自动化动作）
 npm --prefix ui run build   # 前端构建（tsc + vite build）
 cargo run -p kada-hook --example demo   # M1 冒烟 demo（仅 Windows）
 ```

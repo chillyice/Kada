@@ -8,3 +8,9 @@ serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 serde_json = "1"
+
+[features]
+# `automation`：命令 / 文件 / 应用 / 条件 / 变量 / 脚本 等「动作自动化」schema 变体。
+# 关闭后得到「基础版」：仅改键 / 层 / 键序列 / 文本扩展 / 文本·按键·暂停注入。
+default = ["automation"]
+automation = []
