@@ -22,13 +22,36 @@ use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
-    detect_conflicts, is_hotstring_terminator, key_to_char, match_expansion, matches,
-    sanitize_config, Action, ChordAdvance, ChordTracker, Config, Conflict, Key, Modifier, RawEvent,
-    Remap, SeqAdvance, SequenceTracker, Severity, Shortcut, TextExpansion, Trigger, Vars,
-    DEFAULT_SEQUENCE_TIMEOUT_MS, SYSTEM_SHORTCUTS,
+    detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
+    Shortcut, Severity, Vars, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{run_actions, CommandResult};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
+
+/// 输入决策引擎（tap-hold/层/和弦/键序列/热串的状态机），与 Tauri 解耦、可单测。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+mod engine;
+
+/// 软件更新（Tauri updater + GitHub Releases + Ed25519 签名），与 Tauri 壳解耦、可单测。
+mod update;
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+use engine::{Engine, HotstringHit, Inject};
+
+/// 把平台注入（SendInput / uinput）接到引擎的 [`Inject`] 通道。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct SimulatedInject;
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl Inject for SimulatedInject {
+    fn down(&mut self, key: Key) {
+        input::simulate::down(key);
+    }
+
+    fn up(&mut self, key: Key) {
+        input::simulate::up(key);
+    }
+}
 
 /// 平台输入层。
 #[cfg(target_os = "windows")]
@@ -91,12 +114,17 @@ fn to_ev(ev: &input::KeyEvent) -> Ev {
 struct ToastPayload {
     name: String,
     trigger: String,
+    /// 自定义副标题：`Some` 时前端直接显示它（「发现新版本」等非执行中气泡用）；
+    /// 缺省时前端按「触发键 · 正在执行…」渲染。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    subtitle: Option<String>,
 }
 
 /// 运行时状态：钩子持有的配置 + 配置落盘路径 + 消息中心。
 struct KadaState {
     config: Arc<RwLock<Config>>,
-    paused: Arc<AtomicBool>,
+    /// 录入捕获暂停的截止时刻（进程启动后的毫秒数；0 = 未暂停）。见 [`pause_active`]。
+    paused_until: Arc<AtomicU64>,
     /// 录制器：Some = 正在录制（此时快捷键/改键全暂停）。
     rec: Arc<Mutex<Option<Recorder>>>,
     file: PathBuf,
@@ -125,7 +153,41 @@ enum Outcome {
     Pass,
 }
 
-/// 层语义匹配普通改键（非 tap-hold）：激活层条目优先、基层层条目兜底。
+/// 暂停租约时长（毫秒）：录入捕获最多暂停这么久，超时自动恢复。
+///
+/// 暂停本来是「录入组合键/序列/和弦期间屏蔽触发，避免自己触发自己」，但前端若被中断
+/// （切走窗口、关掉详情、窗口收进托盘）可能来不及解除，布尔量会永久卡在暂停态——表现
+/// 为整个应用静默失效（快捷键、改键、文本扩展全不响应），用户完全看不出原因。
+/// 改成租约：到期自动失效，前端正常解除仍即时生效。
+const PAUSE_LEASE_MS: u64 = 60_000;
+
+/// 状态机定时推进间隔（毫秒）。键序列超时、连击等待窗这类「只能靠时间判定」的等待态，
+/// 必须由定时器驱动落地——只靠「下一个事件」懒判定的后果是：单独按一下序列 leader 键
+/// （之后不按别的键）回放永远不发生，用户看到的是「这个键按了没反应」。见 [`Engine::tick`]。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const ENGINE_TICK_MS: u64 = 60;
+
+/// 进程启动时刻（暂停租约的时间基准）。
+static PROCESS_START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// 进程启动至今的毫秒数。
+fn now_ms() -> u64 {
+    PROCESS_START.elapsed().as_millis() as u64
+}
+
+/// 暂停租约是否生效中。
+fn pause_active(until: &AtomicU64) -> bool {
+    let t = until.load(Ordering::Relaxed);
+    t != 0 && now_ms() < t
+}
+
+/// 设置暂停租约（`true` = 暂停 [`PAUSE_LEASE_MS`]，`false` = 立即解除）。
+fn set_pause_lease(until: &AtomicU64, paused: bool) {
+    let deadline = if paused { now_ms() + PAUSE_LEASE_MS } else { 0 };
+    until.store(deadline, Ordering::Relaxed);
+}
+
+/// 层语义匹配普通改键（非 tap-hold）：激活层条目优先、基础层条目兜底。
 fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Option<Key> {
     for r in &cfg.remaps {
         if !r.enabled || r.needs_timing_state() || r.layer.as_deref() != active_layer {
@@ -152,7 +214,7 @@ fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Opti
     None
 }
 
-/// 层语义匹配快捷键：激活层条目优先、基层层条目兜底。返回 (动作, 触发键, 名称)。
+/// 层语义匹配快捷键：激活层条目优先、基础层条目兜底。返回 (动作, 触发键, 名称)。
 fn match_shortcut(
     cfg: &Config,
     raw: &RawEvent,
@@ -210,603 +272,45 @@ fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
     }
 }
 
-/// tap-hold 改键的待定状态：按下 `from` 键后，等待判定「短按（tap）/ 长按（hold）/
-/// 单次（oneshot）/ 粘滞（sticky）」。字段由命中规则 `Remap` 解析而来。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct TapHoldPending {
-    from: Key,
-    tap: Option<Key>,
-    hold: Option<Key>,
-    /// 双击输出键（tap-dance）。
-    tap2: Option<Key>,
-    /// 三击输出键（tap-dance）。
-    tap3: Option<Key>,
-    /// 单次修饰键（单击武装、下一个非修饰键后释放）。
-    oneshot: Option<Key>,
-    /// 粘滞修饰键（单击锁定、再击解锁）。
-    sticky: Option<Key>,
-    /// 长按进入的层（momentary 切层）；与 `hold`（输出键）互斥。
-    hold_layer: Option<String>,
-    timeout: Duration,
-    down_at: Instant,
-    hold_active: bool,
-}
-
-/// tap-dance（连击）等待态：短按释放后不立即输出，等待后续连击或超时。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct TapDanceState {
-    from: Key,
-    /// 已累计击数（1..=3）。
-    tap_count: u8,
-    /// 等待下一击的截止时刻（懒提交：下一次事件到来时判定过期）。
-    deadline: Instant,
-    timeout: Duration,
-    /// 击数 1/2/3 对应的输出键（已按缺省回落），`None` = 该击数无输出。
-    outputs: [Option<Key>; 3],
-    /// 当前连击键是否仍「按下待抬起」（down 已吞、up 待吞）——按住期间不因超时提交。
-    holding: bool,
-}
-
-/// 运行时注入的修饰键状态：分「长按 hold / 粘滞 / 单次」三类，释放时机各不相同，
-/// 但都走同一「物理注入（simulate）+ 后续键 mods 补全」通道。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct ModsState {
-    /// tap-hold `hold` 修饰键（`from` 松开时释放）。
-    hold: BTreeSet<Modifier>,
-    /// 粘滞修饰键（再次单击 `from` 时解锁）。
-    sticky: BTreeSet<Modifier>,
-    /// 单次修饰键（下一个非修饰键松开时释放）。
-    oneshot: BTreeSet<Modifier>,
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-impl ModsState {
-    fn new() -> Self {
-        Self { hold: BTreeSet::new(), sticky: BTreeSet::new(), oneshot: BTreeSet::new() }
-    }
-
-    /// 全部当前注入的修饰键（供后续键的 mods 补全）。
-    fn all(&self) -> impl Iterator<Item = Modifier> + '_ {
-        self.hold.iter().chain(self.sticky.iter()).chain(self.oneshot.iter()).copied()
-    }
-}
-
-/// `Key`（裸修饰键）→ `Modifier`。hold/oneshot/sticky 是修饰键时，后续键的 mods 要补上它。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn key_as_modifier(k: Key) -> Option<Modifier> {
-    match k {
-        Key::Control => Some(Modifier::Ctrl),
-        Key::Alt => Some(Modifier::Alt),
-        Key::Shift => Some(Modifier::Shift),
-        Key::Meta => Some(Modifier::Meta),
-        _ => None,
-    }
-}
-
-/// `Modifier` → 裸修饰键 `Key`（释放 oneshot/sticky 时把集合里的修饰键映射回可注入的键）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn modifier_as_key(m: Modifier) -> Key {
-    match m {
-        Modifier::Ctrl => Key::Control,
-        Modifier::Alt => Key::Alt,
-        Modifier::Shift => Key::Shift,
-        Modifier::Meta => Key::Meta,
-    }
-}
-
-/// tap-hold 状态机单步推进。
+/// 后台执行一次文本扩展：回删触发词 → 注入替换文本 → 补回后缀键。
 ///
-/// 返回 `None` 表示事件被吞掉（原键不泄给目标程序）；返回 `Some(ev)` 表示继续走
-/// 普通 [`decide`]，其中 `ev.mods` 已并入当前注入的修饰键（hold ∪ sticky ∪ oneshot）。
-/// 判定规则：
-/// - 按下 `from` → 吞掉并进入待定；短按（阈值内松开）按模式输出 tap / 进入连击 /
-///   武装 oneshot / 切换 sticky，长按（≥阈值或 roll）输出 hold。
-/// - 待定期间按下其它键 → 立即判 hold（roll 判定，缩短等待）。
-/// - 自动重复的 `from` down 被吞掉、不推进判定。
-/// - 连击（tap-dance）等待窗内再次 down 累计击数，超时懒提交。
+/// 必须另起线程：注入走剪贴板 + `SendInput`，要上百毫秒，跑在钩子回调里会被系统判超时
+/// 摘掉钩子（之后快捷键/改键/文本扩展全部失效）。后缀键在判定命中时已被吞掉，这里补回，
+/// 保证「addr␣」展开成「我的地址␣」。注入失败会记进消息中心（没有控制台时不再无声无息）。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
-fn taphold_step(
-    ev: &Ev,
-    cfg: &Config,
-    pending: &mut Option<TapHoldPending>,
-    tap_dance: &mut Option<TapDanceState>,
-    mods: &mut ModsState,
-    active_layer: &mut Option<String>,
-) -> Option<Ev> {
-    // 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
-    commit_expired_dance(tap_dance);
-
-    match ev {
-        Ev::Down { key, mods: ev_mods, repeat } => {
-            // 连击等待中：同键 down → 累计击数并吞掉；异键 down → 提交连击后照常处理。
-            if let Some(d) = tap_dance.as_ref() {
-                if d.from == *key {
-                    if !*repeat {
-                        count_dance_tap(tap_dance);
-                    }
-                    return None;
-                }
-                commit_dance(tap_dance);
-            }
-
-            let is_pending_from = pending.as_ref().map(|p| p.from == *key).unwrap_or(false);
-            if is_pending_from {
-                return None; // 原键的重复 down：吞掉。
-            }
-            if pending.is_some() {
-                activate_hold(pending, mods, active_layer); // 不同键 down → roll 判定 hold。
-            }
-            if pending.is_none() {
-                if let Some(r) = find_taphold_rule(cfg, *key, active_layer.as_deref()) {
-                    *pending = Some(make_pending(*key, r));
-                    return None;
-                }
-            }
-            let mut m = ev_mods.clone();
-            m.extend(mods.all());
-            Some(Ev::Down { key: *key, mods: m, repeat: *repeat })
-        }
-        Ev::Up { key } => {
-            // 连击等待中的同键 up：吞掉并解除「按住中」。
-            if let Some(d) = tap_dance.as_ref() {
-                if d.from == *key {
-                    release_dance_tap(tap_dance);
-                    return None;
-                }
-            }
-            // pending 同键 up：结束待定（tap/hold/oneshot 武装/sticky 切换/进入连击）。
-            if pending.as_ref().map(|p| p.from == *key).unwrap_or(false) {
-                finish_taphold(pending, tap_dance, mods, active_layer);
-                return None;
-            }
-            // oneshot 消费：下一个非修饰键 up 时释放武装修饰。
-            if !mods.oneshot.is_empty() && key_as_modifier(*key).is_none() {
-                release_oneshot(mods);
-            }
-            Some(Ev::Up { key: *key })
-        }
-    }
-}
-
-/// 按层语义查找命中的 tap-hold/切层规则（激活层优先、基层层兜底）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) -> Option<&'a Remap> {
-    for r in &cfg.remaps {
-        if !r.enabled || !r.needs_timing_state() || r.layer.as_deref() != active_layer {
-            continue;
-        }
-        if r.from.parse::<Key>().ok() == Some(key) {
-            return Some(r);
-        }
-    }
-    if active_layer.is_some() {
-        for r in &cfg.remaps {
-            if !r.enabled || !r.needs_timing_state() || r.layer.is_some() {
-                continue;
-            }
-            if r.from.parse::<Key>().ok() == Some(key) {
-                return Some(r);
-            }
-        }
-    }
-    None
-}
-
-/// 由命中的 [`Remap`] 规则构造待定状态（各字段解析为 `Key`/层 id）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn make_pending(key: Key, r: &Remap) -> TapHoldPending {
-    TapHoldPending {
-        from: key,
-        tap: r.tap_key(),
-        hold: r.hold_key(),
-        tap2: r.tap2_key(),
-        tap3: r.tap3_key(),
-        oneshot: r.oneshot_key(),
-        sticky: r.sticky_key(),
-        hold_layer: r.hold_layer_id().map(String::from),
-        timeout: Duration::from_millis(r.tap_timeout()),
-        down_at: Instant::now(),
-        hold_active: false,
-    }
-}
-
-/// 判定 hold：注入 hold 键 down，或进入切层；hold 是修饰键时记入 `mods.hold`。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn activate_hold(
-    pending: &mut Option<TapHoldPending>,
-    mods: &mut ModsState,
-    active_layer: &mut Option<String>,
-) {
-    let Some(p) = pending.as_mut() else { return };
-    if p.hold_active {
-        return;
-    }
-    p.hold_active = true;
-    if let Some(hk) = p.hold {
-        input::simulate::down(hk);
-        if let Some(md) = key_as_modifier(hk) {
-            mods.hold.insert(md);
-        }
-    } else if let Some(layer) = &p.hold_layer {
-        *active_layer = Some(layer.clone());
-    } else if let Some(ok) = p.oneshot {
-        // oneshot 的 roll：按住 `from` 期间当普通 hold 修饰按下（松开 `from` 时释放）。
-        input::simulate::down(ok);
-        if let Some(md) = key_as_modifier(ok) {
-            mods.hold.insert(md);
-        }
-    }
-}
-
-/// 结束待定：hold 已激活则释放 hold 键 / 退出切层；否则按时长判定 tap/hold，或按模式
-/// 分发到「短按输出 / 进入连击 / 武装 oneshot / 切换 sticky」。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn finish_taphold(
-    pending: &mut Option<TapHoldPending>,
-    tap_dance: &mut Option<TapDanceState>,
-    mods: &mut ModsState,
-    active_layer: &mut Option<String>,
-) {
-    let Some(p) = pending.take() else { return };
-    if p.hold_active {
-        if let Some(hk) = p.hold {
-            input::simulate::up(hk);
-            if let Some(md) = key_as_modifier(hk) {
-                mods.hold.remove(&md);
-            }
-        } else if p.hold_layer.is_some() {
-            *active_layer = None; // 松开切层键 → 退回基层层。
-        } else if let Some(ok) = p.oneshot {
-            input::simulate::up(ok); // oneshot roll 的 hold：松开 `from` 释放。
-            if let Some(md) = key_as_modifier(ok) {
-                mods.hold.remove(&md);
-            }
-        }
-    } else if p.down_at.elapsed() >= p.timeout {
-        if let Some(hk) = p.hold {
-            input::simulate::tap(hk); // 长按后松开：hold 键短促输出一次。
-        }
-        // 切层键长按后松开（未 roll）：短暂进入又退出，无净效果，无需操作。
-    } else if let Some(sk) = p.sticky {
-        toggle_sticky(mods, sk); // 快速 tap：切换粘滞修饰。
-    } else if let Some(ok) = p.oneshot {
-        arm_oneshot(mods, ok); // 快速 tap：武装单次修饰。
-    } else if p.tap2.is_some() || p.tap3.is_some() {
-        // 快速 tap 且含双击/三击 → 进入连击等待（单/双/三击不同义）。
-        *tap_dance = Some(TapDanceState {
-            from: p.from,
-            tap_count: 1,
-            deadline: Instant::now() + p.timeout,
-            timeout: p.timeout,
-            outputs: [p.tap, p.tap2.or(p.tap), p.tap3.or(p.tap2).or(p.tap)],
-            holding: false,
-        });
-    } else if let Some(tk) = p.tap {
-        input::simulate::tap(tk); // 短按：tap 键。
-    }
-}
-
-/// 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn commit_expired_dance(tap_dance: &mut Option<TapDanceState>) {
-    let expired = tap_dance.as_ref().is_some_and(|d| !d.holding && Instant::now() >= d.deadline);
-    if expired {
-        commit_dance(tap_dance);
-    }
-}
-
-/// 立即提交连击：输出当前击数对应的键并清空等待态。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn commit_dance(tap_dance: &mut Option<TapDanceState>) {
-    let Some(d) = tap_dance.take() else { return };
-    if let Some(k) = d.outputs[(d.tap_count - 1) as usize] {
-        input::simulate::tap(k);
-    }
-}
-
-/// 连击等待窗内再次按下同键：累计击数（≤3）、重置等待窗、标记「按住中」。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn count_dance_tap(tap_dance: &mut Option<TapDanceState>) {
-    let Some(d) = tap_dance.as_mut() else { return };
-    if d.tap_count < 3 {
-        d.tap_count += 1;
-    }
-    d.deadline = Instant::now() + d.timeout;
-    d.holding = true;
-}
-
-/// 连击键抬起：解除「按住中」（其 down 已被吞掉，up 一并吞掉）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn release_dance_tap(tap_dance: &mut Option<TapDanceState>) {
-    if let Some(d) = tap_dance.as_mut() {
-        d.holding = false;
-    }
-}
-
-/// 武装单次修饰：物理按下修饰键并记入 `mods.oneshot`，供后续键 mods 补全。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn arm_oneshot(mods: &mut ModsState, key: Key) {
-    if let Some(m) = key_as_modifier(key) {
-        input::simulate::down(key);
-        mods.oneshot.insert(m);
-    }
-}
-
-/// 切换粘滞修饰：锁定则物理按下并记入 `mods.sticky`，解锁则物理抬起并移除。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn toggle_sticky(mods: &mut ModsState, key: Key) {
-    if let Some(m) = key_as_modifier(key) {
-        if mods.sticky.contains(&m) {
-            input::simulate::up(key);
-            mods.sticky.remove(&m);
-        } else {
-            input::simulate::down(key);
-            mods.sticky.insert(m);
-        }
-    }
-}
-
-/// 释放全部武装中的单次修饰（下一个非修饰键 up 时调用）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn release_oneshot(mods: &mut ModsState) {
-    let ones: Vec<Modifier> = mods.oneshot.iter().copied().collect();
-    for m in ones {
-        input::simulate::up(modifier_as_key(m));
-    }
-    mods.oneshot.clear();
-}
-
-/// 键序列（leader key）运行态：承载 [`SequenceTracker`] 与超时判据。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct SequenceState {
-    tracker: SequenceTracker,
-    last_activity: Instant,
-    timeout: Duration,
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-impl SequenceState {
-    fn new() -> Self {
-        Self {
-            tracker: SequenceTracker::new(),
-            last_activity: Instant::now(),
-            timeout: Duration::from_millis(DEFAULT_SEQUENCE_TIMEOUT_MS),
-        }
-    }
-}
-
-/// 和弦（同时按住多个键）运行态：承载 [`ChordTracker`] 与超时判据。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-struct ChordState {
-    tracker: ChordTracker,
-    last_activity: Instant,
-    timeout: Duration,
-}
-
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-impl ChordState {
-    fn new() -> Self {
-        Self {
-            tracker: ChordTracker::new(),
-            last_activity: Instant::now(),
-            timeout: Duration::from_millis(DEFAULT_SEQUENCE_TIMEOUT_MS),
-        }
-    }
-}
-
-/// 收集「当前层生效」的键序列触发条目：(步骤, 动作, 触发键文本, 名称)。
-/// 层语义与 [`match_shortcut`] 一致：激活层条目优先、基层层条目兜底。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn collect_sequence_items(
-    cfg: &Config,
-    active_layer: Option<&str>,
-) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
-    let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
-    for s in &cfg.shortcuts {
-        if !s.enabled || s.layer.as_deref() != active_layer {
-            continue;
-        }
-        for t in &s.triggers {
-            if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
-                out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
-            }
-        }
-    }
-    if active_layer.is_some() {
-        for s in &cfg.shortcuts {
-            if !s.enabled || s.layer.is_some() {
-                continue;
-            }
-            for t in &s.triggers {
-                if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
-                    out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// 收集「当前层生效」的和弦触发条目：(成员键, 动作, 触发键文本, 名称)。
-/// 层语义与 [`match_shortcut`] 一致：激活层条目优先、基层层条目兜底。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn collect_chord_items(
-    cfg: &Config,
-    active_layer: Option<&str>,
-) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
-    let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
-    for s in &cfg.shortcuts {
-        if !s.enabled || s.layer.as_deref() != active_layer {
-            continue;
-        }
-        for t in &s.triggers {
-            if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
-                out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
-            }
-        }
-    }
-    if active_layer.is_some() {
-        for s in &cfg.shortcuts {
-            if !s.enabled || s.layer.is_some() {
-                continue;
-            }
-            for t in &s.triggers {
-                if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
-                    out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// 键序列状态机单步推进（在 tap-hold 之后、普通 [`decide`] 之前调用）。
-///
-/// 返回 `Some(ev)` 表示事件继续走普通 [`decide`]（断链的键仍可触发单组合）；
-/// 返回 `None` 表示事件被吞掉（Block）：leader 已进入等待下一键，或序列已命中。
-/// 只处理非重复 Down；`Escape` 取消进行中的序列并吞掉。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn sequence_step(
-    app: &tauri::AppHandle,
+fn spawn_hotstring(
+    app: tauri::AppHandle,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
-    ev: &Ev,
-    cfg: &Config,
-    state: &mut SequenceState,
-    active_layer: Option<&str>,
-) -> Option<Ev> {
-    let Ev::Down { key, mods, repeat } = ev else { return Some(ev.clone()) };
-    if *repeat {
-        return Some(ev.clone());
-    }
-
-    // 超时：过期则重置，事件照走。
-    if state.tracker.is_active() && state.last_activity.elapsed() >= state.timeout {
-        state.tracker.reset();
-    }
-
-    // Escape 取消进行中的序列并吞掉。
-    if *key == Key::Escape && state.tracker.is_active() {
-        state.tracker.reset();
-        return None;
-    }
-
-    let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
-    let items = collect_sequence_items(cfg, active_layer);
-    let steps: Vec<Vec<Shortcut>> = items.iter().map(|(s, ..)| s.clone()).collect();
-    match state.tracker.advance(&raw, &steps) {
-        SeqAdvance::NoMatch => Some(ev.clone()),
-        SeqAdvance::Advance => {
-            state.last_activity = Instant::now();
-            None
+    hit: HotstringHit,
+) {
+    std::thread::spawn(move || {
+        for _ in 0..hit.backspaces {
+            input::simulate::tap(Key::Backspace);
         }
-        SeqAdvance::Complete(i) => {
-            state.tracker.reset();
-            if let Some((_, actions, trigger, name)) = items.get(i) {
-                fire(app.clone(), results, unread, actions.clone(), trigger.clone(), name.clone());
-            }
-            None
+        let expanded = resolve_hotstring(&hit.replace);
+        if let Err(e) = input::simulate::type_text(&expanded) {
+            commit_result(
+                &app,
+                &results,
+                &unread,
+                CommandResult {
+                    kind: "hotstring".into(),
+                    label: "文本扩展".into(),
+                    command: hit.trigger.clone(),
+                    trigger: hit.trigger.clone(),
+                    name: String::new(),
+                    stdout: String::new(),
+                    stderr: format!("注入替换文本失败：{e}（触发词已被回删）"),
+                    exit_code: None,
+                    show_output: false,
+                    time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                },
+            );
+            return;
         }
-    }
-}
-
-/// 和弦状态机单步推进（在 tap-hold 之后、键序列之前调用）。
-///
-/// 返回 `Some(ev)` 表示事件继续走键序列 / 普通 [`decide`]；返回 `None` 表示事件被吞掉
-/// （Block）：成员键等待其它成员凑齐，或和弦已命中。只处理非重复 Down；
-/// 成员键的 keyup 被钩子层一并吞掉，集合靠「凑齐触发」或「超时」清空，不依赖 Up。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn chord_step(
-    app: &tauri::AppHandle,
-    results: Arc<Mutex<Vec<CommandResult>>>,
-    unread: Arc<AtomicBool>,
-    ev: &Ev,
-    cfg: &Config,
-    state: &mut ChordState,
-    active_layer: Option<&str>,
-) -> Option<Ev> {
-    let Ev::Down { key, mods, repeat } = ev else { return Some(ev.clone()) };
-    if *repeat {
-        return Some(ev.clone());
-    }
-
-    // 超时：过期则重置（丢弃已按下的成员键），事件照走。
-    if state.tracker.is_active() && state.last_activity.elapsed() >= state.timeout {
-        state.tracker.reset();
-    }
-
-    let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
-    let items = collect_chord_items(cfg, active_layer);
-    let chords: Vec<Vec<Shortcut>> = items.iter().map(|(c, ..)| c.clone()).collect();
-    match state.tracker.advance(&raw, &chords) {
-        ChordAdvance::NoMatch => Some(ev.clone()),
-        ChordAdvance::Await => {
-            state.last_activity = Instant::now();
-            None
-        }
-        ChordAdvance::Complete(i) => {
-            state.tracker.reset();
-            if let Some((_, actions, trigger, name)) = items.get(i) {
-                fire(app.clone(), results, unread, actions.clone(), trigger.clone(), name.clone());
-            }
-            None
-        }
-    }
-}
-
-/// 热串输入缓冲最大长度（触发词都很短，64 字符足够）。
-const MAX_HOTSTRING_BUFFER: usize = 64;
-
-/// 处理一个放行的事件用于文本扩展：累积可打印字符、命中触发词时异步回删并注入。
-/// 返回 `true` 表示「事件被消费」（命中触发词的后缀键被吞掉，改由后台线程
-/// 回删 + 注入 + 补回后缀，避免后缀先落盘与回删并发产生竞态/错位）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
-fn on_hotstring(ev: &Ev, buffer: &mut String, expansions: &[TextExpansion]) -> bool {
-    let Ev::Down { key, mods, repeat } = ev else { return false };
-    if *repeat {
-        return false;
-    }
-    // 修饰键不打断缓冲（输入大写字母需要 Shift 按下）。
-    if matches!(key, Key::Shift | Key::Control | Key::Alt | Key::Meta) {
-        return false;
-    }
-    if is_hotstring_terminator(*key) {
-        if let Some(exp) = match_expansion(buffer, expansions) {
-            let backspaces = exp.trigger.chars().count();
-            let replace = exp.replace.clone();
-            let terminator = *key;
-            std::thread::spawn(move || {
-                for _ in 0..backspaces {
-                    input::simulate::tap(Key::Backspace);
-                }
-                let expanded = resolve_hotstring(&replace);
-                let _ = input::simulate::type_text(&expanded);
-                // 后缀键（空格/回车/Tab）已被吞掉，这里补回，保证「sig␣ → signature␣」。
-                input::simulate::tap(terminator);
-            });
-            buffer.clear();
-            return true;
-        }
-        buffer.clear();
-        return false;
-    }
-    if *key == Key::Backspace {
-        buffer.pop();
-        return false;
-    }
-    // 可打印字符累积；其余键（方向键/功能键等）打断缓冲。
-    let shift = mods.contains(&Modifier::Shift);
-    match key_to_char(*key, shift) {
-        Some(c) => {
-            buffer.push(c);
-            if buffer.chars().count() > MAX_HOTSTRING_BUFFER {
-                let skip = buffer.chars().count() - MAX_HOTSTRING_BUFFER;
-                *buffer = buffer.chars().skip(skip).collect();
-            }
-        }
-        None => buffer.clear(),
-    }
-    false
+        input::simulate::tap(hit.terminator);
+    });
 }
 
 /// 展开热串替换文本的动态片段：`{date}` / `{time}` / `{clipboard}`。
@@ -878,6 +382,29 @@ fn detect_wake(
         }
         _ => *last_tap = Some(now),
     }
+}
+
+/// 状态机的超时推进线程：每 [`ENGINE_TICK_MS`] 调一次 [`Engine::tick`]，只在「等待态
+/// 已过期」时动作（回放被吞的 leader / 中间步、提交连击等待窗），不会注入别的东西。
+/// 录制中与暂停中不推进：那段时间事件不进状态机，推进只会把陈旧的等待态回放到用户
+/// 正在录入的内容里。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn spawn_engine_ticker(
+    engine: Arc<Mutex<Engine>>,
+    cfg: Arc<RwLock<Config>>,
+    paused_until: Arc<AtomicU64>,
+    rec: Arc<Mutex<Option<Recorder>>>,
+) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
+        if rec.lock().unwrap().is_some() || pause_active(&paused_until) {
+            continue;
+        }
+        if cfg.read().unwrap().settings.paused {
+            continue;
+        }
+        engine.lock().unwrap().tick(&mut SimulatedInject);
+    });
 }
 
 /// 执行一串动作（异步跑，避免阻塞钩子回调）；命令类动作的结果进消息中心。
@@ -974,7 +501,22 @@ fn ensure_toast(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 
 /// 在屏幕右下角弹一个短暂的气泡（常驻 3 秒后自动消失）。
 fn show_toast(app: &tauri::AppHandle, name: &str, trigger: &str) {
-    let payload = ToastPayload { name: name.to_string(), trigger: trigger.to_string() };
+    let payload =
+        ToastPayload { name: name.to_string(), trigger: trigger.to_string(), subtitle: None };
+    show_toast_payload(app, payload);
+}
+
+/// 弹一条自定义副标题的气泡（不含「正在执行…」，用于「发现新版本」这类通知）。
+fn show_toast_note(app: &tauri::AppHandle, title: &str, subtitle: &str) {
+    let payload = ToastPayload {
+        name: title.to_string(),
+        trigger: String::new(),
+        subtitle: Some(subtitle.to_string()),
+    };
+    show_toast_payload(app, payload);
+}
+
+fn show_toast_payload(app: &tauri::AppHandle, payload: ToastPayload) {
     // 先把载荷写进状态：toast 窗口若是首次懒创建，前端加载后据此兜底渲染，
     // 避免「事件早于监听器注册」导致第一次触发无内容。
     app.state::<KadaState>().toast.lock().unwrap().replace(payload.clone());
@@ -1145,6 +687,351 @@ fn key_name(k: Key) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 假注入器：只记录发出的键，绝不真的注入（会打到跑测试的这台机器上）。
+    #[derive(Default)]
+    struct TestInject {
+        log: Vec<String>,
+    }
+
+    impl engine::Inject for TestInject {
+        fn down(&mut self, key: Key) {
+            self.log.push(format!("down {}", key_name(key)));
+        }
+        fn up(&mut self, key: Key) {
+            self.log.push(format!("up {}", key_name(key)));
+        }
+    }
+
+    fn down(key: Key) -> Ev {
+        Ev::Down { key, mods: BTreeSet::new(), repeat: false }
+    }
+
+    fn up(key: Key) -> Ev {
+        Ev::Up { key }
+    }
+
+    /// 走一遍钩子回调的决策链（与 `run()` 里的接线一致）：`engine.step` → `decide`。
+    fn decide_via_engine(
+        engine: &mut Engine,
+        inj: &mut TestInject,
+        cfg: &Config,
+        ev: &Ev,
+    ) -> Option<Outcome> {
+        let mut fire = |_a: Vec<Action>, _t: String, _n: String| {};
+        let ev = engine.step(ev, cfg, inj, &mut fire)?;
+        Some(decide(&ev, cfg, engine.active_layer()))
+    }
+
+    /// 同 [`decide_via_engine`]，但把触发的触发键收集下来（和弦/序列在 `step` 里就 fire 了）。
+    fn step_collecting_fire(
+        engine: &mut Engine,
+        inj: &mut TestInject,
+        cfg: &Config,
+        ev: &Ev,
+        fired: &mut Vec<String>,
+    ) -> Option<Ev> {
+        let mut fire = |_a: Vec<Action>, t: String, _n: String| fired.push(t);
+        engine.step(ev, cfg, inj, &mut fire)
+    }
+
+    /// 「长按进入层」的切层键（CapsLock → L1）+ 该层内一条快捷键（触发键由参数给出）。
+    fn cfg_with_layer(trigger: &str) -> Config {
+        Config {
+            layers: vec![kada_core::Layer { id: "L1".into(), name: "层1".into() }],
+            remaps: vec![kada_core::Remap {
+                from: "CapsLock".into(),
+                hold_layer: Some("L1".into()),
+                enabled: true,
+                ..Default::default()
+            }],
+            shortcuts: vec![kada_core::ShortcutItem {
+                layer: Some("L1".into()),
+                triggers: vec![trigger.into()],
+                actions: vec![Action::Text {
+                    text: "x".into(),
+                    mode: kada_core::TextMode::Input,
+                    description: None,
+                }],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn layer_key_short_press_replays_original_key() {
+        // 只设了「长按进入层」、没设短按输出：短按必须回放原键，否则这个键就变哑了
+        //（用户按一下 CapsLock 什么也不发生）。
+        let cfg = cfg_with_layer("K");
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+
+        assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
+        decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
+        assert_eq!(inj.log, vec!["down CapsLock", "up CapsLock"], "短按回放原键");
+        assert_eq!(engine.active_layer(), None, "短按不进层");
+    }
+
+    #[test]
+    fn layer_key_long_press_without_other_key_replays_original_key() {
+        // 「一直按住切层键、期间没按别的键就松开」（层从没真正进过）：整个按键必须回放原键，
+        // 否则这个键只是按久了一点就彻底没反应——用户看到的正是「长按切层键没反应」。
+        let mut cfg = cfg_with_layer("K");
+        cfg.remaps[0].tap_timeout_ms = 20;
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+
+        assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
+        assert_eq!(inj.log, vec!["down CapsLock", "up CapsLock"], "长按无输出时回放原键");
+        assert_eq!(engine.active_layer(), None, "没按别的键就不进层");
+    }
+
+    #[test]
+    fn user_real_config_layer_key_tab_with_chord() {
+        // 复刻用户真实配置（2026-09-24 14:25）：`Tab` 长按进「和弦层」，层内一条快捷键带
+        // `5&Y`（和弦）与 `Alt+Z`（普通组合）。事件流按真人操作补齐：Tab 按住（含自动重复）
+        // → 5 → Y → 松开。和弦与组合都应在按住切层键期间命中。
+        const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
+        let cfg = Config {
+            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            remaps: vec![kada_core::Remap {
+                from: "Tab".into(),
+                to: String::new(),
+                hold_layer: Some(LID.into()),
+                tap_timeout_ms: 200,
+                enabled: true,
+                ..Default::default()
+            }],
+            shortcuts: vec![kada_core::ShortcutItem {
+                layer: Some(LID.into()),
+                triggers: vec!["5&Y".into(), "Alt+Z".into()],
+                actions: vec![Action::Text {
+                    text: "pw".into(),
+                    mode: kada_core::TextMode::Input,
+                    description: None,
+                }],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+
+        // ① 和弦：按住 Tab（含自动重复）→ 5 → Y
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+        let mut fired: Vec<String> = Vec::new();
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Tab), &mut fired);
+        for _ in 0..5 {
+            let repeat = Ev::Down { key: Key::Tab, mods: BTreeSet::new(), repeat: true };
+            step_collecting_fire(&mut engine, &mut inj, &cfg, &repeat, &mut fired);
+        }
+        assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
+        assert_eq!(engine.active_layer(), Some(LID), "按住 Tab + 按 5 → 进层");
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
+        assert_eq!(fired, vec!["5&Y"], "层内和弦应触发");
+
+        // ② 普通组合：松开和弦成员后，按住 Tab 再按 Alt+Z（真人按 Alt 时事件带 mods={Alt}）
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Digit5), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Y), &mut fired);
+        fired.clear();
+        let alt_down = Ev::Down {
+            key: Key::Alt,
+            mods: BTreeSet::from([Modifier::Alt]),
+            repeat: false,
+        };
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_down, &mut fired);
+        let z_down = Ev::Down {
+            key: Key::Z,
+            mods: BTreeSet::from([Modifier::Alt]),
+            repeat: false,
+        };
+        let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &z_down, &mut fired);
+        let layer = engine.active_layer().map(str::to_string);
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref()) {
+            Outcome::Shortcut { trigger, .. } => assert_eq!(trigger, "Alt+Z"),
+            other => panic!(
+                "层内 Alt+Z 应命中该层快捷键，实际 {:?}",
+                matches!(other, Outcome::Pass)
+            ),
+        }
+
+        // ③ 层内序列：按住 Tab 期间依次按 F9 J K 应触发
+        let mut cfg2 = cfg.clone();
+        cfg2.shortcuts[0].triggers = vec!["F9 J K".into()];
+        let mut engine2 = Engine::new();
+        let mut inj2 = TestInject::default();
+        let mut fired2: Vec<String> = Vec::new();
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg2, &down(Key::Tab), &mut fired2);
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg2, &down(Key::F9), &mut fired2);
+        assert_eq!(engine2.active_layer(), Some(LID), "按住 Tab + 按 F9 → 进层");
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg2, &down(Key::J), &mut fired2);
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg2, &down(Key::K), &mut fired2);
+        assert_eq!(fired2, vec!["F9 J K"], "层内序列应触发");
+    }
+
+    #[test]
+    fn layer_key_released_before_chord_does_not_fire() {
+        // 层是 momentary 的（hold_layer）：松开切层键后层立即失效，此时按层内和弦不触发（这是
+        // 设计，不是 bug）。「长按切层、松开、再按层内和弦/序列」的用法要用切换式切层
+        //（lock_layer，见 locked_layer_* 用例）。
+        let cfg = cfg_with_layer("5&Y");
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+        let mut fired: Vec<String> = Vec::new();
+
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::CapsLock), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::CapsLock), &mut fired);
+        assert_eq!(engine.active_layer(), None, "松开切层键即退层");
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
+        assert!(fired.is_empty(), "层未激活时层内和弦不触发，实际：{fired:?}");
+    }
+
+    #[test]
+    fn locked_layer_key_long_press_then_chord_sequence_combo() {
+        // 复刻用户真实配置（2026-09-24）：`Tab` 改成「长按锁定层」（切换式）指向「和弦层」，
+        // 层内一条快捷键带 `5&Y`（和弦）+ `F9 J K`（序列）+ `Alt+Z`（普通组合），基础层也有一条
+        // `Alt+Z`。用户诉求：**长按切层键之后（松手）** 层内的和弦与序列要能触发——momentary
+        // 做不到（层随松手消失，层内和弦还得一直按住切层键），切换式才用得起来。
+        const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
+        let cfg = Config {
+            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            remaps: vec![kada_core::Remap {
+                from: "Tab".into(),
+                to: String::new(),
+                lock_layer: Some(LID.into()),
+                tap_timeout_ms: 20, // 真实配置是 200；测试里压短，免得真等
+                enabled: true,
+                ..Default::default()
+            }],
+            shortcuts: vec![
+                kada_core::ShortcutItem {
+                    name: Some("基础层 Alt+Z".into()),
+                    triggers: vec!["Alt+Z".into()],
+                    actions: vec![],
+                    enabled: true,
+                    ..Default::default()
+                },
+                kada_core::ShortcutItem {
+                    name: Some("输入密码".into()),
+                    layer: Some(LID.into()),
+                    triggers: vec!["5&Y".into(), "F9 J K".into(), "Alt+Z".into()],
+                    actions: vec![Action::Text {
+                        text: "pw".into(),
+                        mode: kada_core::TextMode::Input,
+                        description: None,
+                    }],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+        let mut fired: Vec<String> = Vec::new();
+
+        // ① 长按 Tab（期间没按别的键）再松开 → 切进「和弦层」并保持生效。
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Tab), &mut fired);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Tab), &mut fired);
+        assert_eq!(engine.active_layer(), Some(LID), "长按切层后层保持生效");
+        assert!(inj.log.is_empty(), "切层键不回放");
+
+        // ② 层内和弦：松手后直接按 5 与 Y。
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
+        assert_eq!(fired, vec!["5&Y"], "长按切层后层内和弦应触发");
+
+        // ③ 层内序列：F9 J K 依次按下。
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Digit5), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Y), &mut fired);
+        fired.clear();
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::F9), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::J), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::K), &mut fired);
+        assert_eq!(fired, vec!["F9 J K"], "长按切层后层内序列应触发");
+
+        // ④ 层内普通组合：层条目优先于基础层同名条目。
+        fired.clear();
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::F9), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::J), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::K), &mut fired);
+        let alt_z = Ev::Down { key: Key::Z, mods: BTreeSet::from([Modifier::Alt]), repeat: false };
+        let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
+        let layer = engine.active_layer().map(str::to_string);
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref()) {
+            Outcome::Shortcut { name, .. } => assert_eq!(name, "输入密码", "层内 Alt+Z 应优先"),
+            Outcome::Replace(_) => panic!("不该走改键"),
+            Outcome::Pass => panic!("层内 Alt+Z 未命中"),
+        }
+
+        // ⑤ 再长按一次切层键 → 退出锁定层，Alt+Z 回到基础层条目。
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Tab), &mut fired);
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Tab), &mut fired);
+        assert_eq!(engine.active_layer(), None, "再长按一次退出切层");
+        let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, None) {
+            Outcome::Shortcut { name, .. } => assert_eq!(name, "基础层 Alt+Z"),
+            Outcome::Replace(_) => panic!("不该走改键"),
+            Outcome::Pass => panic!("基础层 Alt+Z 未命中"),
+        }
+    }
+
+    #[test]
+    fn layer_key_long_press_activates_layer_shortcut() {
+        // 长按切层键期间按下 K：K 应按「激活层优先」命中层内快捷键（而不是基础层兜底）。
+        let cfg = cfg_with_layer("K");
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+
+        assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
+        assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
+        let out = decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::K)).expect("K 应放行");
+        assert_eq!(engine.active_layer(), Some("L1"), "按住切层键 + 按 K → 进层");
+        match out {
+            Outcome::Shortcut { trigger, .. } => assert_eq!(trigger, "K"),
+            _ => panic!("层内 K 应命中该层快捷键"),
+        }
+
+        // 松开切层键退回基础层，K 不再命中层条目。
+        decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::K));
+        decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
+        assert_eq!(engine.active_layer(), None, "松开切层键退回基础层");
+        let out = decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::K)).expect("K 应放行");
+        assert!(matches!(out, Outcome::Pass), "基础层下 K 不该命中层内快捷键");
+    }
+
+    #[test]
+    fn layer_chord_fires_while_layer_key_held() {
+        // 复刻实际配法：层「和弦层」里放一条和弦快捷键（5&Y），用 CapsLock 长按进层
+        //（CapsLock 只设了「长按进入层」）。按住切层键 + 同时按 5 与 Y → 该层和弦应触发。
+        let cfg = cfg_with_layer("5&Y");
+        let mut fired: Vec<String> = Vec::new();
+        let mut inj = TestInject::default();
+        let mut engine = Engine::new();
+
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::CapsLock), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
+        assert_eq!(engine.active_layer(), Some("L1"), "按住切层键即进层");
+        assert_eq!(fired, vec!["5&Y"], "层内和弦应触发");
+
+        // 不进层时同一个和弦不该触发（层语义：条目只在该层激活时生效）。
+        let mut fired2: Vec<String> = Vec::new();
+        let mut inj2 = TestInject::default();
+        let mut engine2 = Engine::new();
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Digit5), &mut fired2);
+        step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Y), &mut fired2);
+        assert!(fired2.is_empty(), "基础层下不应命中层内和弦，实际：{fired2:?}");
+    }
 
     #[test]
     fn recorder_transcribes_events() {
@@ -1329,10 +1216,11 @@ fn import_config(
     Ok(ignored)
 }
 
-/// 暂停/恢复快捷键触发：录入组合键时暂停，避免自触发。
+/// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
+/// 暂停是限时租约（[`PAUSE_LEASE_MS`]），前端若被中断来不及解除也不会永久卡死。
 #[tauri::command]
 fn set_paused(state: tauri::State<'_, KadaState>, paused: bool) {
-    state.paused.store(paused, Ordering::Relaxed);
+    set_pause_lease(&state.paused_until, paused);
 }
 
 /// 开始录制宏：快捷键/改键随即暂停，所有按键进时间线。
@@ -1346,7 +1234,7 @@ fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
         return Err("已在录制中".into());
     }
     *g = Some(Recorder::new());
-    state.paused.store(true, Ordering::Relaxed);
+    set_pause_lease(&state.paused_until, true);
     Ok(())
 }
 
@@ -1360,7 +1248,7 @@ fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String
     let Some(rec) = g.take() else {
         return Err("没有正在进行的录制".into());
     };
-    state.paused.store(false, Ordering::Relaxed);
+    set_pause_lease(&state.paused_until, false);
     Ok(rec.finish())
 }
 
@@ -1407,6 +1295,7 @@ pub fn run() {
             Some(vec!["--autostart"]),
         ))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![
             get_config,
             set_config,
@@ -1420,14 +1309,17 @@ pub fn run() {
             get_unread,
             get_toast_payload,
             mark_results_read,
-            clear_command_results
+            clear_command_results,
+            update::get_update_status,
+            update::check_update,
+            update::install_update
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             let file = dir.join("config.json");
 
             let config = Arc::new(RwLock::new(load_config(&file)));
-            let paused = Arc::new(AtomicBool::new(false));
+            let paused_until = Arc::new(AtomicU64::new(0));
             let rec = Arc::new(Mutex::new(None::<Recorder>));
             let results: Arc<Mutex<Vec<CommandResult>>> = Arc::new(Mutex::new(Vec::new()));
             let unread = Arc::new(AtomicBool::new(false));
@@ -1440,22 +1332,19 @@ pub fn run() {
 
             // 钩子接线：事件即时查表；（Windows / Linux 有实现）
             #[cfg(any(target_os = "windows", target_os = "linux"))]
+            let engine = Arc::new(Mutex::new(Engine::new()));
+
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
             let hook_handle: Option<input::HookHandle> = Some(
                 {
                     let cfg = config.clone();
-                    let p = paused.clone();
+                    let pause = paused_until.clone();
                     let r = rec.clone();
                     let app_handle = app.handle().clone();
                     let results = results.clone();
                     let unread = unread.clone();
+                    let engine = engine.clone();
                     let mut last_tap: Option<Instant> = None;
-                    let mut hotstring_buffer = String::new();
-                    let mut taphold: Option<TapHoldPending> = None;
-                    let mut tap_dance: Option<TapDanceState> = None;
-                    let mut mods_state = ModsState::new();
-                    let mut active_layer: Option<String> = None;
-                    let mut sequence_state = SequenceState::new();
-                    let mut chord_state = ChordState::new();
                     input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
@@ -1469,45 +1358,28 @@ pub fn run() {
                         // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
                         detect_wake(&cfg, &mut last_tap, &app_handle, &ev);
                         let guard = cfg.read().unwrap();
-                        if p.load(Ordering::Relaxed) || guard.settings.paused {
+                        if pause_active(&pause) || guard.settings.paused {
                             return input::HookAction::Allow;
                         }
-                        // tap-hold 状态机（改键优先于快捷键）：被吞掉的键不进 decide。
-                        let Some(ev) = taphold_step(
-                            &ev,
-                            &guard,
-                            &mut taphold,
-                            &mut tap_dance,
-                            &mut mods_state,
-                            &mut active_layer,
-                        ) else {
+                        // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
+                        // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
+                        let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
+                            fire(
+                                app_handle.clone(),
+                                results.clone(),
+                                unread.clone(),
+                                actions,
+                                trigger,
+                                name,
+                            );
+                        };
+                        let Some(ev) =
+                            engine.lock().unwrap().step(&ev, &guard, &mut SimulatedInject, &mut fire_hit)
+                        else {
                             return input::HookAction::Block;
                         };
-                        // 和弦（同时按住多个键）：吞掉成员键，凑齐触发、超时丢弃。
-                        let Some(ev) = chord_step(
-                            &app_handle,
-                            results.clone(),
-                            unread.clone(),
-                            &ev,
-                            &guard,
-                            &mut chord_state,
-                            active_layer.as_deref(),
-                        ) else {
-                            return input::HookAction::Block;
-                        };
-                        // 键序列（leader key）：吞掉进入等待/命中的键，放行断链的键继续走 decide。
-                        let Some(ev) = sequence_step(
-                            &app_handle,
-                            results.clone(),
-                            unread.clone(),
-                            &ev,
-                            &guard,
-                            &mut sequence_state,
-                            active_layer.as_deref(),
-                        ) else {
-                            return input::HookAction::Block;
-                        };
-                        match decide(&ev, &guard, active_layer.as_deref()) {
+                        let layer = engine.lock().unwrap().active_layer().map(str::to_string);
+                        match decide(&ev, &guard, layer.as_deref()) {
                             Outcome::Shortcut { actions, trigger, name } => {
                                 fire(
                                     app_handle.clone(),
@@ -1521,12 +1393,20 @@ pub fn run() {
                             }
                             Outcome::Replace(to) => input::HookAction::Replace(to),
                             Outcome::Pass => {
-                                // 命中文本扩展时后缀键（空格/回车/Tab）被吞掉，改由后台线程
-                                // 回删 + 注入 + 补回后缀（避免后缀先落盘与回删并发产生错位）。
-                                if on_hotstring(&ev, &mut hotstring_buffer, &guard.expansions) {
-                                    input::HookAction::Block
-                                } else {
-                                    input::HookAction::Allow
+                                // 命中文本扩展：后缀键（空格/回车/Tab）吞掉，改由后台线程
+                                // 回删触发词 + 注入替换文本 + 补回后缀（注入要上百毫秒，绝不能
+                                // 跑在钩子回调里——回调超时会被系统摘掉钩子，之后全部功能失效）。
+                                match engine.lock().unwrap().hotstring(&ev, &guard.expansions) {
+                                    Some(hit) => {
+                                        spawn_hotstring(
+                                            app_handle.clone(),
+                                            results.clone(),
+                                            unread.clone(),
+                                            hit,
+                                        );
+                                        input::HookAction::Block
+                                    }
+                                    None => input::HookAction::Allow,
                                 }
                             }
                         }
@@ -1538,9 +1418,13 @@ pub fn run() {
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
             let hook_handle: Option<input::HookHandle> = None;
 
+            // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker）。
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            spawn_engine_ticker(engine, config.clone(), paused_until.clone(), rec.clone());
+
             let state = KadaState {
                 config,
-                paused,
+                paused_until,
                 rec,
                 file,
                 _hook: Mutex::new(hook_handle),
@@ -1552,6 +1436,8 @@ pub fn run() {
                 toast: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
+            // 更新状态单独托管：设置页/托盘都要读，与配置无关（不进 config.json）。
+            app.manage(update::UpdateState::new(app.package_info().version.to_string()));
 
             // 确保开机自启注册项带 `--autostart` 参数（旧版注册的是裸 exe 路径，无法区分启动来源）。
             let autostart_enabled = app
@@ -1570,14 +1456,16 @@ pub fn run() {
 
             // 托盘：常驻后台，关窗不退出。
             let show_i = MenuItem::with_id(app, "show", "打开咔哒", true, None::<&str>)?;
+            let update_i = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&show_i, &update_i, &quit_i])?;
             let tray_icon = TrayIconBuilder::new()
                 .icon(base_icon.unwrap())
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    "update" => update::spawn(app, update::Mode::Manual),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -1589,6 +1477,9 @@ pub fn run() {
                 })
                 .build(app)?;
             *app.state::<KadaState>().tray.lock().unwrap() = Some(tray_icon);
+
+            // 启动后台检查更新：延迟几秒、仅 release 构建、查不到就静默（见 update::spawn_startup_check）。
+            update::spawn_startup_check(app.handle());
 
             Ok(())
         })

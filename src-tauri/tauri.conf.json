@@ -18,11 +18,23 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IERENUM2N0E3MEYwMEI2OEQKUldTTnRnQVBwMmRjM2FiNVlVL0J3d2djUGEza3VTR01mWDFwMHg3czJCd2IwNTZ2TkdzSUZQVTIK",
+      "endpoints": [
+        "https://github.com/chillyice/Kada/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

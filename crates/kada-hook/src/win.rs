@@ -6,10 +6,12 @@
 //!
 //! 机制要点：
 //! - 修饰键状态用 `GetKeyState` 实时读（事件键本身的方向手动修正，避开
-//!   队列滞后）；自动重复根据同键 250ms 内再次 down 识别。
+//!   队列滞后）；自动重复按「该键已按下且未抬起」判定（[`HELD_KEYS`]），
+//!   不用时间窗——同键快速连打是正常输入，不能被当成重复丢掉。
 //! - `Block`/`Replace` 会登记 [`SWALLOWED`]，后续 keyup 一并吞掉，防止
 //!   幽灵按键；`Replace` 保持"按下-抬起"配对（按住原键 = 按住目标键）。
-//!   未吞掉的 keyup 会以观察者身份回调 handler（录制宏用），返回值被忽略。
+//!   **所有** keyup（含被吞掉的）都以观察者身份回调 handler，返回值被忽略——
+//!   状态机（和弦按住集合 / tap-hold 短长按判定）依赖抬起事件，漏掉就会卡死。
 //! - 注入事件带 `LLKHF_INJECTED`，一律放行，杜绝自我回环。
 //! - `Replace` 注入走 `SendInput`，键码为虚拟键码（US 布局语义，差异见
 //!   各键盘布局 OEM 键）；span nil。
@@ -23,7 +25,6 @@ use std::io;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, LPARAM, LRESULT, WPARAM};
@@ -66,8 +67,8 @@ static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
 static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
-/// 上次 down 的键和时间，用于识别自动重复。
-static LAST_DOWN: LazyLock<Mutex<Option<(Key, Instant)>>> = LazyLock::new(|| Mutex::new(None));
+/// 当前物理按下的键（down 且未 up），用于识别自动重复。
+static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
 /// 钩子句柄。Drop 时给钩子线程发 WM_QUIT 并回收。
 pub struct HookHandle {
@@ -131,6 +132,7 @@ fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     MOUSE_HOOK.store(0, Ordering::Relaxed);
     *SWALLOWED.lock().unwrap() = HashSet::new();
     *REPLACED_DOWN.lock().unwrap() = HashMap::new();
+    *HELD_KEYS.lock().unwrap() = HashSet::new();
     *HANDLER.lock().unwrap() = None;
     Ok(())
 }
@@ -156,8 +158,10 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
     let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
 
     if !down {
-        // keyup：被吞掉的键仍吞掉（防幽灵），但也会以观察者身份回调 handler
-        // （tap-hold 需要在 keyup 时判定 tap/hold）；其余纯观察通知、放行。
+        // keyup：先解除「按下」标记（自动重复判定的依据），被吞掉的键仍吞掉（防幽灵），
+        // 但也会以观察者身份回调 handler（tap-hold 需要在 keyup 时判定 tap/hold）；
+        // 其余纯观察通知、放行。
+        note_key_up(key);
         let swallowed = SWALLOWED.lock().unwrap().remove(&key);
         if swallowed {
             if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
@@ -239,17 +243,19 @@ fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
     };
 
     if !down {
-        // keyup：只吞掉之前登记的键；否则纯观察地通知 handler（返回值忽略）。
-        if SWALLOWED.lock().unwrap().remove(&key) {
+        // keyup：被吞掉的键仍吞掉（防幽灵），但同样以观察者身份回调 handler——与键盘路径
+        // 一致。状态机靠抬起事件维护「按住集合」（和弦成员、tap-hold 的短按/长按判定），
+        // 漏掉被吞键的抬起会让该键与整个状态机永久卡住（键「变哑」）。
+        let swallowed = SWALLOWED.lock().unwrap().remove(&key);
+        if swallowed {
             if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
                 simulate::up(target);
             }
-            return true;
         }
         if let Some(f) = HANDLER.lock().unwrap().as_mut() {
             let _ = f(KeyEvent::Up { key, mods: current_mods() });
         }
-        return false;
+        return swallowed;
     }
 
     let mods = current_mods();
@@ -308,15 +314,16 @@ fn key_as_modifier(k: Key) -> Option<Modifier> {
 }
 
 fn detect_repeat(key: Key) -> bool {
-    let mut last = LAST_DOWN.lock().unwrap();
-    let is_repeat = matches!(last.as_ref(), Some((k, t)) if *k == key && t.elapsed() < Duration::from_millis(250));
-    *last = Some((key, Instant::now()));
-    // 修饰键 / 锁定键不产生自动重复：双击唤醒（如双击 Alt）依赖两次独立 down，
-    // 快速连按不能被 250ms 窗口误判成 repeat，否则第二击被吞、唤醒失效。
-    if key_as_modifier(key).is_some() || key == Key::CapsLock || key == Key::NumLock {
-        return false;
-    }
-    is_repeat
+    // 自动重复 = 该键仍处于按下状态时又收到 down。用「按下集合」而非时间窗判定：同一键
+    // 在 250ms 内连按两次是正常连打（热串触发词 `addr` 的双写 d、双击/三击改键），
+    // 按时间窗会被误判成 repeat 而丢掉第二击，导致热串缓冲缺字 / 连击不计击数。
+    !HELD_KEYS.lock().unwrap().insert(key)
+}
+
+/// 键抬起：移出「按下集合」。无论事件最终吞掉与否都必须调用，否则集合只增不减，
+/// 后续所有该键的按下都会被误判为自动重复。
+fn note_key_up(key: Key) {
+    HELD_KEYS.lock().unwrap().remove(&key);
 }
 
 /// 虚拟键码 ↔ [`Key`]。映射使用 US 布局语义，OEM 标点键的实际位置因
@@ -486,6 +493,15 @@ fn vk_to_key(vk: VIRTUAL_KEY, extended: bool) -> Option<Key> {
 mod tests {
     use super::*;
     use kada_core::key_name;
+    use std::sync::Arc;
+
+    /// 占用全局 [`HANDLER`] 的用例必须串行——cargo test 默认多线程并行，两个用例同时
+    /// 换 HANDLER 会互相打断。中毒（上一个用例 panic）也继续跑，别让一个失败连带整片红。
+    static HANDLER_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_handler() -> std::sync::MutexGuard<'static, ()> {
+        HANDLER_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn mapping_roundtrip() {
@@ -519,12 +535,89 @@ mod tests {
     }
 
     #[test]
-    fn modifier_and_toggle_keys_are_never_repeat() {
-        // 快速连按修饰键/锁定键不能被 250ms 窗口误判成自动重复：
-        // 双击唤醒（如双击 Alt）需要两次独立 down 都送到 handler。
-        for k in [Key::Alt, Key::Control, Key::Shift, Key::Meta, Key::CapsLock] {
-            assert!(!detect_repeat(k), "{} 不应判为重复", key_name(k));
-            assert!(!detect_repeat(k), "{} 第二次 down 也不应判为重复", key_name(k));
+    fn swallowed_mouse_up_still_notifies_handler() {
+        let _g = lock_handler();
+        // 被吞掉的鼠标抬起必须照样回调 handler：和弦成员/改键用中键或侧键时，状态机
+        // 靠抬起维护「按住集合」，漏掉它会让该键与整个状态机永久卡死（键变哑）。
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        *HANDLER.lock().unwrap() = Some(Box::new(move |ev: KeyEvent| {
+            sink.lock().unwrap().push(format!("{ev:?}"));
+            Action::Block // 模拟状态机吞掉成员键
+        }));
+
+        // mouseData 高 16 位 = 1：XBUTTON1（后退/MB4）。
+        let kb = MSLLHOOKSTRUCT { mouseData: 1 << 16, ..Default::default() };
+        assert!(swallow_mouse(WM_XBUTTONDOWN, &kb), "成员键按下被吞");
+        assert!(swallow_mouse(WM_XBUTTONUP, &kb), "抬起一并吞掉（防幽灵）");
+
+        let seen = events.lock().unwrap().clone();
+        *HANDLER.lock().unwrap() = None;
+        let _ = SWALLOWED.lock().unwrap().remove(&Key::MouseBack);
+        assert_eq!(seen.len(), 2, "按下与抬起都要回调 handler，实际：{seen:?}");
+        assert!(seen[0].contains("Down") && seen[1].contains("Up"), "实际：{seen:?}");
+    }
+
+    #[test]
+    fn second_press_of_same_key_is_not_repeat() {
+        let _g = lock_handler();
+        // 敲两下同一个键（`addr` 的双写 d）：第二击不能被判成自动重复，否则热串缓冲少一个
+        // 字符，触发词永远不命中（文本扩展整体失效）。同时验证抬起确实清了「按住集合」
+        // ——若 note_key_up 被挪进「仅未吞键才调用」的分支，这个用例会立刻炸。
+        let events: Arc<Mutex<Vec<KeyEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        *HANDLER.lock().unwrap() = Some(Box::new(move |ev: KeyEvent| {
+            sink.lock().unwrap().push(ev);
+            Action::Allow
+        }));
+
+        // VK_P：避开其它用例（它们用 D / K）。
+        let key = VIRTUAL_KEY(0x50); // VK_P
+        let kb = KBDLLHOOKSTRUCT { vkCode: key.0 as u32, ..Default::default() };
+        for _ in 0..2 {
+            swallow(WM_KEYDOWN, &kb);
+            let seen = events.lock().unwrap().clone();
+            match seen.last().expect("handler 每次都要收到事件") {
+                KeyEvent::Down { key: k, repeat, .. } => {
+                    assert_eq!(*k, Key::P);
+                    assert!(!*repeat, "同键连打的第二击不能是自动重复");
+                }
+                other => panic!("期望 Down，实际 {other:?}"),
+            }
+            swallow(WM_KEYUP, &kb);
+        }
+
+        *HANDLER.lock().unwrap() = None;
+        let _ = SWALLOWED.lock().unwrap().remove(&Key::P);
+        note_key_up(Key::P);
+    }
+
+    #[test]
+    fn auto_repeat_requires_key_still_held() {
+        // 同键连打两次（中间有抬起）不是自动重复：热串触发词 `addr` 的双写 d、双击/三击
+        // 改键都依赖第二击被当成独立按下，否则热串缓冲缺字（不触发扩展）、连击不计击数。
+        assert!(!detect_repeat(Key::D), "首次按下不是重复");
+        note_key_up(Key::D);
+        assert!(!detect_repeat(Key::D), "抬起后再按不是重复");
+        note_key_up(Key::D);
+
+        // 未抬起再次 down = 自动重复（长按连发）。
+        assert!(!detect_repeat(Key::K));
+        assert!(detect_repeat(Key::K), "按住期间的再次 down 是重复");
+        assert!(detect_repeat(Key::K));
+        note_key_up(Key::K);
+        assert!(!detect_repeat(Key::K), "抬起后又恢复成独立按下");
+        note_key_up(Key::K);
+    }
+
+    #[test]
+    fn modifier_and_toggle_keys_never_repeat_after_release() {
+        // 双击唤醒（双击 Alt）依赖两次独立 down：抬起后再按不能被判成重复。
+        for k in [Key::Alt, Key::Control, Key::Shift, Key::Meta, Key::CapsLock, Key::NumLock] {
+            assert!(!detect_repeat(k), "{} 首次按下不是重复", key_name(k));
+            note_key_up(k);
+            assert!(!detect_repeat(k), "{} 抬起后再按不是重复", key_name(k));
+            note_key_up(k);
         }
     }
 }
