@@ -1178,6 +1178,9 @@ button:disabled {
   border-radius: 8px;
   z-index: 200;
   pointer-events: none;
+  /* 保存提示会带上被忽略条目的原因（可能较长）：限宽折行，别撑成一整条横幅。 */
+  max-width: min(760px, calc(100vw - 48px));
+  text-align: center;
 }
 
 /* 触发气泡（toast 窗口，独立小浮层） */

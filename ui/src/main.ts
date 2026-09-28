@@ -59,6 +59,7 @@ type Remap = {
   hold: string | null;
   layer: string | null;
   hold_layer: string | null;
+  lock_layer: string | null;
   tap_timeout_ms: number;
   oneshot: string | null;
   sticky: string | null;
@@ -489,9 +490,11 @@ async function load() {
   cfg = await invoke<Config>("get_config");
   messages = await invoke<CommandResult[]>("get_command_results");
   unread = await invoke<boolean>("get_unread");
+  updateStatus = await invoke<UpdateStatus>("get_update_status");
   await refreshConflicts();
   render();
   syncSettings();
+  syncUpdate();
 }
 
 async function save() {
@@ -511,7 +514,16 @@ async function save() {
   const errs = conflicts.filter((c) => c.severity === "error").length;
   const warns = conflicts.filter((c) => c.severity === "warn").length;
   const notes: string[] = [];
-  if (ignored.length) notes.push(`已忽略 ${ignored.length} 处无效配置`);
+  if (ignored.length) {
+    // 只报数量的话，被丢掉的条目（比如「长按进入层」指向的层已不存在，整条改键作废）用户
+    // 根本查不出来——带上第一条原因，长文案由 .toast 的 max-width 折行。
+    const first = ignored[0];
+    notes.push(
+      ignored.length === 1
+        ? `已忽略 1 处无效配置：${first}`
+        : `已忽略 ${ignored.length} 处无效配置（例：${first}）`,
+    );
+  }
   if (errs || warns) notes.push(`${errs} 处冲突${warns ? `、${warns} 处遮蔽提示` : ""}`);
   if (notes.length) toast(`已保存：${notes.join("；")}`);
   else toast("已保存");
@@ -592,7 +604,26 @@ function comboFromEvent(e: KeyboardEvent): string | null {
   return parts.join("+");
 }
 
+// 录入捕获（组合键/序列/和弦）进行中的解除函数。捕获开始时暂停快捷键（避免自己触发自己），
+// 结束时解除；一旦捕获被中断（窗口失焦、详情被关、收进托盘）也必须解除——否则 Rust 侧会一直
+// 处于暂停态，表现为「快捷键、改键、文本扩展全都没反应」而界面上看不出任何原因
+//（Rust 侧另有 60 秒租约兜底，那是最后一道保险）。
+let activeCaptureCleanup: (() => void) | null = null;
+
+/** 中断当前录入捕获并解除暂停；无捕获时是空操作。 */
+function stopCapture() {
+  const cleanup = activeCaptureCleanup;
+  activeCaptureCleanup = null;
+  cleanup?.();
+}
+
+window.addEventListener("blur", stopCapture);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopCapture();
+});
+
 function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement) {
+  stopCapture();
   btn.disabled = true;
   btn.textContent = "请按组合键…（Esc 取消）";
   void invoke("set_paused", { paused: true });
@@ -607,17 +638,20 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
     }
   };
   const finish = () => {
+    activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     btn.textContent = "录入组合键";
   };
+  activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
 }
 
 // 键序列录入：逐键累积 comboFromEvent 出的组合（空格拼接实时预览），Enter 提交、Esc 取消。
 // 序列至少 2 步（单步就是普通组合键，走「录入组合键」）。
 function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonElement) {
+  stopCapture();
   const steps: string[] = [];
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
@@ -639,11 +673,13 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
     }
   };
   const finish = () => {
+    activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     btn.textContent = "录入序列";
   };
+  activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
   update();
 }
@@ -651,6 +687,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
 // 和弦录入：按住多个普通键，松开时提交（成员用 & 连接、按字典序，至少 2 键）。Esc 取消。
 // 和弦成员只允许普通键（非修饰键 / 非锁定键），与后端 Trigger::parse 的约束一致。
 function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonElement) {
+  stopCapture();
   const held: string[] = [];
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
@@ -682,12 +719,14 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
     }
   };
   const finish = () => {
+    activeCaptureCleanup = null;
     window.removeEventListener("keydown", onKey, true);
     window.removeEventListener("keyup", onKey, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     btn.textContent = "录入和弦";
   };
+  activeCaptureCleanup = finish;
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("keyup", onKey, true);
   update();
@@ -1286,7 +1325,7 @@ function renderRemaps() {
   list.replaceChildren();
   const q = search.trim().toLowerCase();
   cfg.remaps.forEach((r, i) => {
-    const hay = `${r.from} ${remapSummary(r)} ${layerName(r.hold_layer)}`.toLowerCase();
+    const hay = `${r.from} ${remapSummary(r)} ${layerName(r.hold_layer)} ${layerName(r.lock_layer)}`.toLowerCase();
     if (q && !hay.includes(q)) return;
 
     const li = el("li", "row" + (selected === i ? " selected" : ""));
@@ -1300,7 +1339,7 @@ function renderRemaps() {
       void save();
     });
 
-    const isTiming = !!(r.tap || r.hold || r.hold_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
+    const isTiming = !!(r.tap || r.hold || r.hold_layer || r.lock_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
     li.append(
       on,
       el("span", "triggers", r.from),
@@ -1420,7 +1459,7 @@ function openDetail(i: number, isNew = false) {
     setShortcutTitle();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
+      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
     (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
     (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
@@ -1432,6 +1471,7 @@ function openDetail(i: number, isNew = false) {
     (document.getElementById("remap-tap3") as HTMLSelectElement).value = remapDraft.tap3 ?? "";
     fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
     fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
+    fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, remapDraft.lock_layer, "hold");
     (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
       remapDraft.tap_timeout_ms || 200,
     );
@@ -1456,6 +1496,7 @@ function openDetail(i: number, isNew = false) {
 }
 
 function closeDetail() {
+  stopCapture();
   void stopRecIfAny();
   discardDraft();
   draftNew = false;
@@ -2307,6 +2348,12 @@ function bindSettings() {
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
+  document.getElementById("check-update")!.addEventListener("click", () => {
+    void invoke("check_update");
+  });
+  document.getElementById("install-update")!.addEventListener("click", () => {
+    void invoke("install_update");
+  });
 }
 
 async function exportConfig() {
@@ -2334,6 +2381,68 @@ async function importConfig() {
     toast(ignored.length ? `已导入（忽略 ${ignored.length} 处无效配置）` : "已导入");
   } catch (e) {
     toast(`导入失败: ${e}`);
+  }
+}
+
+// ---- 软件更新 ----
+// 状态源在后端（src-tauri/src/update.rs）：检查/下载/安装各阶段由 Rust 推进并 emit
+// `update-status`，前端只渲染，不自己维护「正在检查」这类瞬时状态（否则窗口重开就丢）。
+type UpdateStatus = { current: string } & (
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "up-to-date" }
+  | { phase: "available"; version: string; notes?: string | null }
+  | { phase: "downloading"; version: string; percent?: number | null }
+  | { phase: "installing"; version: string }
+  | { phase: "error"; message: string }
+);
+
+let updateStatus: UpdateStatus | null = null;
+
+function syncUpdate() {
+  const line = document.getElementById("update-status")!;
+  const actions = document.getElementById("update-actions")!;
+  const checkBtn = document.getElementById("check-update") as HTMLButtonElement;
+  if (!updateStatus) {
+    line.textContent = "正在读取版本…";
+    actions.classList.add("hidden");
+    return;
+  }
+  const current = `v${updateStatus.current}`;
+  const busy =
+    updateStatus.phase === "checking" ||
+    updateStatus.phase === "downloading" ||
+    updateStatus.phase === "installing";
+  checkBtn.disabled = busy;
+  actions.classList.toggle("hidden", updateStatus.phase !== "available");
+
+  switch (updateStatus.phase) {
+    case "idle":
+      line.textContent = `当前版本 ${current}`;
+      break;
+    case "checking":
+      line.textContent = `当前版本 ${current} · 正在检查更新…`;
+      break;
+    case "up-to-date":
+      line.textContent = `当前版本 ${current}，已是最新版本`;
+      break;
+    case "available":
+      line.textContent = `发现新版本 v${updateStatus.version}（当前 ${current}），可下载安装`;
+      break;
+    case "downloading": {
+      const pct =
+        updateStatus.percent === null || updateStatus.percent === undefined
+          ? ""
+          : ` ${Math.round(updateStatus.percent)}%`;
+      line.textContent = `正在下载 v${updateStatus.version}…${pct}`;
+      break;
+    }
+    case "installing":
+      line.textContent = `正在安装 v${updateStatus.version}，应用即将退出…`;
+      break;
+    case "error":
+      line.textContent = `检查更新失败：${updateStatus.message}`;
+      break;
   }
 }
 
@@ -2378,11 +2487,12 @@ function syncRemapEditor() {
   if (!remapDraft) return;
   const isModifier = !!(remapDraft.oneshot || remapDraft.sticky);
   const isTapHold = !!(remapDraft.tap || remapDraft.hold || remapDraft.tap2 || remapDraft.tap3);
-  const isLayerKey = !!remapDraft.hold_layer;
+  const isLayerKey = !!(remapDraft.hold_layer || remapDraft.lock_layer);
   // 修饰模式与 tap-hold/切层/普通改键互斥：隐藏后者；反之隐藏修饰下拉无意义（保留可见）。
   document.getElementById("remap-tap-row")!.classList.toggle("hidden", isModifier);
   document.getElementById("remap-hold-row")!.classList.toggle("hidden", isModifier);
   document.getElementById("remap-hold-layer-row")!.classList.toggle("hidden", isModifier);
+  document.getElementById("remap-lock-layer-row")!.classList.toggle("hidden", isModifier);
   document.getElementById("remap-tap2-row")!.classList.toggle("hidden", isModifier || !isTapHold);
   document.getElementById("remap-tap3-row")!.classList.toggle("hidden", isModifier || !isTapHold);
   document.getElementById("remap-timeout-row")!.classList.toggle("hidden", isModifier || !isTapHold);
@@ -2394,7 +2504,7 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
   sel.replaceChildren();
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = mode === "hold" ? "（不切层）" : "基层层（始终生效）";
+  empty.textContent = mode === "hold" ? "（不切层）" : "基础层（始终生效）";
   sel.append(empty);
   for (const l of cfg.layers) {
     const o = document.createElement("option");
@@ -2406,14 +2516,15 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
 }
 
 function layerName(id: string | null | undefined): string {
-  if (!id) return "基层层";
-  return cfg.layers.find((l) => l.id === id)?.name ?? "基层层";
+  if (!id) return "基础层";
+  return cfg.layers.find((l) => l.id === id)?.name ?? "基础层";
 }
 
 // 改键形态的人类可读摘要（列表行 + 详情标题共用），与 kada-core 的 Remap::describe 对齐。
 function remapSummary(r: Remap): string {
   if (r.sticky) return `粘滞 ${r.sticky}`;
   if (r.oneshot) return `单击 ${r.oneshot}`;
+  if (r.lock_layer) return `长按锁定层「${layerName(r.lock_layer)}」`;
   if (r.hold_layer) return `长按进层「${layerName(r.hold_layer)}」`;
   const parts: string[] = [];
   if (r.tap) parts.push(`单击 ${r.tap}`);
@@ -2483,7 +2594,7 @@ function addLayer() {
 async function deleteLayer(id: string) {
   const target = cfg.layers.find((l) => l.id === id);
   if (!target) return;
-  const ok = await ask(`删除层「${target.name}」？该层的快捷键/改键会回到基层层，指向它的切层键会失效。`, {
+  const ok = await ask(`删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`, {
     title: "删除层",
     kind: "warning",
   });
@@ -2495,6 +2606,7 @@ async function deleteLayer(id: string) {
   cfg.remaps.forEach((r) => {
     if (r.layer === id) r.layer = null;
     if (r.hold_layer === id) r.hold_layer = null;
+    if (r.lock_layer === id) r.lock_layer = null;
   });
   if (editingLayerId === id) editingLayerId = null;
   void save();
@@ -2640,18 +2752,44 @@ function bind() {
     remapDraft.layer = (document.getElementById("remap-layer") as HTMLSelectElement).value || null;
     remapDraft.hold_layer =
       (document.getElementById("remap-hold-layer") as HTMLSelectElement).value || null;
+    remapDraft.lock_layer =
+      (document.getElementById("remap-lock-layer") as HTMLSelectElement).value || null;
     remapDraft.tap_timeout_ms =
       parseInt((document.getElementById("remap-timeout") as HTMLInputElement).value, 10) || 200;
     // 任一非普通改键形态（tap-hold/切层/单次/粘滞/连击）→ 清空「改为」；否则用「改为」。
     remapDraft.to = remapDraft.tap ||
       remapDraft.hold ||
       remapDraft.hold_layer ||
+      remapDraft.lock_layer ||
       remapDraft.oneshot ||
       remapDraft.sticky ||
       remapDraft.tap2 ||
       remapDraft.tap3
       ? ""
       : (document.getElementById("remap-to") as HTMLSelectElement).value;
+    // 长按进入层（momentary）与长按锁定层（切换式）互斥：两者都选了保留切换式（层内放和弦/
+    // 序列只能用切换式，见前端的提示文案），避免后端归一化时静默丢一个让用户困惑。
+    if (remapDraft.hold_layer && remapDraft.lock_layer) {
+      remapDraft.hold_layer = null;
+      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
+      toast("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」");
+    }
+    // 没有任何输出（改为/短按/长按/长按进入层/长按锁定层/单次/粘滞/双击/三击全空）→ 后端会当
+    // 无效条目丢掉。这里直接拦住并说清楚，别让用户以为配好了（「长按进入层」没选中层就是这样丢的）。
+    if (
+      !remapDraft.tap &&
+      !remapDraft.hold &&
+      !remapDraft.hold_layer &&
+      !remapDraft.lock_layer &&
+      !remapDraft.oneshot &&
+      !remapDraft.sticky &&
+      !remapDraft.tap2 &&
+      !remapDraft.tap3 &&
+      !remapDraft.to
+    ) {
+      toast("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击");
+      return;
+    }
     if (draftNew) cfg.remaps.unshift(remapDraft);
     else if (selected !== null) cfg.remaps[selected] = remapDraft;
     const saved = remapDraft;
@@ -2730,8 +2868,11 @@ function bind() {
     if (!remapDraft) return;
     remapDraft.hold = (e.target as HTMLSelectElement).value || null;
     if (remapDraft.hold) {
-      remapDraft.hold_layer = null; // 长按输出键与切层互斥
+      // 长按输出键与切层互斥（进入层 / 锁定层都算切层）。
+      remapDraft.hold_layer = null;
+      remapDraft.lock_layer = null;
       (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
+      (document.getElementById("remap-lock-layer") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
@@ -2740,7 +2881,20 @@ function bind() {
     remapDraft.hold_layer = (e.target as HTMLSelectElement).value || null;
     if (remapDraft.hold_layer) {
       remapDraft.hold = null;
+      remapDraft.lock_layer = null; // 进入层与锁定层互斥（切换式才用得起层内和弦/序列）
       (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
+      (document.getElementById("remap-lock-layer") as HTMLSelectElement).value = "";
+    }
+    syncRemapEditor();
+  });
+  document.getElementById("remap-lock-layer")!.addEventListener("change", (e) => {
+    if (!remapDraft) return;
+    remapDraft.lock_layer = (e.target as HTMLSelectElement).value || null;
+    if (remapDraft.lock_layer) {
+      remapDraft.hold = null;
+      remapDraft.hold_layer = null;
+      (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
+      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
@@ -2934,6 +3088,10 @@ async function initEvents() {
     }
     renderMessages();
   });
+  await listen<UpdateStatus>("update-status", (event) => {
+    updateStatus = event.payload;
+    syncUpdate();
+  });
 }
 
 // 右下角触发气泡窗口（独立隐藏窗口，加载 index.html#toast）：
@@ -2947,18 +3105,20 @@ async function bootstrapToast() {
   const sub = el("div", "toast-sub");
   bubble.append(title, sub);
   document.body.append(bubble);
-  const render = (payload: { name: string; trigger: string } | null) => {
+  // subtitle 由后端给：快捷键触发的气泡不带（显示「触发键 · 正在执行…」），
+  // 「发现新版本」这类通知带自定义副标题。
+  type ToastPayload = { name: string; trigger: string; subtitle?: string };
+  const render = (payload: ToastPayload | null) => {
     const name = payload?.name ?? "";
     const trigger = payload?.trigger ?? "";
     title.textContent = name || trigger;
-    sub.textContent = (name ? `${trigger} · ` : "") + "正在执行…";
+    sub.textContent =
+      payload?.subtitle ?? (name ? `${trigger} · ` : "") + "正在执行…";
   };
-  await listen<{ name: string; trigger: string }>("toast-show", (e) => render(e.payload));
+  await listen<ToastPayload>("toast-show", (e) => render(e.payload));
   // 首次懒创建后补一次拉取：窗口刚建好时 toast-show 事件可能早于监听器注册，
   // 用后端暂存的载荷兜底，保证第一次触发也有内容。
-  render(
-    await invoke<{ name: string; trigger: string } | null>("get_toast_payload").catch(() => null),
-  );
+  render(await invoke<ToastPayload | null>("get_toast_payload").catch(() => null));
 }
 
 if (location.hash === "#toast") {

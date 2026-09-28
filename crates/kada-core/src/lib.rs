@@ -455,20 +455,21 @@ impl SequenceTracker {
     }
 }
 
-/// 和弦匹配的结果。
+/// 和弦（同时按住多个键）匹配的结果。
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ChordAdvance {
-    /// 事件与任何和弦无关（未按和弦成员 / 断链后丢弃）。
+    /// 该键不是任何和弦的成员（集合不变）。
     NoMatch,
-    /// 事件是某和弦成员但尚未凑齐（应吞掉，继续等待其它成员）。
+    /// 该键是某和弦成员但尚未凑齐（应吞掉，继续等待其它成员）。
     Await,
-    /// 事件凑齐了某和弦，`usize` 为命中和弦在传入列表中的下标（应吞掉并触发）。
+    /// 该键凑齐了某和弦，`usize` 为命中和弦在传入列表中的下标（应吞掉并触发）。
     Complete(usize),
 }
 
 /// 和弦（同时按住多个键）匹配的运行时状态（纯逻辑，时序由壳层驱动）。
 /// 记录当前按住的成员键集合，凑齐某和弦的所有成员即触发。成员键按下即被吞，
-/// 壳层收不到其 keyup，故集合靠「凑齐触发」或「超时」清空，不依赖 Up 事件。
+/// 集合由 [`ChordTracker::press`] / [`ChordTracker::release`] 成对维护：抬起即移出，
+/// 保证「同时按住」判定准确，也让壳层能据此判定「没凑成 → 原键回放」的时机。
 #[derive(Clone, Debug, Default)]
 pub struct ChordTracker {
     /// 当前按住、尚未凑齐的成员键。
@@ -485,23 +486,25 @@ impl ChordTracker {
         !self.held.is_empty()
     }
 
+    /// 当前按住的成员键（壳层据此判断「成员已全部抬起 → 定论回放」）。
+    pub fn held(&self) -> &BTreeSet<Key> {
+        &self.held
+    }
+
     /// 清空和弦状态（超时 / 触发完成后由壳层调用）。
     pub fn reset(&mut self) {
         self.held.clear();
     }
 
-    /// 喂入一个按键事件，返回匹配结果。`chords` 是当前层生效的所有和弦成员集合，
-    /// 顺序与调用方的触发器列表一致（`Complete(usize)` 的 `usize` 即其下标）。
-    /// 和弦成员是无序的「同时按住」：只要所有成员键都在 held 中即命中。
-    pub fn advance(&mut self, ev: &RawEvent, chords: &[Vec<Shortcut>]) -> ChordAdvance {
-        // 事件键不是任何和弦成员：若已有待凑齐的成员则断链丢弃（成员键不回放）。
-        let is_member = chords.iter().any(|c| c.iter().any(|m| m.key == ev.key));
-        if !is_member {
-            self.held.clear();
+    /// 喂入一个成员键按下。`chords` 是当前层生效的所有和弦成员集合，顺序与调用方的
+    /// 触发器列表一致（`Complete(usize)` 的 `usize` 即其下标）。和弦成员是无序的
+    /// 「同时按住」：所有成员键都在按住集合中即命中。
+    pub fn press(&mut self, key: Key, chords: &[Vec<Shortcut>]) -> ChordAdvance {
+        // 事件键不是任何和弦成员：集合不变（断链与否由壳层决定，成员键不回放）。
+        if !chords.iter().any(|c| c.iter().any(|m| m.key == key)) {
             return ChordAdvance::NoMatch;
         }
-
-        self.held.insert(ev.key);
+        self.held.insert(key);
         for (idx, chord) in chords.iter().enumerate() {
             if chord.iter().all(|m| self.held.contains(&m.key)) {
                 self.held.clear();
@@ -509,6 +512,12 @@ impl ChordTracker {
             }
         }
         ChordAdvance::Await
+    }
+
+    /// 喂入一个成员键抬起。返回该键原本是否处于按住集合中（即确实是待凑齐的成员）。
+    /// 命中触发的和弦时集合已在 [`ChordTracker::press`] 里清空，故返回 false。
+    pub fn release(&mut self, key: Key) -> bool {
+        self.held.remove(&key)
     }
 }
 
@@ -984,7 +993,7 @@ pub struct Folder {
     pub parent: Option<String>,
 }
 
-/// 一个键位层：快捷键/改键可归属某层，仅当该层激活时才生效（`None` = 基层层，始终生效）。
+/// 一个键位层：快捷键/改键可归属某层，仅当该层激活时才生效（`None` = 基础层，始终生效）。
 /// 层与目录不同——目录只分组展示，层决定「哪些条目参与匹配」。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Layer {
@@ -1005,7 +1014,7 @@ pub struct ShortcutItem {
     /// 所属目录 id（`None` 表示未分组）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// 归属层 id（`None` = 基层层，始终生效；`Some` = 仅该层激活时生效）。
+    /// 归属层 id（`None` = 基础层，始终生效；`Some` = 仅该层激活时生效）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
     /// 如 ["Ctrl+Alt+K"]，可多个。
@@ -1027,6 +1036,8 @@ pub struct ShortcutItem {
 /// - **tap-dance**：`tap2`（双击）/ `tap3`（三击）非空时，短按升级为「连击不同义」，
 ///   单击/双击/三击分别输出 `tap`/`tap2`/`tap3`（缺省回落上一级）。
 /// - **切层键**：`hold_layer` 非空时，长按 `from` 进入该层、松开退回（momentary）。
+/// - **锁定切层键**：`lock_layer` 非空时，长按 `from` 切换该层开/关（层保持生效，再长按一次退出）；
+///   与 `hold_layer` 互斥——层内放和弦/序列时按住切层键要同时凑 3~4 个键，锁定式才用得起来。
 /// - **单次修饰**：`oneshot` 非空时，单击 `from` 武装该修饰键、应用到下一个非修饰键后自动释放。
 /// - **粘滞修饰**：`sticky` 非空时，单击 `from` 锁定该修饰键、再次单击解锁。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -1040,12 +1051,16 @@ pub struct Remap {
     /// 长按输出键（tap-hold，典型为修饰键）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold: Option<String>,
-    /// 归属层 id（`None` = 基层层；`Some` = 仅该层激活时生效）。
+    /// 归属层 id（`None` = 基础层；`Some` = 仅该层激活时生效）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
     /// 长按进入的层 id（momentary 切层）；与 `hold`（输出键）互斥。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_layer: Option<String>,
+    /// 长按**锁定**的层 id（切换式切层）：长按 `from` 切换该层开/关，层保持生效；与
+    /// `hold_layer`（momentary，松开即退层）互斥。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_layer: Option<String>,
     /// tap-hold 判定阈值（毫秒）；0 视为默认 200。
     #[serde(default = "default_tap_timeout_ms")]
     pub tap_timeout_ms: u64,
@@ -1073,13 +1088,14 @@ fn default_tap_timeout_ms() -> u64 {
 }
 
 impl Remap {
-    /// 是否有 tap-hold / tap-dance / 切层 行为（短按/长按/双击/三击/长按切层 任一非空白）。
+    /// 是否有 tap-hold / tap-dance / 切层 行为（短按/长按/双击/三击/长按切层/长按锁定层 任一非空白）。
     /// 不含 oneshot/sticky（那些是修饰键模式，见 [`Remap::is_oneshot`] / [`Remap::is_sticky`]）。
     pub fn is_tap_hold(&self) -> bool {
         let nonempty = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.trim().is_empty());
         nonempty(&self.tap)
             || nonempty(&self.hold)
             || nonempty(&self.hold_layer)
+            || nonempty(&self.lock_layer)
             || nonempty(&self.tap2)
             || nonempty(&self.tap3)
     }
@@ -1119,6 +1135,11 @@ impl Remap {
     /// 长按进入的层 id（空白视为无）。
     pub fn hold_layer_id(&self) -> Option<&str> {
         self.hold_layer.as_deref().filter(|s| !s.trim().is_empty())
+    }
+
+    /// 长按锁定的层 id（空白视为无）。
+    pub fn lock_layer_id(&self) -> Option<&str> {
+        self.lock_layer.as_deref().filter(|s| !s.trim().is_empty())
     }
 
     /// 单次修饰键（解析失败返回 None）。
@@ -1182,6 +1203,9 @@ impl Remap {
             }
             if self.hold_layer_id().is_some() {
                 parts.push("长按进层".into());
+            }
+            if self.lock_layer_id().is_some() {
+                parts.push("长按锁定层".into());
             }
             return parts.join(" · ");
         }
@@ -1511,6 +1535,35 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
             out.push(Conflict {
                 severity: Severity::Warn,
                 message: format!("「{tj}」被「{ti}」遮蔽：按下 {tj} 时会先命中更宽松的「{ti}」"),
+                name: String::new(),
+            });
+        }
+    }
+
+    // 5) 层可达性：层里有启用的条目，却没有任何「长按进入层 / 长按锁定层」的切层键指向它 →
+    //    这些条目永远不会生效（`active_layer` 只由切层键驱动）。这是「层内快捷键配了但不
+    //    触发」最难自查的原因，所以在清单里直接点出来。
+    for l in &cfg.layers {
+        let has_entries = cfg
+            .shortcuts
+            .iter()
+            .any(|s| s.enabled && s.layer.as_deref() == Some(l.id.as_str()))
+            || cfg.remaps.iter().any(|r| r.enabled && r.layer.as_deref() == Some(l.id.as_str()));
+        if !has_entries {
+            continue;
+        }
+        let reachable = cfg.remaps.iter().any(|r| {
+            r.enabled
+                && (r.hold_layer.as_deref() == Some(l.id.as_str())
+                    || r.lock_layer.as_deref() == Some(l.id.as_str()))
+        });
+        if !reachable {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: format!(
+                    "层「{}」没有切层键：层内的快捷键/改键永远不会生效（在「改键」里设一条「长按进入层」或「长按锁定层」指向它；层内放和弦/序列建议用「长按锁定层」）",
+                    l.name
+                ),
                 name: String::new(),
             });
         }
@@ -1890,6 +1943,22 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 item.hold_layer = None;
             }
         }
+        if let Some(ll) = &item.lock_layer {
+            if !valid_layer_ids.contains(ll) {
+                ignored.push(format!("改键「{}」的长按锁定层已忽略：层不存在", r.from));
+                item.lock_layer = None;
+            }
+        }
+        // 长按进入层（momentary）与长按锁定层（切换式）互斥：两者都设时保留切换式——层内
+        // 放和弦/序列时 momentary 要同时按住切层键凑 3~4 个键，只有切换式用得起来。
+        let nonblank = |s: &Option<String>| s.as_deref().is_some_and(|v| !v.trim().is_empty());
+        if nonblank(&item.hold_layer) && nonblank(&item.lock_layer) {
+            ignored.push(format!(
+                "改键「{}」同时设了长按进入层与长按锁定层，保留长按锁定层（切换式切层）",
+                r.from
+            ));
+            item.hold_layer = None;
+        }
 
         // 单次/粘滞/双击/三击键名逐项校验（坏键名单独清空并提示）。
         let mut clear_key = |field: &mut Option<String>, label: &str| {
@@ -1920,6 +1989,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             item.tap2 = None;
             item.tap3 = None;
             item.hold_layer = None;
+            item.lock_layer = None;
             item.to = String::new();
             out.remaps.push(item);
         } else if item.is_tap_hold() {
@@ -1943,6 +2013,13 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         } else if item.to.parse::<Key>().is_ok() {
             out.remaps.push(item);
+        } else if item.to.trim().is_empty() {
+            // 没有普通「改为」、也没落下任何有效形态（多半是「长按进入层」指向的层不存在，
+            // 那条提示已在上面给过）。说「键名无法解析」会把人引偏，直接说没有可用输出。
+            ignored.push(format!(
+                "改键「{}」已忽略：没有可用的输出（改为/短按/长按/切层都为空或已失效）",
+                item.from
+            ));
         } else {
             ignored.push(format!("改键「{} → {}」已忽略：键名无法解析", item.from, item.to));
         }
@@ -3091,6 +3168,127 @@ mod layer_tests {
     }
 
     #[test]
+    fn layer_without_switch_key_is_reported() {
+        // 层里有启用的条目、却没有任何切层键指向它 → 永久不可达，必须在冲突清单里点出来，
+        // 否则用户只能看到「层内快捷键配了但不触发」而查不出原因。
+        let layered = ShortcutItem {
+            layer: Some("symbols".into()),
+            triggers: vec!["5&Y".into()],
+            actions: vec![],
+            enabled: true,
+            ..Default::default()
+        };
+        let base = Config {
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            shortcuts: vec![layered],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&base);
+        assert!(
+            hits.iter().any(|c| c.message.contains("没有切层键")),
+            "无切层键的层应被报出"
+        );
+
+        // 加一条指向它的「长按进入层」改键后，提示消失。
+        let with_key = Config {
+            remaps: vec![Remap {
+                from: "Space".into(),
+                to: "".into(),
+                hold_layer: Some("symbols".into()),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..base.clone()
+        };
+        assert!(!detect_conflicts(&with_key).iter().any(|c| c.message.contains("没有切层键")));
+
+        // 「长按锁定层」同样是切层键，指向它也算可达（层内放和弦/序列只能用这种）。
+        let with_lock = Config {
+            remaps: vec![Remap {
+                from: "Space".into(),
+                to: "".into(),
+                lock_layer: Some("symbols".into()),
+                enabled: true,
+                ..Default::default()
+            }],
+            ..base.clone()
+        };
+        assert!(
+            !detect_conflicts(&with_lock).iter().any(|c| c.message.contains("没有切层键")),
+            "长按锁定层也应算可达：{:?}",
+            detect_conflicts(&with_lock)
+        );
+
+        // 层里没有启用的条目时不报（空层不算问题）。
+        let empty = Config {
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            ..Default::default()
+        };
+        assert!(!detect_conflicts(&empty).iter().any(|c| c.message.contains("没有切层键")));
+    }
+
+    #[test]
+    fn lock_layer_detection_and_summary() {
+        let remap = Remap {
+            from: "Tab".into(),
+            to: "".into(),
+            lock_layer: Some("symbols".into()),
+            ..Default::default()
+        };
+        assert!(remap.is_tap_hold(), "lock_layer 也走 tap-hold 状态机");
+        assert!(remap.needs_timing_state());
+        assert_eq!(remap.lock_layer_id(), Some("symbols"));
+        assert_eq!(remap.hold_layer_id(), None);
+        assert!(remap.describe().contains("长按锁定层"), "摘要要能看出是锁定式：{}", remap.describe());
+
+        let blank = Remap {
+            from: "Tab".into(),
+            to: "".into(),
+            lock_layer: Some("  ".into()),
+            ..Default::default()
+        };
+        assert_eq!(blank.lock_layer_id(), None);
+    }
+
+    #[test]
+    fn sanitize_keeps_lock_layer_and_drops_blank_refs() {
+        let cfg = Config {
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            remaps: vec![
+                Remap {
+                    from: "Tab".into(),
+                    to: "".into(),
+                    lock_layer: Some("symbols".into()),
+                    ..Default::default()
+                },
+                Remap {
+                    from: "A".into(),
+                    to: "".into(),
+                    lock_layer: Some("nope".into()), // 层不存在 → 清空 → 整条忽略
+                    ..Default::default()
+                },
+                // 同时设了 momentary 与切换式：保留切换式（层内和弦/序列只能靠它）。
+                Remap {
+                    from: "B".into(),
+                    to: "".into(),
+                    hold_layer: Some("symbols".into()),
+                    lock_layer: Some("symbols".into()),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.remaps.len(), 2);
+        assert_eq!(clean.remaps[0].lock_layer.as_deref(), Some("symbols"));
+        assert_eq!(clean.remaps[0].hold_layer, None);
+        assert_eq!(clean.remaps[1].hold_layer, None);
+        assert_eq!(clean.remaps[1].lock_layer.as_deref(), Some("symbols"));
+        assert!(ignored.iter().any(|m| m.contains("层不存在")));
+        assert!(ignored.iter().any(|m| m.contains("保留长按锁定层")));
+    }
+
+    #[test]
     fn sanitize_cleans_layers_and_dangling_refs() {
         let cfg = Config {
             layers: vec![
@@ -3311,10 +3509,10 @@ mod chord_tests {
         let mut tr = ChordTracker::new();
         assert!(!tr.is_active());
         // F 是成员 → Await（吞掉），未凑齐。
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
         assert!(tr.is_active());
         // J 凑齐 → Complete(0)，状态清空。
-        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Complete(0));
         assert!(!tr.is_active());
     }
 
@@ -3323,47 +3521,61 @@ mod chord_tests {
         // 先按 J 再按 F 也命中（无序）。
         let chords = vec![chord("F&J")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Await);
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Complete(0));
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Complete(0));
     }
 
     #[test]
     fn chord_tracker_three_members() {
         let chords = vec![chord("D&F&J")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::D, &[]), &chords), ChordAdvance::Await);
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
-        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+        assert_eq!(tr.press(Key::D, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Complete(0));
     }
 
     #[test]
-    fn chord_tracker_chain_break_resets() {
+    fn chord_tracker_non_member_keeps_held() {
+        // 非成员键不影响按住集合：成员仍按住，后续补齐成员照样命中。
         let chords = vec![chord("F&J")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
         assert!(tr.is_active());
-        // 无关键 → NoMatch 并清空（成员键不回放）。
-        assert_eq!(tr.advance(&ev(Key::X, &[]), &chords), ChordAdvance::NoMatch);
+        assert_eq!(tr.press(Key::X, &chords), ChordAdvance::NoMatch);
+        assert!(tr.is_active(), "非成员键不打断已按住的成员");
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Complete(0));
+    }
+
+    #[test]
+    fn chord_tracker_release_removes_member() {
+        // 成员抬起即移出集合：抬手后单独按其它成员不构成「同时按住」（不会误触发）。
+        let chords = vec![chord("F&J")];
+        let mut tr = ChordTracker::new();
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
+        assert!(tr.release(Key::F), "F 原本在按住集合里");
         assert!(!tr.is_active());
+        assert!(!tr.release(Key::F), "已抬起的键再抬起返回 false");
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Complete(0));
     }
 
     #[test]
     fn chord_tracker_shared_member() {
         let chords = vec![chord("F&J"), chord("F&K")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
-        assert_eq!(tr.advance(&ev(Key::K, &[]), &chords), ChordAdvance::Complete(1));
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::K, &chords), ChordAdvance::Complete(1));
 
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::F, &[]), &chords), ChordAdvance::Await);
-        assert_eq!(tr.advance(&ev(Key::J, &[]), &chords), ChordAdvance::Complete(0));
+        assert_eq!(tr.press(Key::F, &chords), ChordAdvance::Await);
+        assert_eq!(tr.press(Key::J, &chords), ChordAdvance::Complete(0));
     }
 
     #[test]
     fn chord_tracker_no_match_when_idle() {
         let chords = vec![chord("F&J")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.advance(&ev(Key::A, &[]), &chords), ChordAdvance::NoMatch);
+        assert_eq!(tr.press(Key::A, &chords), ChordAdvance::NoMatch);
         assert!(!tr.is_active());
     }
 

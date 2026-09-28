@@ -1,0 +1,62 @@
+name: Release
+
+# 发版：打一个 v* tag（或手动触发）→ 构建 Windows 安装包 → 用私钥签名 →
+# 生成 latest.json → 建 Release。客户端「检查更新」读的就是这个 Release 上的
+# latest.json（见 src-tauri/tauri.conf.json 的 plugins.updater.endpoints）。
+#
+# 前置条件（一次性）：
+#   1. 仓库 Secrets 里配好签名私钥（见 docs/安装与更新-Windows.md §2.3）：
+#      TAURI_SIGNING_PRIVATE_KEY          = ~/.tauri/kada.key 的文件内容
+#      TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 私钥密码（本项目生成时未设密码，留空字符串即可）
+#   2. 发版前先同步版本号：src-tauri/tauri.conf.json 的 version（Cargo.toml / package.json 同值）。
+#
+# 为什么默认发 draft：更新端点用的是 `releases/latest/download/latest.json`，
+# 它只解析**已发布**的最新 Release——draft 不会被客户端看到，发不发由人决定。
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  release:
+    name: release (windows)
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Frontend install
+        run: npm --prefix ui ci
+
+      # tauri-action 会：跑 beforeBuildCommand 构建前端 → cargo build --release
+      # （含 bundle.createUpdaterArtifacts 产出的安装包与 .sig）→ 上传 Release →
+      # 汇总各平台 .sig 生成 latest.json。签名靠下面两个环境变量。
+      - name: Build, sign and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        with:
+          tagName: v__VERSION__
+          releaseName: "咔哒 Kada v__VERSION__"
+          releaseBody: "Windows 安装包见下方 Assets（`Kada___VERSION___x64-setup.exe`）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级。"
+          releaseDraft: true
+          prerelease: false
+          args: --target x86_64-pc-windows-msvc
