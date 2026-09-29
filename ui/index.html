@@ -123,11 +123,11 @@
               <select id="remap-layer"></select>
             </div>
             <div class="editor-row" id="remap-oneshot-row">
-              <label>单次修饰（可选）</label>
+              <label>单次键（可选）</label>
               <select id="remap-oneshot"></select>
             </div>
             <div class="editor-row" id="remap-sticky-row">
-              <label>粘滞修饰（可选）</label>
+              <label>粘滞键（可选）</label>
               <select id="remap-sticky"></select>
             </div>
             <div class="editor-row" id="remap-tap-row">
@@ -165,7 +165,7 @@
               <label>改为（普通改键）</label>
               <select id="remap-to"></select>
             </div>
-            <p class="hint">单次修饰 = 单击后修饰键应用到下一个按键；粘滞修饰 = 单击锁定、再击解锁。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。
+            <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。
               <br />「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
             <div class="detail-actions">
               <button id="delete-remap" class="danger">删除</button>

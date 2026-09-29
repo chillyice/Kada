@@ -77,7 +77,7 @@ impl Engine {
         self.layer.active()
     }
 
-    /// 当前输入状态快照（激活层 + 注入中的修饰键），供壳层渲染托盘提示 / 悬浮指示。
+    /// 当前输入状态快照（激活层 + 注入中的键），供壳层渲染托盘提示 / 悬浮指示。
     ///
     /// 壳层在状态机定时器线程上每 [`crate::ENGINE_TICK_MS`] 比一次：变了才推给界面。
     /// 状态机那条热路径（钩子回调）一行都不改——**在回调里推 UI 等于把钩子挂在界面上**。
@@ -152,9 +152,7 @@ impl Engine {
                 to_release.extend(p.oneshot);
             }
         }
-        for m in self.mods.all() {
-            to_release.insert(modifier_as_key(m));
-        }
+        to_release.extend(self.mods.keys());
         for k in &to_release {
             inj.up(*k);
         }
@@ -290,15 +288,18 @@ struct TapDanceState {
     holding: bool,
 }
 
-/// 运行时注入的修饰键状态：分「长按 hold / 粘滞 / 单次」三类，释放时机各不相同，
+/// 运行时注入的键状态：分「长按 hold / 粘滞 / 单次」三类，释放时机各不相同，
 /// 但都走同一「物理注入（simulate）+ 后续键 mods 补全」通道。
+///
+/// 集合里存的是 [`Key`] 而不是 [`Modifier`]：三类形态的值域都是**任意键**（非修饰键就是
+/// 「替你按住这个键」，见 7.3-⑭），只有修饰键才参与后续键的 mods 补全（[`ModsState::mods`]）。
 struct ModsState {
-    /// tap-hold `hold` 修饰键（`from` 松开时释放）。
-    hold: BTreeSet<Modifier>,
-    /// 粘滞修饰键（再次单击 `from` 时解锁）。
-    sticky: BTreeSet<Modifier>,
-    /// 单次修饰键（下一个非修饰键松开时释放）。
-    oneshot: BTreeSet<Modifier>,
+    /// tap-hold `hold` 键（`from` 松开时释放）。
+    hold: BTreeSet<Key>,
+    /// 粘滞键（再次单击 `from` 时解锁）。
+    sticky: BTreeSet<Key>,
+    /// 单次键（下一个非修饰键抬起时释放）。
+    oneshot: BTreeSet<Key>,
 }
 
 impl ModsState {
@@ -306,20 +307,14 @@ impl ModsState {
         Self { hold: BTreeSet::new(), sticky: BTreeSet::new(), oneshot: BTreeSet::new() }
     }
 
-    /// 全部当前注入的修饰键（供后续键的 mods 补全）。
-    fn all(&self) -> impl Iterator<Item = Modifier> + '_ {
-        self.hold.iter().chain(self.sticky.iter()).chain(self.oneshot.iter()).copied()
+    /// 全部当前注入的键（供状态快照与释放；任意键）。
+    fn keys(&self) -> impl Iterator<Item = Key> + '_ {
+        self.hold.iter().chain(&self.sticky).chain(&self.oneshot).copied()
     }
-}
 
-/// `Key`（裸修饰键）→ `Modifier`。hold/oneshot/sticky 是修饰键时，后续键的 mods 要补上它。
-fn key_as_modifier(k: Key) -> Option<Modifier> {
-    match k {
-        Key::Control => Some(Modifier::Ctrl),
-        Key::Alt => Some(Modifier::Alt),
-        Key::Shift => Some(Modifier::Shift),
-        Key::Meta => Some(Modifier::Meta),
-        _ => None,
+    /// 其中的修饰键（供后续键的 mods 补全：非修饰键补不进 `Shortcut.mods`）。
+    fn mods(&self) -> impl Iterator<Item = Modifier> + '_ {
+        self.keys().filter_map(|k| k.as_modifier())
     }
 }
 
@@ -383,16 +378,6 @@ impl LayerState {
     }
 }
 
-/// `Modifier` → 裸修饰键 `Key`（释放 oneshot/sticky 时把集合里的修饰键映射回可注入的键）。
-fn modifier_as_key(m: Modifier) -> Key {
-    match m {
-        Modifier::Ctrl => Key::Control,
-        Modifier::Alt => Key::Alt,
-        Modifier::Shift => Key::Shift,
-        Modifier::Meta => Key::Meta,
-    }
-}
-
 impl Engine {
     /// tap-hold 状态机单步推进。
     ///
@@ -438,7 +423,7 @@ impl Engine {
                     }
                 }
                 let mut m = ev_mods.clone();
-                m.extend(mods.all());
+                m.extend(mods.mods());
                 Some(Ev::Down { key: *key, mods: m, repeat: *repeat })
             }
             Ev::Up { key } => {
@@ -454,8 +439,12 @@ impl Engine {
                     finish_taphold(taphold, dance, mods, layers, inj);
                     return None;
                 }
-                // oneshot 消费：下一个非修饰键 up 时释放武装修饰。
-                if !mods.oneshot.is_empty() && key_as_modifier(*key).is_none() {
+                // oneshot 消费：下一个非修饰键 up 时释放武装的键。武装键自己再抬起不算
+                // 消费（否则「按住它的那一下」就被当成用掉了）。
+                if !mods.oneshot.is_empty()
+                    && key.as_modifier().is_none()
+                    && !mods.oneshot.contains(key)
+                {
                     release_oneshot(mods, inj);
                 }
                 Some(Ev::Up { key: *key })
@@ -505,7 +494,8 @@ fn make_pending(key: Key, r: &Remap) -> TapHoldPending {
     }
 }
 
-/// 判定 hold：注入 hold 键 down、切换/进入键位层；hold 是修饰键时记入 `mods.hold`。
+/// 判定 hold：注入 hold 键 down、切换/进入键位层；hold 键一律记入 `mods.hold`
+/// （修饰键另行参与后续键的 mods 补全；非修饰键同样要登记，否则复位时收不回来）。
 fn activate_hold(
     pending: &mut Option<TapHoldPending>,
     mods: &mut ModsState,
@@ -519,9 +509,7 @@ fn activate_hold(
     p.hold_active = true;
     if let Some(hk) = p.hold {
         inj.down(hk);
-        if let Some(md) = key_as_modifier(hk) {
-            mods.hold.insert(md);
-        }
+        mods.hold.insert(hk);
     } else if let Some(layer) = &p.lock_layer {
         // 切换式切层：长按（含 roll）即切换该层开/关，松开切层键不退层——层内放和弦/序列
         // 时全靠它，不然得一边按住切层键一边凑齐成员键。
@@ -529,11 +517,9 @@ fn activate_hold(
     } else if let Some(layer) = &p.hold_layer {
         layers.enter_momentary(layer);
     } else if let Some(ok) = p.oneshot {
-        // oneshot 的 roll：按住 `from` 期间当普通 hold 修饰按下（松开 `from` 时释放）。
+        // oneshot 的 roll：按住 `from` 期间当普通 hold 键按下（松开 `from` 时释放）。
         inj.down(ok);
-        if let Some(md) = key_as_modifier(ok) {
-            mods.hold.insert(md);
-        }
+        mods.hold.insert(ok);
     }
 }
 
@@ -550,18 +536,14 @@ fn finish_taphold(
     if p.hold_active {
         if let Some(hk) = p.hold {
             inj.up(hk);
-            if let Some(md) = key_as_modifier(hk) {
-                mods.hold.remove(&md);
-            }
+            mods.hold.remove(&hk);
         } else if p.lock_layer.is_some() {
             // 切换式切层：长按期间已切换过一次，松开什么都不做（层保持生效，再长按一次退出）。
         } else if p.hold_layer.is_some() {
             layers.leave_momentary(); // 松开切层键 → 退回接管前的层。
         } else if let Some(ok) = p.oneshot {
             inj.up(ok); // oneshot roll 的 hold：松开 `from` 释放。
-            if let Some(md) = key_as_modifier(ok) {
-                mods.hold.remove(&md);
-            }
+            mods.hold.remove(&ok);
         }
     } else if p.down_at.elapsed() >= p.timeout {
         // 按住超过阈值再松开，且期间没按别的键（没 roll）：有长按输出键就短促输出它；
@@ -637,32 +619,33 @@ fn release_dance_tap(tap_dance: &mut Option<TapDanceState>) {
     }
 }
 
-/// 武装单次修饰：物理按下修饰键并记入 `mods.oneshot`，供后续键 mods 补全。
+/// 武装单次键：物理按下并记入 `mods.oneshot`，供「下一个非修饰键抬起」时释放。
+/// 值域不限修饰键（非修饰键 = 替你按住它直到下一个键按完）；修饰键另有 mods 补全。
+/// **已武装时重复按下直接忽略**：同一个键再发一次 down 会被目标程序当成第二次按下。
 fn arm_oneshot(mods: &mut ModsState, key: Key, inj: &mut dyn Inject) {
-    if let Some(m) = key_as_modifier(key) {
-        inj.down(key);
-        mods.oneshot.insert(m);
+    if mods.oneshot.contains(&key) {
+        return;
     }
+    inj.down(key);
+    mods.oneshot.insert(key);
 }
 
-/// 切换粘滞修饰：锁定则物理按下并记入 `mods.sticky`，解锁则物理抬起并移除。
+/// 切换粘滞键：锁定则物理按下并记入 `mods.sticky`，解锁则物理抬起并移除。
 fn toggle_sticky(mods: &mut ModsState, key: Key, inj: &mut dyn Inject) {
-    if let Some(m) = key_as_modifier(key) {
-        if mods.sticky.contains(&m) {
-            inj.up(key);
-            mods.sticky.remove(&m);
-        } else {
-            inj.down(key);
-            mods.sticky.insert(m);
-        }
+    if mods.sticky.contains(&key) {
+        inj.up(key);
+        mods.sticky.remove(&key);
+    } else {
+        inj.down(key);
+        mods.sticky.insert(key);
     }
 }
 
-/// 释放全部武装中的单次修饰（下一个非修饰键 up 时调用）。
+/// 释放全部武装中的单次键（下一个非修饰键 up 时调用）。
 fn release_oneshot(mods: &mut ModsState, inj: &mut dyn Inject) {
-    let ones: Vec<Modifier> = mods.oneshot.iter().copied().collect();
-    for m in ones {
-        inj.up(modifier_as_key(m));
+    let ones: Vec<Key> = mods.oneshot.iter().copied().collect();
+    for k in ones {
+        inj.up(k);
     }
     mods.oneshot.clear();
 }
@@ -685,6 +668,10 @@ fn release_oneshot(mods: &mut ModsState, inj: &mut dyn Inject) {
 /// 待定期间按下的其它键也一并吞掉、排在成员键之后回放：直接放行会让回放的成员键
 /// 落到它后面——「f 还按着就打 a」会变成「af」。修饰键例外（放行，否则 Ctrl+X 之类
 /// 的组合键用不了）。
+///
+/// 成员可以带修饰要求（`Ctrl+F&J` = 按住 Ctrl 的同时把 F、J 一起按住）或本身就是修饰键
+/// （`Ctrl+Alt&J`）：这些修饰键**从不被吞、也不进按住集合**，只在凑齐的那一刻按当时的
+/// 修饰状态判定（见 [`ChordTracker::press`]）。
 struct ChordState {
     /// 已吞掉、尚未定论的按键（按下顺序 = 回放顺序）。
     pending: Vec<PendingKey>,
@@ -758,8 +745,14 @@ impl Engine {
         let chords: Vec<Vec<Shortcut>> = items.iter().map(|(c, ..)| c.clone()).collect();
 
         match ev {
-            Ev::Down { key, repeat, .. } => {
-                let is_member = chords.iter().any(|c| c.iter().any(|m| m.key == *key));
+            Ev::Down { key, mods, repeat } => {
+                // 成员键只算非修饰键：修饰键成员（`Ctrl+F` 里的 Ctrl、`Ctrl+Alt&J` 里的
+                // Ctrl/Alt）只表示「要求按住这个修饰键」，既不吞也不登记——吞掉修饰键会把
+                // `Ctrl+Alt+Tab` 变成 `Ctrl+Tab`，登记进按住集合还会让「按着 Ctrl 打字」
+                // 全被压进待定缓冲。
+                let is_member = chords
+                    .iter()
+                    .any(|c| c.iter().any(|m| m.key == *key && !m.key.is_modifier()));
 
                 if is_member {
                     // 同一键的重复 down（按住连发）或已触发/已回放的键：吞掉，不重复登记。
@@ -770,7 +763,7 @@ impl Engine {
                         return None;
                     }
                     let held_before: BTreeSet<Key> = self.chord.tracker.held().clone();
-                    return match self.chord.tracker.press(*key, &chords) {
+                    return match self.chord.tracker.press(*key, mods, &chords) {
                         ChordAdvance::Complete(i) => {
                             // 命中：成员键就是触发键，不回放；但待定期间被吞掉的其它键
                             // （以及不属于本和弦的残留成员键）要补发，别吞掉用户的输入。
@@ -806,7 +799,7 @@ impl Engine {
                 if self.chord.pending.is_empty() {
                     return Some(ev.clone());
                 }
-                if key_as_modifier(*key).is_some() {
+                if key.as_modifier().is_some() {
                     // 修饰键放行（不产生字符，吞掉会破坏 Ctrl+X 之类的组合）。
                     return Some(ev.clone());
                 }
@@ -935,7 +928,7 @@ impl Engine {
         // 否则用户下一个动作是按下 Ctrl/Shift（放行、早返回）时回放又被推迟。
         self.seq_expire(cfg, inj);
         // 修饰键不参与序列判定（`Ctrl+K` 这类步骤靠主键 + mods 命中），也从不吞。
-        if key_as_modifier(*key).is_some() {
+        if key.as_modifier().is_some() {
             return Some(ev.clone());
         }
 
@@ -1587,7 +1580,7 @@ mod tests {
         // hold：按住 from 期间按别的键 → roll 判定为长按，Ctrl 注入。
         step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
-        assert_eq!(engine.status().hold, vec![Modifier::Ctrl]);
+        assert_eq!(engine.status().hold, vec![Key::Control]);
         // 松开 from 就释放，快照跟着清掉（这条同时验证「同一时刻只可能有一个待定改键」：
         // 按住 from 不放期间按 F1 不会进入 F1 的待定，故先收尾再点下一颗键）。
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
@@ -1597,15 +1590,15 @@ mod tests {
         // sticky：点一下 F1 锁定 Shift。
         step(&mut engine, &down(Key::F1), &cfg, &mut inj, &mut fired);
         step(&mut engine, &up(Key::F1), &cfg, &mut inj, &mut fired);
-        assert_eq!(engine.status().sticky, vec![Modifier::Shift]);
+        assert_eq!(engine.status().sticky, vec![Key::Shift]);
         assert!(engine.status().hold.is_empty(), "粘滞与按住是两套集合，互不串味");
 
         // oneshot：点一下 F2 武装 Alt。
         step(&mut engine, &down(Key::F2), &cfg, &mut inj, &mut fired);
         step(&mut engine, &up(Key::F2), &cfg, &mut inj, &mut fired);
         let st = engine.status();
-        assert_eq!(st.sticky, vec![Modifier::Shift], "武装单次不影响已锁定的粘滞");
-        assert_eq!(st.oneshot, vec![Modifier::Alt]);
+        assert_eq!(st.sticky, vec![Key::Shift], "武装单次不影响已锁定的粘滞");
+        assert_eq!(st.oneshot, vec![Key::Alt]);
         assert_eq!(st.layer, None, "没有层生效时层为空");
 
         // 解锁粘滞后快照跟着变（指示要能反映「已经退出这个状态」）。
@@ -2119,5 +2112,126 @@ mod tests {
         let (mut inj, _fired) = (FakeInject::default(), Fired::default());
         assert!(!engine.reset(&mut inj), "干净状态不该被报告成「脏」（否则白白刷日志）");
         assert!(inj.log.is_empty());
+    }
+
+    // ---- 7.3-⑭：单次 / 粘滞的值域扩到任意键、和弦成员可带修饰 ----
+
+    /// 带修饰键按下一个键（和弦成员的修饰要求按它判定）。
+    fn down_mods(key: Key, mods: &[Modifier]) -> Ev {
+        Ev::Down { key, mods: mods.iter().copied().collect(), repeat: false }
+    }
+
+    #[test]
+    fn oneshot_plain_key_is_held_until_next_key_released() {
+        // 单次的非修饰键 = 「替你按住它，直到下一个键按完」：注入 down 后一直按着，
+        // 下一个非修饰键抬起才释放（目标程序据此看到 A 先于 B 落下）。
+        let mut r = remap("CapsLock", "");
+        r.oneshot = Some("A".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down A"], "短按武装：物理按住 A");
+        assert_eq!(engine.status().oneshot, vec![Key::A], "指示要如实说「单次 A」");
+
+        // 下一个键照常放行且不带修饰（A 不是修饰键，补不进 mods）。
+        let ev = step(&mut engine, &down(Key::B), &cfg, &mut inj, &mut fired).expect("B 应放行");
+        match ev {
+            Ev::Down { mods, .. } => assert!(mods.is_empty(), "非修饰键的武装不该给 B 加修饰"),
+            _ => panic!("应为 Down"),
+        }
+        assert!(inj.log.is_empty(), "B 抬起前 A 仍按着");
+        step(&mut engine, &up(Key::B), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["up A"], "下一个非修饰键抬起后释放");
+        assert!(engine.status().oneshot.is_empty());
+    }
+
+    #[test]
+    fn oneshot_rearming_the_same_key_does_not_double_inject() {
+        // 武装的键自己再按一次不该被当成「用掉」，也不该重复 down（会被目标程序当成连按两次）。
+        let mut r = remap("CapsLock", "");
+        r.oneshot = Some("A".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down A"]);
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::A), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.status().oneshot, vec![Key::A], "武装的键自己抬起不算消费");
+        assert!(inj.log.is_empty(), "不重复注入");
+    }
+
+    #[test]
+    fn sticky_plain_key_holds_until_next_tap() {
+        // 粘滞的非修饰键 = 点一下按住它（侧键做「按住说话」这类用法），再点一下松开。
+        let mut r = remap("CapsLock", "");
+        r.sticky = Some("MouseBack".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        for _ in 0..2 {
+            step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+            step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        }
+        assert_eq!(inj.take(), vec!["down MouseBack", "up MouseBack"], "第一次锁定、第二次解锁");
+        assert!(engine.status().sticky.is_empty());
+    }
+
+    #[test]
+    fn chord_member_with_modifier_requires_it_held() {
+        // Ctrl+F&J：Ctrl 按着才凑齐；没按 Ctrl 时成员键照吞键铁律回放（不能变哑）。
+        let cfg = cfg_with(&["Ctrl+F&J"]);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // 没有 Ctrl：F 按下被吞（等凑齐），F 抬起 → 判定「不是和弦」→ 原样回放。
+        assert!(step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired).is_none());
+        step(&mut engine, &up(Key::F), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down F", "up F"], "缺修饰没凑齐要回放");
+        assert!(fired.log.is_empty());
+
+        // 按住 Ctrl 再凑 F、J → 触发。
+        step(&mut engine, &down(Key::Control), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down_mods(Key::F, &[Modifier::Ctrl]), &cfg, &mut inj, &mut fired);
+        assert!(
+            step(&mut engine, &down_mods(Key::J, &[Modifier::Ctrl]), &cfg, &mut inj, &mut fired)
+                .is_none()
+        );
+        assert_eq!(fired.log, vec!["Ctrl+F&J"], "修饰键按住时凑齐");
+        assert!(inj.log.is_empty(), "成员键就是触发键，不回放");
+    }
+
+    #[test]
+    fn chord_modifier_only_member_is_never_swallowed() {
+        // Ctrl+Alt&J：Ctrl/Alt 只是「要求按住」，按下照样放行、不进回放缓冲
+        // （吞掉修饰键会把 Ctrl+Alt+Tab 变成 Ctrl+Tab）。
+        let cfg = cfg_with(&["Ctrl+Alt&J"]);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(), "J 待定");
+        assert!(
+            step(&mut engine, &down(Key::Alt), &cfg, &mut inj, &mut fired).is_some(),
+            "修饰键成员要放行"
+        );
+        assert!(step(&mut engine, &up(Key::Alt), &cfg, &mut inj, &mut fired).is_some());
+        step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down J", "up J"], "只回放成员键，修饰键不参与回放");
+
+        // 两个修饰键都按住 → 凑齐触发。
+        step(
+            &mut engine,
+            &down_mods(Key::J, &[Modifier::Ctrl, Modifier::Alt]),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
+        assert_eq!(fired.log, vec!["Ctrl+Alt&J"]);
     }
 }
