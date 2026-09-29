@@ -6,6 +6,8 @@
 //! - Linux 后端：[`linux`] 用 evdev + uinput（内核输入层），X11 / Wayland
 //!   桌面都能全局拦截与改键，需要 root 或 `input` 组授权 `/dev/input` 与
 //!   `/dev/uinput`。
+//! - macOS 后端：[`macos`] 用 `CGEventTap`（CoreGraphics 事件流），需要「辅助功能」
+//!   权限；键码是 macOS 虚拟键码（ANSI 位置语义）。
 //!
 //! 事件统一为轻量的键盘事件，键模型在 [`kada_core`]。
 
@@ -14,5 +16,8 @@ pub mod win;
 
 #[cfg(target_os = "linux")]
 pub mod linux;
+
+#[cfg(target_os = "macos")]
+pub mod macos;
 
 pub use kada_core::{format_shortcut, key_name, matches, Key, Modifier, RawEvent, Shortcut};

@@ -28,7 +28,7 @@ use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOption
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// 输入决策引擎（tap-hold/层/和弦/键序列/热串的状态机），与 Tauri 解耦、可单测。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 mod engine;
 
 /// 软件更新（Tauri updater + GitHub Releases + Ed25519 签名），与 Tauri 壳解耦、可单测。
@@ -40,14 +40,14 @@ mod config_io;
 /// 配置外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），与 Tauri 壳解耦、可单测。
 mod config_watch;
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use engine::{Engine, HotstringHit, Inject};
 
 /// 把平台注入（SendInput / uinput）接到引擎的 [`Inject`] 通道。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 struct SimulatedInject;
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 impl Inject for SimulatedInject {
     fn down(&mut self, key: Key) {
         input::simulate::down(key);
@@ -96,9 +96,26 @@ mod input {
     }
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(target_os = "macos")]
 mod input {
-    //! 其它平台（macOS）：输入层待实现（M5）。占位类型保证壳可编译。
+    //! macOS：CGEventTap 全局钩子（kada-hook），需要「辅助功能」权限。
+    pub use kada_hook::macos::{
+        foreground_window, frontmost_context, reinstall_count, simulate, start,
+        Action as HookAction, HookHandle, KeyEvent,
+    };
+
+    /// 输入层是否可用 = 有没有「辅助功能」权限。
+    ///
+    /// 与另两个平台不同：macOS 的能力是**运行时授权**的，没权限时 `CGEventTapCreate` 必失败，
+    /// 录制只会录到一片空白。如实报 false，用户看到的是「要授权」而不是「录了半天没东西」。
+    pub fn hooks_supported() -> bool {
+        kada_hook::macos::accessibility_granted()
+    }
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+mod input {
+    //! 其它平台：无输入层实现。占位类型保证壳可编译。
     /// 平台事件（无实现时不可构造）。
     pub enum KeyEvent {}
 
@@ -116,7 +133,7 @@ enum Ev {
     Up { key: Key },
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn to_ev(ev: &input::KeyEvent) -> Ev {
     match ev {
         input::KeyEvent::Down { key, mods, repeat } => Ev::Down {
@@ -301,7 +318,7 @@ const PAUSE_LEASE_MS: u64 = 60_000;
 /// 状态机定时推进间隔（毫秒）。键序列超时、连击等待窗这类「只能靠时间判定」的等待态，
 /// 必须由定时器驱动落地——只靠「下一个事件」懒判定的后果是：单独按一下序列 leader 键
 /// （之后不按别的键）回放永远不发生，用户看到的是「这个键按了没反应」。见 [`Engine::tick`]。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 const ENGINE_TICK_MS: u64 = 60;
 
 /// 进程启动时刻（暂停租约的时间基准）。
@@ -414,7 +431,7 @@ fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
 /// 必须另起线程：注入走剪贴板 + `SendInput`，要上百毫秒，跑在钩子回调里会被系统判超时
 /// 摘掉钩子（之后快捷键/改键/文本扩展全部失效）。后缀键在判定命中时已被吞掉，这里补回，
 /// 保证「addr␣」展开成「我的地址␣」。注入失败会记进消息中心（没有控制台时不再无声无息）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn spawn_hotstring(
     app: tauri::AppHandle,
     results: Arc<Mutex<Vec<CommandResult>>>,
@@ -452,7 +469,7 @@ fn spawn_hotstring(
 
 /// 展开热串替换文本的动态片段：`{date}` / `{time}` / `{clipboard}`。
 /// 未知占位符保持原样（不破坏用户输入的字面 `{...}`）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn resolve_hotstring(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -536,7 +553,7 @@ fn wake_double_tap(cfg: &RwLock<Config>, last_tap: &mut Option<Instant>, ev: &Ev
 /// 右键菜单、UAC 提示、桌面切换瞬间），而那些抖动不是「用户换了工作窗口」。误判的代价
 /// 是白复位一次——用户手上正凑的和弦 / 刚按的序列 leader 会被丢掉。多等一个巡检间隔
 /// （[`ENGINE_TICK_MS`]，60ms）就能把抖动全滤掉，对「清理残留状态」完全没体感。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[derive(Debug)]
 struct FocusTracker {
     /// 已确认的当前窗口。
@@ -545,7 +562,7 @@ struct FocusTracker {
     candidate: Option<isize>,
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 impl FocusTracker {
     fn new(initial: Option<isize>) -> Self {
         Self { confirmed: initial, candidate: None }
@@ -577,13 +594,13 @@ impl FocusTracker {
 }
 
 /// 输入状态复位的巡检状态（见规划 7.2-④）：上次看到的钩子重装次数 + 前台窗口观察器。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 struct ResetWatch {
     reinstalls: u64,
     focus: FocusTracker,
 }
 
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 impl ResetWatch {
     fn new() -> Self {
         Self {
@@ -631,7 +648,7 @@ impl ResetWatch {
 /// 还顺带把**输入状态可视指示**推给界面（见规划 7.3-⑬）：状态变了才推（托盘提示 + 悬浮指示窗）。
 /// 放在这条线程上是因为它是唯一一处「不在钩子回调里、又拿得到最新 `Engine` 状态」的地方——
 /// 在回调里推 UI 等于把输入层挂在界面上。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn spawn_engine_ticker(
     engine: Arc<Mutex<Engine>>,
     cfg: Arc<RwLock<Config>>,
@@ -786,7 +803,7 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
 ///
 /// `timeout_ms` 是命令/脚本的执行超时（0 = 不限时），由调用点从配置读出后传入——调用点
 /// 已经持有配置读锁，这里不再进线程里二次加锁（保存配置时写锁会等读锁，多一层没必要）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn fire(
     app: tauri::AppHandle,
     results: Arc<Mutex<Vec<CommandResult>>>,
@@ -819,7 +836,7 @@ fn fire(
     });
 }
 
-#[cfg(not(any(target_os = "windows", target_os = "linux")))]
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 fn fire(
     _app: tauri::AppHandle,
     _results: Arc<Mutex<Vec<CommandResult>>>,
@@ -1935,11 +1952,21 @@ fn abort_actions() -> usize {
     running
 }
 
+/// 录制不可用时给用户的解释（[`input::hooks_supported`] 为 false 时用）。
+///
+/// macOS 的 false 不表示「没实现」，而是「还没拿到辅助功能权限」——说成「平台不支持」会让
+/// 用户彻底放弃（他不知道要去授权）。Windows / Linux 恒支持，这句在那里用不到。
+#[cfg(target_os = "macos")]
+const RECORD_UNAVAILABLE: &str = "宏录制不可用：请先在「系统设置 → 隐私与安全性 → 辅助功能」里勾选 Kada，\
+并重启 Kada（macOS 不允许未授权的应用监听与注入键盘事件）";
+#[cfg(not(target_os = "macos"))]
+const RECORD_UNAVAILABLE: &str = "当前平台暂不支持宏录制";
+
 /// 开始录制宏：快捷键/改键随即暂停，所有按键进时间线。
 #[tauri::command]
 fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
     if !input::hooks_supported() {
-        return Err("当前平台暂不支持宏录制".into());
+        return Err(RECORD_UNAVAILABLE.into());
     }
     let mut g = state.rec.lock().unwrap();
     if g.is_some() {
@@ -1954,7 +1981,7 @@ fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
 #[tauri::command]
 fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String> {
     if !input::hooks_supported() {
-        return Err("当前平台暂不支持宏录制".into());
+        return Err(RECORD_UNAVAILABLE.into());
     }
     let mut g = state.rec.lock().unwrap();
     let Some(rec) = g.take() else {
@@ -2053,22 +2080,21 @@ pub fn run() {
                 .map(|img| tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height()));
             let unread_icon = base_icon.as_ref().map(with_red_dot);
 
-            // 钩子接线：事件即时查表；（Windows / Linux 有实现）
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let engine = Arc::new(Mutex::new(Engine::new()));
 
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
-            let hook_handle: Option<input::HookHandle> = Some(
-                {
-                    let cfg = config.clone();
-                    let pause = paused_until.clone();
-                    let r = rec.clone();
-                    let app_handle = app.handle().clone();
-                    let results = results.clone();
-                    let unread = unread.clone();
-                    let engine = engine.clone();
-                    let mut last_tap: Option<Instant> = None;
-                    input::start(move |ev: input::KeyEvent| {
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            let hook_start = {
+                let cfg = config.clone();
+                let pause = paused_until.clone();
+                let r = rec.clone();
+                let app_handle = app.handle().clone();
+                let results = results.clone();
+                let unread = unread.clone();
+                let engine = engine.clone();
+                let mut last_tap: Option<Instant> = None;
+                input::start(move |ev: input::KeyEvent| {
                         let ev = to_ev(&ev);
                         // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
                         {
@@ -2144,16 +2170,36 @@ pub fn run() {
                             }
                         }
                     })
-                }
-                .map_err(|e: std::io::Error| e.to_string())?,
+            };
+
+            // 起不来的处置分两种，因为「起不来」在两个平台的含义完全不同：
+            //
+            // - Windows / Linux：起不来是异常（权限配错、资源被占），让 setup 失败、应用报错退出，
+            //   用户至少能看见「哪里不对」，而不是一个看着还活着、按键全不响的托盘。
+            // - macOS：**首次启动必然起不来**——tap 要「辅助功能」权限，而这份权限只能由用户
+            //   在系统设置里手动授予。此时若让 setup 失败，应用根本起不来，用户连设置页都进不去，
+            //   也就永远拿不到那份权限（`start` 已经顺手弹过系统授权框）。改为照常启动 + 把
+            //   「怎么授权」记进消息中心（托盘建好后统一推，见下面 startup_warnings）。
+            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) = (
+                Some(hook_start.map_err(|e: std::io::Error| e.to_string())?),
+                None,
             );
 
-            #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-            let hook_handle: Option<input::HookHandle> = None;
+            #[cfg(target_os = "macos")]
+            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) =
+                match hook_start {
+                    Ok(h) => (Some(h), None),
+                    Err(e) => (None, Some(("输入层".to_string(), e.to_string()))),
+                };
+
+            #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) =
+                (None, None);
 
             // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker），
             // 顺带把输入状态可视指示推给界面（托盘提示 + 悬浮指示窗，见规划 7.3-⑬）。
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_engine_ticker(
                 engine,
                 config.clone(),
@@ -2226,24 +2272,33 @@ pub fn run() {
                 .build(app)?;
             *app.state::<KadaState>().tray.lock().unwrap() = Some(tray_icon);
 
-            // 配置损坏 / 自愈的告警推给消息中心。放在托盘建好之后：commit_result 会叠托盘
-            // 红点，此时托盘已存在才叠得上（应用内「消息」入口的红点由前端拉取 unread 得到）。
-            if !load_warnings.is_empty() {
+            // 启动期的告警推给消息中心：配置损坏 / 自愈（`load_warnings`），以及输入层起不来
+            // （macOS 缺「辅助功能」权限——这条必须让用户看见，否则「按键全不响」无从下手）。
+            // 放在托盘建好之后：commit_result 会叠托盘红点，此时托盘已存在才叠得上
+            // （应用内「消息」入口的红点由前端拉取 unread 得到）。
+            let mut startup_warnings: Vec<(String, String, String)> = load_warnings
+                .into_iter()
+                .map(|w| ("配置".to_string(), w.summary, w.detail))
+                .collect();
+            if let Some((label, detail)) = hook_warning {
+                startup_warnings.push((label, "输入层未启动".to_string(), detail));
+            }
+            if !startup_warnings.is_empty() {
                 let st = app.state::<KadaState>();
                 let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
-                for w in load_warnings {
+                for (label, summary, detail) in startup_warnings {
                     commit_result(
                         app.handle(),
                         &st.results,
                         &st.unread,
                         CommandResult {
                             kind: "config".into(),
-                            label: "配置".into(),
+                            label,
                             trigger: "启动加载".into(),
                             name: String::new(),
-                            command: w.summary,
+                            command: summary,
                             stdout: String::new(),
-                            stderr: w.detail,
+                            stderr: detail,
                             exit_code: None,
                             show_output: false,
                             time: time.clone(),

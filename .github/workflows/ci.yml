@@ -10,7 +10,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        # macOS 必须跑：macOS 输入层（CGEventTap）与前台窗口查询（辅助功能 AX）只能在 macOS 上
+        # 编译，开发机（Windows）连交叉编译都做不了——wry 与 ring 的构建脚本要真的 clang。
+        # 这条 job 是那份代码唯一的「编译 + 单测」验证点。
+        os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -59,3 +62,6 @@ jobs:
 
       - name: Tauri shell compiles
         run: cargo check -p kada
+
+      - name: Basic version compiles (no automation)
+        run: cargo check -p kada --no-default-features

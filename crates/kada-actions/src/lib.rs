@@ -18,7 +18,7 @@ use std::fs;
 use std::io::Read;
 #[cfg(feature = "automation")]
 use std::path::Path;
-#[cfg(all(feature = "automation", any(target_os = "windows", target_os = "linux")))]
+#[cfg(all(feature = "automation", any(target_os = "windows", target_os = "linux", target_os = "macos")))]
 use std::process::{Child, Stdio};
 #[cfg(feature = "automation")]
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,6 +34,8 @@ use kada_core::{AppOperation, FileObject, OsOperation, Shell, TextValue, Value};
 use kada_hook::win::simulate;
 #[cfg(target_os = "linux")]
 use kada_hook::linux::simulate;
+#[cfg(target_os = "macos")]
+use kada_hook::macos::simulate;
 
 /// 一次命令类动作（CMD / PowerShell / 关闭程序 / 脚本）的执行结果，进入消息中心。
 #[derive(Clone, Serialize)]
@@ -103,7 +105,7 @@ struct Ctx<'a> {
 /// `t` 是本次触发的现场（触发键 / 名称 / 前台窗口，供「前台应用/窗口」类条件求值），
 /// `vars` 承载本次触发内的变量，`last_copied` 记录最近一次复制/剪切的来源。
 /// `opts` 提供超时等执行边界；用户请求中止时停止执行剩余动作并记一条结果。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
 pub fn run_actions(
     commit: &mut dyn FnMut(CommandResult),
@@ -120,7 +122,7 @@ pub fn run_actions(
 }
 
 /// 动作链的实际执行（`If` 分支递归时复用同一 [`Ctx`]：超时与中止代数整链共享）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
 fn run_chain(
     commit: &mut dyn FnMut(CommandResult),
@@ -161,7 +163,7 @@ fn run_chain(
 
 /// 用户中止时补记的一条结果：进消息中心，让「点了停止」有可见的回应
 /// （否则用户只能靠「它不再继续了」猜）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn abort_result(ctx: &Ctx) -> CommandResult {
     CommandResult {
         kind: "abort".into(),
@@ -182,7 +184,7 @@ fn abort_result(ctx: &Ctx) -> CommandResult {
 /// 展示上用「哪种动作失败」当标签（tab 标题是「标签 · 名称」，一眼能看出坏在哪一步），
 /// 「命令」一栏放动作摘要（用户写的说明优先，其次是动作本体渲染，如 `删除 D:\x.txt`）——
 /// 同一个快捷键挂了多个同类动作时，只给类型是分不清哪一条炸了的。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> CommandResult {
     CommandResult {
         kind: "error".into(),
@@ -199,7 +201,7 @@ fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> Command
 }
 
 /// 失败记录的展示标签（消息中心 tab 上「标签 · 名称」的左半）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_label(action: &Action) -> &'static str {
     match action {
         Action::Text { mode: TextMode::Input, .. } => "文本注入失败",
@@ -236,7 +238,7 @@ fn action_label(action: &Action) -> &'static str {
 
 /// 失败记录是否弹窗：沿用动作自己的 `show_output`——用户给命令 / 脚本开了「显示输出」，
 /// 那它连启动都没成功这件事同样该弹出来；其余动作静默记入消息中心 + 未读红点。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_show_output(action: &Action) -> bool {
     match action {
         #[cfg(feature = "automation")]
@@ -250,7 +252,7 @@ fn action_show_output(action: &Action) -> bool {
 
 /// 「命令」一栏的内容：用户写的动作说明优先（它才是用户认得的那句话），
 /// 没有说明则渲染动作本体摘要。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_summary(action: &Action, vars: &Vars) -> String {
     let body = action_body(action, vars);
     match action_description(action).map(str::trim).filter(|d| !d.is_empty()) {
@@ -260,7 +262,7 @@ fn action_summary(action: &Action, vars: &Vars) -> String {
 }
 
 /// 动作本体摘要（变量已按本次触发的取值代入，展示的是「实际做了什么」）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_body(action: &Action, vars: &Vars) -> String {
     let sub = |s: &str| substitute_vars(s, vars);
     match action {
@@ -299,7 +301,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
     }
 }
 
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn os_body(op: &OsOperation, vars: &Vars) -> String {
     let sub = |s: &str| substitute_vars(s, vars);
     match op {
@@ -318,7 +320,7 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
     }
 }
 
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn app_body(op: &AppOperation, vars: &Vars) -> String {
     let sub = |s: &str| substitute_vars(s, vars);
     match op {
@@ -334,7 +336,7 @@ fn app_body(op: &AppOperation, vars: &Vars) -> String {
 }
 
 /// 程序名 + 参数渲染成一行（参数同样代入变量）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn join_args(program: &str, args: &[String], vars: &Vars) -> String {
     let args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
     if args.is_empty() {
@@ -345,7 +347,7 @@ fn join_args(program: &str, args: &[String], vars: &Vars) -> String {
 }
 
 /// 取动作上用户写的说明（`Action` 各变体都带可选 `description`）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_description(action: &Action) -> Option<&str> {
     match action {
         Action::Text { description, .. }
@@ -368,11 +370,11 @@ fn action_description(action: &Action) -> Option<&str> {
 
 /// 摘要里字段长度的上限：这一栏是给用户认「哪一步」的短上下文，
 /// 整段替换文本 / 长命令原样铺开会把消息卡片撑得没法看。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 const PREVIEW_MAX_CHARS: usize = 160;
 
 /// 压成单行并截断（换行在卡片里是多行，摘要只需要一眼能认出来）。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn preview(s: &str) -> String {
     let one_line: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
     match one_line.char_indices().nth(PREVIEW_MAX_CHARS) {
@@ -386,7 +388,7 @@ fn preview(s: &str) -> String {
 /// `vars` 承载本次触发内的变量（`GetFileProps` 写 File、`App::Status` 写 Bool、
 /// 命令动作 `var` 非空时写 Text），供后续动作用占位符引用；
 /// `last_copied` 记录最近一次复制/剪切的来源，供「粘贴」动作使用。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
 fn run_action(
     action: &Action,
@@ -545,7 +547,7 @@ fn run_action(
 }
 
 /// 执行一个操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn run_os(
     op: &OsOperation,
     vars: &mut Vars,
@@ -590,6 +592,12 @@ fn run_os(
                     .arg(&p)
                     .spawn()
                     .map_err(|e| format!("打开目录失败: {e}"))?;
+            } else if cfg!(target_os = "macos") {
+                // macOS 的 `open` 一个命令同时管「打开目录」与「打开网址」（见 open_url）。
+                std::process::Command::new("open")
+                    .arg(&p)
+                    .spawn()
+                    .map_err(|e| format!("打开目录失败: {e}"))?;
             } else {
                 std::process::Command::new("xdg-open")
                     .arg(&p)
@@ -618,11 +626,11 @@ fn run_os(
 }
 
 /// 把当前选中/剪贴板文本转为大写或小写后粘贴回原处：
-/// 复制选中（Ctrl+C）→ 读剪贴板 → 转换 → 粘贴（Ctrl+V）。
-/// 无选中时 Ctrl+C 通常不改剪贴板，即退化为「转换剪贴板文本」。
-#[cfg(any(target_os = "windows", target_os = "linux"))]
+/// 复制选中（平台组合键）→ 读剪贴板 → 转换 → 粘贴（`type_text` 内部自己处理平台差异）。
+/// 无选中时复制通常不改剪贴板，即退化为「转换剪贴板文本」。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn transform_case(upper: bool) -> Result<(), String> {
-    simulate::chord(&[Key::Control, Key::C]);
+    copy_chord();
     std::thread::sleep(Duration::from_millis(80));
     let clip = simulate::get_clipboard_text().map_err(|e| e.to_string())?;
     let out = if upper { clip.to_uppercase() } else { clip.to_lowercase() };
@@ -630,8 +638,18 @@ fn transform_case(upper: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// 「复制选中内容」的组合键：macOS 是 ⌘C，Windows / Linux 是 Ctrl+C。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn copy_chord() {
+    if cfg!(target_os = "macos") {
+        simulate::chord(&[Key::Meta, Key::C]);
+    } else {
+        simulate::chord(&[Key::Control, Key::C]);
+    }
+}
+
 /// 执行一个应用动作（打开/关闭/查询状态/重启）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn run_app(
     op: &AppOperation,
     ctx: &Ctx,
@@ -674,7 +692,7 @@ fn run_app(
 }
 
 /// 启动程序（可选参数）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn launch_program(program: &str, args: &[String]) -> Result<(), String> {
     std::process::Command::new(program)
         .args(args)
@@ -684,11 +702,13 @@ fn launch_program(program: &str, args: &[String]) -> Result<(), String> {
 }
 
 /// 用系统默认浏览器打开网址。Windows 走 `explorer`（直接以参数传入，不经 shell，
-/// 避免 URL 里的 `&`/`?` 等被 cmd 二次解析）；Linux 走 `xdg-open`。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+/// 避免 URL 里的 `&`/`?` 等被 cmd 二次解析）；macOS 走 `open`；Linux 走 `xdg-open`。
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn open_url(url: &str) -> Result<(), String> {
     let res = if cfg!(target_os = "windows") {
         std::process::Command::new("explorer").arg(url).spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(url).spawn()
     } else {
         std::process::Command::new("xdg-open").arg(url).spawn()
     };
@@ -696,7 +716,9 @@ fn open_url(url: &str) -> Result<(), String> {
 }
 
 /// 关闭程序（结束所有同名进程），返回命令结果供消息中心展示。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+///
+/// Windows 走 `taskkill`；macOS / Linux 都走 `pkill`（两边都自带这个命令）。
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
     let image = image_name(program);
     let cmd = if cfg!(target_os = "windows") {
@@ -709,7 +731,7 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
 }
 
 /// 重启程序：先关闭（忽略「未在运行」），再启动。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn restart_program(program: &str, args: &[String], ctx: &Ctx) -> Result<(), String> {
     let _ = close_program(program, ctx);
     launch_program(program, args)?;
@@ -717,7 +739,7 @@ fn restart_program(program: &str, args: &[String], ctx: &Ctx) -> Result<(), Stri
 }
 
 /// 判断程序是否正在运行。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn app_running(program: &str) -> bool {
     if cfg!(target_os = "windows") {
         match std::process::Command::new("tasklist")
@@ -739,7 +761,7 @@ fn app_running(program: &str) -> bool {
 }
 
 /// 取程序名（镜像名）：`program` 为带路径形式时取最后一段文件名，否则原样返回。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn image_name(program: &str) -> String {
     Path::new(program)
         .file_name()
@@ -748,7 +770,7 @@ fn image_name(program: &str) -> String {
 }
 
 /// 复制文件或目录（目录递归）。`dest` 为已存在目录时复制到其下，否则视为完整目标路径。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn copy_path(source: &str, dest: &str) -> Result<(), String> {
     let src = Path::new(source);
     let dst = Path::new(dest);
@@ -771,7 +793,7 @@ fn copy_path(source: &str, dest: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn copy_dir_rec(src: &Path, dst: &Path) -> std::io::Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -788,7 +810,7 @@ fn copy_dir_rec(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// 移动文件或目录（同盘 `rename`；跨盘回退为复制后删除源）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn move_path(source: &str, dest: &str) -> Result<(), String> {
     let src = Path::new(source);
     if !src.exists() {
@@ -812,7 +834,7 @@ fn move_path(source: &str, dest: &str) -> Result<(), String> {
 }
 
 /// 删除文件或目录（目录递归删除）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn delete_path(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if !p.exists() {
@@ -826,7 +848,7 @@ fn delete_path(path: &str) -> Result<(), String> {
 }
 
 /// 新建空文件（自动创建父目录；已存在则截断为空）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn new_file(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if let Some(parent) = p.parent() {
@@ -836,7 +858,7 @@ fn new_file(path: &str) -> Result<(), String> {
 }
 
 /// 压缩为 zip：Windows 走 `Compress-Archive`，Linux 走 `zip`。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn zip_path(source: &str, dest: &str) -> Result<(), String> {
     let src = Path::new(source);
     if !src.exists() {
@@ -870,7 +892,7 @@ fn zip_path(source: &str, dest: &str) -> Result<(), String> {
 }
 
 /// 解压 zip：Windows 走 `Expand-Archive`，Linux 走 `unzip`。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn unzip_path(source: &str, dest: &str) -> Result<(), String> {
     let src = Path::new(source);
     if !src.exists() {
@@ -897,7 +919,7 @@ fn unzip_path(source: &str, dest: &str) -> Result<(), String> {
 }
 
 /// 读取文件/目录属性，构造 [`FileObject`]。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn file_object(path: &str) -> Result<FileObject, String> {
     let p = Path::new(path);
     let meta = fs::metadata(p).map_err(|e| format!("读取属性失败：{e}"))?;
@@ -917,7 +939,7 @@ fn file_object(path: &str) -> Result<FileObject, String> {
 }
 
 /// 命令 / 脚本的执行结果与「被强制终止」的原因。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 struct CmdOutput {
     stdout: String,
     stderr: String,
@@ -926,7 +948,7 @@ struct CmdOutput {
     killed: Option<String>,
 }
 
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 impl CmdOutput {
     /// 组装进消息中心的命令结果；被强制终止时把原因写进 stderr（用户唯一能看到的地方）。
     fn into_result(
@@ -965,7 +987,7 @@ impl CmdOutput {
 
 /// 等待子进程结束时轮询的间隔：既是中止 / 超时的判定粒度，也是 CPU 占用的上界
 /// （20ms 一次 `try_wait` 基本无感，用户点「停止」最多 20ms 后进程开始被杀）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 const WAIT_POLL_MS: u64 = 20;
 
 /// 跑一个子进程并**限时**等它结束（超时或用户中止则连同子进程树一起杀掉），捕获 UTF-8 输出。
@@ -977,7 +999,7 @@ const WAIT_POLL_MS: u64 = 20;
 /// 管道必须边跑边读：子进程输出超过管道缓冲（Windows 约 4~64KB）而没人读时，它写阻塞、
 /// 我们等它退出——双方互等，超时判定也就永远等不到（`output()` 内部正是用读线程避开了
 /// 这一点，所以这里也不能省）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn run_with_limits(
     cmd: &mut std::process::Command,
     label: &str,
@@ -1037,7 +1059,7 @@ fn run_with_limits(
 }
 
 /// 把超时时长渲染成人话（`90 秒` / `1.5 秒` / `200 毫秒`）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn fmt_secs(d: Duration) -> String {
     let ms = d.as_millis();
     if ms < 1000 {
@@ -1079,10 +1101,17 @@ fn kill_tree(child: &mut Child) {
     let _ = child.kill();
 }
 
+/// macOS：与 Linux 同一处已知缺口（macOS 的 `sh -c "a; b"` 会另起子进程跑 `a`，
+/// `Child::kill` 只收掉 `sh` 自己）。同样先只保证「不再永久占住执行线程」。
+#[cfg(all(target_os = "macos", feature = "automation"))]
+fn kill_tree(child: &mut Child) {
+    let _ = child.kill();
+}
+
 /// 执行 shell 命令并捕获 UTF-8 输出（限时、可中止，见 [`run_with_limits`]）。
 /// Windows 下 cmd 前缀 `chcp 65001`、PowerShell 前缀设置输出编码，保证中文不乱码；
-/// Linux 下 CMD 走 `sh -c`。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+/// macOS / Linux 下 CMD 走 `sh -c`（两边都有 `/bin/sh`）。
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn run_cmd(label: &str, is_powershell: bool, command: &str, ctx: &Ctx) -> Result<CmdOutput, String> {
     // Windows 的 CMD 走临时批处理文件（见下），跑完要删掉——被强杀时也得删。
     let mut temp_bat: Option<std::path::PathBuf> = None;
@@ -1121,7 +1150,7 @@ fn run_cmd(label: &str, is_powershell: bool, command: &str, ctx: &Ctx) -> Result
 
 /// 执行脚本文件：可选解释器（`None` = 直接执行脚本本身），注入环境变量
 /// `KADA_TRIGGER`（触发组合）、`KADA_NAME`（快捷键名）、`KADA_VARS`（变量表 JSON）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn run_script(
     interpreter: Option<&str>,
     path: &str,
@@ -1143,7 +1172,7 @@ fn run_script(
 }
 
 /// 把变量表序列化为 JSON 对象字符串（供脚本环境变量 `KADA_VARS` 使用）。
-#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 fn vars_to_json(vars: &Vars) -> String {
     let mut map = serde_json::Map::new();
     for (name, value) in vars {
@@ -1166,7 +1195,7 @@ fn vars_to_json(vars: &Vars) -> String {
     serde_json::Value::Object(map).to_string()
 }
 
-#[cfg(all(test, any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+#[cfg(all(test, any(target_os = "windows", target_os = "linux", target_os = "macos"), feature = "automation"))]
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
