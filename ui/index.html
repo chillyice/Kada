@@ -228,7 +228,13 @@
                   <option value="CapsLock">双击 CapsLock</option>
                 </select>
               </label>
+              <label class="setting-row">
+                <span>动作超时</span>
+                <input type="number" id="set-action-timeout" class="action-input action-input-num" min="0" step="1" />
+                <span class="unit-hint">秒（0 = 不限）</span>
+              </label>
             </div>
+            <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
             <div class="settings-section">
               <div class="settings-section-head">
                 <span>键位层</span>
@@ -260,7 +266,10 @@
         <section id="detail-messages" class="detail hidden">
           <header class="detail-head">
             <span class="detail-title">消息</span>
-            <button id="clear-messages" class="danger">清空</button>
+            <span class="head-actions">
+              <button id="abort-actions" class="ghost" title="停止正在执行的动作：剩余动作不再执行，正在跑的命令 / 脚本立即终止">■ 停止执行</button>
+              <button id="clear-messages" class="danger">清空</button>
+            </span>
           </header>
           <div class="msg-view-tabs">
             <button id="msg-view-results" class="msg-view-tab active">命令结果</button>

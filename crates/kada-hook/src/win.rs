@@ -663,6 +663,20 @@ pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
     }
 }
 
+/// 当前前台窗口句柄（`None` = 当前没有前台窗口）；无句柄时返回 `None`。
+///
+/// 壳层用它做「前台切换 → 输入状态复位」的变化检测（见规划 7.2-④）：**只看句柄变没变**，
+/// 不查标题与进程名——[`frontmost_context`] 要 `OpenProcess` 拿镜像路径，那是判定条件时
+/// 才值得付的代价，而这里每 60ms 轮询一次，必须便宜（`GetForegroundWindow` 只读一个全局）。
+pub fn foreground_window() -> Option<isize> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() {
+        None
+    } else {
+        Some(hwnd.0 as isize)
+    }
+}
+
 /// 取当前前台窗口上下文（进程名 + 窗口标题），供「按前台应用/窗口」类条件求值。
 /// 无前台窗口或权限不足时返回 None。
 pub fn frontmost_context() -> Option<FrontmostContext> {

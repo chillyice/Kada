@@ -73,7 +73,7 @@ const DEMO_CONFIG = {
     },
   ],
   expansions: [{ trigger: ";addr", replace: "某市某区某路 88 号", enabled: true }],
-  settings: { autostart: false, paused: false, wake_key: null },
+  settings: { autostart: false, paused: false, wake_key: null, action_timeout_ms: 30000 },
 };
 
 const DEMO_RESULTS = [
@@ -134,6 +134,9 @@ export function installBrowserMock() {
         case "set_paused":
           paused = !!args?.paused;
           return null;
+        // 停止执行：演示模式没有真的在跑的动作，如实返回 0（前端提示「当前没有正在执行的动作」）。
+        case "abort_actions":
+          return 0;
         case "start_record":
           return null;
         case "stop_record":

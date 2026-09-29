@@ -1256,8 +1256,15 @@ pub fn match_expansion<'a>(
         .max_by_key(|e| e.trigger.chars().count())
 }
 
+/// 动作执行超时的默认值（毫秒）。
+///
+/// 超过这个时长还没结束的命令/脚本会被连同子进程一起终止，并在消息中心记一条结果。
+/// 没有超时的后果不是「慢」而是「坏」：脚本挂住就永久占住这条触发的执行线程，后续动作
+/// 永不执行、线程也收不回来（见规划 7.2-⑦）。
+pub const DEFAULT_ACTION_TIMEOUT_MS: u64 = 30_000;
+
 /// 应用设置（配置的一部分，随 JSON 一起落盘/跨平台同步）。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
     /// 开机自启（跟随系统启动）。
     #[serde(default)]
@@ -1268,6 +1275,28 @@ pub struct Settings {
     /// 快速唤醒键：双击该键唤出主窗口（如 "Alt"）；`None` 表示关闭快速唤醒。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wake_key: Option<String>,
+    /// 命令/脚本类动作的执行超时（毫秒）；`0` = 不限时。
+    ///
+    /// 缺字段时取 [`DEFAULT_ACTION_TIMEOUT_MS`]：老配置（写于本字段出现之前）也要拿到
+    /// 超时保护，若用 `#[serde(default)]` 的零值会让它们默认「不限时」，保护形同虚设。
+    #[serde(default = "default_action_timeout_ms")]
+    pub action_timeout_ms: u64,
+}
+
+/// `action_timeout_ms` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
+pub fn default_action_timeout_ms() -> u64 {
+    DEFAULT_ACTION_TIMEOUT_MS
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Self {
+            autostart: false,
+            paused: false,
+            wake_key: None,
+            action_timeout_ms: DEFAULT_ACTION_TIMEOUT_MS,
+        }
+    }
 }
 
 /// 根配置。

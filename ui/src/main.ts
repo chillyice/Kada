@@ -69,7 +69,13 @@ type Remap = {
   enabled: boolean;
 };
 type TextExpansion = { trigger: string; replace: string; enabled: boolean };
-type Settings = { autostart: boolean; paused: boolean; wake_key?: string | null };
+type Settings = {
+  autostart: boolean;
+  paused: boolean;
+  wake_key?: string | null;
+  /** 命令/脚本动作的执行超时（毫秒）；0 = 不限时。界面按秒录入。 */
+  action_timeout_ms: number;
+};
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 type Conflict = { severity: "error" | "warn"; message: string; name: string };
 type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
@@ -498,7 +504,7 @@ let cfg: Config = {
   shortcuts: [],
   remaps: [],
   expansions: [],
-  settings: { autostart: false, paused: false },
+  settings: { autostart: false, paused: false, action_timeout_ms: 30_000 },
 };
 let section: Section = "shortcuts";
 let selected: number | null = null; // 当前列表中的选中下标
@@ -2454,16 +2460,25 @@ function openConflictView() {
 }
 
 // ---- 设置 ----
+/** 超时（毫秒）→ 界面上的秒数（配置里存毫秒，界面按秒录入；0 = 不限）。 */
+function timeoutSeconds(ms: number): number {
+  return Math.round((Number(ms) || 0) / 1000);
+}
+
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
   (document.getElementById("set-wake-key") as HTMLSelectElement).value = cfg.settings.wake_key ?? "";
+  (document.getElementById("set-action-timeout") as HTMLInputElement).value = String(
+    timeoutSeconds(cfg.settings.action_timeout_ms),
+  );
 }
 
 function bindSettings() {
   const autostart = document.getElementById("set-autostart") as HTMLInputElement;
   const paused = document.getElementById("set-paused") as HTMLInputElement;
   const wakeKey = document.getElementById("set-wake-key") as HTMLSelectElement;
+  const actionTimeout = document.getElementById("set-action-timeout") as HTMLInputElement;
   autostart.addEventListener("change", () => {
     cfg.settings.autostart = autostart.checked;
     void save();
@@ -2474,6 +2489,13 @@ function bindSettings() {
   });
   wakeKey.addEventListener("change", () => {
     cfg.settings.wake_key = wakeKey.value || null;
+    void save();
+  });
+  actionTimeout.addEventListener("change", () => {
+    // 负值 / 非数字按 0（不限时）处理：后端只认 u64，宁可放开也不静默变成 1 秒把人坑了。
+    const secs = Math.max(0, Math.floor(Number(actionTimeout.value) || 0));
+    actionTimeout.value = String(secs);
+    cfg.settings.action_timeout_ms = secs * 1000;
     void save();
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
@@ -3173,6 +3195,17 @@ function showResultModal(r: CommandResult) {
   document.getElementById("result-modal")!.classList.remove("hidden");
 }
 
+// 停止正在执行的动作：后端返回请求发出时「正在执行的动作链数量」。
+// 0 说明此刻没有可停的东西——如实告诉用户，而不是假装停成功了。
+async function abortActions() {
+  try {
+    const running = await invoke<number>("abort_actions");
+    toast(running > 0 ? `已请求停止（${running} 条正在执行）` : "当前没有正在执行的动作");
+  } catch (e) {
+    toast(`停止失败: ${e}`);
+  }
+}
+
 function hideResultModal() {
   document.getElementById("result-modal")!.classList.add("hidden");
 }
@@ -3186,6 +3219,7 @@ function bindMessages() {
     msgView = "conflicts";
     renderMessages();
   });
+  document.getElementById("abort-actions")!.addEventListener("click", () => void abortActions());
   document.getElementById("msg-prev")!.addEventListener("click", () => {
     if (!messages.length) return;
     msgIndex = (msgIndex - 1 + messages.length) % messages.length;

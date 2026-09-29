@@ -24,7 +24,7 @@ use kada_core::{
     detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
     Shortcut, Severity, Vars, SYSTEM_SHORTCUTS,
 };
-use kada_actions::{run_actions, CommandResult};
+use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// 输入决策引擎（tap-hold/层/和弦/键序列/热串的状态机），与 Tauri 解耦、可单测。
@@ -60,8 +60,8 @@ impl Inject for SimulatedInject {
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
-        frontmost_context, hotkey_occupied, simulate, start, Action as HookAction, HookHandle,
-        KeyEvent,
+        foreground_window, frontmost_context, hotkey_occupied, reinstall_count, simulate, start,
+        Action as HookAction, HookHandle, KeyEvent,
     };
 
     pub fn hooks_supported() -> bool {
@@ -72,10 +72,24 @@ mod input {
 #[cfg(target_os = "linux")]
 mod input {
     //! Linux：evdev + uinput 全局钩子（kada-hook），X11 / Wayland 通用。
-    pub use kada_hook::linux::{frontmost_context, simulate, start, Action as HookAction, HookHandle, KeyEvent};
+    pub use kada_hook::linux::{
+        frontmost_context, simulate, start, Action as HookAction, HookHandle, KeyEvent,
+    };
 
     pub fn hooks_supported() -> bool {
         true
+    }
+
+    /// evdev 钩子没有「被系统摘除后重装」这条路（不依赖系统钩子链），恒 0 = 没重装过；
+    /// 设备被拔掉导致的丢事件另见规划 7.3-⑱。
+    pub fn reinstall_count() -> u64 {
+        0
+    }
+
+    /// evdev 层拿不到前台窗口（要接 X11 / Wayland 协议，见规划 7.3-⑲），故「前台切换复位」
+    /// 在 Linux 上暂时恒不成立——与「前台应用/窗口」条件在该平台的受限一致。
+    pub fn foreground_window() -> Option<isize> {
+        None
     }
 }
 
@@ -395,10 +409,102 @@ fn wake_double_tap(cfg: &RwLock<Config>, last_tap: &mut Option<Instant>, ev: &Ev
     }
 }
 
+/// 前台窗口观察器：**连续两轮巡检看到同一个新窗口**才认「切换」。
+///
+/// 为什么要确认一轮：`GetForegroundWindow` 会被瞬态窗口抖一下（我们自己的触发气泡、
+/// 右键菜单、UAC 提示、桌面切换瞬间），而那些抖动不是「用户换了工作窗口」。误判的代价
+/// 是白复位一次——用户手上正凑的和弦 / 刚按的序列 leader 会被丢掉。多等一个巡检间隔
+/// （[`ENGINE_TICK_MS`]，60ms）就能把抖动全滤掉，对「清理残留状态」完全没体感。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+#[derive(Debug)]
+struct FocusTracker {
+    /// 已确认的当前窗口。
+    confirmed: Option<isize>,
+    /// 刚看到、还等下一轮确认的新窗口。
+    candidate: Option<isize>,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl FocusTracker {
+    fn new(initial: Option<isize>) -> Self {
+        Self { confirmed: initial, candidate: None }
+    }
+
+    /// 观察一次当前前台窗口，返回是否是一次**真的**切换。
+    fn observe(&mut self, now: Option<isize>) -> bool {
+        match now {
+            Some(w) if Some(w) == self.confirmed => {
+                self.candidate = None;
+                false
+            }
+            Some(w) => {
+                if self.candidate == Some(w) {
+                    self.confirmed = Some(w);
+                    self.candidate = None;
+                    true
+                } else {
+                    // 第一次看到，先记下来等下一轮确认。
+                    self.candidate = Some(w);
+                    false
+                }
+            }
+            // 取不到句柄（锁屏、无前台窗口）：瞬态读空不作数，也不覆盖候选——
+            // 锁屏读空、解锁回到同一个窗口时不该复位。
+            None => false,
+        }
+    }
+}
+
+/// 输入状态复位的巡检状态（见规划 7.2-④）：上次看到的钩子重装次数 + 前台窗口观察器。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+struct ResetWatch {
+    reinstalls: u64,
+    focus: FocusTracker,
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+impl ResetWatch {
+    fn new() -> Self {
+        Self {
+            reinstalls: input::reinstall_count(),
+            focus: FocusTracker::new(input::foreground_window()),
+        }
+    }
+
+    /// 巡检一次，返回「需要复位」的原因（`None` = 一切正常）；基线无论如何都推进。
+    ///
+    /// 两条触发路径正是 `Engine` 那份时序状态会变脏的场景：
+    /// - **钩子已重装**（底座自愈看门狗修好了被系统摘除 / 唤醒 / 解锁后的钩子）：那次断线
+    ///   期间的 keyup 全丢了，底座自己复位了 `HELD_KEYS` 等三张表，壳层这份镜像也得复位——
+    ///   通道就是底座单调递增的 `reinstall_count`（不用回调：那要在钩子线程的消息循环里跑
+    ///   壳层代码，还得多一套跨线程注册；60ms 轮询一次足够，且完全不碰钩子层）。
+    /// - **前台窗口切换**（Alt-Tab / 点别的窗口）：待定的和弦、序列、连击、热串缓冲都属于
+    ///   上一个窗口，跟着过去会打进新窗口；按住式层也要退出（切层键的抬起可能永远不来）。
+    fn poll(&mut self) -> Option<&'static str> {
+        let reinstalls = input::reinstall_count();
+        let reinstalled = reinstalls != self.reinstalls;
+        self.reinstalls = reinstalls;
+
+        let switched = self.focus.observe(input::foreground_window());
+
+        if reinstalled {
+            Some("钩子已重装")
+        } else if switched {
+            Some("前台窗口切换")
+        } else {
+            None
+        }
+    }
+}
+
 /// 状态机的超时推进线程：每 [`ENGINE_TICK_MS`] 调一次 [`Engine::tick`]，只在「等待态
 /// 已过期」时动作（回放被吞的 leader / 中间步、提交连击等待窗），不会注入别的东西。
 /// 录制中与暂停中不推进：那段时间事件不进状态机，推进只会把陈旧的等待态回放到用户
 /// 正在录入的内容里。
+///
+/// 同一个线程顺带做**输入状态复位**巡检（钩子重装 / 前台切换，见 [`ResetWatch`]）：
+/// 复位与超时推进都作用于同一个 [`Engine`]，放在一起就不必为复位再起一个线程。
+/// 巡检本身照常进行（基线要跟上），只是暂停/录制期间不落地。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn spawn_engine_ticker(
     engine: Arc<Mutex<Engine>>,
@@ -406,19 +512,34 @@ fn spawn_engine_ticker(
     paused_until: Arc<AtomicU64>,
     rec: Arc<Mutex<Option<Recorder>>>,
 ) {
-    std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
-        if rec.lock().unwrap().is_some() || pause_active(&paused_until) {
-            continue;
+    std::thread::spawn(move || {
+        let mut watch = ResetWatch::new();
+        loop {
+            std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
+            let reason = watch.poll();
+            if rec.lock().unwrap().is_some()
+                || pause_active(&paused_until)
+                || cfg.read().unwrap().settings.paused
+            {
+                continue;
+            }
+            let mut engine = engine.lock().unwrap();
+            if let Some(reason) = reason {
+                // 只在真的丢掉了状态时留痕：复位本身是无声兜底（用户此刻没有动作可做），
+                // 进消息中心只会变成噪音。
+                if engine.reset(&mut SimulatedInject) {
+                    eprintln!("kada: 输入状态已复位（{reason}）");
+                }
+            }
+            engine.tick(&mut SimulatedInject);
         }
-        if cfg.read().unwrap().settings.paused {
-            continue;
-        }
-        engine.lock().unwrap().tick(&mut SimulatedInject);
     });
 }
 
 /// 执行一串动作（异步跑，避免阻塞钩子回调）；命令类动作的结果进消息中心。
+///
+/// `timeout_ms` 是命令/脚本的执行超时（0 = 不限时），由调用点从配置读出后传入——调用点
+/// 已经持有配置读锁，这里不再进线程里二次加锁（保存配置时写锁会等读锁，多一层没必要）。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn fire(
     app: tauri::AppHandle,
@@ -427,6 +548,7 @@ fn fire(
     actions: Vec<Action>,
     trigger: String,
     name: String,
+    timeout_ms: u64,
 ) {
     // 气泡窗口首次懒创建较慢（WebView 冷启动），放后台线程，避免阻塞钩子回调——
     // WH_KEYBOARD_LL 回调超时会被系统摘除，导致后续快捷键/热串/改键全部失效。
@@ -445,15 +567,9 @@ fn fire(
         let mut last_copied: Option<String> = None;
         let frontmost = input::frontmost_context();
         let mut commit = |result: CommandResult| commit_result(&app, &results, &unread, result);
-        run_actions(
-            &mut commit,
-            &actions,
-            &trigger,
-            &name,
-            &mut vars,
-            &mut last_copied,
-            frontmost.as_ref(),
-        );
+        let opts = RunOptions { action_timeout: Duration::from_millis(timeout_ms) };
+        let t = TriggerCtx { trigger: &trigger, name: &name, frontmost: frontmost.as_ref() };
+        run_actions(&mut commit, &actions, t, &mut vars, &mut last_copied, &opts);
     });
 }
 
@@ -465,6 +581,7 @@ fn fire(
     _actions: Vec<Action>,
     _trigger: String,
     _name: String,
+    _timeout_ms: u64,
 ) {
     // 无钩子即无触发入口，本分支不会运行（macOS 占位）。
 }
@@ -1148,6 +1265,40 @@ mod tests {
         assert!(!wake_double_tap(&bad, &mut last, &down(Key::Alt)));
         assert!(!wake_double_tap(&bad, &mut last, &down(Key::Alt)));
     }
+
+    // ---- 前台切换判定（输入状态复位的触发条件，见规划 7.2-④） ----
+
+    #[test]
+    fn focus_tracker_needs_two_sightings_of_new_window() {
+        let mut t = FocusTracker::new(Some(1));
+        assert!(!t.observe(Some(1)), "同一窗口不算切换");
+        assert!(!t.observe(Some(2)), "刚看到的新窗口先记下，等下一轮确认");
+        assert!(t.observe(Some(2)), "连续两轮都是它 → 切换成立");
+        assert!(!t.observe(Some(2)), "确认之后不再重复报告");
+    }
+
+    #[test]
+    fn focus_tracker_ignores_transient_window_flicker() {
+        // 触发气泡 / 右键菜单这类瞬态窗口只出现一轮：不该被当成「用户换了窗口」，
+        // 否则用户手上正凑的和弦会被白复位掉。
+        let mut t = FocusTracker::new(Some(1));
+        assert!(!t.observe(Some(9)), "瞬态窗口：只看到一轮");
+        assert!(!t.observe(Some(1)), "又回到原窗口 → 什么都不发生");
+        assert!(!t.observe(Some(1)));
+        // 真的换了：连续两轮都停在 2。
+        assert!(!t.observe(Some(2)));
+        assert!(t.observe(Some(2)));
+    }
+
+    #[test]
+    fn focus_tracker_treats_missing_handle_as_no_change() {
+        // 锁屏 / 桌面切换瞬间会读不到前台窗口：不作数，也不该把候选位冲掉
+        //（否则锁屏读空后回到原窗口会被误判成切换）。
+        let mut t = FocusTracker::new(Some(1));
+        assert!(!t.observe(None));
+        assert!(!t.observe(None));
+        assert!(!t.observe(Some(1)), "读空之后回到原窗口：没换过");
+    }
 }
 
 /// 读取当前配置。
@@ -1278,6 +1429,16 @@ fn set_paused(state: tauri::State<'_, KadaState>, paused: bool) {
     set_pause_lease(&state.paused_until, paused);
 }
 
+/// 中止正在执行的动作：剩余动作不再执行、正在跑的命令/脚本（含子进程）立即强制终止。
+/// 返回中止请求发出时**正在执行**的动作链数量——0 表示此刻没有可停的东西，前端据此
+/// 给出「当前没有正在执行的动作」，而不是假装停成功了。
+#[tauri::command]
+fn abort_actions() -> usize {
+    let running = actions_abort::running();
+    actions_abort::request();
+    running
+}
+
 /// 开始录制宏：快捷键/改键随即暂停，所有按键进时间线。
 #[tauri::command]
 fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
@@ -1358,6 +1519,7 @@ pub fn run() {
             export_config,
             import_config,
             set_paused,
+            abort_actions,
             start_record,
             stop_record,
             get_command_results,
@@ -1429,6 +1591,7 @@ pub fn run() {
                         }
                         // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
                         // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
+                        let action_timeout = guard.settings.action_timeout_ms;
                         let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                             fire(
                                 app_handle.clone(),
@@ -1437,6 +1600,7 @@ pub fn run() {
                                 actions,
                                 trigger,
                                 name,
+                                action_timeout,
                             );
                         };
                         let Some(ev) =
@@ -1454,6 +1618,7 @@ pub fn run() {
                                     actions,
                                     trigger,
                                     name,
+                                    action_timeout,
                                 );
                                 input::HookAction::Block
                             }
