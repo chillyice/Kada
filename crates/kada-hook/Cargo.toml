@@ -9,8 +9,16 @@ kada-core = { path = "../kada-core", default-features = false }
 [target.'cfg(target_os = "linux")'.dependencies]
 evdev = "0.13"
 
-[target.'cfg(any(windows, target_os = "linux"))'.dependencies]
+[target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-graphics = "0.25"
+
+[target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 arboard = "3"
+
+# 只有 win.rs 用得到：按 `cfg(windows)` 声明，免得 Linux / macOS 也去编一个用不上的
+# Windows 绑定（它在非 Windows 目标上编不过）。
+[target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_System_RemoteDesktop",

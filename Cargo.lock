@@ -1966,6 +1966,8 @@ name = "kada-hook"
 version = "0.1.0"
 dependencies = [
  "arboard",
+ "core-foundation 0.10.1",
+ "core-graphics",
  "evdev",
  "kada-core",
  "windows",
