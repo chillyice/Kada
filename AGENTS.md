@@ -39,6 +39,7 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
   examples/demo.rs          # M1 冒烟 demo（仅 Windows，真人按键验证）
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
+  src/abort.rs              # 中止开关（代数计数器，避开「新一轮清零」竞态）+ 正在执行计数 RunGuard
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建（冷启动零 WebView）
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
@@ -61,7 +62,8 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **配置落盘铁律**（`src-tauri/src/config_io.rs`）：保存必须走「同目录唯一临时文件 → `fsync` → `rename` 覆盖」的原子替换（并留 `config.json.bak` 上次良好副本），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——原文件改名留档 `config.json.corrupt-<时间戳>`、能从 `.bak` 恢复就恢复并回写主文件，都失败才以空配置启动，经过作为告警在托盘建好后进消息中心。加载路径只 `migrate()` **不** `sanitize_config()`（逐条清洗只在保存/导入路径——加载时静默丢条目同样算「悄悄改用户配置」）。
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
 - **冲突检测**（`detect_conflicts`）：硬冲突（重复触发键 / 序列 leader 遮蔽同层单组合）/ 软冲突（超集）/ 系统快捷键清单命中 / **层可达性**（层里有启用条目却没有任何切层键指向它 → 警告「层内条目永远不会生效」，这是「层配了但不触发」最难自查的原因）。
-- **消息中心**（内存态，重启清空）：命令/脚本结果一律记入；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。「消息」页分「命令结果 / 冲突」两个标签。
+- **消息中心**（内存态，重启清空）：命令/脚本结果一律记入，**中止/超时结果也记入**（`kind="abort"`）；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。「消息」页分「命令结果 / 冲突」两个标签。
+- **动作执行有界**（`kada-actions/`，详见 `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**（挂住即永久占住该触发的执行线程）；走 `run_with_limits`（管道**边读边等** + 20ms 轮询 `try_wait`），超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即 `taskkill /T /F` **杀整棵进程树**（`Child::kill` 杀不掉 `cmd /C`、`sh -c` 下面真干活的孙进程；Linux 只 `kill()` 为已知缺口）。中止 = **代数计数器** `abort::request()`（判定点：每步动作前 / 进程轮询 / `PauseMs` 分片 / `App::Status` 重试），`abort_actions` 回报正在执行数。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
 
@@ -73,7 +75,8 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V`（中文等 Unicode 最稳，会短暂占用并恢复剪贴板）；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询 `GetKeyState`）等物理修饰键释放——触发带修饰键的快捷键时修饰键仍按住，直接注入会被污染成 `Ctrl+Alt+V` 而输不出文本（Linux 因独占抓取 + 独立虚拟设备无需等待，同接口空实现）。
 - **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、走 `Inject` trait 假注入可单测，`lib.rs` 只剩接线）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 `ENGINE_TICK_MS=60ms` 调 `Engine::tick`：序列 leader 超时回放、连击等待窗提交，事件路径上另有懒判定兜底）——只靠「下一个事件」懒判定的后果是单独按一下序列 leader 键（之后不按别的键）永远等不到回放，表现为该键按了没反应。热串命中后吞掉后缀键，由**后台线程**回删触发词 + 注入 + 补回后缀（注入上百毫秒，绝不能跑在钩子回调里）。
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 `PAUSE_LEASE_MS`（60 秒）后自动失效——录入捕获被中断（窗口失焦、详情被关、收进托盘）时前端可能来不及解除，布尔量会永久卡在暂停态让整个应用静默失效（快捷键/改键/文本扩展全无响应且看不出原因）；前端在失焦/隐藏/关详情时也主动解除。
-- **自愈看门狗**（仅 Windows，`win.rs`）：低层钩子会**静默失效**——回调超时被系统摘除 / 休眠唤醒 / 会话解锁后再也收不到事件，而托盘看着还活着。`start` 另起 1s 巡检线程，三条触发路径：心跳 `LAST_HOOK_TICK`（两个回调在入口刷新）与系统 `GetLastInputInfo` 对照（系统收下输入而心跳落后 >1.5s ⇒ 已被摘除；**宽限必须大于巡检间隔**，否则两轮之间的输入永远发现不了）、`GetTickCount` 间隔 >10s 判唤醒（该计数**计入睡眠时间**）、`WTSInfoEx.SessionFlags` 判解锁（**反直觉字段：0=锁定、1=未锁定**）。命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**，且**必须先卸旧再装新**（不卸旧 = 旧钩子留在链里、每个按键被处理两遍），并**一并复位运行时状态**（`SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`，其中已注入的目标键要补一个 up）——丢掉的 keyup 补不回来，不复位就留下「某键变哑」与「修饰键粘住」。机制细节见 `docs/架构设计.md` §3.15。
+- **自愈看门狗**（仅 Windows，`win.rs`）：低层钩子会**静默失效**（回调超时被摘除 / 休眠唤醒 / 解锁后再收不到事件，而托盘看着还活着）。`start` 另起 1s 巡检线程，三条触发路径：心跳 `LAST_HOOK_TICK`（两个回调在入口刷新）与 `GetLastInputInfo` 对照（系统收下输入而心跳落后 >1.5s ⇒ 已被摘除；**宽限必须大于巡检间隔**，否则两轮之间的输入永远发现不了）、`GetTickCount` 间隔 >10s 判唤醒（该计数**计入睡眠时间**）、`WTSInfoEx.SessionFlags` 判解锁（**反直觉字段：0=锁定、1=未锁定**）。命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 每个按键被处理两遍），并**一并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`**（已注入的目标键补一个 up）。细节见 `docs/架构设计.md` §3.15。
+- **输入状态复位**（`Engine::reset`，仅 Windows 有触发源，详见 `需求设计说明书.md` §5.1）：钩子重装 / 前台切换 = 「与物理键盘断过一次线」，靠「按键抬起」或时间窗终止的等待态会永远等不到终止（和弦按住集合的键永久变哑、已注入的修饰键粘住、待定态与热串缓冲回放到**换了主人**的窗口）。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。通道在状态机定时器线程上：`reinstall_count()` 变化 = 钩子已重装（不在钩子线程上跑壳层代码）；`foreground_window()` + `FocusTracker` **连续两轮同一新窗口**才算切换。Linux 恒不触发。
 - **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow` 窗口标题 + 进程名；Linux 暂返回 `None`（Wayland 受限），前台类条件在该平台恒不成立。
 - **已知天花板（升级路径）**：低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截（Interception）；Linux 热插拔键盘不在监听列表（重启应用即可）。
 
@@ -107,6 +110,6 @@ M0–M4 已完成：工程骨架 / 核心键模型 + Windows 钩子 / 配置模�
 
 ## 文档清单
 
-- `README.md`（项目简介）；`docs/README.md`（文档索引 + 新人阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 跨平台策略 / 已知天花板）；`docs/需求设计说明书.md`（功能需求唯一活文档 + 未实现规划 §7 + 修订记录）；`docs/安装与更新-Windows.md`（安装步骤 + 更新链路 / 密钥与 Secrets / 发版步骤）；`docs/变量提取与引用指南.md`（变量提取与占位符引用 Q&A）；`docs/竞品分析与优化规划.md`（竞品横向对比，分析视角）；`docs/变更归档.md`（已实现变更：文件-改动表 + 规则/决策）。
+- `README.md`（简介）；`docs/README.md`（索引 + 阅读顺序）；`docs/架构设计.md`（分层 / 事件流转 / 关键机制 / 天花板）；`docs/需求设计说明书.md`（功能需求活文档 + 规划 §7 + 修订记录）；`docs/安装与更新-Windows.md`（安装 + 更新链路 / 密钥 / 发版）；`docs/变量提取与引用指南.md`（变量 Q&A）；`docs/竞品分析与优化规划.md`（竞品对比）；`docs/变更归档.md`（已实现变更：文件-改动表 + 规则/决策）。
 - **落点分工**：规则/约定/命名 → 本文件；功能需求与规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`（新归档追加到那里，不写回本文件）。代码事实以源码为准，先 `grep` 再动手。
 - 本机已装：Rust toolchain、Node、Tauri CLI（`@tauri-apps/cli`）。前端依赖 `npm --prefix ui ci`；构建在 Windows 下进行。

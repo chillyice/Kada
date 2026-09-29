@@ -103,6 +103,71 @@ impl Engine {
         }
     }
 
+    /// 输入状态复位：钩子被摘除后重装、前台窗口切换时由壳层调用（见规划 7.2-④）。
+    /// 返回是否真的丢掉了东西（`false` = 本来就是干净状态，调用方可跳过日志）。
+    ///
+    /// 这些时刻的共同点是「我们与物理键盘之间断了一次线」，Engine 里所有以「按键抬起」
+    /// 或「时间窗」为终止条件的等待态都可能永远等不到终止：
+    /// - [`ChordTracker`] 的按住集合里那个键再也收不到抬起 → 该键之后每次按下都被判成
+    ///   「已在按住中」而**永久变哑**（正是钩子层 `HELD_KEYS` 那份脏状态的镜像）。
+    /// - `ModsState` 里的 hold / oneshot / sticky 已经**物理注入**了修饰键 down，配对的
+    ///   抬起丢了 → 系统层面认为 Ctrl/Alt 一直按着（「修饰键粘住」），后面敲什么都成组合键。
+    /// - 待定的 tap-hold / 连击 / 键序列会把缓冲里的键在超时后回放到一个已经换了主人的窗口。
+    /// - 热串缓冲同理：在 A 窗口敲了一半的触发词，切到 B 窗口敲下后缀就展开成一段文本。
+    ///
+    /// 处理原则：**注入出去的东西必须收回来，缓冲里的东西一律丢弃不回放**。
+    /// - 收回：我们注入过的 hold / oneshot / sticky 修饰键补一个 up；momentary 层退出。
+    /// - 丢弃：待定 tap-hold、连击等待窗、和弦与序列的待回放键、热串缓冲全部清空。这些键
+    ///   在钩子层已被吞掉，但此处**不回放**——复位场景下（锁屏 / 唤醒 / 钩子被摘 / 切窗口）
+    ///   前台目标已经变了，把旧按键注入到新窗口（可能是密码框、可能是别的程序）比丢掉它们
+    ///   更糟：那会让用户看到「一串莫名其妙的字符被打进当前窗口」。
+    /// - 保留：锁定层（`lock_layer`）是用户显式切换的持续状态，与「按键抬起」无关，
+    ///   跨前台切换继续生效（和 CapsLock 同理）。
+    pub fn reset(&mut self, inj: &mut dyn Inject) -> bool {
+        // 注入过的键先收回来（去重：hold 是修饰键时它同时记在 `mods.hold` 里）。
+        let mut to_release: BTreeSet<Key> = BTreeSet::new();
+        if let Some(p) = self.taphold.as_ref() {
+            if p.hold_active {
+                to_release.extend(p.hold);
+                // oneshot 的 roll：按住 `from` 期间它被当普通 hold 修饰按下。
+                to_release.extend(p.oneshot);
+            }
+        }
+        for m in self.mods.all() {
+            to_release.insert(modifier_as_key(m));
+        }
+        for k in &to_release {
+            inj.up(*k);
+        }
+
+        let dirty = !to_release.is_empty()
+            || self.taphold.is_some()
+            || self.dance.is_some()
+            || !self.chord.pending.is_empty()
+            || self.chord.tracker.is_active()
+            || !self.seq.pending.is_empty()
+            || self.seq.tracker.is_active()
+            || !self.hotstring.is_empty()
+            || self.layer.restore.is_some();
+
+        self.mods.hold.clear();
+        self.mods.sticky.clear();
+        self.mods.oneshot.clear();
+        self.taphold = None;
+        self.dance = None;
+        self.chord.pending.clear();
+        self.chord.tracker.reset();
+        self.chord.settling.clear();
+        self.seq.pending.clear();
+        self.seq.tracker.reset();
+        self.hotstring.clear();
+        if self.layer.restore.is_some() {
+            // 接管前是锁定层就恢复回去，否则退回基础层（锁定层本身不动）。
+            self.layer.leave_momentary();
+        }
+        dirty
+    }
+
     /// 热串（文本扩展）：在放行事件上累积可打印字符，命中「触发词 + 后缀」时返回要执行的展开
     /// （回删触发词 / 注入替换文本 / 补回后缀键）。注入会阻塞上百毫秒，**必须由调用方放到
     /// 后台线程**执行——钩子回调里跑这么久的活会被系统摘掉钩子。
@@ -1643,5 +1708,135 @@ mod tests {
         std::thread::sleep(Duration::from_millis(30));
         step(&mut engine, &up(Key::Tab), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.active_layer(), None);
+    }
+
+    // ---- 输入状态复位（钩子重装 / 前台切换，见规划 7.2-④） ----
+
+    #[test]
+    fn reset_releases_injected_hold_modifier() {
+        // 按住切层/tap-hold 键期间钩子被摘或切了窗口：注入的 Ctrl 必须收回，
+        // 否则系统层面 Ctrl 一直按着，之后敲什么都是组合键（「修饰键粘住」）。
+        let mut r = remap("CapsLock", "");
+        r.hold = Some("Ctrl".into());
+        r.tap = Some("Escape".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired); // roll → 注入 Ctrl down
+        assert_eq!(inj.take(), vec!["down Ctrl"]);
+
+        assert!(engine.reset(&mut inj), "有待定态就该被判为「脏」");
+        assert_eq!(inj.take(), vec!["up Ctrl"], "注入的修饰键必须补一个 up");
+        // 复位后再按住同一个键：能重新判 hold（没被卡在「已按住」里）。
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down Ctrl"], "复位后该键恢复正常");
+    }
+
+    #[test]
+    fn reset_releases_sticky_and_oneshot() {
+        let mut r = remap("CapsLock", "");
+        r.sticky = Some("Ctrl".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired); // 单击 → 锁定粘滞
+        assert_eq!(inj.take(), vec!["down Ctrl"]);
+
+        assert!(engine.reset(&mut inj));
+        assert_eq!(inj.take(), vec!["up Ctrl"], "粘滞修饰也要收回（否则永远粘住）");
+    }
+
+    #[test]
+    fn reset_drops_chord_pending_without_replay() {
+        // 和弦待定期丢过一次 keyup：按住集合必须清空，否则那个键之后每次按下都被判成
+        // 「已在按住中」吞掉 → 永久变哑。但**不回放**缓冲里的键（前台目标可能已经变了）。
+        let cfg = cfg_with(&["F&J"]);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired).is_none());
+        assert!(engine.reset(&mut inj));
+        assert!(inj.take().is_empty(), "复位不回放缓冲里的键（避免打进新窗口）");
+
+        // 复位后 F 是干净的：重新按 F、J 仍能凑成和弦。
+        assert!(step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["F&J"], "复位后该键还能重新凑和弦");
+    }
+
+    #[test]
+    fn reset_drops_sequence_pending_without_replay() {
+        let cfg = cfg_with(&["F9 J K"]);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(step(&mut engine, &down(Key::F9), &cfg, &mut inj, &mut fired).is_none());
+        assert!(engine.reset(&mut inj));
+        assert!(inj.take().is_empty(), "复位不回放 leader");
+        // 超时线程之后也不会再回放（tracker 与 pending 都已清空）。
+        engine.tick(&mut inj);
+        assert!(inj.take().is_empty());
+        assert!(step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired).is_some(), "普通键照常放行");
+    }
+
+    #[test]
+    fn reset_drops_momentary_layer_but_keeps_locked_one() {
+        // 前台切换后：按住式（momentary）层的「松开切层键」事件可能永远不来，必须退出；
+        // 锁定层是用户显式切换的持续状态，与按键抬起无关，继续生效。
+        let cfg = cfg_with_locked_layer("K");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // 长按 Tab → 锁定 L1。
+        step(&mut engine, &down(Key::Tab), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(30));
+        step(&mut engine, &up(Key::Tab), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), Some("L1"));
+        // 纯锁定层没有「会变脏的等待态」，复位报告 false（调用方据此不刷日志）。
+        assert!(!engine.reset(&mut inj), "锁定层不算待复位的脏状态");
+        assert_eq!(engine.active_layer(), Some("L1"), "锁定层跨前台切换继续生效");
+
+        // 锁定层之上按住 CapsLock 临时进 L2（momentary 接管）→ 复位后回到锁定层。
+        let mut cfg2 = cfg.clone();
+        cfg2.layers.push(kada_core::Layer { id: "L2".into(), name: "层2".into() });
+        cfg2.remaps.push(Remap {
+            from: "CapsLock".into(),
+            to: String::new(),
+            hold_layer: Some("L2".into()),
+            tap_timeout_ms: 20,
+            enabled: true,
+            ..Default::default()
+        });
+        step(&mut engine, &down(Key::CapsLock), &cfg2, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::A), &cfg2, &mut inj, &mut fired); // roll → 进 L2
+        assert_eq!(engine.active_layer(), Some("L2"));
+        assert!(engine.reset(&mut inj));
+        assert_eq!(engine.active_layer(), Some("L1"), "momentary 层退出，锁定层恢复");
+    }
+
+    #[test]
+    fn reset_clears_hotstring_buffer() {
+        // 在 A 窗口敲了一半的触发词，切到 B 窗口后敲后缀不该在 B 里展开出一段文本。
+        let mut engine = Engine::new();
+        let (mut inj, mut _fired) = (FakeInject::default(), Fired::default());
+        let mut hits = Vec::new();
+        type_str(&mut engine, "addr", &mut hits);
+
+        assert!(engine.reset(&mut inj), "缓冲里有内容就算「脏」");
+        assert!(inj.log.is_empty(), "热串缓冲只是壳层状态，不涉及注入");
+        assert!(engine.hotstring(&down(Key::Space), &expansions()).is_none(), "复位后不该再展开");
+    }
+
+    #[test]
+    fn reset_is_noop_when_idle() {
+        let mut engine = Engine::new();
+        let (mut inj, _fired) = (FakeInject::default(), Fired::default());
+        assert!(!engine.reset(&mut inj), "干净状态不该被报告成「脏」（否则白白刷日志）");
+        assert!(inj.log.is_empty());
     }
 }

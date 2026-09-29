@@ -1653,3 +1653,10 @@ pre.msg-v {
   background: var(--accent);
   border-radius: 2px;
 }
+
+/* 详情页头部的一组按钮（如「消息」页的「停止执行 / 清空」）。 */
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
