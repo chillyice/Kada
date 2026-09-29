@@ -249,8 +249,13 @@
                 <input type="number" id="set-chord-timeout" class="action-input action-input-num" min="0" step="50" />
                 <span class="unit-hint">毫秒（0 = 不限）</span>
               </label>
+              <label class="setting-row">
+                <input type="checkbox" id="set-status-hud" class="toggle" />
+                <span>显示输入状态悬浮指示</span>
+              </label>
             </div>
             <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
+            <p class="hint">「输入状态悬浮指示」= 有层或改键修饰键生效时，屏幕底部浮一条小条，显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
             <p class="hint">「序列等待」= 键序列（如 <code>F9 J K</code>）按下第一步后，等下一步的最长时间；「和弦等待」= 按下部分和弦成员（如 <code>F&amp;J</code> 的 F）后，等其余成员的最长时间。两者超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
             <div class="settings-section">
               <div class="settings-section-head">

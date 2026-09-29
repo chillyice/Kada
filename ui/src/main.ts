@@ -79,8 +79,21 @@ type Settings = {
   sequence_timeout_ms: number;
   /** 和弦等待窗（毫秒）；0 = 不限时。界面按毫秒录入。 */
   chord_timeout_ms: number;
+  /** 输入状态悬浮指示：有层 / 修饰键生效时在屏幕下方浮一条状态，没有时自动消失。 */
+  show_status_hud: boolean;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
+/** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
+type StatusPayload = {
+  /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
+  layer?: string;
+  /** 该层来自「长按锁定层」：松开切层键仍生效。 */
+  locked: boolean;
+  /** 注入中的修饰键，`kind` 决定用词：按住 / 粘滞 / 单次。 */
+  mods: { kind: "hold" | "sticky" | "oneshot"; key: string }[];
+  /** 后端拼好的一句话摘要（托盘提示用，悬浮窗不展示）。 */
+  summary: string;
+};
 type Conflict = { severity: "error" | "warn"; message: string; name: string };
 type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
 type CommandResult = {
@@ -514,6 +527,7 @@ let cfg: Config = {
     action_timeout_ms: 30_000,
     sequence_timeout_ms: 1000,
     chord_timeout_ms: 1000,
+    show_status_hud: true,
   },
 };
 let section: Section = "shortcuts";
@@ -2872,6 +2886,9 @@ function syncSettings() {
   (document.getElementById("set-chord-timeout") as HTMLInputElement).value = timeoutMs(
     cfg.settings.chord_timeout_ms,
   );
+  // 缺字段的老配置（写在该设置出现之前）按「开」显示，与后端 `default_true` 一致。
+  (document.getElementById("set-status-hud") as HTMLInputElement).checked =
+    cfg.settings.show_status_hud !== false;
 }
 
 function bindSettings() {
@@ -2881,6 +2898,7 @@ function bindSettings() {
   const actionTimeout = document.getElementById("set-action-timeout") as HTMLInputElement;
   const sequenceTimeout = document.getElementById("set-sequence-timeout") as HTMLInputElement;
   const chordTimeout = document.getElementById("set-chord-timeout") as HTMLInputElement;
+  const statusHud = document.getElementById("set-status-hud") as HTMLInputElement;
   autostart.addEventListener("change", () => {
     cfg.settings.autostart = autostart.checked;
     void save();
@@ -2911,6 +2929,10 @@ function bindSettings() {
     const ms = Math.max(0, Math.floor(Number(chordTimeout.value) || 0));
     chordTimeout.value = String(ms);
     cfg.settings.chord_timeout_ms = ms;
+    void save();
+  });
+  statusHud.addEventListener("change", () => {
+    cfg.settings.show_status_hud = statusHud.checked;
     void save();
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
@@ -3716,8 +3738,51 @@ async function bootstrapToast() {
   render(await invoke<ToastPayload | null>("get_toast_payload").catch(() => null));
 }
 
+// 输入状态悬浮指示窗（独立隐藏窗口，加载 index.html#hud）：
+// 显示「当前激活层 + 注入中的修饰键（按住 / 粘滞 / 单次）」。显示与隐藏全由后端决定（有东西
+// 生效才亮出来、没有就藏回去），这里只负责画内容并把量到的尺寸回报给后端定位。
+async function bootstrapHud() {
+  document.querySelector(".layout")?.remove();
+  document.querySelector("#result-modal")?.remove();
+  document.querySelector("#save-status")?.remove();
+  const box = el("div", "hud-box");
+  const row = el("div", "hud-row");
+  box.append(row);
+  document.body.append(box);
+  const MOD_KIND_LABEL: Record<string, string> = { hold: "按住", sticky: "粘滞", oneshot: "单次" };
+  const render = (payload: StatusPayload | null) => {
+    row.replaceChildren();
+    if (payload?.layer) {
+      const chip = el("span", "hud-chip hud-layer");
+      chip.textContent = `层 · ${payload.layer}${payload.locked ? "（锁定）" : "（按住）"}`;
+      row.append(chip);
+    }
+    for (const m of payload?.mods ?? []) {
+      const chip = el("span", `hud-chip hud-${m.kind}`);
+      chip.textContent = `${MOD_KIND_LABEL[m.kind] ?? m.kind} ${m.key}`;
+      row.append(chip);
+    }
+    // 量完内容再回报尺寸：窗口要贴屏幕底部居中，宽高得先知道（多给 2px 余量，宁可多留一点
+    // 透明边也不能把内容裁掉——`.hud-row` 居中，多出来的部分是看不见的）。
+    const rect = row.getBoundingClientRect();
+    void invoke("hud_ready", {
+      width: Math.ceil(rect.width) + 14,
+      height: Math.ceil(rect.height) + 14,
+    }).catch(() => {});
+  };
+  await listen<StatusPayload>("status-change", (e) => render(e.payload));
+  // 首次懒创建后补一次拉取：窗口刚建好时 status-change 事件可能早于监听器注册
+  // （与触发气泡同一个套路）。
+  render(await invoke<StatusPayload | null>("get_status_payload").catch(() => null));
+}
+
 if (location.hash === "#toast") {
   void bootstrapToast();
+} else if (location.hash === "#hud") {
+  // 演示模式只在没有 Tauri 壳时生效（`index.html#hud` 纯浏览器直开时给一份样例载荷，
+  // 方便调样式；壳内自动跳过）。触发气泡那边不装，因为它没有可预览的静态内容。
+  installBrowserMock();
+  void bootstrapHud();
 } else {
   installBrowserMock();
   bind();

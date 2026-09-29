@@ -1437,6 +1437,73 @@ body:has(.toast-bubble) {
   display: none;
 }
 
+/* 输入状态悬浮指示（hud 窗口，独立小浮层；见规划 7.3-⑬） */
+/* 同 toast：hud 也是 transparent 窗口，body 必须透明，否则会显示成实心深色矩形 */
+body:has(.hud-box) {
+  background: transparent;
+}
+
+/* 外层只负责在窗口里居中；窗口尺寸由后端按 `.hud-row` 量出来的宽高设置，
+   所以这里必须让内层保持内容宽度（不能被拉伸），多出来的透明边不可见。 */
+.hud-box {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hud-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  background: rgba(22, 26, 34, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  white-space: nowrap;
+}
+
+.hud-chip {
+  font-size: 12px;
+  line-height: 1.2;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+
+/* 层是「当前模式」，给最醒目的位置与配色；三种修饰键按释放时机区分：
+   按住（跟着切层键松）、粘滞（再击解锁）、单次（下一个键后释放）。 */
+.hud-layer {
+  font-weight: 600;
+  color: #ffd9cf;
+  background: var(--accent-dim);
+  border-color: var(--accent);
+  /* 层名可以很长：给它一个上限并省略，别把窗口撑过后端 900px 的钳制宽度而被裁掉。 */
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hud-hold {
+  color: #cfe1ff;
+  background: rgba(64, 108, 176, 0.35);
+  border-color: rgba(96, 148, 224, 0.55);
+}
+
+.hud-sticky {
+  color: #d8ffd9;
+  background: rgba(56, 128, 76, 0.35);
+  border-color: rgba(96, 190, 118, 0.55);
+}
+
+.hud-oneshot {
+  color: #ffe9c4;
+  background: rgba(158, 116, 40, 0.35);
+  border-color: rgba(214, 164, 66, 0.55);
+}
+
 /* ---------- 消息中心 ---------- */
 .badge {
   position: absolute;

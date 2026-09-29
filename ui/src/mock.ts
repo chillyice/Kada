@@ -80,6 +80,7 @@ const DEMO_CONFIG = {
     action_timeout_ms: 30000,
     sequence_timeout_ms: 1000,
     chord_timeout_ms: 1000,
+    show_status_hud: true,
   },
 };
 
@@ -153,6 +154,22 @@ export function installBrowserMock() {
         case "stop_record":
           return [];
         case "get_toast_payload":
+          return null;
+        // 输入状态指示：演示模式给一份「层 + 三种修饰键」的样例，让 `index.html#hud`
+        // 在纯浏览器里也能渲染出来看样式（真实值只有壳内的状态机定时器线程会推）。
+        case "get_status_payload":
+          return {
+            layer: "导航层",
+            locked: true,
+            mods: [
+              { kind: "hold", key: "Ctrl" },
+              { kind: "sticky", key: "Shift" },
+              { kind: "oneshot", key: "Alt" },
+            ],
+            summary: "层：导航层（锁定） · 按住 Ctrl · 粘滞 Shift · 单次 Alt",
+          };
+        // 悬浮指示窗渲染完回报尺寸（演示模式不真的改窗口大小）。
+        case "hud_ready":
           return null;
         // 对话框（plugin:dialog）：文件对话框演示模式一律返回空（用户取消）。
         case "plugin:dialog|open":
