@@ -239,8 +239,19 @@
                 <input type="number" id="set-action-timeout" class="action-input action-input-num" min="0" step="1" />
                 <span class="unit-hint">秒（0 = 不限）</span>
               </label>
+              <label class="setting-row">
+                <span>序列等待</span>
+                <input type="number" id="set-sequence-timeout" class="action-input action-input-num" min="0" step="50" />
+                <span class="unit-hint">毫秒（0 = 不限）</span>
+              </label>
+              <label class="setting-row">
+                <span>和弦等待</span>
+                <input type="number" id="set-chord-timeout" class="action-input action-input-num" min="0" step="50" />
+                <span class="unit-hint">毫秒（0 = 不限）</span>
+              </label>
             </div>
             <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
+            <p class="hint">「序列等待」= 键序列（如 <code>F9 J K</code>）按下第一步后，等下一步的最长时间；「和弦等待」= 按下部分和弦成员（如 <code>F&amp;J</code> 的 F）后，等其余成员的最长时间。两者超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
             <div class="settings-section">
               <div class="settings-section-head">
                 <span>键位层</span>

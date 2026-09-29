@@ -398,8 +398,17 @@ pub struct SequenceTracker {
     candidates: Vec<(usize, Vec<Shortcut>, usize)>,
 }
 
-/// 键序列超时的默认毫秒数（leader 后超过该时长未按下一步即回退）。
+/// 键序列等待窗的默认毫秒数（leader 后超过该时长未按下一步即回退）。
+///
+/// 实际取值来自 [`Settings::sequence_timeout_ms`]（设置页可改，`0` = 不限时）；
+/// 本常量只是缺省值：老配置（写于该字段出现之前）与 `Settings::default` 都用它。
 pub const DEFAULT_SEQUENCE_TIMEOUT_MS: u64 = 1000;
+
+/// 和弦等待窗的默认毫秒数（按下部分成员后，等其余成员的最长时间）。
+///
+/// 实际取值来自 [`Settings::chord_timeout_ms`]（设置页可改，`0` = 不限时：等成员键
+/// 全部抬起才定论）；本常量只是缺省值。
+pub const DEFAULT_CHORD_TIMEOUT_MS: u64 = 1000;
 
 impl SequenceTracker {
     pub fn new() -> Self {
@@ -1285,11 +1294,35 @@ pub struct Settings {
     /// 超时保护，若用 `#[serde(default)]` 的零值会让它们默认「不限时」，保护形同虚设。
     #[serde(default = "default_action_timeout_ms")]
     pub action_timeout_ms: u64,
+    /// 键序列（leader key）等待窗（毫秒）：leader 按下后等下一步的最长时间，超时把已吞掉的
+    /// 键原样回放；`0` = 不限时（一直等，直到断链或命中）。
+    ///
+    /// 手感因人而异（手慢的人嫌 1000ms 短、误触的人嫌它长），故进设置。缺字段取
+    /// [`DEFAULT_SEQUENCE_TIMEOUT_MS`]——与 `action_timeout_ms` 同一个理由：老配置（写于本
+    /// 字段出现之前）本来就按 1000ms 跑，`#[serde(default)]` 的零值会悄悄改成「不限时」。
+    #[serde(default = "default_sequence_timeout_ms")]
+    pub sequence_timeout_ms: u64,
+    /// 和弦（`F&J` 同时按住）等待窗（毫秒）：按下部分成员后，等其余成员的最长时间；超时判定
+    /// 「不是和弦」，把待定的键按输入顺序原样回放；`0` = 不限时（等成员键全部抬起才定论）。
+    ///
+    /// 缺字段取 [`DEFAULT_CHORD_TIMEOUT_MS`]（同上）。
+    #[serde(default = "default_chord_timeout_ms")]
+    pub chord_timeout_ms: u64,
 }
 
 /// `action_timeout_ms` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
 pub fn default_action_timeout_ms() -> u64 {
     DEFAULT_ACTION_TIMEOUT_MS
+}
+
+/// `sequence_timeout_ms` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
+pub fn default_sequence_timeout_ms() -> u64 {
+    DEFAULT_SEQUENCE_TIMEOUT_MS
+}
+
+/// `chord_timeout_ms` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
+pub fn default_chord_timeout_ms() -> u64 {
+    DEFAULT_CHORD_TIMEOUT_MS
 }
 
 impl Default for Settings {
@@ -1299,6 +1332,8 @@ impl Default for Settings {
             paused: false,
             wake_key: None,
             action_timeout_ms: DEFAULT_ACTION_TIMEOUT_MS,
+            sequence_timeout_ms: DEFAULT_SEQUENCE_TIMEOUT_MS,
+            chord_timeout_ms: DEFAULT_CHORD_TIMEOUT_MS,
         }
     }
 }
@@ -3637,6 +3672,43 @@ mod chord_tests {
         assert_eq!(clean.shortcuts[0].triggers, vec!["F&J".to_string()]);
         assert!(clean.shortcuts[1].triggers.is_empty());
         assert!(ignored.iter().any(|m| m.contains("F&Ctrl")));
+    }
+}
+
+/// 设置里的两个等待窗（序列 / 和弦）都是「缺字段拿默认值、0 = 不限时是有效取值」，
+/// 两类取值都别被 serde 缺省或清洗改掉。
+#[cfg(test)]
+mod settings_timeout_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_two_constants() {
+        let d = Settings::default();
+        assert_eq!(d.sequence_timeout_ms, DEFAULT_SEQUENCE_TIMEOUT_MS);
+        assert_eq!(d.chord_timeout_ms, DEFAULT_CHORD_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn old_config_without_timeout_fields_gets_defaults() {
+        // 老配置（写于这两个字段出现之前）应拿到 1000ms，而不是 `#[serde(default)]` 的 0
+        // （0 在这里 = 不限时，等于悄悄把等待窗取消）。
+        let old: Config =
+            serde_json::from_str(r#"{"settings":{"autostart":true,"action_timeout_ms":5000}}"#).unwrap();
+        assert_eq!(old.settings.sequence_timeout_ms, DEFAULT_SEQUENCE_TIMEOUT_MS);
+        assert_eq!(old.settings.chord_timeout_ms, DEFAULT_CHORD_TIMEOUT_MS);
+        assert_eq!(old.settings.action_timeout_ms, 5000, "已有的字段照旧");
+    }
+
+    #[test]
+    fn zero_means_unlimited_and_survives_roundtrip() {
+        let cfg = Config {
+            settings: Settings { sequence_timeout_ms: 0, chord_timeout_ms: 2500, ..Default::default() },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.settings, cfg.settings);
+        assert_eq!(back.settings.sequence_timeout_ms, 0, "0（不限时）不能被缺省值盖回 1000");
     }
 }
 

@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use kada_core::{
     is_hotstring_terminator, key_to_char, match_expansion, Action, ChordAdvance, ChordTracker,
     Config, Key, Modifier, RawEvent, Remap, SeqAdvance, SequenceTracker, Shortcut, TextExpansion,
-    Trigger, DEFAULT_SEQUENCE_TIMEOUT_MS,
+    Trigger,
 };
 
 use crate::Ev;
@@ -33,6 +33,14 @@ pub trait Inject {
 /// 待定期间最多先吞掉多少个「其它键」：超过就立即定论回放，避免成员键一直按住时
 /// 把用户的输入无限攒在缓冲里（表现为打字延迟）。
 const MAX_PENDING_BUFFER: usize = 16;
+
+/// 把设置里的毫秒等待窗换算成 `Duration`；`0` = 不限时（`None`，等不到时间到的那天）。
+///
+/// 序列（`Settings.sequence_timeout_ms`）与和弦（`Settings.chord_timeout_ms`）共用同一约定：
+/// 面板上填 0 就是把等待窗关掉，此时定论只由「下一个键」「抬起」这类事件触发。
+fn wait_window(ms: u64) -> Option<Duration> {
+    (ms > 0).then(|| Duration::from_millis(ms))
+}
 
 /// 输入决策引擎的全部运行时状态（钩子回调持有，单线程串行访问）。
 pub struct Engine {
@@ -69,13 +77,6 @@ impl Engine {
         self.layer.active()
     }
 
-    /// 键序列等待超时（毫秒）。默认 [`DEFAULT_SEQUENCE_TIMEOUT_MS`]；测试里缩短到毫秒级，
-    /// 免得超时相关用例真等一秒。
-    #[cfg(test)]
-    pub fn set_sequence_timeout_ms(&mut self, ms: u64) {
-        self.seq.timeout = Duration::from_millis(ms);
-    }
-
     /// 前置状态机：tap-hold（含连击/单次/粘滞/切层）→ 和弦 → 键序列。
     /// 返回 `None` = 事件被吞掉（框架层返回 Block）；`Some(ev)` = 继续走 `decide`。
     pub fn step(
@@ -91,16 +92,20 @@ impl Engine {
     }
 
     /// 定时推进（壳层用定时器线程驱动，见 `ENGINE_TICK_MS`）：把「只能靠时间判定」的
-    /// 等待态落地——键序列超时回放、连击等待窗超时提交。
+    /// 等待态落地——键序列超时回放、和弦等待窗超时回放、连击等待窗超时提交。
     ///
     /// 没有它，超时判定就只能靠「下一个事件」懒触发：单独按一下序列 leader 键（之后不按
     /// 别的键），或改了双击/三击的键只短按一次，回放与输出都要等用户下次敲键盘才发生，
-    /// 用户看到的是「这个键按了没反应」。
-    pub fn tick(&mut self, inj: &mut dyn Inject) {
+    /// 用户看到的是「这个键按了没反应」。和弦同理：成员键还按着、用户却在打别的字，那些
+    /// 字被吞着等成员抬起，等待窗到点就该还回去。
+    ///
+    /// 等待窗取值来自配置（[`Config::settings`]，`0` = 不限时），所以 `tick` 需要 `cfg`——
+    /// 由调用方在**取 `Engine` 锁之前**持有配置读锁传入，别在持锁期间再去读配置（加锁顺序
+    /// 与钩子回调路径一致，避免死锁）。
+    pub fn tick(&mut self, cfg: &Config, inj: &mut dyn Inject) {
         commit_expired_dance(&mut self.dance, inj);
-        if self.seq.tracker.is_active() && self.seq.last_activity.elapsed() >= self.seq.timeout {
-            self.seq.replay(inj);
-        }
+        self.chord_expire(cfg, inj);
+        self.seq_expire(cfg, inj);
     }
 
     /// 输入状态复位：钩子被摘除后重装、前台窗口切换时由壳层调用（见规划 7.2-④）。
@@ -657,21 +662,37 @@ fn release_oneshot(mods: &mut ModsState, inj: &mut dyn Inject) {
 /// 成员键按下即吞掉（不吞就漏字符、凑不成和弦），但**没凑成和弦时必须原样回放**——
 /// 否则「F&J」会让 F、J 两个键彻底变哑：按下被吞、抬起被吞，目标程序收不到任何事件。
 ///
-/// 定论（回放）的三个时机：
+/// 定论（回放）的四个时机：
 /// - 成员键全部抬起仍未凑齐 → 判定「不是和弦」。
+/// - 等待窗（`Settings.chord_timeout_ms`）过期 → 同样判定「不是和弦」（见 [`Engine::chord_expire`]）。
 /// - 待定期间按下的其它键把它挤爆缓冲（[`MAX_PENDING_BUFFER`]）→ 立即定论。
 /// - 凑齐 → 触发，此时不回放（成员键本身就是触发键）。
 ///
 /// 待定期间按下的其它键也一并吞掉、排在成员键之后回放：直接放行会让回放的成员键
 /// 落到它后面——「f 还按着就打 a」会变成「af」。修饰键例外（放行，否则 Ctrl+X 之类
 /// 的组合键用不了）。
-#[derive(Default)]
 struct ChordState {
     /// 已吞掉、尚未定论的按键（按下顺序 = 回放顺序）。
     pending: Vec<PendingKey>,
     /// 已触发/已回放、但物理仍按住的键：其 keyup 到达前抑制自动重复，避免重复回放。
     settling: BTreeSet<Key>,
     tracker: ChordTracker,
+    /// 最近一次**成员键**动作（按下 / 定论回放）的时刻，等待窗从这里起算。
+    ///
+    /// 刻意不在「其它键被吞进缓冲」时刷新：那样用户一直打字就能把回放无限推后，
+    /// 等待窗也就形同虚设（这正是它要治的症状）。
+    last_activity: Instant,
+}
+
+impl Default for ChordState {
+    fn default() -> Self {
+        Self {
+            pending: Vec::new(),
+            settling: BTreeSet::new(),
+            tracker: ChordTracker::new(),
+            last_activity: Instant::now(),
+        }
+    }
 }
 
 /// 待定期间被吞掉的一次按键。
@@ -682,6 +703,11 @@ struct PendingKey {
 }
 
 impl ChordState {
+    /// 是否处于「等成员键凑齐」的待定态（待定缓冲非空或成员键还按着）。
+    fn is_waiting(&self) -> bool {
+        !self.pending.is_empty() || self.tracker.is_active()
+    }
+
     /// 把待定期间吞掉的按键按用户输入顺序原样回放，并清空待定状态。
     /// 仍物理按住的键记入 `settling`（抬起前不再参与判定，防止自动重复重复回放）。
     fn replay_pending(&mut self, inj: &mut dyn Inject) {
@@ -692,6 +718,7 @@ impl ChordState {
         }
         self.settling.extend(held);
         self.tracker.reset();
+        self.last_activity = Instant::now();
     }
 }
 
@@ -708,6 +735,11 @@ impl Engine {
         inj: &mut dyn Inject,
         fire: &mut dyn FnMut(Vec<Action>, String, String),
     ) -> Option<Ev> {
+        // 等待窗过期：判定「不是和弦」，先按输入顺序回放待定的键，再照常处理本次事件
+        // （与键序列同构的懒判定；tick 那条定时路径是兜底，单独按住成员键时不按别的键
+        // 就只能靠它）。
+        self.chord_expire(cfg, inj);
+
         let items = collect_chord_items(cfg, self.layer.active());
         let chords: Vec<Vec<Shortcut>> = items.iter().map(|(c, ..)| c.clone()).collect();
 
@@ -748,6 +780,7 @@ impl Engine {
                         }
                         ChordAdvance::Await => {
                             self.chord.pending.push(PendingKey { key: *key, member: true });
+                            self.chord.last_activity = Instant::now();
                             None
                         }
                         // 理论上到不了（`is_member` 已判过），兜底按「非成员键」放行。
@@ -781,6 +814,23 @@ impl Engine {
                 Some(ev.clone())
             }
         }
+    }
+
+    /// 和弦等待窗过期（`Settings.chord_timeout_ms`，`0` = 不限时）→ 按「不是和弦」定论：
+    /// 把待定的键（成员键与借道回放的其它键）按输入顺序原样回放。返回是否过期回放了。
+    ///
+    /// 为什么需要它：成员键按下即被吞，此后**用户打的每个字都在缓冲里排队**，直到成员键
+    /// 全部抬起才一起吐出来。用户其实是「单手按住一个和弦成员、另一只手在打字」时，那些
+    /// 字就被压着不动（单键按住不放时更是一直不动）。等待窗就是给这段滞留时间设个上限。
+    /// 到点后的定论是**回放**，不是旧实现的「丢弃」——吞键铁律不允许把按键吞掉不还
+    /// （见 `docs/架构说明`「吞键铁律」）。
+    fn chord_expire(&mut self, cfg: &Config, inj: &mut dyn Inject) -> bool {
+        let Some(window) = wait_window(cfg.settings.chord_timeout_ms) else { return false };
+        if self.chord.is_waiting() && self.chord.last_activity.elapsed() >= window {
+            self.chord.replay_pending(inj);
+            return true;
+        }
+        false
     }
 }
 
@@ -826,12 +876,11 @@ fn collect_chord_items(
 /// 原样回放**，否则 leader 键与断链时已吞掉的中间步会变哑：
 /// - 命中：不回放（这些键本身就是触发键）。
 /// - 断链（下一个键不匹配任何候选）：回放已吞掉的键，再补发当前键，保持输入顺序。
-/// - 超时（[`DEFAULT_SEQUENCE_TIMEOUT_MS`] 内没有后续按键）：等下一次事件到来时先回放，
-///   再照常处理该事件（钩子回调只在事件里跑，没有定时器线程）。
+/// - 超时（`Settings.sequence_timeout_ms` 内没有后续按键，`0` = 不限时）：回放已吞掉的键
+///   ——由定时 tick 到点落地，下一次事件到来时也懒判一次。
 struct SequenceState {
     tracker: SequenceTracker,
     last_activity: Instant,
-    timeout: Duration,
     /// 已吞掉、尚未定论的按键（leader 与已匹配的中间步，按下顺序 = 回放顺序）。
     pending: Vec<Key>,
 }
@@ -841,7 +890,6 @@ impl SequenceState {
         Self {
             tracker: SequenceTracker::new(),
             last_activity: Instant::now(),
-            timeout: Duration::from_millis(DEFAULT_SEQUENCE_TIMEOUT_MS),
             pending: Vec::new(),
         }
     }
@@ -871,9 +919,7 @@ impl Engine {
 
         // 懒超时：等待超时后第一次事件到来时回放已吞掉的键。必须在「修饰键放行」之前判，
         // 否则用户下一个动作是按下 Ctrl/Shift（放行、早返回）时回放又被推迟。
-        if self.seq.tracker.is_active() && self.seq.last_activity.elapsed() >= self.seq.timeout {
-            self.seq.replay(inj);
-        }
+        self.seq_expire(cfg, inj);
         // 修饰键不参与序列判定（`Ctrl+K` 这类步骤靠主键 + mods 命中），也从不吞。
         if key_as_modifier(*key).is_some() {
             return Some(ev.clone());
@@ -924,6 +970,17 @@ impl Engine {
             }
             _ => Some(ev.clone()),
         }
+    }
+
+    /// 键序列等待窗过期（`Settings.sequence_timeout_ms`，`0` = 不限时）→ 把已吞掉的 leader
+    /// 与中间步按输入顺序原样回放。返回是否过期回放了。
+    fn seq_expire(&mut self, cfg: &Config, inj: &mut dyn Inject) -> bool {
+        let Some(window) = wait_window(cfg.settings.sequence_timeout_ms) else { return false };
+        if self.seq.tracker.is_active() && self.seq.last_activity.elapsed() >= window {
+            self.seq.replay(inj);
+            return true;
+        }
+        false
     }
 }
 
@@ -1038,6 +1095,105 @@ mod tests {
     ) -> Option<Ev> {
         let mut fire = |_a: Vec<Action>, trigger: String, _n: String| fired.log.push(trigger);
         engine.step(ev, cfg, inj, &mut fire)
+    }
+
+    /// 把两个等待窗缩到毫秒级（序列 / 和弦）：超时相关用例不必真等默认的 1 秒。
+    fn short_timeout(mut cfg: Config, ms: u64) -> Config {
+        cfg.settings.sequence_timeout_ms = ms;
+        cfg.settings.chord_timeout_ms = ms;
+        cfg
+    }
+
+    // ---- 等待窗来自设置（不是写死的 1000ms） ----
+
+    #[test]
+    fn sequence_timeout_zero_means_unlimited() {
+        // 0 = 不限时：leader 一直等下去，别在 1000ms 后自作主张回放。
+        let cfg = short_timeout(cfg_with(&["F9 J K"]), 0);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(step(&mut engine, &down(Key::F9), &cfg, &mut inj, &mut fired).is_none());
+        std::thread::sleep(Duration::from_millis(10));
+        engine.tick(&cfg, &mut inj);
+        assert!(inj.take().is_empty(), "不限时就不该由 tick 回放");
+
+        // 后续步照常推进（等待窗不是「卡死」的意思）。
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["F9 J K"], "不限时只影响回放时机，不影响命中");
+        assert!(inj.log.is_empty());
+    }
+
+    #[test]
+    fn sequence_timeout_comes_from_settings() {
+        // 手慢的人把窗口调大：默认 1000ms 内该等的还是要等。
+        let mut cfg = cfg_with(&["F9 J K"]);
+        cfg.settings.sequence_timeout_ms = 5_000;
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::F9), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(10));
+        engine.tick(&cfg, &mut inj);
+        assert!(inj.take().is_empty(), "窗口 5 秒，10ms 时不该回放");
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(), "还在等第二步");
+    }
+
+    #[test]
+    fn chord_timeout_expires_and_replays_in_order() {
+        // 成员键还按着、另一只手在打字：等待窗到点就把积压的键按输入顺序还回去。
+        let cfg = short_timeout(cfg_with(&["F&J"]), 1);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // 被吞掉待回放
+        assert!(inj.take().is_empty(), "等待窗内先压着");
+
+        std::thread::sleep(Duration::from_millis(5));
+        engine.tick(&cfg, &mut inj);
+        assert_eq!(inj.take(), vec!["down F", "up F", "down A", "up A"], "到点按输入顺序回放");
+
+        // 过期后 F 已定论成普通按键：再按 J（同在和弦里）不再凑成和弦。
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
+        step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down J", "up J"], "过期后成员键各自回放，不再触发");
+        assert!(fired.log.is_empty(), "过期 = 不是和弦");
+    }
+
+    #[test]
+    fn chord_expiry_is_lazy_on_next_event_too() {
+        // tick 只是兜底：等待窗过期后的第一个事件也该先定论，不许把陈旧的待定态
+        // 拿去凑和弦（晚按的成员键不该「补上一击」）。
+        let cfg = short_timeout(cfg_with(&["F&J"]), 1);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(5));
+        let out = step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired);
+        assert!(out.is_none(), "J 是成员键，自己也要等确认");
+        assert_eq!(inj.take(), vec!["down F", "up F"], "先回放已定论的 F");
+
+        step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
+        assert_eq!(inj.take(), vec!["down J", "up J"], "J 单独按下 → 回放成普通 j");
+        assert!(fired.log.is_empty(), "晚了 5ms 的两个键不再是和弦");
+    }
+
+    #[test]
+    fn chord_timeout_zero_means_unlimited() {
+        // 0 = 不限时（＝旧行为）：成员键按着多久都等，「成员全抬起」才定论。
+        let cfg = short_timeout(cfg_with(&["F&J"]), 0);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(10));
+        engine.tick(&cfg, &mut inj);
+        assert!(inj.take().is_empty(), "不限时就不该回放");
+        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["F&J"], "不限时：慢一点按也算和弦");
     }
 
     // ---- 和弦：没凑成必须回放（bug 回归：成员键永久变哑） ----
@@ -1206,9 +1362,8 @@ mod tests {
     #[test]
     fn sequence_leader_alone_is_replayed_after_timeout() {
         // leader 单独按下（没跟后续键）：超时后要回放，键不能被永久吞掉。
-        let cfg = cfg_with(&["F9 J K"]);
+        let cfg = short_timeout(cfg_with(&["F9 J K"]), 1);
         let mut engine = Engine::new();
-        engine.set_sequence_timeout_ms(1);
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         assert!(step(&mut engine, &down(Key::F9), &cfg, &mut inj, &mut fired).is_none());
@@ -1226,9 +1381,8 @@ mod tests {
     fn tick_replays_expired_sequence_leader() {
         // 单独按一下 leader 键、之后不按别的键：不能靠「下一个事件」懒回放（那要等用户
         // 下次敲键盘，表现为这个键按了没反应），由定时 tick 到点回放。
-        let cfg = cfg_with(&["F9 J K"]);
+        let cfg = short_timeout(cfg_with(&["F9 J K"]), 1);
         let mut engine = Engine::new();
-        engine.set_sequence_timeout_ms(1);
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         step(&mut engine, &down(Key::F9), &cfg, &mut inj, &mut fired);
@@ -1236,7 +1390,7 @@ mod tests {
         assert!(inj.take().is_empty(), "等待期内不回放");
 
         std::thread::sleep(Duration::from_millis(5));
-        engine.tick(&mut inj);
+        engine.tick(&cfg, &mut inj);
         assert_eq!(inj.take(), vec!["down F9", "up F9"], "超时后由 tick 回放 leader");
         assert!(fired.log.is_empty(), "回放不等于触发");
     }
@@ -1257,7 +1411,7 @@ mod tests {
         assert!(inj.take().is_empty(), "进入连击等待窗，先不输出");
 
         std::thread::sleep(Duration::from_millis(30));
-        engine.tick(&mut inj);
+        engine.tick(&cfg, &mut inj);
         assert_eq!(inj.take(), vec!["down A", "up A"], "过期提交单击输出");
     }
 
@@ -1512,7 +1666,7 @@ mod tests {
         assert!(inj.take().is_empty(), "进入连击等待窗，先不输出");
 
         std::thread::sleep(Duration::from_millis(30));
-        engine.tick(&mut inj);
+        engine.tick(&cfg, &mut inj);
         assert_eq!(inj.take(), vec!["down CapsLock", "up CapsLock"], "单击缺省回放原键");
     }
 
@@ -1524,7 +1678,6 @@ mod tests {
         r.tap3 = Some("C".into());
         let cfg = cfg_with_remap(r);
         let mut engine = Engine::new();
-        engine.set_sequence_timeout_ms(1);
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         // 两次快击 → 第二击累计后超时提交 tap2 的键。
@@ -1779,7 +1932,7 @@ mod tests {
         assert!(engine.reset(&mut inj));
         assert!(inj.take().is_empty(), "复位不回放 leader");
         // 超时线程之后也不会再回放（tracker 与 pending 都已清空）。
-        engine.tick(&mut inj);
+        engine.tick(&cfg, &mut inj);
         assert!(inj.take().is_empty());
         assert!(step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired).is_some(), "普通键照常放行");
     }

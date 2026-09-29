@@ -148,7 +148,15 @@ mod tests {
             shortcuts: vec![shortcut("本机快捷键", "Ctrl+Alt+K")],
             remaps: vec![remap("CapsLock", "Ctrl")],
             expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "本机地址".into(), enabled: true }],
-            settings: Settings { autostart: true, paused: true, wake_key: Some("Alt".into()), action_timeout_ms: 5000 },
+            settings: Settings {
+                autostart: true,
+                paused: true,
+                wake_key: Some("Alt".into()),
+                action_timeout_ms: 5000,
+                sequence_timeout_ms: 700,
+                chord_timeout_ms: 700,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -185,7 +193,15 @@ mod tests {
     fn merge_never_touches_settings() {
         let cur = local();
         let incoming = Config {
-            settings: Settings { autostart: false, paused: false, wake_key: None, action_timeout_ms: 0 },
+            settings: Settings {
+                autostart: false,
+                paused: false,
+                wake_key: None,
+                action_timeout_ms: 0,
+                sequence_timeout_ms: 50,
+                chord_timeout_ms: 50,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (out, _) = merge_configs(&cur, &incoming);

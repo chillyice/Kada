@@ -73,7 +73,14 @@ const DEMO_CONFIG = {
     },
   ],
   expansions: [{ trigger: ";addr", replace: "某市某区某路 88 号", enabled: true }],
-  settings: { autostart: false, paused: false, wake_key: null, action_timeout_ms: 30000 },
+  settings: {
+    autostart: false,
+    paused: false,
+    wake_key: null,
+    action_timeout_ms: 30000,
+    sequence_timeout_ms: 1000,
+    chord_timeout_ms: 1000,
+  },
 };
 
 const DEMO_RESULTS = [

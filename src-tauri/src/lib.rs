@@ -533,10 +533,11 @@ fn spawn_engine_ticker(
             // 之后，按住的旧层与待定的和弦都属于上一份配置，留着只会打进新配置里。
             let cfg_replaced = cfg_stale.swap(false, Ordering::Relaxed);
             let reason = reset_reason.or(if cfg_replaced { Some("配置已重新加载") } else { None });
-            if rec.lock().unwrap().is_some()
-                || pause_active(&paused_until)
-                || cfg.read().unwrap().settings.paused
-            {
+            // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
+            // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
+            // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
+            let guard = cfg.read().unwrap();
+            if rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused {
                 continue;
             }
             let mut engine = engine.lock().unwrap();
@@ -547,7 +548,7 @@ fn spawn_engine_ticker(
                     eprintln!("kada: 输入状态已复位（{reason}）");
                 }
             }
-            engine.tick(&mut SimulatedInject);
+            engine.tick(&guard, &mut SimulatedInject);
         }
     });
 }
