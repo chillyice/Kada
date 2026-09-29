@@ -37,6 +37,9 @@ mod update;
 /// 配置读写（原子写 + 损坏自愈），与 Tauri 壳解耦、可单测。
 mod config_io;
 
+/// 配置外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），与 Tauri 壳解耦、可单测。
+mod config_watch;
+
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use engine::{Engine, HotstringHit, Inject};
 
@@ -144,6 +147,12 @@ struct KadaState {
     /// 录制器：Some = 正在录制（此时快捷键/改键全暂停）。
     rec: Arc<Mutex<Option<Recorder>>>,
     file: PathBuf,
+    /// 外部修改监听的基线（见 [`config_watch`]）。**本进程每次写盘都要在这里销账**，而且写盘
+    /// 与销账必须同持这把锁——否则巡检线程可能插在中间，把刚写的配置当成外部修改再加载一遍。
+    cfg_watch: Arc<Mutex<config_watch::ConfigWatcher>>,
+    /// 「配置被整份换掉了」的旗标：外部改动采纳后置位，由状态机定时器线程消费并复位 [`Engine`]
+    /// （与旧配置绑定的按住层 / 待定和弦 / 注入中的修饰键都该跟着作废，见 [`spawn_engine_ticker`]）。
+    cfg_stale: Arc<AtomicBool>,
     _hook: Mutex<Option<input::HookHandle>>,
     /// 消息中心：命令结果（内存态，重启清空）。
     results: Arc<Mutex<Vec<CommandResult>>>,
@@ -502,21 +511,28 @@ impl ResetWatch {
 /// 录制中与暂停中不推进：那段时间事件不进状态机，推进只会把陈旧的等待态回放到用户
 /// 正在录入的内容里。
 ///
-/// 同一个线程顺带做**输入状态复位**巡检（钩子重装 / 前台切换，见 [`ResetWatch`]）：
-/// 复位与超时推进都作用于同一个 [`Engine`]，放在一起就不必为复位再起一个线程。
-/// 巡检本身照常进行（基线要跟上），只是暂停/录制期间不落地。
+/// 同一个线程顺带做**输入状态复位**巡检（钩子重装 / 前台切换，见 [`ResetWatch`]，以及
+/// 「配置被整份换掉」见下面 `cfg_stale`）：复位与超时推进都作用于同一个 [`Engine`]，
+/// 放在一起就不必为复位再起一个线程。巡检本身照常进行（基线要跟上），只是暂停/录制期间
+/// 不落地。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn spawn_engine_ticker(
     engine: Arc<Mutex<Engine>>,
     cfg: Arc<RwLock<Config>>,
     paused_until: Arc<AtomicU64>,
     rec: Arc<Mutex<Option<Recorder>>>,
+    cfg_stale: Arc<AtomicBool>,
 ) {
     std::thread::spawn(move || {
         let mut watch = ResetWatch::new();
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
-            let reason = watch.poll();
+            let reset_reason = watch.poll();
+            // 外部改动把配置整份换掉了（见 [`spawn_config_watcher`]）：跟上一条复位通道走同一套
+            // 口径——注入的收回来、缓冲里的丢弃不回放、锁定层保留。切换键位层 / 删掉序列 leader
+            // 之后，按住的旧层与待定的和弦都属于上一份配置，留着只会打进新配置里。
+            let cfg_replaced = cfg_stale.swap(false, Ordering::Relaxed);
+            let reason = reset_reason.or(if cfg_replaced { Some("配置已重新加载") } else { None });
             if rec.lock().unwrap().is_some()
                 || pause_active(&paused_until)
                 || cfg.read().unwrap().settings.paused
@@ -533,6 +549,97 @@ fn spawn_engine_ticker(
             }
             engine.tick(&mut SimulatedInject);
         }
+    });
+}
+
+/// 配置外部修改监听的巡检线程（见 [`config_watch`] 与规划 7.2-⑩）。
+///
+/// 每秒看一眼配置文件：被外部改成了另一份**能解析**的内容就采纳（替换内存里那份 + 通知
+/// 消息中心 + 广播给界面）；改成解析不动的半截内容就只提示、**谁都不动**（磁盘上那份留给
+/// 用户自己修）。这样「手改 JSON / 恢复备份 / 同步客户端落盘」都能生效，且应用内的下一个
+/// 保存不会再把外部改动盖掉——内存里那份已经跟着走了。
+///
+/// 巡检是轮询而非订阅文件系统事件：与钩子看门狗、[`ResetWatch`] 同一取舍——不引入额外依赖
+/// 与平台分支，不用管编辑器「先写临时文件再改名」和同步客户端的各种怪癖，代价只是慢一拍
+/// （[`config_watch::POLL_MS`]）。读的是一份几 KB 的文件，开销可以忽略。
+fn spawn_config_watcher(app: tauri::AppHandle) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_millis(config_watch::POLL_MS));
+        let st = app.state::<KadaState>();
+        // 判定 + 采纳在锁内一口气做完，通知放到锁外：`cfg_watch` 这把锁与 set_config /
+        // import_config 共用，持锁期间不该去动托盘图标、发事件（也不能让写盘等它）。
+        let (reloaded, bad) = {
+            let current = st.config.read().unwrap().clone();
+            let mut watch = st.cfg_watch.lock().unwrap();
+            match watch.poll(&st.file, &current) {
+                None => (None, None),
+                Some(config_watch::Change::Unreadable(err)) => (None, Some(err)),
+                Some(config_watch::Change::Reloaded(next)) => {
+                    let autostart_changed = next.settings.autostart != current.settings.autostart;
+                    let cfg = *next;
+                    // 留一份给锁外的通知与广播（配置只有几 KB，且这条路径本来就罕见）。
+                    *st.config.write().unwrap() = cfg.clone();
+                    (Some((cfg, autostart_changed)), None)
+                }
+            }
+        };
+        // 坏内容：内存与磁盘都不动，只提示这一次（同一份内容不重复报，见 [`config_watch`]）。
+        if let Some(err) = bad {
+            commit_result(
+                &app,
+                &st.results,
+                &st.unread,
+                CommandResult {
+                    kind: "config".into(),
+                    label: "配置".into(),
+                    trigger: "外部修改".into(),
+                    name: String::new(),
+                    command: "配置文件被外部修改，但内容无法解析：已保留当前配置".into(),
+                    stdout: format!(
+                        "磁盘上的 {} 未被改动（监听不会清理或回写外部内容）。\
+                         改好后会自动重新加载；想放弃这次外部改动，可用 config.json.bak 覆盖回去。",
+                        st.file.display(),
+                    ),
+                    stderr: err,
+                    exit_code: None,
+                    show_output: false,
+                    time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                },
+            );
+            continue;
+        }
+        // 采纳成功（上面已换进内存）：自启跟着系统同步一次，引擎复位交给定时器线程。
+        let Some((cfg, autostart_changed)) = reloaded else { continue };
+        if autostart_changed {
+            sync_autostart(&app, cfg.settings.autostart);
+        }
+        st.cfg_stale.store(true, Ordering::Relaxed);
+        commit_result(
+            &app,
+            &st.results,
+            &st.unread,
+            CommandResult {
+                kind: "config".into(),
+                label: "配置".into(),
+                trigger: "外部修改".into(),
+                name: String::new(),
+                command: "检测到配置文件被外部修改，已重新加载生效".into(),
+                stdout: format!(
+                    "快捷键 {} 条、改键 {} 条、文本扩展 {} 条、层 {} 个、目录 {} 个。\
+                     误改可回滚到 config.json.bak（上次保存时的良好副本）。",
+                    cfg.shortcuts.len(),
+                    cfg.remaps.len(),
+                    cfg.expansions.len(),
+                    cfg.layers.len(),
+                    cfg.folders.len(),
+                ),
+                stderr: String::new(),
+                exit_code: None,
+                show_output: false,
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            },
+        );
+        let _ = app.emit("config-changed", &cfg);
     });
 }
 
@@ -1318,8 +1425,13 @@ fn set_config(
 ) -> Result<Vec<String>, String> {
     let (clean, ignored) = sanitize_config(&config);
     let autostart = clean.settings.autostart;
+    // 「写盘 + 改内存 + 给监听销账」三件事同持 `cfg_watch` 锁：巡检线程拿同一把锁，
+    // 不会插在中间把刚写的配置当成外部修改再加载一遍（外部真的改了也照样检得出）。
+    let mut watch = state.cfg_watch.lock().unwrap();
     config_io::save(&state.file, &clean)?;
     *state.config.write().unwrap() = clean;
+    watch.adopt_own_write(&state.file);
+    drop(watch);
     sync_autostart(&app, autostart);
     Ok(ignored)
 }
@@ -1471,8 +1583,12 @@ fn import_config(
         (merged, added, autostart, None)
     };
 
+    // 与 set_config 同一套口径：写盘 + 改内存 + 给监听销账同持一把锁（导入也是一种「自己写的盘」）。
+    let mut watch = state.cfg_watch.lock().unwrap();
     config_io::save(&state.file, &next)?;
     *state.config.write().unwrap() = next;
+    watch.adopt_own_write(&state.file);
+    drop(watch);
     sync_autostart(&app, autostart);
     Ok(ImportOutcome {
         mode: if replace { "replace".into() } else { "merge".into() },
@@ -1604,6 +1720,10 @@ pub fn run() {
             let rec = Arc::new(Mutex::new(None::<Recorder>));
             let results: Arc<Mutex<Vec<CommandResult>>> = Arc::new(Mutex::new(Vec::new()));
             let unread = Arc::new(AtomicBool::new(false));
+            // 外部修改监听的基线：此刻磁盘上的内容就是刚读进来的这一份。
+            let cfg_watch = Arc::new(Mutex::new(config_watch::ConfigWatcher::new(&file)));
+            // 「配置被整份换掉」的旗标：监听线程置位，状态机定时器线程消费（见 spawn_engine_ticker）。
+            let cfg_stale = Arc::new(AtomicBool::new(false));
 
             // 托盘图标：基础 + 带红点（未读态）。转为 owned 以存入 state。
             let base_icon: Option<tauri::image::Image<'static>> = app
@@ -1711,13 +1831,21 @@ pub fn run() {
 
             // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker）。
             #[cfg(any(target_os = "windows", target_os = "linux"))]
-            spawn_engine_ticker(engine, config.clone(), paused_until.clone(), rec.clone());
+            spawn_engine_ticker(
+                engine,
+                config.clone(),
+                paused_until.clone(),
+                rec.clone(),
+                cfg_stale.clone(),
+            );
 
             let state = KadaState {
                 config,
                 paused_until,
                 rec,
                 file,
+                cfg_watch,
+                cfg_stale,
                 _hook: Mutex::new(hook_handle),
                 results,
                 unread,
@@ -1727,6 +1855,8 @@ pub fn run() {
                 toast: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
+            // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
+            spawn_config_watcher(app.handle().clone());
             // 更新状态单独托管：设置页/托盘都要读，与配置无关（不进 config.json）。
             app.manage(update::UpdateState::new(app.package_info().version.to_string()));
 

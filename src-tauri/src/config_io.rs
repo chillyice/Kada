@@ -12,6 +12,9 @@
 //!    磁盘上，用户可人工修复后覆盖回去。
 //!
 //! 与 Tauri 无关，可单测。
+//!
+//! 运行期的**外部修改监听**（[`crate::config_watch`]）走另一条口子 [`read_only`]：同样解析
+//! 配置，但**绝不碰磁盘**——自愈那套只属于启动，见该函数注释。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -55,6 +58,18 @@ pub fn load(file: &Path) -> LoadOutcome {
         Ok(cfg) => LoadOutcome { config: cfg, warnings: Vec::new() },
         Err(e) => recover(file, &format!("配置解析失败：{e}")),
     }
+}
+
+/// **只读**解析文件内容（无副作用），外部修改监听用（见 [`crate::config_watch`]）。
+///
+/// [`load`] 的损坏自愈（留档 + 从 `.bak` 回写）是**启动**路径的口径：那时没有别的数据源，
+/// 恢复总比空配置强。运行期监听不能照搬这套：用户正拿编辑器改 JSON，中途保存出来的半截
+/// 内容会被判成「损坏」，一留档一自愈就把用户改到一半的内容从磁盘挪走、再拿旧备份盖回去
+/// ——监听功能反过来毁掉用户的编辑。所以这条路径**只读不写**：解析得动就采纳，解析不动
+/// 就原地保留（改好后下一轮会按新内容重新解析），磁盘一个字节都不动。
+pub fn read_only(file: &Path) -> Result<Config, String> {
+    let text = fs::read_to_string(file).map_err(|e| e.to_string())?;
+    parse(&text)
 }
 
 /// 主文件不存在：首次启动（正常，静默用默认配置）或只剩备份可用（用户删了主文件 /

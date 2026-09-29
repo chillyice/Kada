@@ -1939,6 +1939,43 @@ async function requestCloseDetail() {
   closeDetail();
 }
 
+// 外部修改（后端监听 config.json 后广播的新配置，见规划 7.2-⑩）：把界面换成文件里的那一份。
+//
+// 触达编辑页时也算一次「离开当前编辑上下文」，所以与 leave 守卫同一套口径：**有未保存改动**
+// 就问一句，两个按钮各自写明后果（一个丢弃改动、一个会在下次保存时覆盖文件里的外部改动）；
+// 只是打开了编辑页却没改（干净草稿）就不问——关掉它什么都不会丢，留着反而危险：外部内容里
+// 的同一下标可能已经是另一条，草稿一保存就写到别人身上去了。
+async function applyExternalConfig(next: Config) {
+  const editing = draft !== null || remapDraft !== null || expansionDraft !== null;
+  if (editing) {
+    if (isDraftDirty()) {
+      const take = await ask(
+        `${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
+          "加载新内容会放弃这些改动。",
+        {
+          title: "配置已被外部修改",
+          kind: "warning",
+          okLabel: "加载新配置",
+          cancelLabel: "保留我的改动（下次保存会覆盖外部改动）",
+        },
+      );
+      // 保留编辑：界面与内存都不动，用户手上的编辑照旧。代价（下次保存覆盖外部改动）已经写在
+      // 按钮上，消息中心里也留着一条外部改动的记录，之后不会再重复弹（后端已采纳过一次）。
+      if (!take) return;
+    }
+    stopCapture();
+    void stopRecIfAny();
+    discardDraft();
+    draftNew = false;
+    selected = null;
+  }
+  cfg = next;
+  await refreshConflicts();
+  render();
+  syncSettings();
+  toast("配置文件已被外部修改，已重新加载");
+}
+
 function flashRow(i: number, listId: string) {
   if (i < 0) return;
   const row = document.querySelector<HTMLElement>(`#${listId} .row[data-idx="${i}"]`);
@@ -3608,6 +3645,10 @@ async function initEvents() {
   await listen<UpdateStatus>("update-status", (event) => {
     updateStatus = event.payload;
     syncUpdate();
+  });
+  // 配置文件被外部改动后由后端广播（见 applyExternalConfig）。
+  await listen<Config>("config-changed", (event) => {
+    void applyExternalConfig(event.payload);
   });
 }
 
