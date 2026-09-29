@@ -75,6 +75,10 @@ type Settings = {
   wake_key?: string | null;
   /** 命令/脚本动作的执行超时（毫秒）；0 = 不限时。界面按秒录入。 */
   action_timeout_ms: number;
+  /** 键序列（leader key）等待窗（毫秒）；0 = 不限时。界面按毫秒录入。 */
+  sequence_timeout_ms: number;
+  /** 和弦等待窗（毫秒）；0 = 不限时。界面按毫秒录入。 */
+  chord_timeout_ms: number;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 type Conflict = { severity: "error" | "warn"; message: string; name: string };
@@ -504,7 +508,13 @@ let cfg: Config = {
   shortcuts: [],
   remaps: [],
   expansions: [],
-  settings: { autostart: false, paused: false, action_timeout_ms: 30_000 },
+  settings: {
+    autostart: false,
+    paused: false,
+    action_timeout_ms: 30_000,
+    sequence_timeout_ms: 1000,
+    chord_timeout_ms: 1000,
+  },
 };
 let section: Section = "shortcuts";
 let selected: number | null = null; // 当前列表中的选中下标
@@ -2843,12 +2853,24 @@ function timeoutSeconds(ms: number): number {
   return Math.round((Number(ms) || 0) / 1000);
 }
 
+/** 等待窗（毫秒）→ 输入框文本（界面按毫秒录入；0 = 不限）。缺字段的老配置按默认 1000 显示。 */
+function timeoutMs(ms: number | undefined): string {
+  const n = Number(ms);
+  return String(ms === undefined || !Number.isFinite(n) || n < 0 ? 1000 : Math.floor(n));
+}
+
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
   (document.getElementById("set-wake-key") as HTMLSelectElement).value = cfg.settings.wake_key ?? "";
   (document.getElementById("set-action-timeout") as HTMLInputElement).value = String(
     timeoutSeconds(cfg.settings.action_timeout_ms),
+  );
+  (document.getElementById("set-sequence-timeout") as HTMLInputElement).value = timeoutMs(
+    cfg.settings.sequence_timeout_ms,
+  );
+  (document.getElementById("set-chord-timeout") as HTMLInputElement).value = timeoutMs(
+    cfg.settings.chord_timeout_ms,
   );
 }
 
@@ -2857,6 +2879,8 @@ function bindSettings() {
   const paused = document.getElementById("set-paused") as HTMLInputElement;
   const wakeKey = document.getElementById("set-wake-key") as HTMLSelectElement;
   const actionTimeout = document.getElementById("set-action-timeout") as HTMLInputElement;
+  const sequenceTimeout = document.getElementById("set-sequence-timeout") as HTMLInputElement;
+  const chordTimeout = document.getElementById("set-chord-timeout") as HTMLInputElement;
   autostart.addEventListener("change", () => {
     cfg.settings.autostart = autostart.checked;
     void save();
@@ -2874,6 +2898,19 @@ function bindSettings() {
     const secs = Math.max(0, Math.floor(Number(actionTimeout.value) || 0));
     actionTimeout.value = String(secs);
     cfg.settings.action_timeout_ms = secs * 1000;
+    void save();
+  });
+  // 两个等待窗按毫秒录入（默认 1000）：负数 / 非数字同样按 0（不限时）处理。
+  sequenceTimeout.addEventListener("change", () => {
+    const ms = Math.max(0, Math.floor(Number(sequenceTimeout.value) || 0));
+    sequenceTimeout.value = String(ms);
+    cfg.settings.sequence_timeout_ms = ms;
+    void save();
+  });
+  chordTimeout.addEventListener("change", () => {
+    const ms = Math.max(0, Math.floor(Number(chordTimeout.value) || 0));
+    chordTimeout.value = String(ms);
+    cfg.settings.chord_timeout_ms = ms;
     void save();
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
