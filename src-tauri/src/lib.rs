@@ -353,36 +353,45 @@ fn resolve_hotstring(text: &str) -> String {
     out
 }
 
-/// 快速唤醒：双击 `Settings::wake_key` 唤出主窗口。
+/// 双击唤醒的判定窗口：两次「唤醒键按下」的间隔在此之内才算双击。
+const WAKE_DOUBLE_TAP_MS: u64 = 400;
+
+/// 快速唤醒判定：这一击是否构成「双击唤醒键」。
 ///
-/// 被动检测——只唤出窗口、不拦截按键：唤醒键（默认 Alt）常同时是修饰键，
-/// 拦截会破坏 Alt+Tab / Alt+字母 等组合。两次按下（非自动重复）间隔 ≤400ms
-/// 判为双击；其间按下其它键则取消上一次单击计数（视作组合键的一部分）。
-fn detect_wake(
-    cfg: &RwLock<Config>,
-    last_tap: &mut Option<Instant>,
-    app: &tauri::AppHandle,
-    ev: &Ev,
-) {
-    let Ev::Down { key, repeat, .. } = ev else { return };
+/// 被动检测——只报告命中、不拦截按键：唤醒键（UI 里建议选 Alt）常同时是修饰键，拦截会
+/// 破坏 Alt+Tab / Alt+字母 等组合。两次按下（非自动重复）间隔 ≤[`WAKE_DOUBLE_TAP_MS`]
+/// 判为双击；其间按下其它键则取消上一次单击计数（视作组合键的一部分）。唤醒键由
+/// `Settings::wake_key` 指定，**`None` = 关闭快速唤醒**（是 `Settings` 的默认值）。
+///
+/// **只判定，不建窗口**：调用方命中后必须把唤窗丢到后台线程（见 `run` 里的接线）——
+/// 冷启动时建 WebView 要几百毫秒，跑在钩子回调里会被系统判超时摘掉钩子，之后快捷键 /
+/// 改键 / 热串全部静默失效。这里不持有 `AppHandle`，顺带也就能单测了。
+fn wake_double_tap(cfg: &RwLock<Config>, last_tap: &mut Option<Instant>, ev: &Ev) -> bool {
+    let Ev::Down { key, repeat, .. } = ev else { return false };
     if *repeat {
-        return;
+        return false;
     }
-    let guard = cfg.read().unwrap();
-    let Some(wake) = guard.settings.wake_key.as_ref() else { return };
-    let Ok(wk) = wake.parse::<Key>() else { return };
-    if *key != wk {
-        // 按下其它键 → 上一次唤醒键单击不算数（可能是组合键的一部分）。
-        last_tap.take();
-        return;
+    {
+        let guard = cfg.read().unwrap();
+        let Some(wake) = guard.settings.wake_key.as_ref() else { return false };
+        let Ok(wk) = wake.parse::<Key>() else { return false };
+        if *key != wk {
+            // 按下其它键 → 上一次唤醒键单击不算数（可能是组合键的一部分）。
+            last_tap.take();
+            return false;
+        }
     }
     let now = Instant::now();
     match *last_tap {
-        Some(prev) if now.duration_since(prev) <= Duration::from_millis(400) => {
+        Some(prev) if now.duration_since(prev) <= Duration::from_millis(WAKE_DOUBLE_TAP_MS) => {
+            // 计完这一双击就归零：再要唤醒得重新点两下。
             *last_tap = None;
-            show_main_window(app);
+            true
         }
-        _ => *last_tap = Some(now),
+        _ => {
+            *last_tap = Some(now);
+            false
+        }
     }
 }
 
@@ -559,7 +568,18 @@ fn show_main_window(app: &tauri::AppHandle) {
             let _ = w.show();
             let _ = w.set_focus();
         }
-        Err(e) => eprintln!("创建主窗口失败: {e}"),
+        Err(e) => {
+            // 唤起现在跑在后台线程（见 `wake_double_tap` 的接线），冷启动期间连点两次双击
+            // 可能两个线程都走到这里：主线程是串行处理的，后到的那次会撞上「窗口已存在」。
+            // 窗口其实已经建好了，补一次显示即可，不必让用户看到一句吓人的创建失败。
+            match app.get_webview_window("main") {
+                Some(w) => {
+                    let _ = w.show();
+                    let _ = w.set_focus();
+                }
+                None => eprintln!("创建主窗口失败: {e}"),
+            }
+        }
     }
 }
 
@@ -1072,6 +1092,62 @@ mod tests {
             .count();
         assert_eq!(ctrl, 1, "重复 down 必须折叠");
     }
+
+    /// 只有「快速唤醒键」一项不同的配置。
+    fn wake_cfg(wake_key: Option<&str>) -> RwLock<Config> {
+        let mut cfg = Config::default();
+        cfg.settings.wake_key = wake_key.map(str::to_string);
+        RwLock::new(cfg)
+    }
+
+    #[test]
+    fn wake_double_tap_needs_two_taps_in_window() {
+        // 判定已与「建窗口」解耦（见 wake_double_tap 的注释），所以这层时序规则能单测。
+        let cfg = wake_cfg(Some("Alt"));
+        let mut last = None;
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "第一击只是单击");
+        assert!(wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "窗口内的第二击命中");
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "计完归零，第三击重新算单击");
+        assert!(wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "第四击又凑成一次双击");
+    }
+
+    #[test]
+    fn wake_double_tap_window_expires_and_other_keys_reset() {
+        let cfg = wake_cfg(Some("Alt"));
+
+        // 上一次单击已落在判定窗口之外：这一击只算新的单击，不该唤窗。
+        let mut last = Some(Instant::now() - Duration::from_millis(WAKE_DOUBLE_TAP_MS + 50));
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "超出窗口不算双击");
+        assert!(last.is_some(), "超时后要重新计时（这一击仍是单击）");
+
+        // 中间按了别的键 → 上一次单击作废（那次多半是 Alt+Tab 这类组合的一部分）。
+        let mut last = None;
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)));
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::K)));
+        assert!(last.is_none(), "按其它键要清掉单击计数");
+        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "清空后这一击是新单击");
+
+        // 自动重复的按下不是独立一击：长按唤醒键不该被当成连击而唤窗。
+        let mut last = None;
+        let repeated = Ev::Down { key: Key::Alt, mods: BTreeSet::new(), repeat: true };
+        assert!(!wake_double_tap(&cfg, &mut last, &repeated), "自动重复不算一击");
+        assert!(last.is_none(), "自动重复也不该开始计时");
+    }
+
+    #[test]
+    fn wake_disabled_or_unparsable_key_never_wakes() {
+        // 未设唤醒键 = 快速唤醒关闭：按多少次都不唤窗。
+        let off = wake_cfg(None);
+        let mut last = None;
+        assert!(!wake_double_tap(&off, &mut last, &down(Key::Alt)));
+        assert!(!wake_double_tap(&off, &mut last, &down(Key::Alt)));
+
+        // 配置里是解析不了的键名：当作关闭，既不 panic 也不唤窗（手工改配置能改出这种值）。
+        let bad = wake_cfg(Some("没这个键"));
+        let mut last = None;
+        assert!(!wake_double_tap(&bad, &mut last, &down(Key::Alt)));
+        assert!(!wake_double_tap(&bad, &mut last, &down(Key::Alt)));
+    }
 }
 
 /// 读取当前配置。
@@ -1339,7 +1415,14 @@ pub fn run() {
                             }
                         }
                         // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
-                        detect_wake(&cfg, &mut last_tap, &app_handle, &ev);
+                        // 判定留在回调里（只读配置 + 比时间，很快），**建窗口丢后台线程**：
+                        // 冷启动时 WebView 要几百毫秒，同步建会把钩子回调拖过系统超时线、
+                        // 钩子被摘掉，之后整个应用静默失效（开机自启时主窗口还没预建，
+                        // 首次双击唤醒正好撞在这条路上）。
+                        if wake_double_tap(&cfg, &mut last_tap, &ev) {
+                            let app = app_handle.clone();
+                            std::thread::spawn(move || show_main_window(&app));
+                        }
                         let guard = cfg.read().unwrap();
                         if pause_active(&pause) || guard.settings.paused {
                             return input::HookAction::Allow;
