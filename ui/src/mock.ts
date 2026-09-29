@@ -137,20 +137,28 @@ export function installBrowserMock() {
         // 停止执行：演示模式没有真的在跑的动作，如实返回 0（前端提示「当前没有正在执行的动作」）。
         case "abort_actions":
           return 0;
+        // 导入：演示模式的文件对话框恒返回「取消」，走不到这里；留着是为了让 IPC 契约完整
+        // （后端 ImportOutcome 的形状）并在将来放开文件选择时不至于崩在「不支持命令」。
+        case "import_config":
+          return { mode: args?.mode ?? "replace", added: 0, notes: [], backup: null };
         case "start_record":
           return null;
         case "stop_record":
           return [];
         case "get_toast_payload":
           return null;
-        // 对话框（plugin:dialog）：演示模式一律返回空（用户取消）。
+        // 对话框（plugin:dialog）：文件对话框演示模式一律返回空（用户取消）。
         case "plugin:dialog|open":
         case "plugin:dialog|save":
           return null;
-        case "plugin:dialog|ask":
-        case "plugin:dialog|message":
-        case "plugin:dialog|confirm":
-          return true;
+        // 确认框要返回**被点击按钮的文案**，不是布尔：`ask()` 拿它跟 okLabel（默认 "Yes"）比、
+        // `confirm()` 跟 "Ok" 比，`message()` 直接把它当结果。以前这里返回 true，于是演示模式下
+        // 所有确认框都被判成「取消」——删除目录/删除层点了没反应，且看不出原因。
+        case "plugin:dialog|message": {
+          const buttons = args?.buttons as { ok?: string } | string | undefined;
+          if (buttons && typeof buttons === "object") return buttons.ok ?? "Ok";
+          return buttons === "YesNo" ? "Yes" : "Ok";
+        }
         // 事件监听（plugin:event）：演示模式下没有事件源，登记即返回句柄。
         case "plugin:event|listen":
           return Math.floor(Math.random() * 2 ** 31);

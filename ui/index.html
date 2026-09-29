@@ -264,7 +264,7 @@
               <button id="export-config">导出配置</button>
               <button id="import-config">导入配置</button>
             </div>
-            <p class="hint">改动即时保存并生效；导入会逐条清洗无效配置并提示忽略项。</p>
+            <p class="hint">改动即时保存并生效；导入可选「合并」（只新增）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
           </div>
         </section>
 
@@ -391,6 +391,50 @@
           <button id="unsaved-cancel">继续编辑</button>
           <button id="unsaved-discard" class="danger">放弃改动</button>
           <button id="unsaved-save" class="primary">保存并离开</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 导入方式：导入是唯一能一次改掉整份配置的入口，必须先让用户明确选「合并」还是「替换」
+         ——原先点一下按钮就把配置整份换掉，提示文案也没说会替换。 -->
+    <div id="import-modal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-box confirm-box">
+        <header class="modal-head">
+          <span class="modal-title">导入配置</span>
+        </header>
+        <div class="modal-body">
+          <p id="import-file" class="confirm-text"></p>
+          <p class="confirm-hint">
+            <strong>合并</strong>：只添加导入的条目，现有条目不删不改（触发键/原键/触发词撞车的条目跳过），本机设置不动。<br>
+            <strong>替换</strong>：用导入文件完全覆盖当前配置（含开机自启、快速唤醒键等设置），导入前的配置会留档一份。
+          </p>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="import-cancel">取消</button>
+          <button id="import-replace" class="danger">替换（覆盖全部）</button>
+          <button id="import-merge" class="primary">合并</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 导入结果：新增 / 跳过 / 忽略逐条列出。只报个数的话，用户查不出是哪条没进来。 -->
+    <div id="import-result-modal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-box confirm-box">
+        <header class="modal-head">
+          <span class="modal-title">导入完成</span>
+          <button id="import-result-close" class="detail-close" title="关闭">×</button>
+        </header>
+        <div class="modal-body">
+          <p id="import-result-text" class="confirm-text"></p>
+          <p id="import-result-note" class="confirm-hint"></p>
+          <ul id="import-result-list" class="report-list"></ul>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="import-result-ok" class="primary">知道了</button>
         </footer>
       </div>
     </div>
