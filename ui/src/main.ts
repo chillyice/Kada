@@ -1039,7 +1039,7 @@ function showRowMenu(
     items.push(
       { label: "剪切", run: () => cutShortcut(target.idx) },
       { label: "复制", run: () => copyShortcut(target.idx) },
-      { label: "删除", run: () => deleteShortcutAt(target.idx) },
+      { label: "删除", run: () => void deleteShortcutAt(target.idx) },
     );
   } else {
     items.push(
@@ -1110,15 +1110,32 @@ function renameFolder(id: string) {
   renderListPane();
 }
 
+// 删除单条内容的统一确认。原先只有「删除目录 / 删除层」问一句，同为破坏性操作的单条删除
+// （快捷键 / 改键 / 文本扩展）却是点了就没了——同类实体的安全级别不该不一致。
+// 未落盘的新增项不弹：删除它等同「取消」，没有任何已保存的内容会丢。
+async function confirmDelete(kind: string, name: string, discardsDraft: boolean): Promise<boolean> {
+  const dirty = discardsDraft ? "该条还有未保存的改动，会一并丢弃。" : "";
+  return await ask(`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
+    kind: "warning",
+    title: `删除${kind}`,
+  });
+}
+
+// 快捷键的展示名（无名时退回触发键；列表行显示的是「触发键 + 名称」，确认框要对得上号）。
+function shortcutLabel(s: ShortcutItem): string {
+  return s.name?.trim() || s.triggers.join(" / ") || "未命名";
+}
+
 async function deleteFolder(id: string) {
   const target = cfg.folders.find((f) => f.id === id);
   if (!target) return;
-  const ok = await ask(`删除目录「${target.name}」及其中的所有快捷键？`, {
-    title: "删除目录",
-    kind: "warning",
-  });
-  if (!ok) return;
   const ids = collectDescendantIds(id);
+  const n = cfg.shortcuts.filter((s) => s.folder && ids.has(s.folder)).length;
+  const ok = await ask(
+    `删除目录「${target.name}」${n ? `及其中的 ${n} 条快捷键` : "及其所有内容"}？删除后无法撤销。`,
+    { title: "删除目录", kind: "warning" },
+  );
+  if (!ok) return;
   cfg.folders = cfg.folders.filter((f) => !ids.has(f.id));
   cfg.shortcuts = cfg.shortcuts.filter((s) => !(s.folder && ids.has(s.folder)));
   for (const fid of ids) collapsedFolders.delete(fid);
@@ -1168,7 +1185,13 @@ function pasteIntoFolder(folderId: string | null) {
   void save();
 }
 
-function deleteShortcutAt(idx: number) {
+async function deleteShortcutAt(idx: number) {
+  const target = cfg.shortcuts[idx];
+  if (!target) return;
+  // 正在编辑这条且草稿有改动 → 删除会连改动一起丢，要说清楚。
+  if (!(await confirmDelete("快捷键", shortcutLabel(target), selected === idx && isDraftDirty()))) {
+    return;
+  }
   cfg.shortcuts.splice(idx, 1);
   if (selected === idx) {
     discardDraft();
@@ -1178,6 +1201,24 @@ function deleteShortcutAt(idx: number) {
     selected -= 1;
   }
   void save();
+}
+
+// 详情页删除：确认通过才落删。三个编辑页共用一条路径，别再各写一遍（原先三处重复代码）。
+async function deleteDetailEntry(kind: string, label: string, remove: () => void) {
+  if (!(await confirmDelete(kind, label, isDraftDirty()))) return;
+  remove();
+  discardDraft();
+  draftNew = false;
+  selected = null;
+  void save();
+}
+
+// 新增项尚未落盘，删除 = 直接丢弃草稿：没有已保存的内容会丢，不必再弹一次确认。
+function discardNewDraft() {
+  discardDraft();
+  draftNew = false;
+  selected = null;
+  render();
 }
 
 // ---- 拖拽排序/移动 ----
@@ -2822,18 +2863,70 @@ async function exportConfig() {
   }
 }
 
+// 导入结果（后端 ImportOutcome）：只回「忽略了几处」的话，用户查不出是哪条没进来，
+// 所以明细逐条列出。
+type ImportMode = "merge" | "replace";
+type ImportOutcome = {
+  mode: ImportMode;
+  added: number;
+  notes: string[];
+  backup: string | null;
+};
+
+let importModePending: ((m: ImportMode | null) => void) | null = null;
+
+// 导入方式选择。导入是唯一能一次改掉整份配置的入口，必须先明确选，不能点一下就算数。
+function askImportMode(file: string): Promise<ImportMode | null> {
+  // 已经有一个框等着时，后来的请求按「取消」处理（同未保存守卫：否则先到的 promise 永远挂着）。
+  if (importModePending) return Promise.resolve(null);
+  document.getElementById("import-file")!.textContent = `将导入 ${file}，请选择导入方式：`;
+  document.getElementById("import-modal")!.classList.remove("hidden");
+  return new Promise((resolve) => (importModePending = resolve));
+}
+
+function resolveImportMode(mode: ImportMode | null) {
+  const pending = importModePending;
+  importModePending = null;
+  document.getElementById("import-modal")!.classList.add("hidden");
+  pending?.(mode);
+}
+
 async function importConfig() {
   const path = await openFile({
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (!path || Array.isArray(path)) return;
+  const mode = await askImportMode(fileName(path));
+  if (!mode) return;
   try {
-    const ignored = await invoke<string[]>("import_config", { path });
+    const r = await invoke<ImportOutcome>("import_config", { path, mode });
     await load();
-    toast(ignored.length ? `已导入（忽略 ${ignored.length} 处无效配置）` : "已导入");
+    showImportResult(r);
   } catch (e) {
     toast(`导入失败: ${e}`);
   }
+}
+
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+function showImportResult(r: ImportOutcome) {
+  const skipped = r.notes.length;
+  document.getElementById("import-result-text")!.textContent =
+    r.mode === "merge"
+      ? `已合并：新增 ${r.added} 条${skipped ? `，跳过 / 忽略 ${skipped} 条` : ""}。`
+      : `已替换为导入的配置：共 ${r.added} 条${skipped ? `，忽略 ${skipped} 条` : ""}。`;
+  const note = document.getElementById("import-result-note")!;
+  note.classList.toggle("hidden", !r.backup);
+  if (r.backup) note.textContent = `导入前的配置已留档：${r.backup}（覆盖回去即可回滚）`;
+  const list = document.getElementById("import-result-list")!;
+  list.replaceChildren(...r.notes.map((n) => el("li", undefined, n)));
+  document.getElementById("import-result-modal")!.classList.remove("hidden");
+}
+
+function hideImportResult() {
+  document.getElementById("import-result-modal")!.classList.add("hidden");
 }
 
 // ---- 软件更新 ----
@@ -3103,6 +3196,27 @@ function bind() {
     }
   });
 
+  // 导入方式：遮罩 / Esc 一律按「取消」——绝不替用户选一种导入方式。
+  document.getElementById("import-merge")!.addEventListener("click", () => resolveImportMode("merge"));
+  document.getElementById("import-replace")!.addEventListener("click", () =>
+    resolveImportMode("replace"),
+  );
+  document.getElementById("import-cancel")!.addEventListener("click", () => resolveImportMode(null));
+  document.getElementById("import-modal")!.querySelector(".modal-mask")!
+    .addEventListener("click", () => resolveImportMode(null));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && importModePending) {
+      e.preventDefault();
+      resolveImportMode(null);
+    }
+  });
+
+  // 导入结果框：纯展示，点哪都关。
+  document.getElementById("import-result-ok")!.addEventListener("click", hideImportResult);
+  document.getElementById("import-result-close")!.addEventListener("click", hideImportResult);
+  document.getElementById("import-result-modal")!.querySelector(".modal-mask")!
+    .addEventListener("click", hideImportResult);
+
   document.getElementById("add-folder-btn")!.addEventListener("click", () => {
     if (section === "shortcuts") addFolder(null);
   });
@@ -3190,19 +3304,11 @@ function bind() {
   document.getElementById("undo-shortcuts")!.addEventListener("click", revertDraft);
   document.getElementById("delete-shortcut")!.addEventListener("click", () => {
     if (section !== "shortcuts" || !draft) return;
-    if (draftNew) {
-      // 新增项尚未落盘，删除 = 直接丢弃草稿。
-      discardDraft();
-      draftNew = false;
-      selected = null;
-      render();
-      return;
-    }
-    if (selected !== null) cfg.shortcuts.splice(selected, 1);
-    discardDraft();
-    draftNew = false;
-    selected = null;
-    void save();
+    const d = draft;
+    if (draftNew) return discardNewDraft();
+    void deleteDetailEntry("快捷键", shortcutLabel(d), () => {
+      if (selected !== null) cfg.shortcuts.splice(selected, 1);
+    });
   });
 
   document.getElementById("save-remap")!.addEventListener("click", () => {
@@ -3217,18 +3323,11 @@ function bind() {
   document.getElementById("undo-remaps")!.addEventListener("click", revertDraft);
   document.getElementById("delete-remap")!.addEventListener("click", () => {
     if (section !== "remaps" || !remapDraft) return;
-    if (draftNew) {
-      discardDraft();
-      draftNew = false;
-      selected = null;
-      render();
-      return;
-    }
-    if (selected !== null) cfg.remaps.splice(selected, 1);
-    discardDraft();
-    draftNew = false;
-    selected = null;
-    void save();
+    const r = remapDraft;
+    if (draftNew) return discardNewDraft();
+    void deleteDetailEntry("改键", `${r.from} → ${remapSummary(r)}`, () => {
+      if (selected !== null) cfg.remaps.splice(selected, 1);
+    });
   });
 
   document.getElementById("save-expansion")!.addEventListener("click", () => {
@@ -3244,18 +3343,11 @@ function bind() {
   document.getElementById("undo-expansions")!.addEventListener("click", revertDraft);
   document.getElementById("delete-expansion")!.addEventListener("click", () => {
     if (section !== "expansions" || !expansionDraft) return;
-    if (draftNew) {
-      discardDraft();
-      draftNew = false;
-      selected = null;
-      render();
-      return;
-    }
-    if (selected !== null) cfg.expansions.splice(selected, 1);
-    discardDraft();
-    draftNew = false;
-    selected = null;
-    void save();
+    const exp = expansionDraft;
+    if (draftNew) return discardNewDraft();
+    void deleteDetailEntry("文本扩展", exp.trigger || "未命名", () => {
+      if (selected !== null) cfg.expansions.splice(selected, 1);
+    });
   });
 
   fillKeySelect(document.getElementById("remap-from") as HTMLSelectElement, "CapsLock");

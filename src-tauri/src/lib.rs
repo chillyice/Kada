@@ -1405,21 +1405,81 @@ fn export_config(state: tauri::State<'_, KadaState>, path: String) -> Result<(),
     std::fs::write(&path, json).map_err(|e| format!("写入失败：{e}"))
 }
 
-/// 从指定路径导入配置（解析 + 逐条清洗，坏条目被忽略，通过后替换并落盘）。
+/// 导入结果：给 UI 报清「新增了什么 / 跳过了什么 / 忽略了多少坏条目 / 原配置留档在哪」。
+/// 原先只回一个忽略条数，用户根本查不出是哪条没进来。
+#[derive(Serialize)]
+struct ImportOutcome {
+    /// 实际采用的导入方式（`merge` / `replace`）。
+    mode: String,
+    /// 新增条目总数（合并方式下是并入的条数；替换方式下是导入文件里的条目数）。
+    added: usize,
+    /// 明细：逐条说明被跳过的条目（合并）与被忽略的坏条目（清洗）。
+    notes: Vec<String>,
+    /// 替换导入时「导入前配置」的留档路径（合并导入为 `None`：没覆盖任何东西）。
+    backup: Option<String>,
+}
+
+/// 从指定路径导入配置。
+///
+/// 两种方式：
+/// - `merge`：并进当前配置——**只增不删**，现有条目一条不动；改键按原键、文本扩展按触发词、
+///   快捷键按触发键判重，撞车的保留现有并逐条报出；`settings` 保留本机现值
+///   （口径见 [`kada_core::merge_configs`]）。
+/// - `replace`：整份覆盖（含设置）。因为不可逆，覆盖前先把现有配置复制留档
+///   （`config.json.pre-import-<时间戳>`；随后 `config_io::save` 还会把旧内容留成 `.bak`）。
+///
+/// 两种方式都先对导入内容逐条清洗，坏条目被忽略并报出。
 #[tauri::command]
 fn import_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, KadaState>,
     path: String,
-) -> Result<Vec<String>, String> {
+    mode: Option<String>,
+) -> Result<ImportOutcome, String> {
+    let replace = match mode.as_deref() {
+        Some("merge") => false,
+        // 缺省按整份替换（老前端 / 手调 IPC 的既有行为）。
+        None | Some("replace") => true,
+        Some(other) => return Err(format!("未知的导入方式：{other}")),
+    };
+
     let s = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
-    let config: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
-    let (clean, ignored) = sanitize_config(&config);
-    let autostart = clean.settings.autostart;
-    config_io::save(&state.file, &clean)?;
-    *state.config.write().unwrap() = clean;
+    let imported: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
+    let (incoming, mut notes) = sanitize_config(&imported);
+
+    let (next, added, autostart, backup) = if replace {
+        let backup = config_io::archive_copy(&state.file, config_io::PRE_IMPORT_MARK);
+        // 留档是尽力而为（可能没配置可读或写不进去），失败要说一声：`save` 那层的 `.bak`
+        // 仍是被覆盖内容的回滚点，所以不为它中断导入。
+        if backup.is_none() && state.file.exists() {
+            notes.push("导入前的配置留档失败（配置仍已替换；可回滚到 config.json.bak）".into());
+        }
+        let added = incoming.folders.len()
+            + incoming.layers.len()
+            + incoming.shortcuts.len()
+            + incoming.remaps.len()
+            + incoming.expansions.len();
+        let autostart = incoming.settings.autostart;
+        (incoming, added, autostart, backup)
+    } else {
+        let current = state.config.read().unwrap().clone();
+        let (merged, report) = kada_core::merge_configs(&current, &incoming);
+        let added = report.added(); // 先取计数，再把 skipped 移进 notes（部分移动后不能再借 report）
+        notes.extend(report.skipped);
+        // 合并保留本机设置，自启按现值同步（不做系统层改动，只是让状态机与配置一致）。
+        let autostart = current.settings.autostart;
+        (merged, added, autostart, None)
+    };
+
+    config_io::save(&state.file, &next)?;
+    *state.config.write().unwrap() = next;
     sync_autostart(&app, autostart);
-    Ok(ignored)
+    Ok(ImportOutcome {
+        mode: if replace { "replace".into() } else { "merge".into() },
+        added,
+        notes,
+        backup: backup.map(|p| p.display().to_string()),
+    })
 }
 
 /// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。

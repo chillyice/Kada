@@ -90,6 +90,10 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// 配置合并（导入的「合并」方式）：只增不删、不制造新冲突、设置保留本机。
+mod merge;
+pub use merge::{merge_configs, MergeReport};
+
 mod parse {
     use super::*;
 

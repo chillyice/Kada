@@ -1657,6 +1657,27 @@ pre.msg-v {
   font-size: 12px;
 }
 
+/* 导入方式说明是成段的多行文案，行距放大一点才读得下去。 */
+#import-modal .confirm-hint {
+  line-height: 1.7;
+}
+
+/* 导入结果明细：逐条列出被跳过 / 被忽略的条目（只报个数用户查不出是哪条没进来）。
+   自身滚动 + 限高，条目多时也不至于把弹窗撑出屏幕。 */
+.report-list {
+  margin: 10px 0 0;
+  padding-left: 18px;
+  max-height: 240px;
+  overflow-y: auto;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.report-list:empty {
+  display: none;
+}
+
 .modal-foot {
   display: flex;
   align-items: center;

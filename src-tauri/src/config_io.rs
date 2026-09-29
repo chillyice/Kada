@@ -27,6 +27,8 @@ const BAK_SUFFIX: &str = ".bak";
 const TMP_SUFFIX: &str = ".tmp";
 /// 损坏文件的留档名（带时间戳，不覆盖上一次事故的留档）。
 const CORRUPT_MARK: &str = ".corrupt-";
+/// 「替换导入」前的留档名（带时间戳）：导入不可逆，留一份能人工回滚的副本。
+pub const PRE_IMPORT_MARK: &str = ".pre-import-";
 
 /// 读取结果：配置本体 + 需要告警的异常（一切正常时 `warnings` 为空）。
 pub struct LoadOutcome {
@@ -137,9 +139,34 @@ fn self_heal(file: &Path, cfg: Config, mut warning: LoadWarning) -> LoadOutcome 
 /// 把损坏的原文件改名留档（`config.json.corrupt-20260929-153000`），返回留档路径。
 /// 带时间戳是为了不与上一次事故的留档互相覆盖；改名而非复制，保证后续保存盖不掉它。
 fn archive_corrupt(file: &Path) -> Option<PathBuf> {
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
-    let dest = file.with_file_name(format!("{}{CORRUPT_MARK}{stamp}", file_name(file)));
+    let dest = file.with_file_name(format!("{}{CORRUPT_MARK}{}", file_name(file), stamp()));
     fs::rename(file, &dest).ok().map(|_| dest)
+}
+
+/// 把当前配置文件**复制**留档为 `<文件名><mark><时间戳>`，返回留档路径。
+///
+/// 用于「替换导入」这类把现有配置整体换掉的不可逆操作：原内容留一份带名字的快照，
+/// 出事可人工覆盖回去。与 [`archive_corrupt`] 的区别是**复制而非改名**——主文件还要
+/// 继续用（随后才被导入内容覆盖）；时间戳相同则加序号，绝不覆盖上一份留档。
+/// 内容是原样快照（不做解析校验）：要的就是「覆盖前磁盘上是什么」这个事实。
+pub fn archive_copy(file: &Path, mark: &str) -> Option<PathBuf> {
+    let text = fs::read_to_string(file).ok()?;
+    let base = file_name(file);
+    let stamp = stamp();
+    for n in 0..64u32 {
+        let seq = if n == 0 { String::new() } else { format!("-{n}") };
+        let dest = file.with_file_name(format!("{base}{mark}{stamp}{seq}"));
+        if dest.exists() {
+            continue;
+        }
+        return write_atomic(&dest, text.as_bytes()).ok().map(|_| dest);
+    }
+    None
+}
+
+/// 留档用的时间戳（`20260929-153000`，本地时区）。
+fn stamp() -> String {
+    chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()
 }
 
 /// 读取 `.bak`（上次良好副本）；不存在或解析失败返回 `None`。
@@ -416,6 +443,36 @@ mod tests {
             "失败后不留临时文件：{:?}",
             tmp.entries()
         );
+    }
+
+    #[test]
+    fn archive_copy_snapshots_without_touching_the_original() {
+        let tmp = TmpDir::new("archive");
+        let file = tmp.config();
+        save(&file, &cfg_named("v1")).unwrap();
+
+        let a = archive_copy(&file, PRE_IMPORT_MARK).unwrap();
+        let b = archive_copy(&file, PRE_IMPORT_MARK).unwrap();
+
+        assert_ne!(a, b, "同一秒内的两次留档不能互相覆盖：{:?}", tmp.entries());
+        assert!(file.exists(), "留档是复制，主文件必须还在");
+        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()), "v1");
+        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&b).unwrap()).unwrap()), "v1");
+        assert!(
+            a.file_name().unwrap().to_string_lossy().contains(PRE_IMPORT_MARK),
+            "留档名要能一眼看出是导入前快照：{}",
+            a.display()
+        );
+        // 留档是快照：主文件被导入内容覆盖后，快照仍是旧内容。
+        save(&file, &cfg_named("v2")).unwrap();
+        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()), "v1");
+    }
+
+    #[test]
+    fn archive_copy_without_target_is_none() {
+        let tmp = TmpDir::new("archive_none");
+        assert!(archive_copy(&tmp.config(), PRE_IMPORT_MARK).is_none(), "没有配置可留档时返回 None");
+        assert_eq!(tmp.entries(), Vec::<String>::new(), "失败不留垃圾文件");
     }
 
     #[test]
