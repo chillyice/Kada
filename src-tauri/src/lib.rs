@@ -139,26 +139,29 @@ struct ToastPayload {
     subtitle: Option<String>,
 }
 
-/// 输入状态快照（见规划 7.3-⑬）：当前激活层 + 注入中的修饰键，由 [`Engine::status`] 产出。
+/// 输入状态快照（见规划 7.3-⑬）：当前激活层 + 注入中的键，由 [`Engine::status`] 产出。
 ///
 /// 是一份**只读拷贝**（`Engine` 的状态在钩子回调里随时在变，拿引用出去等于把锁带出去）。
-/// 修饰键是「有序集合 → `Vec`」（`BTreeSet` 迭代顺序固定），于是两份快照可以直接 `==` 比出
+/// 键是「有序集合 → `Vec`」（`BTreeSet` 迭代顺序固定），于是两份快照可以直接 `==` 比出
 /// 「状态变了没有」——定时器线程据此决定要不要推给界面，没变就一个字节都不发。
+///
+/// 三类形态的值域是**任意键**（非修饰键也能单次 / 粘滞 / 长按，见 7.3-⑭），所以这里存 [`Key`]
+/// 而不是 `Modifier`：指示要如实说「单次 A」，而只有修饰键才参与后续键的 mods 补全。
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) struct EngineStatus {
     /// 激活层 id（`None` = 基础层）。
     pub layer: Option<String>,
     /// 该层是否来自「长按锁定层」（切换式）：松开切层键仍生效。
     pub layer_locked: bool,
-    /// `hold` 长按的修饰键（松开切层/改键键时释放）。
-    pub hold: Vec<Modifier>,
-    /// `sticky` 粘滞的修饰键（单击锁定、再击解锁）。
-    pub sticky: Vec<Modifier>,
-    /// `oneshot` 单次的修饰键（单击武装、下一个非修饰键后释放）。
-    pub oneshot: Vec<Modifier>,
+    /// `hold` 长按的键（松开切层/改键键时释放）。
+    pub hold: Vec<Key>,
+    /// `sticky` 粘滞的键（单击锁定、再击解锁）。
+    pub sticky: Vec<Key>,
+    /// `oneshot` 单次的键（单击武装、下一个非修饰键后释放）。
+    pub oneshot: Vec<Key>,
 }
 
-/// 「什么也没生效」= 基础层且没有任何注入中的修饰键。生产侧由 [`StatusPayload::idle`] 判
+/// 「什么也没生效」= 基础层且没有任何注入中的键。生产侧由 [`StatusPayload::idle`] 判
 /// （那里判的是显示名有没有定出来），这条只给单测当断言用。
 #[cfg(test)]
 impl EngineStatus {
@@ -170,16 +173,16 @@ impl EngineStatus {
     }
 }
 
-/// 输入状态指示里的一条修饰键（见规划 7.3-⑬）。`kind` 决定界面上的用词与配色。
+/// 输入状态指示里的一条注入键（见规划 7.3-⑬）。`kind` 决定界面上的用词与配色。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct StatusMod {
     /// `hold`（按住）/ `sticky`（粘滞）/ `oneshot`（单次）。
     kind: &'static str,
-    /// 修饰键中性名：`Ctrl` / `Alt` / `Shift` / `Meta`。
+    /// 键的中性名（与触发键同一套用词：`Ctrl` / `Shift` / `A` / `MouseBack`…）。
     key: String,
 }
 
-/// 输入状态指示载荷：当前激活层 + 注入中的修饰键（见规划 7.3-⑬）。
+/// 输入状态指示载荷：当前激活层 + 注入中的键（见规划 7.3-⑬）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct StatusPayload {
     /// 激活层的**显示名**（层没起名字时回落 id）；`None` = 基础层。
@@ -187,26 +190,16 @@ struct StatusPayload {
     layer: Option<String>,
     /// 该层来自「长按锁定层」（切换式）：松开切层键仍生效。
     locked: bool,
-    /// 注入中的修饰键（按住 / 粘滞 / 单次）。
+    /// 注入中的键（按住 / 粘滞 / 单次）。
     mods: Vec<StatusMod>,
     /// 一句话摘要：托盘提示直接用它，也是悬浮指示的兜底文案。
     summary: String,
 }
 
 impl StatusPayload {
-    /// 空状态（基础层 + 没有注入中的修饰键）——指示据此隐藏。
+    /// 空状态（基础层 + 没有注入中的键）——指示据此隐藏。
     fn idle(&self) -> bool {
         self.layer.is_none() && self.mods.is_empty()
-    }
-}
-
-/// 修饰键 → 中性名（与 `kada_core::format_shortcut` 同一套用词）。
-fn modifier_label(m: Modifier) -> &'static str {
-    match m {
-        Modifier::Ctrl => "Ctrl",
-        Modifier::Alt => "Alt",
-        Modifier::Shift => "Shift",
-        Modifier::Meta => "Meta",
     }
 }
 
@@ -234,15 +227,15 @@ fn build_status(st: &EngineStatus, cfg: &Config) -> StatusPayload {
     let layer = st.layer.as_deref().map(|id| layer_label(cfg, id));
     let mut mods: Vec<StatusMod> = Vec::new();
     for (kind, set) in [("hold", &st.hold), ("sticky", &st.sticky), ("oneshot", &st.oneshot)] {
-        for m in set {
-            mods.push(StatusMod { kind, key: modifier_label(*m).to_string() });
+        for k in set {
+            mods.push(StatusMod { kind, key: key_name(*k).to_string() });
         }
     }
     let summary = status_summary(layer.as_deref(), st.layer_locked, &mods);
     StatusPayload { layer, locked: st.layer_locked, mods, summary }
 }
 
-/// 指示摘要（托盘提示用）：`层：游戏（锁定） · 按住 Ctrl · 单次 Shift`。
+/// 指示摘要（托盘提示用）：`层：游戏（锁定） · 按住 Ctrl · 单次 A`。
 fn status_summary(layer: Option<&str>, locked: bool, mods: &[StatusMod]) -> String {
     let mut parts: Vec<String> = Vec::new();
     if let Some(l) = layer {
@@ -1684,9 +1677,9 @@ mod tests {
         let st = EngineStatus {
             layer: Some("L1".into()),
             layer_locked: true,
-            hold: vec![Modifier::Ctrl],
+            hold: vec![Key::Control],
             sticky: vec![],
-            oneshot: vec![Modifier::Alt],
+            oneshot: vec![Key::Alt],
         };
         let p = build_status(&st, &cfg);
         assert_eq!(p.layer.as_deref(), Some("游戏层"), "层 id 要换成显示名");
@@ -1707,6 +1700,22 @@ mod tests {
         assert_eq!(p.layer.as_deref(), Some("ghost"));
         assert_eq!(p.summary, "层：ghost（按住）");
         assert!(!p.locked, "没标锁定就按「按住」说");
+    }
+
+    /// 非修饰键也能单次 / 粘滞 / 长按（规划 7.3-⑭）：指示要按它的键名如实显示，
+    /// 而不是「只认修饰键」时那样整条消失。
+    #[test]
+    fn status_payload_shows_plain_keys() {
+        let st = EngineStatus {
+            hold: vec![Key::Enter],
+            sticky: vec![Key::MouseBack],
+            oneshot: vec![Key::Alt],
+            ..Default::default()
+        };
+        let p = build_status(&st, &Config::default());
+        let kinds: Vec<(&str, &str)> = p.mods.iter().map(|m| (m.kind, m.key.as_str())).collect();
+        assert_eq!(kinds, vec![("hold", "Enter"), ("sticky", "MouseBack"), ("oneshot", "Alt")]);
+        assert_eq!(p.summary, "按住 Enter · 粘滞 MouseBack · 单次 Alt");
     }
 
     /// 空状态：指示要判成 idle（据此隐藏悬浮窗、托盘提示回到应用名），且序列化里不带 `layer`。

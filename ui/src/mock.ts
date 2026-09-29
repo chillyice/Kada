@@ -71,6 +71,22 @@ const DEMO_CONFIG = {
       tap3: null,
       enabled: true,
     },
+    {
+      // 粘滞的任意键（7.3-⑭）：点一下锁定、再点一下解锁——侧键「按住说话」这类用法。
+      from: "F1",
+      to: "",
+      tap: null,
+      hold: null,
+      layer: null,
+      hold_layer: null,
+      lock_layer: null,
+      tap_timeout_ms: 200,
+      oneshot: null,
+      sticky: "MouseBack",
+      tap2: null,
+      tap3: null,
+      enabled: true,
+    },
   ],
   expansions: [{ trigger: ";addr", replace: "某市某区某路 88 号", enabled: true }],
   settings: {

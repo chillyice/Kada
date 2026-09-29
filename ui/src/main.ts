@@ -89,7 +89,7 @@ type StatusPayload = {
   layer?: string;
   /** 该层来自「长按锁定层」：松开切层键仍生效。 */
   locked: boolean;
-  /** 注入中的修饰键，`kind` 决定用词：按住 / 粘滞 / 单次。 */
+  /** 注入中的键（任意键，见 7.3-⑭），`kind` 决定用词：按住 / 粘滞 / 单次。 */
   mods: { kind: "hold" | "sticky" | "oneshot"; key: string }[];
   /** 后端拼好的一句话摘要（托盘提示用，悬浮窗不展示）。 */
   summary: string;
@@ -803,16 +803,24 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   update();
 }
 
-// 和弦录入：按住多个普通键，松开时提交（成员用 & 连接、按字典序，至少 2 键）。Esc 取消。
-// 和弦成员只允许普通键（非修饰键 / 非锁定键），与后端 Trigger::parse 的约束一致。
+// 和弦录入：按住多个键，松开时提交（成员用 & 连接、按字典序，至少 2 键）。Esc 取消。
+// 成员是普通键（修饰键 / CapsLock 不当成员）；按住修饰键录入时把它写在**第一个**成员上
+// （`Ctrl+F&J` = 按住 Ctrl 的同时把 F、J 一起按住）——后端对成员修饰要求的判定只看「凑齐
+// 那一刻按着没有」，写在第一个成员上等价于要求全程按着，显示也最省事。
 function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonElement) {
   stopCapture();
   const held: string[] = [];
+  let mods = "";
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
+  // 提交文本：成员按字典序，修饰键写在第一个成员上（见上）。
+  const chordText = () => {
+    const members = held.map((m, i) => (i === 0 && mods ? `${mods}+${m}` : m));
+    return members.sort().join("&");
+  };
   const update = () => {
     btn.textContent = held.length
-      ? `和弦：${held.join("&")}（松开提交，Esc 取消）`
+      ? `和弦：${chordText()}（松开提交，Esc 取消）`
       : "请同时按住多个键…（松开提交，Esc 取消）";
   };
   const EXCLUDED = new Set([
@@ -825,14 +833,17 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
     if (e.code === "Escape") return finish();
     if (e.type === "keyup") {
       // 松开任一键即提交：至少 2 键才成立，否则视为取消。
-      if (held.length >= 2) onCommit([...held].sort().join("&"));
+      if (held.length >= 2) onCommit(chordText());
       finish();
       return;
     }
-    // keydown（忽略自动重复）。
+    // keydown（忽略自动重复）。修饰键不当成员：按下**第一个成员**时按着的修饰键会记下来，
+    // 提交时写在那个成员上（后端按「凑齐那一刻按着没有」判定，等价于要求全程按着）。
     if (e.repeat) return;
+    if (held.length === 0) mods = currentMods(e);
+    if (EXCLUDED.has(e.code)) return;
     const k = codeToKey(e.code);
-    if (k && !EXCLUDED.has(e.code) && !held.includes(k)) {
+    if (k && !held.includes(k)) {
       held.push(k);
       update();
     }
@@ -849,6 +860,16 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("keyup", onKey, true);
   update();
+}
+
+// 当前按住的修饰键（与后端键名一致：Ctrl / Alt / Shift / Meta）。
+function currentMods(e: KeyboardEvent): string {
+  const mods: string[] = [];
+  if (e.ctrlKey) mods.push("Ctrl");
+  if (e.altKey) mods.push("Alt");
+  if (e.shiftKey) mods.push("Shift");
+  if (e.metaKey) mods.push("Meta");
+  return mods.join("+");
 }
 
 // ---- 渲染 ----
@@ -3103,41 +3124,35 @@ function fillKeySelect(sel: HTMLSelectElement, value: string, withEmpty = false)
     sel.append(o);
   }
   sel.value = value;
-}
-
-// 修饰键下拉（单次/粘滞只接受 Ctrl/Alt/Shift/Meta）。
-const MOD_OPTIONS = ["Ctrl", "Alt", "Shift", "Meta"];
-
-function fillModifierSelect(sel: HTMLSelectElement, value: string | null) {
-  sel.replaceChildren();
-  const empty = document.createElement("option");
-  empty.value = "";
-  empty.textContent = "（无）";
-  sel.append(empty);
-  for (const m of MOD_OPTIONS) {
+  // 手写的值可能不在表里（`Escape`/`Control` 这类规范名与表里的 `Esc`/`Ctrl` 是别名关系）：
+  // 补一个选项兜住，否则下拉一片空白、一保存就把用户写的值丢掉。
+  if (value && sel.value !== value) {
     const o = document.createElement("option");
-    o.value = m;
-    o.textContent = m;
+    o.value = value;
+    o.textContent = value;
     sel.append(o);
+    sel.value = value;
   }
-  sel.value = value ?? "";
 }
 
-// 根据所选形态，切换「单次/粘滞修饰」「短按/双击/三击/长按/切层 + 阈值」与「普通改键」表单显示。
+// 单次 / 粘滞键的下拉：值域是**任意键**（修饰键是常见用法，非修饰键 = 替你按住它，
+// 见规划 7.3-⑭），所以直接用全键表。
+
+// 根据所选形态，切换「单次/粘滞键」「短按/双击/三击/长按/切层 + 阈值」与「普通改键」表单显示。
 function syncRemapEditor() {
   if (!remapDraft) return;
-  const isModifier = !!(remapDraft.oneshot || remapDraft.sticky);
+  const isModKey = !!(remapDraft.oneshot || remapDraft.sticky);
   const isTapHold = !!(remapDraft.tap || remapDraft.hold || remapDraft.tap2 || remapDraft.tap3);
   const isLayerKey = !!(remapDraft.hold_layer || remapDraft.lock_layer);
-  // 修饰模式与 tap-hold/切层/普通改键互斥：隐藏后者；反之隐藏修饰下拉无意义（保留可见）。
-  document.getElementById("remap-tap-row")!.classList.toggle("hidden", isModifier);
-  document.getElementById("remap-hold-row")!.classList.toggle("hidden", isModifier);
-  document.getElementById("remap-hold-layer-row")!.classList.toggle("hidden", isModifier);
-  document.getElementById("remap-lock-layer-row")!.classList.toggle("hidden", isModifier);
-  document.getElementById("remap-tap2-row")!.classList.toggle("hidden", isModifier || !isTapHold);
-  document.getElementById("remap-tap3-row")!.classList.toggle("hidden", isModifier || !isTapHold);
-  document.getElementById("remap-timeout-row")!.classList.toggle("hidden", isModifier || !isTapHold);
-  document.getElementById("remap-to-row")!.classList.toggle("hidden", isModifier || isTapHold || isLayerKey);
+  // 单次/粘滞键与 tap-hold/切层/普通改键互斥：隐藏后者；反之隐藏修饰下拉无意义（保留可见）。
+  document.getElementById("remap-tap-row")!.classList.toggle("hidden", isModKey);
+  document.getElementById("remap-hold-row")!.classList.toggle("hidden", isModKey);
+  document.getElementById("remap-hold-layer-row")!.classList.toggle("hidden", isModKey);
+  document.getElementById("remap-lock-layer-row")!.classList.toggle("hidden", isModKey);
+  document.getElementById("remap-tap2-row")!.classList.toggle("hidden", isModKey || !isTapHold);
+  document.getElementById("remap-tap3-row")!.classList.toggle("hidden", isModKey || !isTapHold);
+  document.getElementById("remap-timeout-row")!.classList.toggle("hidden", isModKey || !isTapHold);
+  document.getElementById("remap-to-row")!.classList.toggle("hidden", isModKey || isTapHold || isLayerKey);
   refreshDirty();
 }
 
@@ -3450,8 +3465,8 @@ function bind() {
   fillKeySelect(document.getElementById("remap-to") as HTMLSelectElement, "Ctrl");
   fillKeySelect(document.getElementById("remap-tap") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-hold") as HTMLSelectElement, "", true);
-  fillModifierSelect(document.getElementById("remap-oneshot") as HTMLSelectElement, "");
-  fillModifierSelect(document.getElementById("remap-sticky") as HTMLSelectElement, "");
+  fillKeySelect(document.getElementById("remap-oneshot") as HTMLSelectElement, "", true);
+  fillKeySelect(document.getElementById("remap-sticky") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-tap2") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-tap3") as HTMLSelectElement, "", true);
   document.getElementById("remap-tap")!.addEventListener("change", (e) => {
@@ -3739,7 +3754,7 @@ async function bootstrapToast() {
 }
 
 // 输入状态悬浮指示窗（独立隐藏窗口，加载 index.html#hud）：
-// 显示「当前激活层 + 注入中的修饰键（按住 / 粘滞 / 单次）」。显示与隐藏全由后端决定（有东西
+// 显示「当前激活层 + 注入中的键（按住 / 粘滞 / 单次）」。显示与隐藏全由后端决定（有东西
 // 生效才亮出来、没有就藏回去），这里只负责画内容并把量到的尺寸回报给后端定位。
 async function bootstrapHud() {
   document.querySelector(".layout")?.remove();
