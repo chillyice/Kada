@@ -17,7 +17,7 @@ use kada_core::{
     Trigger,
 };
 
-use crate::Ev;
+use crate::{EngineStatus, Ev};
 
 /// 注入通道。真实实现转发平台 `simulate`（Windows `SendInput` / Linux uinput）。
 pub trait Inject {
@@ -75,6 +75,20 @@ impl Engine {
     /// 当前激活的键位层（`None` = 基础层）。
     pub fn active_layer(&self) -> Option<&str> {
         self.layer.active()
+    }
+
+    /// 当前输入状态快照（激活层 + 注入中的修饰键），供壳层渲染托盘提示 / 悬浮指示。
+    ///
+    /// 壳层在状态机定时器线程上每 [`crate::ENGINE_TICK_MS`] 比一次：变了才推给界面。
+    /// 状态机那条热路径（钩子回调）一行都不改——**在回调里推 UI 等于把钩子挂在界面上**。
+    pub fn status(&self) -> EngineStatus {
+        EngineStatus {
+            layer: self.layer.active.clone(),
+            layer_locked: self.layer.locked,
+            hold: self.mods.hold.iter().copied().collect(),
+            sticky: self.mods.sticky.iter().copied().collect(),
+            oneshot: self.mods.oneshot.iter().copied().collect(),
+        }
     }
 
     /// 前置状态机：tap-hold（含连击/单次/粘滞/切层）→ 和弦 → 键序列。
@@ -1518,6 +1532,120 @@ mod tests {
         assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down Esc", "up Esc"]);
+    }
+
+    // ---- 输入状态快照：托盘提示与悬浮指示的数据源（见规划 7.3-⑬） ----
+
+    #[test]
+    fn status_shows_momentary_layer_then_back_to_idle() {
+        // 按住式切层键：层生效期间快照里要有层，且标明是「按住」而非「锁定」。
+        let mut r = remap("CapsLock", "");
+        r.hold_layer = Some("layer-1".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(engine.status().idle(), "起始无层、无修饰键");
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 进层
+        let st = engine.status();
+        assert_eq!(st.layer.as_deref(), Some("layer-1"));
+        assert!(!st.layer_locked, "按住式切层不是锁定层");
+        assert!(!st.idle());
+
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(engine.status().idle(), "松开切层键后回到基础层");
+    }
+
+    #[test]
+    fn status_marks_locked_layer() {
+        let cfg = cfg_with_locked_layer("K");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::Tab), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(30));
+        step(&mut engine, &up(Key::Tab), &cfg, &mut inj, &mut fired);
+        let st = engine.status();
+        assert_eq!(st.layer.as_deref(), Some("L1"));
+        assert!(st.layer_locked, "切换式切层要标成锁定（松开切层键仍生效）");
+    }
+
+    #[test]
+    fn status_separates_hold_sticky_and_oneshot_modifiers() {
+        // 三种注入修饰的释放时机不同，指示上必须分得开：按住 Ctrl / 粘滞 Shift / 单次 Alt。
+        let mut hold = remap("CapsLock", "");
+        hold.hold = Some("Ctrl".into());
+        let mut sticky = remap("F1", "");
+        sticky.sticky = Some("Shift".into());
+        let mut oneshot = remap("F2", "");
+        oneshot.oneshot = Some("Alt".into());
+        let cfg = Config { remaps: vec![hold, sticky, oneshot], ..Default::default() };
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // hold：按住 from 期间按别的键 → roll 判定为长按，Ctrl 注入。
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.status().hold, vec![Modifier::Ctrl]);
+        // 松开 from 就释放，快照跟着清掉（这条同时验证「同一时刻只可能有一个待定改键」：
+        // 按住 from 不放期间按 F1 不会进入 F1 的待定，故先收尾再点下一颗键）。
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(engine.status().hold.is_empty());
+        assert!(engine.status().sticky.is_empty(), "还没点 F1，粘滞当然是空的");
+
+        // sticky：点一下 F1 锁定 Shift。
+        step(&mut engine, &down(Key::F1), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::F1), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.status().sticky, vec![Modifier::Shift]);
+        assert!(engine.status().hold.is_empty(), "粘滞与按住是两套集合，互不串味");
+
+        // oneshot：点一下 F2 武装 Alt。
+        step(&mut engine, &down(Key::F2), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::F2), &cfg, &mut inj, &mut fired);
+        let st = engine.status();
+        assert_eq!(st.sticky, vec![Modifier::Shift], "武装单次不影响已锁定的粘滞");
+        assert_eq!(st.oneshot, vec![Modifier::Alt]);
+        assert_eq!(st.layer, None, "没有层生效时层为空");
+
+        // 解锁粘滞后快照跟着变（指示要能反映「已经退出这个状态」）。
+        step(&mut engine, &down(Key::F1), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::F1), &cfg, &mut inj, &mut fired);
+        assert!(engine.status().sticky.is_empty());
+    }
+
+    #[test]
+    fn status_goes_idle_after_reset() {
+        // 复位（钩子重装 / 前台切换 / 配置整份重载）之后指示必须跟着熄掉，
+        // 否则屏幕上会一直挂着一条早就无效的状态。
+        let mut r = remap("CapsLock", "");
+        r.oneshot = Some("Ctrl".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(!engine.status().idle());
+
+        engine.reset(&mut inj);
+        assert!(engine.status().idle(), "复位后快照回到空");
+    }
+
+    /// 快照可以直接比较：定时器线程靠它决定「要不要推给界面」，抖动一下就会让指示闪。
+    #[test]
+    fn status_compares_by_value() {
+        let mut r = remap("CapsLock", "");
+        r.oneshot = Some("Ctrl".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        let before = engine.status();
+        assert_eq!(before, Engine::new().status(), "同样的空状态要比得出相等");
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::A), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.status(), before, "与状态无关的普通按键不该改变快照");
     }
 
     #[test]

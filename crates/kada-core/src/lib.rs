@@ -1308,6 +1308,20 @@ pub struct Settings {
     /// 缺字段取 [`DEFAULT_CHORD_TIMEOUT_MS`]（同上）。
     #[serde(default = "default_chord_timeout_ms")]
     pub chord_timeout_ms: u64,
+    /// 输入状态悬浮指示：有层或注入的修饰键生效时，屏幕下方浮一条「当前激活层 + 修饰键
+    /// （hold / oneshot / sticky）」，没有东西生效时自动消失；关掉就只留托盘提示。
+    ///
+    /// 缺字段取 `true`（[`default_true`]）：oneshot / sticky / 切层键这类形态「按了看不见状态」
+    /// 是用户误判「按键失灵」的主因（见规划 7.3-⑬），默认开启；它只在真有东西生效时才出现、
+    /// 平时不占屏幕，不想要的人在设置页关掉即可。用 `#[serde(default)]` 的零值会让老配置
+    /// 静默拿不到这个指示。
+    #[serde(default = "default_true")]
+    pub show_status_hud: bool,
+}
+
+/// `show_status_hud` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
+pub fn default_true() -> bool {
+    true
 }
 
 /// `action_timeout_ms` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1334,6 +1348,7 @@ impl Default for Settings {
             action_timeout_ms: DEFAULT_ACTION_TIMEOUT_MS,
             sequence_timeout_ms: DEFAULT_SEQUENCE_TIMEOUT_MS,
             chord_timeout_ms: DEFAULT_CHORD_TIMEOUT_MS,
+            show_status_hud: true,
         }
     }
 }

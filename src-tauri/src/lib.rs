@@ -139,6 +139,123 @@ struct ToastPayload {
     subtitle: Option<String>,
 }
 
+/// 输入状态快照（见规划 7.3-⑬）：当前激活层 + 注入中的修饰键，由 [`Engine::status`] 产出。
+///
+/// 是一份**只读拷贝**（`Engine` 的状态在钩子回调里随时在变，拿引用出去等于把锁带出去）。
+/// 修饰键是「有序集合 → `Vec`」（`BTreeSet` 迭代顺序固定），于是两份快照可以直接 `==` 比出
+/// 「状态变了没有」——定时器线程据此决定要不要推给界面，没变就一个字节都不发。
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) struct EngineStatus {
+    /// 激活层 id（`None` = 基础层）。
+    pub layer: Option<String>,
+    /// 该层是否来自「长按锁定层」（切换式）：松开切层键仍生效。
+    pub layer_locked: bool,
+    /// `hold` 长按的修饰键（松开切层/改键键时释放）。
+    pub hold: Vec<Modifier>,
+    /// `sticky` 粘滞的修饰键（单击锁定、再击解锁）。
+    pub sticky: Vec<Modifier>,
+    /// `oneshot` 单次的修饰键（单击武装、下一个非修饰键后释放）。
+    pub oneshot: Vec<Modifier>,
+}
+
+/// 「什么也没生效」= 基础层且没有任何注入中的修饰键。生产侧由 [`StatusPayload::idle`] 判
+/// （那里判的是显示名有没有定出来），这条只给单测当断言用。
+#[cfg(test)]
+impl EngineStatus {
+    fn idle(&self) -> bool {
+        self.layer.is_none()
+            && self.hold.is_empty()
+            && self.sticky.is_empty()
+            && self.oneshot.is_empty()
+    }
+}
+
+/// 输入状态指示里的一条修饰键（见规划 7.3-⑬）。`kind` 决定界面上的用词与配色。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct StatusMod {
+    /// `hold`（按住）/ `sticky`（粘滞）/ `oneshot`（单次）。
+    kind: &'static str,
+    /// 修饰键中性名：`Ctrl` / `Alt` / `Shift` / `Meta`。
+    key: String,
+}
+
+/// 输入状态指示载荷：当前激活层 + 注入中的修饰键（见规划 7.3-⑬）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct StatusPayload {
+    /// 激活层的**显示名**（层没起名字时回落 id）；`None` = 基础层。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    layer: Option<String>,
+    /// 该层来自「长按锁定层」（切换式）：松开切层键仍生效。
+    locked: bool,
+    /// 注入中的修饰键（按住 / 粘滞 / 单次）。
+    mods: Vec<StatusMod>,
+    /// 一句话摘要：托盘提示直接用它，也是悬浮指示的兜底文案。
+    summary: String,
+}
+
+impl StatusPayload {
+    /// 空状态（基础层 + 没有注入中的修饰键）——指示据此隐藏。
+    fn idle(&self) -> bool {
+        self.layer.is_none() && self.mods.is_empty()
+    }
+}
+
+/// 修饰键 → 中性名（与 `kada_core::format_shortcut` 同一套用词）。
+fn modifier_label(m: Modifier) -> &'static str {
+    match m {
+        Modifier::Ctrl => "Ctrl",
+        Modifier::Alt => "Alt",
+        Modifier::Shift => "Shift",
+        Modifier::Meta => "Meta",
+    }
+}
+
+/// 修饰键形态的中文用词（托盘摘要与悬浮指示共用，避免前后端两份说法）。
+fn mod_kind_label(kind: &str) -> &'static str {
+    match kind {
+        "hold" => "按住",
+        "sticky" => "粘滞",
+        "oneshot" => "单次",
+        _ => "",
+    }
+}
+
+/// 层 id → 界面显示名（层没起名字就用 id；id 已不在配置里——例如刚被外部改动删掉——也照原样显示）。
+fn layer_label(cfg: &Config, id: &str) -> String {
+    cfg.layers
+        .iter()
+        .find(|l| l.id == id)
+        .map(|l| if l.name.trim().is_empty() { l.id.clone() } else { l.name.clone() })
+        .unwrap_or_else(|| id.to_string())
+}
+
+/// 引擎快照 + 配置 → 指示载荷（纯函数，可单测）。
+fn build_status(st: &EngineStatus, cfg: &Config) -> StatusPayload {
+    let layer = st.layer.as_deref().map(|id| layer_label(cfg, id));
+    let mut mods: Vec<StatusMod> = Vec::new();
+    for (kind, set) in [("hold", &st.hold), ("sticky", &st.sticky), ("oneshot", &st.oneshot)] {
+        for m in set {
+            mods.push(StatusMod { kind, key: modifier_label(*m).to_string() });
+        }
+    }
+    let summary = status_summary(layer.as_deref(), st.layer_locked, &mods);
+    StatusPayload { layer, locked: st.layer_locked, mods, summary }
+}
+
+/// 指示摘要（托盘提示用）：`层：游戏（锁定） · 按住 Ctrl · 单次 Shift`。
+fn status_summary(layer: Option<&str>, locked: bool, mods: &[StatusMod]) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(l) = layer {
+        // 两种来源与 `LayerState` 对齐：锁定 = 长按切换一次后保持（`lock_layer`）；
+        // 其余 = 按住切层键期间生效（`hold_layer`）。
+        parts.push(format!("层：{l}{}", if locked { "（锁定）" } else { "（按住）" }));
+    }
+    for m in mods {
+        parts.push(format!("{} {}", mod_kind_label(m.kind), m.key));
+    }
+    parts.join(" · ")
+}
+
 /// 运行时状态：钩子持有的配置 + 配置落盘路径 + 消息中心。
 struct KadaState {
     config: Arc<RwLock<Config>>,
@@ -160,6 +277,8 @@ struct KadaState {
     unread: Arc<AtomicBool>,
     /// 最近一次触发气泡的载荷（懒创建 toast 窗口时，供前端加载后兜底读取）。
     toast: Arc<Mutex<Option<ToastPayload>>>,
+    /// 最近一次输入状态指示的载荷（懒创建状态指示窗时，供前端加载后兜底读取）。
+    status: Arc<Mutex<Option<StatusPayload>>>,
     /// 托盘图标（用于运行时叠 / 去红点）。
     tray: Mutex<Option<TrayIcon>>,
     /// 托盘基础图标（无红点）。
@@ -515,6 +634,10 @@ impl ResetWatch {
 /// 「配置被整份换掉」见下面 `cfg_stale`）：复位与超时推进都作用于同一个 [`Engine`]，
 /// 放在一起就不必为复位再起一个线程。巡检本身照常进行（基线要跟上），只是暂停/录制期间
 /// 不落地。
+///
+/// 还顺带把**输入状态可视指示**推给界面（见规划 7.3-⑬）：状态变了才推（托盘提示 + 悬浮指示窗）。
+/// 放在这条线程上是因为它是唯一一处「不在钩子回调里、又拿得到最新 `Engine` 状态」的地方——
+/// 在回调里推 UI 等于把输入层挂在界面上。
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 fn spawn_engine_ticker(
     engine: Arc<Mutex<Engine>>,
@@ -522,9 +645,13 @@ fn spawn_engine_ticker(
     paused_until: Arc<AtomicU64>,
     rec: Arc<Mutex<Option<Recorder>>>,
     cfg_stale: Arc<AtomicBool>,
+    app: tauri::AppHandle,
 ) {
     std::thread::spawn(move || {
         let mut watch = ResetWatch::new();
+        // 上一次推给界面的指示（载荷 + 指示开关）：两者任一变了才重新推。开关也参与比对，
+        // 否则「关掉悬浮指示」要等到下次状态变化才生效（锁定层能让它一直挂着）。
+        let mut last_status: Option<(StatusPayload, bool)> = None;
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
             let reset_reason = watch.poll();
@@ -536,19 +663,37 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let guard = cfg.read().unwrap();
-            if rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused {
-                continue;
+            let (payload, hud_enabled) = {
+                let guard = cfg.read().unwrap();
+                let frozen =
+                    rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused;
+                // 暂停 / 录制期间不推进状态机（那段时间事件根本不进状态机），但指示照常反映当前
+                // 状态：暂停这个动作本身不该让已经按住的层从指示里消失。
+                let status = if frozen {
+                    engine.lock().unwrap().status()
+                } else {
+                    let mut engine = engine.lock().unwrap();
+                    if let Some(reason) = reason {
+                        // 只在真的丢掉了状态时留痕：复位本身是无声兜底（用户此刻没有动作可做），
+                        // 进消息中心只会变成噪音。
+                        if engine.reset(&mut SimulatedInject) {
+                            eprintln!("kada: 输入状态已复位（{reason}）");
+                        }
+                    }
+                    engine.tick(&guard, &mut SimulatedInject);
+                    engine.status()
+                };
+                (build_status(&status, &guard), guard.settings.show_status_hud)
+            };
+            // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
+            let changed = match last_status.as_ref() {
+                Some((last, enabled)) => last != &payload || *enabled != hud_enabled,
+                None => true,
+            };
+            if changed {
+                publish_status(&app, &payload, hud_enabled);
+                last_status = Some((payload, hud_enabled));
             }
-            let mut engine = engine.lock().unwrap();
-            if let Some(reason) = reason {
-                // 只在真的丢掉了状态时留痕：复位本身是无声兜底（用户此刻没有动作可做），
-                // 进消息中心只会变成噪音。
-                if engine.reset(&mut SimulatedInject) {
-                    eprintln!("kada: 输入状态已复位（{reason}）");
-                }
-            }
-            engine.tick(&guard, &mut SimulatedInject);
         }
     });
 }
@@ -713,6 +858,12 @@ fn ensure_toast(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     .always_on_top(true)
     .resizable(false)
     .focused(false)
+    // 同 `ensure_hud`：`focused(false)` 只保证**第一次**显示不抢焦点（tao 首次用
+    // `SW_SHOWNOACTIVATE`，之后清掉这个标记、退回 `SW_SHOW`），而气泡每次触发都 show 一次。
+    // 加 `focusable(false)`（`WS_EX_NOACTIVATE`）才真的永不成为前台窗口——否则连按两次快捷键，
+    // 第二次气泡就会把焦点从用户正在打字的窗口抢走，`ResetWatch` 还会把它当成「前台切换」
+    // 白复位一次输入状态。
+    .focusable(false)
     .inner_size(300.0, 60.0)
     .visible(false)
     .build()
@@ -733,6 +884,119 @@ fn ensure_toast(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
         let _ = w.set_position(LogicalPosition::new(x, y));
     }
     Some(w)
+}
+
+/// 按需创建屏幕下方的输入状态悬浮窗（见规划 7.3-⑬）：真有状态要显示时才建 WebView。
+///
+/// **必须 `focusable(false)`**——Windows 上就是 `WS_EX_NOACTIVATE`，否则这个窗能被激活，
+/// 后果很具体：它在用户按住切层键期间一直挂在最上层，一旦成了前台窗口，① 前台条件（前台应用 /
+/// 窗口标题）全读成我们自己这个窗；② `ResetWatch` 把它当作「前台切换」→ 复位输入状态，
+/// 按住的 momentary 层当场被踢掉——正是本功能要消除的那种「按了没反应」。它只是一块看板：
+/// 不接受点击、不接焦点。位置与尺寸在 [`hud_ready`] 里按内容定（要贴底部居中，宽高得先量出来）。
+fn ensure_hud(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("hud") {
+        return Some(w);
+    }
+    let w = match tauri::WebviewWindowBuilder::new(
+        app,
+        "hud",
+        tauri::WebviewUrl::App("index.html#hud".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .focusable(false)
+    .inner_size(240.0, 44.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("创建状态指示窗失败: {e}");
+            return None;
+        }
+    };
+    let _ = w.set_ignore_cursor_events(true);
+    Some(w)
+}
+
+/// 输入状态可视指示（见规划 7.3-⑬）：状态变化时刷新托盘提示，并按需显示 / 隐藏悬浮指示窗。
+///
+/// 由状态机定时器线程调用，**必须在配置读锁与 `Engine` 锁之外**：这里要动托盘图标、建窗口、
+/// 发事件，而钩子回调正等着那把 `Engine` 锁——在锁里干这些就等于把整个输入层挂在界面上。
+/// 重量级的那步（建 WebView）另外挪到自己的线程上，见函数末尾。
+fn publish_status(app: &tauri::AppHandle, payload: &StatusPayload, hud_enabled: bool) {
+    // 定时器线程比 `app.manage(KadaState)` 先起步（差几十毫秒），用 `try_state` 兜一下：
+    // 拿不到就等下一拍，别在后台线程里 panic。
+    let Some(state) = app.try_state::<KadaState>() else { return };
+    // 载荷存进 state：悬浮窗是懒创建的，前端加载后据此兜底渲染（与触发气泡同一个套路）。
+    state.status.lock().unwrap().replace(payload.clone());
+    // 托盘提示：悬停才看得见，但零成本、最不打扰，状态为空时回到应用名。
+    if let Some(tray) = state.tray.lock().unwrap().as_ref() {
+        let tip = if payload.idle() {
+            "咔哒 Kada".to_string()
+        } else {
+            format!("咔哒 Kada · {}", payload.summary)
+        };
+        let _ = tray.set_tooltip(Some(&tip));
+    }
+    // 悬浮指示：设置里关掉了、或没有东西生效 → 收起来（窗口留着重用，不销毁）。
+    if !hud_enabled || payload.idle() {
+        if let Some(w) = app.get_webview_window("hud") {
+            let _ = w.hide();
+        }
+        return;
+    }
+    // 建 WebView 是重活（首次上百毫秒），**不能就地做**：这条线程还要落地序列 / 和弦的超时
+    // 回放（`Engine::tick`），占住它等于让被吞掉的键晚几百毫秒才补回来。与触发气泡同一条
+    // 约定——唤窗一律交给别的线程（`show_toast` 也是在 `std::thread::spawn` 里建窗的）。
+    let (app, payload) = (app.clone(), payload.clone());
+    std::thread::spawn(move || {
+        if let Some(w) = ensure_hud(&app) {
+            // 显示交给前端：它渲染完量出内容宽高再调 [`hud_ready`]（要贴底部居中，尺寸得先量）。
+            // 这次 emit 晚到也没关系：窗口若已过期，`hud_ready` 会再查一次当前状态并把它藏回去。
+            let _ = w.emit("status-change", &payload);
+        }
+    });
+}
+
+/// 悬浮指示窗渲染完成（前端量出内容宽高后调用）：按内容调整窗口、贴工作区底部居中并显示。
+#[tauri::command]
+fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
+    let Some(w) = app.get_webview_window("hud") else { return };
+    // 尺寸来自界面，不可全信：钳一下，别让异常值把窗口撑满屏幕或只剩一条缝。
+    let w_logical = width.clamp(120.0, 900.0);
+    let h_logical = height.clamp(24.0, 240.0);
+    let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
+    let state = app.state::<KadaState>();
+    // 先读配置、再读状态载荷（加锁顺序与 [`publish_status`] 一致）。
+    let enabled = state.config.read().map(|c| c.settings.show_status_hud).unwrap_or(true);
+    let active = state.status.lock().unwrap().as_ref().map(|p| !p.idle()).unwrap_or(false);
+    if !enabled || !active {
+        // 量尺寸这段时间里状态已经过去了（或指示被关掉）：别把刚藏起来的窗又亮回来。
+        let _ = w.hide();
+        return;
+    }
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let work = m.work_area();
+        let x =
+            (work.position.x as f64 + (work.size.width as f64 - w_logical * scale) / 2.0) / scale;
+        let y = (work.position.y as f64 + work.size.height as f64 - h_logical * scale
+            - 24.0 * scale)
+            / scale;
+        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+    }
+    let _ = w.show();
+}
+
+/// 读取当前输入状态载荷（悬浮指示窗懒创建后，前端加载时调用兜底渲染）。
+#[tauri::command]
+fn get_status_payload(state: tauri::State<'_, KadaState>) -> Option<StatusPayload> {
+    state.status.lock().unwrap().clone()
 }
 
 /// 在屏幕右下角弹一个短暂的气泡（常驻 3 秒后自动消失）。
@@ -1407,6 +1671,52 @@ mod tests {
         assert!(!t.observe(None));
         assert!(!t.observe(Some(1)), "读空之后回到原窗口：没换过");
     }
+
+    // ---- 输入状态指示载荷（托盘提示 / 悬浮指示，见规划 7.3-⑬） ----
+
+    /// 层 + 三类修饰键 → 载荷：层名要换成显示名，修饰键要按形态分开、摘要直接可读。
+    #[test]
+    fn status_payload_maps_layer_name_and_modifier_kinds() {
+        let cfg = Config {
+            layers: vec![kada_core::Layer { id: "L1".into(), name: "游戏层".into() }],
+            ..Default::default()
+        };
+        let st = EngineStatus {
+            layer: Some("L1".into()),
+            layer_locked: true,
+            hold: vec![Modifier::Ctrl],
+            sticky: vec![],
+            oneshot: vec![Modifier::Alt],
+        };
+        let p = build_status(&st, &cfg);
+        assert_eq!(p.layer.as_deref(), Some("游戏层"), "层 id 要换成显示名");
+        assert!(p.locked);
+        let kinds: Vec<(&str, &str)> =
+            p.mods.iter().map(|m| (m.kind, m.key.as_str())).collect();
+        assert_eq!(kinds, vec![("hold", "Ctrl"), ("oneshot", "Alt")], "形态不能混为一谈");
+        assert_eq!(p.summary, "层：游戏层（锁定） · 按住 Ctrl · 单次 Alt");
+        assert!(!p.idle());
+    }
+
+    /// 层没起名字就显示 id；id 已不在配置里（刚被外部改动删掉）也照原样显示，不能变成空白。
+    #[test]
+    fn status_payload_falls_back_to_layer_id() {
+        let cfg = Config::default();
+        let st = EngineStatus { layer: Some("ghost".into()), ..Default::default() };
+        let p = build_status(&st, &cfg);
+        assert_eq!(p.layer.as_deref(), Some("ghost"));
+        assert_eq!(p.summary, "层：ghost（按住）");
+        assert!(!p.locked, "没标锁定就按「按住」说");
+    }
+
+    /// 空状态：指示要判成 idle（据此隐藏悬浮窗、托盘提示回到应用名），且序列化里不带 `layer`。
+    #[test]
+    fn status_payload_is_idle_when_nothing_is_active() {
+        let p = build_status(&EngineStatus::default(), &Config::default());
+        assert!(p.idle());
+        assert_eq!(p.summary, "");
+        assert!(!serde_json::to_string(&p).unwrap().contains("layer"));
+    }
 }
 
 /// 读取当前配置。
@@ -1702,6 +2012,8 @@ pub fn run() {
             get_command_results,
             get_unread,
             get_toast_payload,
+            get_status_payload,
+            hud_ready,
             mark_results_read,
             clear_command_results,
             update::get_update_status,
@@ -1830,7 +2142,8 @@ pub fn run() {
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
             let hook_handle: Option<input::HookHandle> = None;
 
-            // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker）。
+            // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker），
+            // 顺带把输入状态可视指示推给界面（托盘提示 + 悬浮指示窗，见规划 7.3-⑬）。
             #[cfg(any(target_os = "windows", target_os = "linux"))]
             spawn_engine_ticker(
                 engine,
@@ -1838,6 +2151,7 @@ pub fn run() {
                 paused_until.clone(),
                 rec.clone(),
                 cfg_stale.clone(),
+                app.handle().clone(),
             );
 
             let state = KadaState {
@@ -1854,6 +2168,7 @@ pub fn run() {
                 tray_base: base_icon.clone(),
                 tray_unread: unread_icon,
                 toast: Arc::new(Mutex::new(None)),
+                status: Arc::new(Mutex::new(None)),
             };
             app.manage(state);
             // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
@@ -1883,6 +2198,8 @@ pub fn run() {
             let menu = Menu::with_items(app, &[&show_i, &update_i, &quit_i])?;
             let tray_icon = TrayIconBuilder::new()
                 .icon(base_icon.unwrap())
+                // 托盘提示的初值；有层 / 修饰键生效时由 publish_status 换成当前状态摘要。
+                .tooltip("咔哒 Kada")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
