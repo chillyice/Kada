@@ -58,10 +58,12 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻；动作执行调 kada_actions::run_actions；主窗口与气泡窗口按需懒创建（冷启动零 WebView）
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 注入通道
   src/update.rs             # 软件更新（Tauri updater + GitHub Releases + Ed25519 签名）：启动静默检查/手动检查/下载安装状态机 + 进度节流，Tauri 无关部分可单测
+  src/config_io.rs          # 配置读写：原子写（临时文件+fsync+rename 覆盖）+ 上次良好副本 .bak + 损坏留档与自愈，Tauri 无关、可单测
   src/main.rs               # 入口
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/更新端点/安装模式）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键/改键/宏录制/消息中心/设置页软件更新
+  src/main.ts               # 配置界面：快捷键（含动作流程图可视化编排）/改键/文本扩展/宏录制/消息中心/设置页软件更新
+  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（`npm --prefix ui run dev` 直开浏览器调试/视觉验收）
   src/style.css             # 深色 UI 样式
 .github/workflows/ci.yml    # CI：ubuntu + windows 双平台构建 + 测试
 .github/workflows/release.yml  # 发版：打 v* tag 触发，tauri-action 构建→签名→生成 latest.json→draft Release
@@ -83,6 +85,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   - `Layer { id, name }` 键位层（快捷键/改键可归属某层，仅该层激活时生效）+ `TextExpansion { trigger, replace, enabled }` 文本扩展（输入触发词+后缀自动展开，`replace` 支持 `{date}`/`{time}`/`{clipboard}`）
   - `Settings { autostart, paused, wake_key }`；`detect_conflicts` 检测硬/软冲突（序列按完整字符串判重；序列 leader 遮蔽同层单组合=硬冲突；超集软冲突仅对单组合生效；**层可达性**：层里有启用的条目却没有任何「长按进入层/长按锁定层」的切层键指向它 → 警告「层内条目永远不会生效」，这是「层内快捷键配了但不触发」最难自查的原因）；启动显隐按来源区分（双击 exe 显示主窗口、开机自启带 `--autostart` 参数静默到托盘）
   - 变量占位符：`{变量名}` / `{变量名.字段}`，由 `substitute_vars` 替换（`Os::GetFileProps` 写 File、`App::Status` 写 Bool、命令动作 `var` 非空写 Text，Text 带退出码 `{变量名.exit_code}`，作用域=单次触发内的动作序列）；`sanitize_config` 逐条清洗坏条目（坏触发键/动作/改键单独忽略，不拖垮整份保存）
+  - **配置落盘铁律（`src-tauri/src/config_io.rs`，原子写 + 损坏自愈，2026-09-29 落地）**：保存 = 写同目录唯一临时文件 → `fsync` → `rename` 覆盖目标（并留 `config.json.bak` 上次良好副本，仅当现有内容可解析才留），任何时刻磁盘上的 `config.json` 都不是半截 JSON；加载解析失败**绝不静默清空**——原名改名留档 `config.json.corrupt-<时间戳>`、能用 `.bak` 恢复就恢复并回写主文件，都失败才以空配置启动，经过作为告警在托盘建好后进消息中心。`set_config`/`import_config` 与启动加载都走这一条路径（不要再退回 `fs::write`）。
   - feature 门控（`automation`，`kada-core`/`kada-actions`/`src-tauri` 三 crate 均 `default = ["automation"]`）：`Command`/`Os`/`App`/`OpenUrl`/`If`/`Script`/`Condition`/`Vars` 属自动化动作，关闭 feature（`--no-default-features`）得「基础版」= 改键全形态/层/键序列/文本扩展/Text·Keys·PauseMs 注入；`Action::Script` 是脚本扩展的「逃生舱」（先指向脚本文件，不嵌 Rhai/Lua，生态起来再补 wasm/动态库）
 - 手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`），加载时校验。
 - **消息中心**（内存态，重启清空）：Cmd/PowerShell 结果一律记入消息中心；`show_output` 开则弹结果弹窗、关则托盘图标 + 应用内「消息」入口亮红点，进入「消息」页标记已读。「消息」页分「命令结果 / 冲突」两个标签（冲突标签常驻展示 `get_conflicts` 清单，`Conflict.name` 标识归属、severity 着色），快捷键列表顶部另有可点可消除的冲突气泡。

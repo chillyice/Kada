@@ -440,6 +440,25 @@ body {
   gap: 16px;
 }
 
+/* 编辑器内容限宽居中：超宽窗口下输入行不拉满整屏，可读性优先。 */
+.detail-editor > * {
+  width: 100%;
+  max-width: 880px;
+}
+
+/* 描述 + 所属层并排，省一行的纵向空间。 */
+.editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 200px;
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .editor-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .detail-body {
   flex: 1;
   min-height: 0;
@@ -594,15 +613,158 @@ body {
   align-self: flex-start;
 }
 
-/* ---------- 动作列表 ---------- */
+/* ---------- 动作流程编排 ---------- */
 .action-list {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
+/* 流程管线：节点间距交给 step 自身的 padding-bottom（脊柱线要穿过间隙连到下一个节点）。 */
+.action-list.flow,
+.action-branch.flow {
+  gap: 0;
+}
+
+/* 每类动作一个主题色，卡片左边框 / 脊柱圆点 / 类型名 / 图标底全用它。 */
+.flow-step.type-text { --type-color: #4ec97a; }
+.flow-step.type-command { --type-color: #4f9cf9; }
+.flow-step.type-script { --type-color: #b07cf9; }
+.flow-step.type-keys { --type-color: #f97a50; }
+.flow-step.type-pause_ms { --type-color: #98a0b3; }
+.flow-step.type-os { --type-color: #d9a441; }
+.flow-step.type-app { --type-color: #38c7d8; }
+.flow-step.type-open_url { --type-color: #e879b9; }
+.flow-step.type-if { --type-color: #ffd166; }
+
+.flow-step,
+.flow-terminator {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding-bottom: 12px;
+}
+
+.flow-step:last-child,
+.flow-terminator:last-child {
+  padding-bottom: 0;
+}
+
+/* 时间线脊柱：每个节点左轨画一条竖线，穿过与相邻节点的间隙连成一条。 */
+.flow-rail {
+  position: relative;
+  align-self: stretch;
+  width: 24px;
+  flex-shrink: 0;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12px;
+}
+
+.flow-rail::before {
+  content: "";
+  position: absolute;
+  left: 11px;
+  top: -12px;
+  bottom: -12px;
+  width: 2px;
+  background: var(--line);
+}
+
+/* 首节点：线从自己的圆点往下；末节点：线从上方进来停在圆点；独节点：不画线。 */
+.flow > :first-child .flow-rail::before {
+  top: 23px;
+}
+
+.flow > :last-child .flow-rail::before {
+  top: -12px;
+  bottom: auto;
+  height: 35px;
+}
+
+.flow > :only-child .flow-rail::before {
+  display: none;
+}
+
+.flow-dot {
+  position: relative;
+  z-index: 1;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--panel);
+  border: 2px solid var(--type-color, var(--line));
+  color: var(--type-color, var(--muted));
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: grab;
+  user-select: none;
+}
+
+.flow-dot:hover {
+  background: var(--bg);
+}
+
+.flow-dot:active {
+  cursor: grabbing;
+}
+
+/* 起止端点：⚡ 触发（橙红）/ ✓ 执行完成（绿）。 */
+.flow-dot.term {
+  cursor: default;
+}
+
+.flow-terminator .flow-dot {
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+.flow-terminator.start .flow-dot {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.flow-terminator.end .flow-dot {
+  color: #4ec97a;
+  border-color: #4ec97a;
+}
+
+.flow-term-label {
+  padding-top: 13px;
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  min-width: 0;
+}
+
+.flow-term-label b {
+  font-family: Consolas, monospace;
+  font-weight: 600;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+.flow-empty {
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .action-row {
+  flex: 1;
+  min-width: 0;
   border: 1px solid var(--line);
+  border-left: 3px solid var(--type-color, var(--line));
   border-radius: 8px;
   padding: 10px 12px;
   background: var(--panel);
@@ -615,7 +777,7 @@ body {
   margin-bottom: 8px;
 }
 
-/* 动作组件：收起态只显示 序号 + 图标 + 描述；展开态为三行（标题行 / 类型筛选行 / 输入行） */
+/* 动作组件：收起态只显示 类型名 + 描述 + 变量标签；展开态为三行（标题行 / 类型筛选行 / 输入行） */
 .action-grip {
   flex-shrink: 0;
   color: var(--muted);
@@ -635,33 +797,52 @@ body {
   cursor: grabbing;
 }
 
-.action-seq {
-  flex-shrink: 0;
-  min-width: 18px;
-  height: 18px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: grab;
-  user-select: none;
-}
-
-.action-seq:hover {
-  color: var(--text);
-  border-color: var(--muted);
-}
-
 .action-ico {
   flex-shrink: 0;
   font-size: 13px;
   cursor: grab;
   user-select: none;
+  padding: 2px 5px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--type-color, transparent) 16%, transparent);
+}
+
+.action-type-name {
+  flex-shrink: 0;
+  color: var(--type-color, var(--muted));
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 变量流向标签：⇒ var 写出（绿）/ {var} 引用（灰）。 */
+.action-vartags {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.var-tag {
+  font-family: Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+  padding: 0 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.var-tag.write {
+  color: #4ec97a;
+  background: rgba(78, 201, 122, 0.12);
+  border: 1px solid rgba(78, 201, 122, 0.35);
+}
+
+.var-tag.read {
+  color: var(--muted);
+  background: var(--bg);
+  border: 1px solid var(--line);
 }
 
 .action-title {
@@ -725,29 +906,17 @@ body {
 }
 
 .action-row.drop-before {
-  box-shadow: inset 0 2px 0 var(--accent);
+  box-shadow: inset 0 3px 0 var(--accent);
 }
 
 .action-row.drop-after {
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: inset 0 -3px 0 var(--accent);
 }
 
 .action-row.drop-into,
 .action-branch.drop-into {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
-}
-
-.move {
-  width: 24px;
-  padding: 2px 0;
-  font-size: 12px;
-  line-height: 1;
-}
-
-.move:disabled {
-  opacity: 0.35;
-  cursor: default;
 }
 
 .action-type {
@@ -875,6 +1044,14 @@ body {
   font-weight: 600;
 }
 
+.branch-label.then {
+  color: #4ec97a;
+}
+
+.branch-label.else {
+  color: var(--muted);
+}
+
 .action-branch {
   display: flex;
   flex-direction: column;
@@ -882,6 +1059,15 @@ body {
   padding-left: 12px;
   border-left: 2px solid var(--line);
   min-height: 14px; /* 空分支也留出可悬停的落点，便于拖入动作 */
+}
+
+/* 分支泳道：满足 = 绿轨，否则 = 灰轨，与标签呼应。 */
+.action-branch.branch-then {
+  border-left-color: rgba(78, 201, 122, 0.55);
+}
+
+.action-branch.branch-else {
+  border-left-color: rgba(139, 147, 163, 0.45);
 }
 
 .add-inline {

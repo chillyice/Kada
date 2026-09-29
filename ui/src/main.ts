@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dialog";
+import { installBrowserMock } from "./mock";
 
 type OsOperation =
   | { op: "copy"; source: string; dest: string }
@@ -110,6 +111,88 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   open_url: "🌐",
   if: "🔀",
 };
+
+const ACTION_TYPE_LABELS = Object.fromEntries(
+  ACTION_TYPES.map((t) => [t.value, t.label]),
+) as Record<Action["type"], string>;
+
+function actionTypeLabel(t: Action["type"]): string {
+  return ACTION_TYPE_LABELS[t];
+}
+
+// ---- 变量流向（可视化编排的数据流标签） ----
+// 该动作会把结果写进哪个变量（没有则空）。
+function actionVarWrites(a: Action): string[] {
+  switch (a.type) {
+    case "command":
+    case "script":
+      return a.var.trim() ? [a.var.trim()] : [];
+    case "os":
+      return a.operation.op === "get_file_props" && a.operation.var.trim()
+        ? [a.operation.var.trim()]
+        : [];
+    case "app":
+      return a.operation.op === "status" && a.operation.var.trim()
+        ? [a.operation.var.trim()]
+        : [];
+    default:
+      return [];
+  }
+}
+
+// 文本扩展专用的动态片段不是变量，从引用标签里排除。
+const VAR_DYNAMIC = new Set(["date", "time", "clipboard"]);
+
+// 该动作引用了哪些 {变量}（只扫承载占位符的字符串字段，条件分支里的动作单独算，不并入）。
+// 不能扫 JSON 序列化原文——嵌套对象的花括号会被误当成变量引用。
+function actionVarReads(a: Action): string[] {
+  const texts: string[] = [];
+  switch (a.type) {
+    case "text":
+      texts.push(a.text);
+      break;
+    case "command":
+      texts.push(a.command);
+      break;
+    case "script":
+      texts.push(a.path, a.interpreter ?? "");
+      break;
+    case "os": {
+      const o = a.operation;
+      if ("source" in o) texts.push(o.source, o.dest);
+      if ("path" in o) texts.push(o.path);
+      if ("dest" in o) texts.push(o.dest);
+      break;
+    }
+    case "app": {
+      const o = a.operation;
+      texts.push(o.program);
+      if ("args" in o) texts.push(...o.args);
+      break;
+    }
+    case "open_url":
+      texts.push(a.url);
+      break;
+    case "if": {
+      const c = a.condition;
+      if ("path" in c) texts.push(c.path);
+      if ("value" in c) texts.push(c.value);
+      if ("app" in c) texts.push(c.app);
+      if ("text" in c) texts.push(c.text);
+      break;
+    }
+    default:
+      break;
+  }
+  const out = new Set<string>();
+  for (const t of texts) {
+    for (const m of t.matchAll(/\{([^{}\s]+)\}/g)) {
+      const name = m[1].split(".")[0];
+      if (name && !VAR_DYNAMIC.has(name)) out.add(name);
+    }
+  }
+  return [...out];
+}
 
 // ---- 条件判断的子条件 ----
 const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
@@ -1537,10 +1620,12 @@ function renderTriggers(s: ShortcutItem) {
   });
 }
 
-// ---- 动作列表渲染 ----
+// ---- 动作列表渲染（流程管线视图） ----
 function renderActions(s: ShortcutItem) {
   const wrap = document.getElementById("action-list")!;
-  renderActionList(wrap, s.actions, () => renderActions(s));
+  renderActionList(wrap, s.actions, () => renderActions(s), {
+    start: s.triggers.length ? s.triggers.join(" / ") : "未设触发键",
+  });
 }
 
 // 递归把某个动作列表的所有动作标记为收起（打开已有多动作的快捷键时用）。
@@ -1554,86 +1639,131 @@ function collapseAllActions(actions: Action[]) {
   }
 }
 
-// 把一个动作列表渲染进 container；任何结构变化（增删/移动/改类型/拖拽）都通过 rerender()
-// 触发整体重绘。嵌套的「条件判断」动作同样用它递归渲染 then/otherwise 分支。
-// 收起态只显示 序号 + 类型图标 + 描述；展开态为三行：标题行 / 类型筛选行 / 输入行。
+// 流程管线的起止端点：⚡ 触发（附组合键）→ 步骤 → ✓ 执行完成。仅顶层列表有，分支泳道没有。
+function flowTerminator(kind: "start" | "end", main: string, sub?: string): HTMLElement {
+  const t = el("div", `flow-terminator ${kind}`);
+  const rail = el("div", "flow-rail");
+  rail.append(el("span", "flow-dot term", kind === "start" ? "⚡" : "✓"));
+  const label = el("span", "flow-term-label");
+  label.append(el("span", undefined, main));
+  if (sub) label.append(el("b", undefined, sub));
+  t.append(rail, label);
+  return t;
+}
+
+// 单个流程节点：左侧时间线脊柱（序号圆点）+ 右侧动作卡片。
+// 拖拽命中计算用：把「所在列表 + 下标」直接挂在卡片元素上（非序列化属性）。
+function flowStep(a: Action, i: number, actions: Action[], rerender: () => void): HTMLElement {
+  const collapsed = collapsedActions.has(a);
+  const step = el("div", `flow-step type-${a.type}`);
+  const row = el("div", "action-row" + (collapsed ? " collapsed" : ""));
+  row.dataset.idx = String(i);
+  (row as unknown as { _dropList?: Action[] })._dropList = actions;
+  (row as unknown as { _dropIndex?: number })._dropIndex = i;
+
+  const rail = el("div", "flow-rail");
+  const dot = el("span", "flow-dot", String(i + 1));
+  dot.title = "拖动排序 / 嵌套；点击展开或收起";
+  rail.append(dot);
+
+  // 第一行：拖动手柄 + 图标 + 类型名 + 标题（描述） + 变量流标签 + 删除
+  const head = el("div", "action-head");
+
+  const grip = el("span", "action-grip", "⋮⋮");
+  grip.title = "拖动排序 / 嵌套；点击展开或收起";
+  head.append(grip);
+
+  const ico = el("span", "action-ico", ACTION_ICONS[a.type]);
+  ico.title = actionTypeLabel(a.type);
+  head.append(ico);
+
+  head.append(el("span", "action-type-name", actionTypeLabel(a.type)));
+
+  // 拖拽 + 点击展开/收起：脊柱圆点、手柄、图标都可触发（扩大命中范围）。
+  for (const handle of [dot, grip, ico]) {
+    attachActionDragStart(handle, row, actions, i);
+  }
+
+  // 变量流向标签：写出（⇒ var，绿）在前、引用（{var}，灰）在后，一眼看出数据怎么流。
+  const tags = el("span", "action-vartags");
+  for (const w of actionVarWrites(a)) tags.append(el("span", "var-tag write", `⇒ ${w}`));
+  const reads = actionVarReads(a);
+  for (const r of reads.slice(0, 3)) tags.append(el("span", "var-tag read", `{${r}}`));
+  if (reads.length > 3) tags.append(el("span", "var-tag read", `+${reads.length - 3}`));
+
+  if (collapsed) {
+    const title = el("span", "action-title", actionDescription(a));
+    title.title = "点击展开";
+    title.addEventListener("click", () => {
+      toggleActionCollapsed(a);
+      rerender();
+    });
+    head.append(title, tags);
+  } else {
+    const titleInput = el("input", "action-input action-title-input") as HTMLInputElement;
+    titleInput.type = "text";
+    titleInput.value = a.description ?? "";
+    titleInput.placeholder = "动作标题（可选）";
+    titleInput.addEventListener("input", () => {
+      a.description = titleInput.value.trim() || undefined;
+    });
+    const del = el("button", "action-del") as HTMLButtonElement;
+    del.title = "删除动作";
+    del.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
+    del.addEventListener("click", () => {
+      actions.splice(i, 1);
+      collapsedActions.delete(a);
+      rerender();
+    });
+    head.append(titleInput, tags, del);
+  }
+
+  row.append(head);
+
+  if (!collapsed) {
+    // 第二行：动作类型 + 子类型
+    const typeRow = el("div", "action-type-row");
+    typeRow.append(makeActionTypeSelect(a, actions, i, rerender));
+    const sub = actionSubtypeSelect(a, rerender);
+    if (sub) typeRow.append(sub);
+    row.append(typeRow);
+    // 第三行：其他输入内容
+    row.append(actionFields(a, rerender));
+  }
+
+  step.append(rail, row);
+  return step;
+}
+
+// 把一个动作列表渲染成流程管线进 container；任何结构变化（增删/移动/改类型/拖拽）都通过
+// rerender() 触发整体重绘。嵌套的「条件判断」动作同样用它递归渲染 then/otherwise 分支
+//（不带起止端点）。opts.start 传入触发摘要时在管线头部加 ⚡ 端点、尾部加 ✓ 端点。
+// 收起态只显示 类型名 + 描述 + 变量标签；展开态为三行：标题行 / 类型筛选行 / 输入行。
 function renderActionList(
   container: HTMLElement,
   actions: Action[],
   rerender: () => void,
+  opts: { start?: string } = {},
 ): void {
   container.replaceChildren();
+  container.classList.add("flow");
+  if (opts.start !== undefined) {
+    container.append(flowTerminator("start", "触发", opts.start));
+  }
   actions.forEach((a, i) => {
-    const collapsed = collapsedActions.has(a);
-    const row = el("div", "action-row" + (collapsed ? " collapsed" : ""));
-    row.dataset.idx = String(i);
-    // 拖拽命中计算用：把「所在列表 + 下标」直接挂在元素上（非序列化属性）。
-    (row as unknown as { _dropList?: Action[] })._dropList = actions;
-    (row as unknown as { _dropIndex?: number })._dropIndex = i;
-
-    // 第一行：拖动手柄 + 序号 + 图标 + 标题（描述） + 删除
-    const head = el("div", "action-head");
-
-    const grip = el("span", "action-grip", "⋮⋮");
-    grip.title = "拖动排序 / 嵌套；点击展开或收起";
-    head.append(grip);
-
-    const seq = el("span", "action-seq", String(i + 1));
-    head.append(seq);
-
-    const ico = el("span", "action-ico", ACTION_ICONS[a.type]);
-    head.append(ico);
-
-    // 拖拽 + 点击展开/收起：手柄、序号、图标都可触发（扩大命中范围）。
-    for (const handle of [grip, seq, ico]) {
-      attachActionDragStart(handle, row, actions, i);
-    }
-
-    if (collapsed) {
-      const title = el("span", "action-title", actionDescription(a));
-      title.title = "点击展开";
-      title.addEventListener("click", () => {
-        toggleActionCollapsed(a);
-        rerender();
-      });
-      head.append(title);
-    } else {
-      const titleInput = el("input", "action-input action-title-input") as HTMLInputElement;
-      titleInput.type = "text";
-      titleInput.value = a.description ?? "";
-      titleInput.placeholder = "动作标题（可选）";
-      titleInput.addEventListener("input", () => {
-        a.description = titleInput.value.trim() || undefined;
-      });
-      head.append(titleInput);
-
-      const del = el("button", "action-del") as HTMLButtonElement;
-      del.title = "删除动作";
-      del.innerHTML =
-        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
-      del.addEventListener("click", () => {
-        actions.splice(i, 1);
-        collapsedActions.delete(a);
-        rerender();
-      });
-      head.append(del);
-    }
-
-    row.append(head);
-
-    if (!collapsed) {
-      // 第二行：动作类型 + 子类型
-      const typeRow = el("div", "action-type-row");
-      typeRow.append(makeActionTypeSelect(a, actions, i, rerender));
-      const sub = actionSubtypeSelect(a, rerender);
-      if (sub) typeRow.append(sub);
-      row.append(typeRow);
-      // 第三行：其他输入内容
-      row.append(actionFields(a, rerender));
-    }
-
-    container.append(row);
+    container.append(flowStep(a, i, actions, rerender));
   });
+  if (opts.start !== undefined) {
+    container.append(
+      flowTerminator(
+        "end",
+        actions.length ? "执行完成" : "还没有动作 · 点下方「+ 添加动作」",
+      ),
+    );
+  } else if (actions.length === 0) {
+    container.append(el("div", "flow-empty", "空 · 拖入动作或点下方「添加动作」"));
+  }
 }
 
 function toggleActionCollapsed(a: Action) {
@@ -2208,8 +2338,8 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       body.append(lineVal);
     }
 
-    body.append(el("div", "branch-label", "满足条件时执行"));
-    const thenList = el("div", "action-branch");
+    body.append(el("div", "branch-label then", "✓ 满足条件时执行"));
+    const thenList = el("div", "action-branch branch-then");
     (thenList as unknown as { _dropList?: Action[] })._dropList = a.then;
     renderActionList(thenList, a.then, rerender);
     const addThen = el("button", "add-inline", "＋ 添加动作");
@@ -2219,8 +2349,8 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     });
     body.append(thenList, addThen);
 
-    body.append(el("div", "branch-label", "否则执行（可空）"));
-    const elseList = el("div", "action-branch");
+    body.append(el("div", "branch-label else", "✗ 否则执行（可空）"));
+    const elseList = el("div", "action-branch branch-else");
     (elseList as unknown as { _dropList?: Action[] })._dropList = a.otherwise;
     renderActionList(elseList, a.otherwise, rerender);
     const addElse = el("button", "add-inline", "＋ 添加动作");
@@ -3124,6 +3254,7 @@ async function bootstrapToast() {
 if (location.hash === "#toast") {
   void bootstrapToast();
 } else {
+  installBrowserMock();
   bind();
   bindMessages();
   void (async () => {

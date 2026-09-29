@@ -10,7 +10,6 @@
 //! 可编译运行（改键/快捷键/录制暂不可用，托盘与配置界面可用）。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -34,6 +33,9 @@ mod engine;
 
 /// 软件更新（Tauri updater + GitHub Releases + Ed25519 签名），与 Tauri 壳解耦、可单测。
 mod update;
+
+/// 配置读写（原子写 + 损坏自愈），与 Tauri 壳解耦、可单测。
+mod config_io;
 
 #[cfg(any(target_os = "windows", target_os = "linux"))]
 use engine::{Engine, HotstringHit, Inject};
@@ -1072,30 +1074,6 @@ mod tests {
     }
 }
 
-fn load_config(file: &PathBuf) -> Config {
-    match fs::read_to_string(file) {
-        Ok(s) => match serde_json::from_str::<Config>(&s) {
-            Ok(mut cfg) => {
-                cfg.migrate();
-                cfg
-            }
-            Err(e) => {
-                eprintln!("配置解析失败 {e}，已回退为默认空配置");
-                Config::default()
-            }
-        },
-        Err(_) => Config::default(),
-    }
-}
-
-fn save_config(file: &PathBuf, cfg: &Config) -> Result<(), String> {
-    let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
-    if let Some(dir) = file.parent() {
-        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    }
-    fs::write(file, json).map_err(|e| e.to_string())
-}
-
 /// 读取当前配置。
 #[tauri::command]
 fn get_config(state: tauri::State<'_, KadaState>) -> Config {
@@ -1104,6 +1082,7 @@ fn get_config(state: tauri::State<'_, KadaState>) -> Config {
 
 /// 保存配置：先逐条清洗（坏触发键/动作/改键被单独忽略，不影响其余配置），
 /// 写入磁盘并即时生效。返回被忽略内容的说明（供 UI 提示），只有真正失败（写盘等）才报错。
+/// 落盘走 [`config_io::save`]（原子替换 + 留存上次良好副本），不会留下半截 JSON。
 #[tauri::command]
 fn set_config(
     app: tauri::AppHandle,
@@ -1112,7 +1091,7 @@ fn set_config(
 ) -> Result<Vec<String>, String> {
     let (clean, ignored) = sanitize_config(&config);
     let autostart = clean.settings.autostart;
-    save_config(&state.file, &clean)?;
+    config_io::save(&state.file, &clean)?;
     *state.config.write().unwrap() = clean;
     sync_autostart(&app, autostart);
     Ok(ignored)
@@ -1210,7 +1189,7 @@ fn import_config(
     let config: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
     let (clean, ignored) = sanitize_config(&config);
     let autostart = clean.settings.autostart;
-    save_config(&state.file, &clean)?;
+    config_io::save(&state.file, &clean)?;
     *state.config.write().unwrap() = clean;
     sync_autostart(&app, autostart);
     Ok(ignored)
@@ -1318,7 +1297,11 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             let file = dir.join("config.json");
 
-            let config = Arc::new(RwLock::new(load_config(&file)));
+            // 配置读取走 config_io：原子写 + 损坏自愈。解析失败不静默清空——原文件留档，
+            // 能从 .bak 恢复就恢复，经过作为告警在托盘建好后推给消息中心（见文件末尾）。
+            let config_io::LoadOutcome { config: loaded, warnings: load_warnings } =
+                config_io::load(&file);
+            let config = Arc::new(RwLock::new(loaded));
             let paused_until = Arc::new(AtomicU64::new(0));
             let rec = Arc::new(Mutex::new(None::<Recorder>));
             let results: Arc<Mutex<Vec<CommandResult>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1477,6 +1460,32 @@ pub fn run() {
                 })
                 .build(app)?;
             *app.state::<KadaState>().tray.lock().unwrap() = Some(tray_icon);
+
+            // 配置损坏 / 自愈的告警推给消息中心。放在托盘建好之后：commit_result 会叠托盘
+            // 红点，此时托盘已存在才叠得上（应用内「消息」入口的红点由前端拉取 unread 得到）。
+            if !load_warnings.is_empty() {
+                let st = app.state::<KadaState>();
+                let time = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+                for w in load_warnings {
+                    commit_result(
+                        app.handle(),
+                        &st.results,
+                        &st.unread,
+                        CommandResult {
+                            kind: "config".into(),
+                            label: "配置".into(),
+                            trigger: "启动加载".into(),
+                            name: String::new(),
+                            command: w.summary,
+                            stdout: String::new(),
+                            stderr: w.detail,
+                            exit_code: None,
+                            show_output: false,
+                            time: time.clone(),
+                        },
+                    );
+                }
+            }
 
             // 启动后台检查更新：延迟几秒、仅 release 构建、查不到就静默（见 update::spawn_startup_check）。
             update::spawn_startup_check(app.handle());
