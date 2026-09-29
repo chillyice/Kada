@@ -512,6 +512,9 @@ let draftNew = false; // 当前编辑是否为“新增”未保存项
 let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保存才写回 cfg）
 let remapDraft: Remap | null = null; // 改键编辑草稿
 let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
+// 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
+// 见「未保存改动守卫」一节。
+let draftBaseline: string | null = null;
 let recording = false;
 let conflicts: Conflict[] = [];
 let search = "";
@@ -586,7 +589,9 @@ async function load() {
   syncUpdate();
 }
 
-async function save() {
+// 落盘整份配置。返回 true = 真的写进去了——未保存守卫靠它决定「保存并离开」要不要放行，
+// 失败还放行等于把用户的改动悄悄丢掉。
+async function save(): Promise<boolean> {
   cfg.shortcuts = cfg.shortcuts.filter(
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
@@ -597,7 +602,7 @@ async function save() {
   } catch (e) {
     toast(`保存失败: ${e}`);
     render();
-    return;
+    return false;
   }
   await refreshConflicts();
   const errs = conflicts.filter((c) => c.severity === "error").length;
@@ -617,6 +622,7 @@ async function save() {
   if (notes.length) toast(`已保存：${notes.join("；")}`);
   else toast("已保存");
   render();
+  return true;
 }
 
 // 冲突检测用到的配置：编辑时把草稿合并进 cfg，让冲突在录入触发键的当下就实时显示，
@@ -946,7 +952,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   li.addEventListener("click", (e) => {
     if ((e.target as HTMLElement).closest("input, button")) return; // 开关/菜单不打开详情
     if (suppressClick) return;
-    openDetail(idx);
+    void requestOpenDetail(idx);
   });
   return li;
 }
@@ -1437,7 +1443,7 @@ function renderRemaps() {
     );
     li.addEventListener("click", (e) => {
       if ((e.target as HTMLElement).closest("input, button")) return;
-      openDetail(i);
+      void requestOpenDetail(i);
     });
     list.append(li);
   });
@@ -1470,7 +1476,7 @@ function renderExpansions() {
     );
     li.addEventListener("click", (ev) => {
       if ((ev.target as HTMLElement).closest("input, button")) return;
-      openDetail(i);
+      void requestOpenDetail(i);
     });
     list.append(li);
   });
@@ -1500,6 +1506,7 @@ function renderDetail() {
     document.getElementById("expansion-editor")!.classList.toggle("hidden", !has);
     if (!has) document.getElementById("expansion-title")!.textContent = "文本扩展";
   }
+  refreshDirty();
 }
 
 // 快捷键详情标题：显示名称（空则「（未命名）」），点击标题行内编辑名称。
@@ -1530,56 +1537,81 @@ function setShortcutTitle() {
     draft.name = v || null;
     title.textContent = draft.name || "（未命名）";
   };
+  // 名称是行内编辑的，没有对应 input 元素可监听：边打边同步进草稿，脏标记才跟得上。
+  title.oninput = () => {
+    if (!draft) return;
+    const v = (title.textContent ?? "").replace(/\s+/g, " ").trim();
+    draft.name = v || null;
+    refreshDirty();
+  };
+}
+
+// 把草稿渲染进编辑页（openDetail 与「撤销改动」共用，避免两条路各写一份填充逻辑）。
+function fillShortcutEditor() {
+  if (!draft) return;
+  (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
+  fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
+  renderTriggers(draft);
+  renderActions(draft);
+  setShortcutTitle();
+}
+
+function fillRemapEditor() {
+  if (!remapDraft) return;
+  (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
+  (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
+  (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
+  (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
+  (document.getElementById("remap-oneshot") as HTMLSelectElement).value = remapDraft.oneshot ?? "";
+  (document.getElementById("remap-sticky") as HTMLSelectElement).value = remapDraft.sticky ?? "";
+  (document.getElementById("remap-tap2") as HTMLSelectElement).value = remapDraft.tap2 ?? "";
+  (document.getElementById("remap-tap3") as HTMLSelectElement).value = remapDraft.tap3 ?? "";
+  fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
+  fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
+  fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, remapDraft.lock_layer, "hold");
+  (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
+    remapDraft.tap_timeout_ms || 200,
+  );
+  syncRemapEditor();
+  document.getElementById("remap-title")!.textContent = draftNew
+    ? "新增改键"
+    : `${remapDraft.from} → ${remapSummary(remapDraft)}`;
+}
+
+function fillExpansionEditor() {
+  if (!expansionDraft) return;
+  (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
+    expansionDraft.trigger;
+  (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
+    expansionDraft.replace;
+  document.getElementById("expansion-title")!.textContent = draftNew
+    ? "新增文本扩展"
+    : expansionDraft.trigger || "（未命名）";
 }
 
 function openDetail(i: number, isNew = false) {
   selected = i;
   draftNew = isNew;
+  draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
   if (section === "shortcuts") {
     draft = isNew
       ? { name: "", description: "", folder: null, layer: null, triggers: [], actions: [newAction("text")], enabled: true }
       : deepClone(cfg.shortcuts[i]);
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
     if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
-    (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
-    fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
-    renderTriggers(draft);
-    renderActions(draft);
-    setShortcutTitle();
+    fillShortcutEditor();
   } else if (section === "remaps") {
     remapDraft = isNew
       ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
-    (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
-    (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
-    (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
-    (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
-    (document.getElementById("remap-oneshot") as HTMLSelectElement).value = remapDraft.oneshot ?? "";
-    (document.getElementById("remap-sticky") as HTMLSelectElement).value = remapDraft.sticky ?? "";
-    (document.getElementById("remap-tap2") as HTMLSelectElement).value = remapDraft.tap2 ?? "";
-    (document.getElementById("remap-tap3") as HTMLSelectElement).value = remapDraft.tap3 ?? "";
-    fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
-    fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
-    fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, remapDraft.lock_layer, "hold");
-    (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
-      remapDraft.tap_timeout_ms || 200,
-    );
-    syncRemapEditor();
-    document.getElementById("remap-title")!.textContent = draftNew
-      ? "新增改键"
-      : `${remapDraft.from} → ${remapSummary(remapDraft)}`;
+    fillRemapEditor();
   } else if (section === "expansions") {
     expansionDraft = isNew
       ? { trigger: "", replace: "", enabled: true }
       : deepClone(cfg.expansions[i]);
-    (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
-      expansionDraft.trigger;
-    (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
-      expansionDraft.replace;
-    document.getElementById("expansion-title")!.textContent = draftNew
-      ? "新增文本扩展"
-      : expansionDraft.trigger || "（未命名）";
+    fillExpansionEditor();
   }
+  markDraftBaseline();
   renderListPane();
   renderDetail();
 }
@@ -1598,6 +1630,272 @@ function discardDraft() {
   draft = null;
   remapDraft = null;
   expansionDraft = null;
+  draftBaseline = null;
+  refreshDirty();
+}
+
+// ---- 编辑页保存 ----
+// 三个编辑页的「保存」按钮与未保存守卫的「保存并离开」共用这三支。返回值 = 是否真的落盘。
+
+// 快捷键：保存后留在编辑页（草稿继续可改）；空的新条目会被 save() 清洗剔除，那才回落到关闭编辑页。
+async function saveShortcutDetail(): Promise<boolean> {
+  if (section !== "shortcuts" || !draft) return false;
+  await stopRecIfAny();
+  draft.description = domValue("edit-desc") || null;
+  draft.layer = domValue("edit-layer") || null;
+  // 落盘的是草稿副本：草稿与 cfg 从此各持一份，之后继续在编辑页改动就不会悄悄改到内存里的
+  // cfg（冲突检测 / 列表读的都是 cfg，「保存了但没保存」的样子很难查）。
+  const item = deepClone(draft);
+  if (draftNew) {
+    cfg.shortcuts.unshift(item);
+  } else if (selected !== null && cfg.shortcuts[selected]) {
+    // 「启用」只有列表行的开关能改（编辑页没这个控件），别拿草稿里的旧值把用户刚点的开关盖回去。
+    item.enabled = cfg.shortcuts[selected].enabled;
+    cfg.shortcuts[selected] = item;
+  }
+  draftNew = false;
+  const ok = await save();
+  selected = cfg.shortcuts.indexOf(item);
+  if (selected < 0) draft = null; // 空条目被清洗剔除 → 关闭编辑页
+  // 保存成功才刷新基线；失败（或草稿已被剔除）保持原样，别让用户以为已经落盘。
+  if (ok) draftBaseline = draftSignature();
+  else if (!draft) draftBaseline = null;
+  render();
+  if (ok) flashRow(selected ?? -1, "shortcut-list");
+  return ok;
+}
+
+async function saveRemapDetail(): Promise<boolean> {
+  if (section !== "remaps" || !remapDraft) return false;
+  remapDraft.from = domValue("remap-from");
+  remapDraft.tap = domValue("remap-tap") || null;
+  remapDraft.hold = domValue("remap-hold") || null;
+  remapDraft.oneshot = domValue("remap-oneshot") || null;
+  remapDraft.sticky = domValue("remap-sticky") || null;
+  remapDraft.tap2 = domValue("remap-tap2") || null;
+  remapDraft.tap3 = domValue("remap-tap3") || null;
+  remapDraft.layer = domValue("remap-layer") || null;
+  remapDraft.hold_layer = domValue("remap-hold-layer") || null;
+  remapDraft.lock_layer = domValue("remap-lock-layer") || null;
+  remapDraft.tap_timeout_ms = parseInt(domValue("remap-timeout"), 10) || 200;
+  // 任一非普通改键形态（tap-hold/切层/单次/粘滞/连击）→ 清空「改为」；否则用「改为」。
+  remapDraft.to = remapDraft.tap ||
+    remapDraft.hold ||
+    remapDraft.hold_layer ||
+    remapDraft.lock_layer ||
+    remapDraft.oneshot ||
+    remapDraft.sticky ||
+    remapDraft.tap2 ||
+    remapDraft.tap3
+    ? ""
+    : domValue("remap-to");
+  // 长按进入层（momentary）与长按锁定层（切换式）互斥：两者都选了保留切换式（层内放和弦/
+  // 序列只能用切换式，见前端的提示文案），避免后端归一化时静默丢一个让用户困惑。
+  if (remapDraft.hold_layer && remapDraft.lock_layer) {
+    remapDraft.hold_layer = null;
+    (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
+    toast("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」");
+  }
+  // 没有任何输出（改为/短按/长按/长按进入层/长按锁定层/单次/粘滞/双击/三击全空）→ 后端会当
+  // 无效条目丢掉。这里直接拦住并说清楚，别让用户以为配好了（「长按进入层」没选中层就是这样丢的）。
+  // 返回 false 让「保存并离开」也停下来，改键还留在编辑页。
+  if (
+    !remapDraft.tap &&
+    !remapDraft.hold &&
+    !remapDraft.hold_layer &&
+    !remapDraft.lock_layer &&
+    !remapDraft.oneshot &&
+    !remapDraft.sticky &&
+    !remapDraft.tap2 &&
+    !remapDraft.tap3 &&
+    !remapDraft.to
+  ) {
+    toast("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击");
+    return false;
+  }
+  const item = deepClone(remapDraft);
+  if (draftNew) {
+    cfg.remaps.unshift(item);
+  } else if (selected !== null && cfg.remaps[selected]) {
+    item.enabled = cfg.remaps[selected].enabled;
+    cfg.remaps[selected] = item;
+  }
+  remapDraft = null; // 改键保存后关闭编辑页（原行为）
+  draftNew = false;
+  selected = null;
+  draftBaseline = null;
+  const ok = await save();
+  if (ok) flashRow(cfg.remaps.indexOf(item), "remap-list");
+  return ok;
+}
+
+async function saveExpansionDetail(): Promise<boolean> {
+  if (section !== "expansions" || !expansionDraft) return false;
+  expansionDraft.trigger = domValue("edit-exp-trigger").trim();
+  expansionDraft.replace = domValue("edit-exp-replace");
+  const item = deepClone(expansionDraft);
+  if (draftNew) {
+    cfg.expansions.unshift(item);
+  } else if (selected !== null && cfg.expansions[selected]) {
+    item.enabled = cfg.expansions[selected].enabled;
+    cfg.expansions[selected] = item;
+  }
+  expansionDraft = null; // 文本扩展保存后关闭编辑页（原行为）
+  draftNew = false;
+  selected = null;
+  draftBaseline = null;
+  const ok = await save();
+  if (ok) flashRow(cfg.expansions.indexOf(item), "expansion-list");
+  return ok;
+}
+
+// ---- 未保存改动守卫 ----
+// 编辑草稿是 cfg 的副本（openDetail 时 deepClone / 新建模板），所以「改没改过」没法靠引用比对，
+// 只能与基线比对：draftBaseline 记下打开编辑页（或上次保存）那一刻的草稿签名。
+// 签名里必须带上「只在保存时才读回草稿」的那些输入框——描述 / 所属层、改键的原键与长按阈值、
+// 文本扩展的触发词与替换文本——否则改这些字段脏标记不亮，离开时照样静默丢。
+
+function domValue(id: string): string {
+  const node = document.getElementById(id) as
+    | HTMLInputElement
+    | HTMLSelectElement
+    | HTMLTextAreaElement
+    | null;
+  return node ? node.value : "";
+}
+
+function draftSignature(): string | null {
+  if (section === "shortcuts") {
+    if (!draft) return null;
+    return JSON.stringify({
+      ...draft,
+      description: domValue("edit-desc") || null,
+      layer: domValue("edit-layer") || null,
+    });
+  }
+  if (section === "remaps") {
+    if (!remapDraft) return null;
+    return JSON.stringify({
+      ...remapDraft,
+      from: domValue("remap-from"),
+      to: domValue("remap-to"),
+      layer: domValue("remap-layer") || null,
+      tap_timeout_ms: parseInt(domValue("remap-timeout"), 10) || 200,
+    });
+  }
+  if (section === "expansions") {
+    if (!expansionDraft) return null;
+    return JSON.stringify({
+      ...expansionDraft,
+      trigger: domValue("edit-exp-trigger").trim(),
+      replace: domValue("edit-exp-replace"),
+    });
+  }
+  return null;
+}
+
+function markDraftBaseline() {
+  draftBaseline = draftSignature();
+  refreshDirty();
+}
+
+// 基线为 null = 没有草稿（或正在填充），一律不算脏——编辑内容清空时签名也是 null，
+// 不这么判会把「草稿没了」当成「有改动」。
+function isDraftDirty(): boolean {
+  return draftBaseline !== null && draftSignature() !== draftBaseline;
+}
+
+// 脏标记与「撤销改动」的可用态。（标记放动作行，不放标题：标题就是行内编辑的名称输入框。）
+function refreshDirty() {
+  const dirty = isDraftDirty();
+  for (const s of ["shortcuts", "remaps", "expansions"] as Section[]) {
+    const onChange = dirty && s === section;
+    document.getElementById(`dirty-${s}`)?.classList.toggle("hidden", !onChange);
+    const undo = document.getElementById(`undo-${s}`) as HTMLButtonElement | null;
+    if (undo) undo.disabled = !onChange;
+  }
+}
+
+// 撤销改动：把草稿还原成基线内容（打开时 / 上次保存的），编辑页留在原地。
+function revertDraft() {
+  if (!draftBaseline) return;
+  if (section === "shortcuts") {
+    draft = JSON.parse(draftBaseline) as ShortcutItem;
+    fillShortcutEditor();
+  } else if (section === "remaps") {
+    remapDraft = JSON.parse(draftBaseline) as Remap;
+    fillRemapEditor();
+  } else if (section === "expansions") {
+    expansionDraft = JSON.parse(draftBaseline) as TextExpansion;
+    fillExpansionEditor();
+  } else {
+    return;
+  }
+  refreshDirty();
+  // 触发键可能被改回来了，冲突提示跟着重算（否则还挂着已撤销的那条冲突）。
+  void refreshConflicts().then(renderConflictBubble);
+  toast("已撤销未保存的改动");
+}
+
+type UnsavedChoice = "save" | "discard" | "cancel";
+let unsavedPending: ((c: UnsavedChoice) => void) | null = null;
+
+function draftLabel(): string {
+  if (section === "shortcuts") return `快捷键「${draft?.name || "未命名"}」`;
+  if (section === "remaps" && remapDraft) {
+    return `改键「${remapDraft.from} → ${remapSummary(remapDraft)}」`;
+  }
+  if (section === "expansions") return `文本扩展「${expansionDraft?.trigger || "未命名"}」`;
+  return "当前编辑";
+}
+
+function askUnsaved(): Promise<UnsavedChoice> {
+  // 已经有一个确认框等着时忽略后来的请求（连点两行会同时进来）：让它当「取消」处理，
+  // 否则先到的那个 promise 永远不 resolve，那一次点击就永远挂在那里。
+  if (unsavedPending) return Promise.resolve("cancel");
+  document.getElementById("unsaved-text")!.textContent = `${draftLabel()}有未保存的改动。`;
+  document.getElementById("unsaved-modal")!.classList.remove("hidden");
+  return new Promise((resolve) => (unsavedPending = resolve));
+}
+
+function resolveUnsaved(choice: UnsavedChoice) {
+  const pending = unsavedPending;
+  unsavedPending = null;
+  document.getElementById("unsaved-modal")!.classList.add("hidden");
+  pending?.(choice);
+}
+
+// 离开前的守卫：有未保存改动就问一句。true = 可以继续离开（已保存 / 已放弃）。
+async function confirmLeaveDraft(): Promise<boolean> {
+  if (!isDraftDirty()) return true;
+  const choice = await askUnsaved();
+  if (choice === "cancel") return false;
+  if (choice === "discard") {
+    discardDraft();
+    draftNew = false;
+    return true;
+  }
+  // 「保存并离开」：保存失败（或改键没设任何输出被判无效）就别走，留在编辑页别把改动丢了。
+  return await saveCurrentDraft();
+}
+
+async function saveCurrentDraft(): Promise<boolean> {
+  if (section === "shortcuts") return await saveShortcutDetail();
+  if (section === "remaps") return await saveRemapDetail();
+  if (section === "expansions") return await saveExpansionDetail();
+  return false;
+}
+
+// 列表行点开 / 「+ 新增」：草稿有未保存改动时先问一句，别默默覆盖掉草稿。
+async function requestOpenDetail(i: number, isNew = false) {
+  if (!(await confirmLeaveDraft())) return;
+  openDetail(i, isNew);
+}
+
+// 取消 / ×  关闭编辑页：同样是「离开」，走同一道守卫。
+async function requestCloseDetail() {
+  if (!(await confirmLeaveDraft())) return;
+  closeDetail();
 }
 
 function flashRow(i: number, listId: string) {
@@ -1624,6 +1922,7 @@ function renderTriggers(s: ShortcutItem) {
     chip.append(x);
     wrap.append(chip);
   });
+  refreshDirty();
 }
 
 // ---- 动作列表渲染（流程管线视图） ----
@@ -1632,6 +1931,7 @@ function renderActions(s: ShortcutItem) {
   renderActionList(wrap, s.actions, () => renderActions(s), {
     start: s.triggers.length ? s.triggers.join(" / ") : "未设触发键",
   });
+  refreshDirty();
 }
 
 // 递归把某个动作列表的所有动作标记为收起（打开已有多动作的快捷键时用）。
@@ -2456,7 +2756,7 @@ function renderConflictList() {
 // 跳到「消息 → 冲突」标签查看冲突详情。
 function openConflictView() {
   msgView = "conflicts";
-  switchSection("messages");
+  void switchSection("messages");
 }
 
 // ---- 设置 ----
@@ -2649,6 +2949,7 @@ function syncRemapEditor() {
   document.getElementById("remap-tap3-row")!.classList.toggle("hidden", isModifier || !isTapHold);
   document.getElementById("remap-timeout-row")!.classList.toggle("hidden", isModifier || !isTapHold);
   document.getElementById("remap-to-row")!.classList.toggle("hidden", isModifier || isTapHold || isLayerKey);
+  refreshDirty();
 }
 
 // 填充「所属层」（assign）/「长按进入层」（hold）下拉。
@@ -2767,16 +3068,38 @@ async function deleteLayer(id: string) {
 // ---- 事件绑定 ----
 function bind() {
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
-    b.addEventListener("click", () => switchSection(b.dataset.tab as Section));
+    b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
   });
 
   document.getElementById("add-btn")!.addEventListener("click", () => {
-    if (section === "shortcuts") {
-      openDetail(-1, true);
-    } else if (section === "remaps") {
-      openDetail(-1, true);
-    } else if (section === "expansions") {
-      openDetail(-1, true);
+    if (section === "shortcuts" || section === "remaps" || section === "expansions") {
+      void requestOpenDetail(-1, true);
+    }
+  });
+
+  // 脏标记：编辑页里任何一次输入/选择/点按都可能改动草稿，用事件委托统一重算，
+  // 好过给每个字段（含动态生成的动作字段）逐个插桩。
+  for (const id of ["detail-editor", "remap-editor", "expansion-editor"]) {
+    const pane = document.getElementById(id)!;
+    pane.addEventListener("input", refreshDirty);
+    pane.addEventListener("change", refreshDirty);
+    pane.addEventListener("click", refreshDirty);
+  }
+
+  // 未保存确认框：遮罩与 Esc 一律按「继续编辑」处理（不做任何破坏性动作）。
+  document.getElementById("unsaved-save")!.addEventListener("click", () => resolveUnsaved("save"));
+  document.getElementById("unsaved-discard")!.addEventListener("click", () =>
+    resolveUnsaved("discard"),
+  );
+  document.getElementById("unsaved-cancel")!.addEventListener("click", () =>
+    resolveUnsaved("cancel"),
+  );
+  document.getElementById("unsaved-modal")!.querySelector(".modal-mask")!
+    .addEventListener("click", () => resolveUnsaved("cancel"));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && unsavedPending) {
+      e.preventDefault();
+      resolveUnsaved("cancel");
     }
   });
 
@@ -2855,25 +3178,16 @@ function bind() {
   });
 
   document.getElementById("save-shortcut")!.addEventListener("click", () => {
-    if (section !== "shortcuts" || !draft) return;
-    void stopRecIfAny();
-    draft.description = (document.getElementById("edit-desc") as HTMLInputElement).value || null;
-    draft.layer = (document.getElementById("edit-layer") as HTMLSelectElement).value || null;
-    if (draftNew) cfg.shortcuts.unshift(draft);
-    else if (selected !== null) cfg.shortcuts[selected] = draft;
-    draftNew = false;
-    const saved = draft;
-    void save().then(() => flashRow(cfg.shortcuts.indexOf(saved), "shortcut-list"));
-    // 保存后留在编辑页（不清空 draft）；若空的新条目被保存清洗剔除，则回落到关闭编辑页。
-    selected = cfg.shortcuts.indexOf(saved);
-    if (selected < 0) {
-      draft = null;
-      selected = null;
-    }
+    void saveShortcutDetail();
   });
 
-  document.getElementById("cancel-shortcut")!.addEventListener("click", closeDetail);
-  document.getElementById("detail-close")!.addEventListener("click", closeDetail);
+  document.getElementById("cancel-shortcut")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("detail-close")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("undo-shortcuts")!.addEventListener("click", revertDraft);
   document.getElementById("delete-shortcut")!.addEventListener("click", () => {
     if (section !== "shortcuts" || !draft) return;
     if (draftNew) {
@@ -2885,74 +3199,22 @@ function bind() {
       return;
     }
     if (selected !== null) cfg.shortcuts.splice(selected, 1);
-    draft = null;
+    discardDraft();
     draftNew = false;
     selected = null;
     void save();
   });
 
   document.getElementById("save-remap")!.addEventListener("click", () => {
-    if (section !== "remaps" || !remapDraft) return;
-    remapDraft.from = (document.getElementById("remap-from") as HTMLSelectElement).value;
-    remapDraft.tap = (document.getElementById("remap-tap") as HTMLSelectElement).value || null;
-    remapDraft.hold = (document.getElementById("remap-hold") as HTMLSelectElement).value || null;
-    remapDraft.oneshot =
-      (document.getElementById("remap-oneshot") as HTMLSelectElement).value || null;
-    remapDraft.sticky = (document.getElementById("remap-sticky") as HTMLSelectElement).value || null;
-    remapDraft.tap2 = (document.getElementById("remap-tap2") as HTMLSelectElement).value || null;
-    remapDraft.tap3 = (document.getElementById("remap-tap3") as HTMLSelectElement).value || null;
-    remapDraft.layer = (document.getElementById("remap-layer") as HTMLSelectElement).value || null;
-    remapDraft.hold_layer =
-      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value || null;
-    remapDraft.lock_layer =
-      (document.getElementById("remap-lock-layer") as HTMLSelectElement).value || null;
-    remapDraft.tap_timeout_ms =
-      parseInt((document.getElementById("remap-timeout") as HTMLInputElement).value, 10) || 200;
-    // 任一非普通改键形态（tap-hold/切层/单次/粘滞/连击）→ 清空「改为」；否则用「改为」。
-    remapDraft.to = remapDraft.tap ||
-      remapDraft.hold ||
-      remapDraft.hold_layer ||
-      remapDraft.lock_layer ||
-      remapDraft.oneshot ||
-      remapDraft.sticky ||
-      remapDraft.tap2 ||
-      remapDraft.tap3
-      ? ""
-      : (document.getElementById("remap-to") as HTMLSelectElement).value;
-    // 长按进入层（momentary）与长按锁定层（切换式）互斥：两者都选了保留切换式（层内放和弦/
-    // 序列只能用切换式，见前端的提示文案），避免后端归一化时静默丢一个让用户困惑。
-    if (remapDraft.hold_layer && remapDraft.lock_layer) {
-      remapDraft.hold_layer = null;
-      (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
-      toast("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」");
-    }
-    // 没有任何输出（改为/短按/长按/长按进入层/长按锁定层/单次/粘滞/双击/三击全空）→ 后端会当
-    // 无效条目丢掉。这里直接拦住并说清楚，别让用户以为配好了（「长按进入层」没选中层就是这样丢的）。
-    if (
-      !remapDraft.tap &&
-      !remapDraft.hold &&
-      !remapDraft.hold_layer &&
-      !remapDraft.lock_layer &&
-      !remapDraft.oneshot &&
-      !remapDraft.sticky &&
-      !remapDraft.tap2 &&
-      !remapDraft.tap3 &&
-      !remapDraft.to
-    ) {
-      toast("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击");
-      return;
-    }
-    if (draftNew) cfg.remaps.unshift(remapDraft);
-    else if (selected !== null) cfg.remaps[selected] = remapDraft;
-    const saved = remapDraft;
-    remapDraft = null;
-    draftNew = false;
-    selected = null;
-    void save().then(() => flashRow(cfg.remaps.indexOf(saved), "remap-list"));
+    void saveRemapDetail();
   });
-
-  document.getElementById("cancel-remap")!.addEventListener("click", closeDetail);
-  document.getElementById("remap-close")!.addEventListener("click", closeDetail);
+  document.getElementById("cancel-remap")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("remap-close")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("undo-remaps")!.addEventListener("click", revertDraft);
   document.getElementById("delete-remap")!.addEventListener("click", () => {
     if (section !== "remaps" || !remapDraft) return;
     if (draftNew) {
@@ -2963,30 +3225,23 @@ function bind() {
       return;
     }
     if (selected !== null) cfg.remaps.splice(selected, 1);
-    remapDraft = null;
+    discardDraft();
     draftNew = false;
     selected = null;
     void save();
   });
 
   document.getElementById("save-expansion")!.addEventListener("click", () => {
-    if (section !== "expansions" || !expansionDraft) return;
-    expansionDraft.trigger = (
-      document.getElementById("edit-exp-trigger") as HTMLInputElement
-    ).value.trim();
-    expansionDraft.replace = (document.getElementById("edit-exp-replace") as HTMLTextAreaElement)
-      .value;
-    if (draftNew) cfg.expansions.unshift(expansionDraft);
-    else if (selected !== null) cfg.expansions[selected] = expansionDraft;
-    const saved = expansionDraft;
-    expansionDraft = null;
-    draftNew = false;
-    selected = null;
-    void save().then(() => flashRow(cfg.expansions.indexOf(saved), "expansion-list"));
+    void saveExpansionDetail();
   });
 
-  document.getElementById("cancel-expansion")!.addEventListener("click", closeDetail);
-  document.getElementById("expansion-close")!.addEventListener("click", closeDetail);
+  document.getElementById("cancel-expansion")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("expansion-close")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("undo-expansions")!.addEventListener("click", revertDraft);
   document.getElementById("delete-expansion")!.addEventListener("click", () => {
     if (section !== "expansions" || !expansionDraft) return;
     if (draftNew) {
@@ -2997,7 +3252,7 @@ function bind() {
       return;
     }
     if (selected !== null) cfg.expansions.splice(selected, 1);
-    expansionDraft = null;
+    discardDraft();
     draftNew = false;
     selected = null;
     void save();
@@ -3085,7 +3340,13 @@ function bind() {
   bindSettings();
 }
 
-function switchSection(tab: Section) {
+// 切页会丢弃草稿（草稿只属于当前编辑页），所以先过一道未保存守卫。
+async function switchSection(tab: Section) {
+  if (!(await confirmLeaveDraft())) return;
+  switchSectionNow(tab);
+}
+
+function switchSectionNow(tab: Section) {
   void stopRecIfAny();
   discardDraft();
   draftNew = false;

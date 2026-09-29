@@ -95,7 +95,9 @@
             </div>
             <div class="detail-actions">
               <button id="delete-shortcut" class="danger">删除</button>
+              <span id="dirty-shortcuts" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
               <span class="flex-spacer"></span>
+              <button id="undo-shortcuts" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
               <button id="cancel-shortcut">取消</button>
               <button id="save-shortcut" class="primary">保存</button>
             </div>
@@ -167,7 +169,9 @@
               <br />「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
             <div class="detail-actions">
               <button id="delete-remap" class="danger">删除</button>
+              <span id="dirty-remaps" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
               <span class="flex-spacer"></span>
+              <button id="undo-remaps" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
               <button id="cancel-remap">取消</button>
               <button id="save-remap" class="primary">保存</button>
             </div>
@@ -195,7 +199,9 @@
             <p class="hint">输入触发词后按 空格 / 回车 / Tab 自动回删并展开；留空替换文本 = 删除该触发词。</p>
             <div class="detail-actions">
               <button id="delete-expansion" class="danger">删除</button>
+              <span id="dirty-expansions" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
               <span class="flex-spacer"></span>
+              <button id="undo-expansions" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
               <button id="cancel-expansion">取消</button>
               <button id="save-expansion" class="primary">保存</button>
             </div>
@@ -367,6 +373,27 @@
     </div>
 
     <div id="row-menu" class="row-menu hidden"></div>
+
+    <!-- 未保存改动确认：切条目 / 切页 / 关编辑页前拦一道，别让改动静默消失。
+         三态是刻意的——只给「放弃 / 取消」会逼用户先手动保存再点一次。 -->
+    <div id="unsaved-modal" class="modal hidden">
+      <div class="modal-mask"></div>
+      <div class="modal-box confirm-box">
+        <header class="modal-head">
+          <span class="modal-title">有未保存的改动</span>
+        </header>
+        <div class="modal-body">
+          <p id="unsaved-text" class="confirm-text"></p>
+          <p class="confirm-hint">离开会丢弃这些改动；也可以先保存再离开。</p>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="unsaved-cancel">继续编辑</button>
+          <button id="unsaved-discard" class="danger">放弃改动</button>
+          <button id="unsaved-save" class="primary">保存并离开</button>
+        </footer>
+      </div>
+    </div>
 
     <div id="save-status" class="toast"></div>
 
