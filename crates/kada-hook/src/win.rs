@@ -15,19 +15,32 @@
 //! - 注入事件带 `LLKHF_INJECTED`，一律放行，杜绝自我回环。
 //! - `Replace` 注入走 `SendInput`，键码为虚拟键码（US 布局语义，差异见
 //!   各键盘布局 OEM 键）；span nil。
+//! - 自愈看门狗（[`watchdog_loop`]）：低层钩子会**静默失效**——回调超过
+//!   `LowLevelHooksTimeout`（默认 300ms）被系统摘除、休眠唤醒后、会话解锁后
+//!   都可能再也收不到事件，而托盘看着还活着（用户看到的是「快捷键全不响应」）。
+//!   独立心跳线程巡检，命中即让钩子线程**重建两个钩子并复位运行时状态**。
 //!
 //! 已知天花板（升级路径）：
 //! - 低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截（Interception）。
 //! - `type_text` 用剪贴板粘贴（中文最稳），会短暂占用剪贴板。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::ffi::c_void;
 use std::io;
-use std::sync::atomic::{AtomicIsize, Ordering};
+use std::mem::size_of;
+use std::sync::atomic::{AtomicIsize, AtomicU32, AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use windows::core::PWSTR;
 use windows::Win32::Foundation::{CloseHandle, LPARAM, LRESULT, WPARAM};
+use windows::Win32::System::RemoteDesktop::{
+    WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
+    WTSSessionInfoEx, WTSINFOEXW,
+};
+use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
     GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
     PROCESS_QUERY_LIMITED_INFORMATION,
@@ -69,15 +82,42 @@ static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(Ha
 static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 当前物理按下的键（down 且未 up），用于识别自动重复。
 static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
+/// 看门狗心跳：钩子回调每次被调用都刷新它（`GetTickCount` 毫秒）。钩子被系统摘除后
+/// 就再也不会被调用，这个时间戳随停止前进——这是「钩子还活着」唯一的证据。
+static LAST_HOOK_TICK: AtomicU32 = AtomicU32::new(0);
+/// 钩子线程 id。看门狗靠它把重装请求投递到拥有消息循环的钩子线程：`SetWindowsHookEx`
+/// 必须在那个线程上调用（钩子回调也在那儿跑）。0 = 钩子线程已退出。
+static HOOK_TID: AtomicU32 = AtomicU32::new(0);
+/// 自愈重装累计次数（诊断用）。
+static REINSTALLS: AtomicU64 = AtomicU64::new(0);
+/// 钩子线程的自定义消息：请求重建两个钩子。
+const WM_APP_REINSTALL: u32 = WM_APP + 1;
+/// 看门狗巡检间隔。
+const WATCHDOG_INTERVAL_MS: u64 = 1_000;
+/// 判定「钩子已失效」的宽限：系统记下的最后输入比钩子最后事件新这么多毫秒，就说明
+/// 钩子漏掉了事件。**必须大于巡检间隔**，否则两轮之间的输入可能整段落空、永远不被发现。
+const HEARTBEAT_GRACE_MS: i32 = 1_500;
+/// 相邻两次巡检的间隔超过这个值 → 机器睡过（`GetTickCount` 把睡眠时间也算进去）。
+/// 取 10s 是为了让一次调度延迟不至于被误判成唤醒——误判的代价只是一次无害的重装。
+const SUSPEND_GAP_MS: i32 = 10_000;
 
-/// 钩子句柄。Drop 时给钩子线程发 WM_QUIT 并回收。
+/// 钩子句柄。Drop 时停掉看门狗、给钩子线程发 WM_QUIT 并回收。
 pub struct HookHandle {
     tid: u32,
     join: Option<JoinHandle<()>>,
+    watchdog: Option<JoinHandle<()>>,
+    /// 看门狗停机信号：Drop 时丢掉它，看门狗从 `recv_timeout` 立刻收到断开并退出
+    /// （比等它睡完一个巡检间隔才退出快，不拖慢应用退出）。
+    watchdog_stop: Option<mpsc::Sender<()>>,
 }
 
 impl Drop for HookHandle {
     fn drop(&mut self) {
+        // 先停看门狗，否则它可能在钩子线程退出之后还去投递重装请求。
+        self.watchdog_stop.take();
+        if let Some(w) = self.watchdog.take() {
+            let _ = w.join();
+        }
         let _ = unsafe { PostThreadMessageW(self.tid, WM_QUIT, WPARAM(0), LPARAM(0)) };
         if let Some(j) = self.join.take() {
             let _ = j.join();
@@ -85,7 +125,8 @@ impl Drop for HookHandle {
     }
 }
 
-/// 安装全局键盘与鼠标钩子（同一线程跑消息循环）。处理函数在钩子线程回调内同步执行。
+/// 安装全局键盘与鼠标钩子（同一线程跑消息循环），并启动自愈看门狗。
+/// 处理函数在钩子线程回调内同步执行。
 pub fn start<F>(handler: F) -> io::Result<HookHandle>
 where
     F: FnMut(KeyEvent) -> Action + Send + 'static,
@@ -102,42 +143,258 @@ where
     let tid = ready_rx
         .recv()
         .map_err(|_| io::Error::other("钩子线程启动失败"))?;
-    Ok(HookHandle { tid, join: Some(join) })
+    // 看门狗只负责「发现失效」并投递重装请求，真正装钩子的永远是钩子线程。
+    let (watchdog_stop, watchdog_rx) = mpsc::channel::<()>();
+    let watchdog = thread::Builder::new()
+        .name("kada-hook-watchdog".into())
+        .spawn(move || watchdog_loop(watchdog_rx))?;
+    Ok(HookHandle {
+        tid,
+        join: Some(join),
+        watchdog: Some(watchdog),
+        watchdog_stop: Some(watchdog_stop),
+    })
 }
 
 fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     let tid = unsafe { GetCurrentThreadId() };
-    let kbd_hhook = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
-        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 键盘钩子失败: {e}")))?;
-    let mouse_hhook = unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) }
-        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")))?;
-    HOOK.store(kbd_hhook.0 as isize, Ordering::Relaxed);
-    MOUSE_HOOK.store(mouse_hhook.0 as isize, Ordering::Relaxed);
+    install_hooks()?;
+    HOOK_TID.store(tid, Ordering::Relaxed);
     let _ = ready_tx.send(tid);
 
     let mut msg = MSG::default();
     // GetMessageW 返回 0 = 收到 WM_QUIT
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+        // 看门狗的重装请求：`SetWindowsHookEx` 必须在有消息循环的本线程上调用，
+        // 所以看门狗只投递消息、由这里落地。
+        if msg.message == WM_APP_REINSTALL {
+            reinstall_hooks();
+            continue;
+        }
         unsafe {
             _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
 
-    unsafe {
-        _ = UnhookWindowsHookEx(kbd_hhook);
-        _ = UnhookWindowsHookEx(mouse_hhook);
-    }
-    HOOK.store(0, Ordering::Relaxed);
-    MOUSE_HOOK.store(0, Ordering::Relaxed);
-    *SWALLOWED.lock().unwrap() = HashSet::new();
-    *REPLACED_DOWN.lock().unwrap() = HashMap::new();
-    *HELD_KEYS.lock().unwrap() = HashSet::new();
+    unhook();
+    reset_runtime_state();
+    HOOK_TID.store(0, Ordering::Relaxed);
     *HANDLER.lock().unwrap() = None;
     Ok(())
 }
 
+/// 装上键盘与鼠标两个低层钩子，并从头刷新心跳。只在钩子线程上调用。
+fn install_hooks() -> io::Result<()> {
+    let kbd = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
+        .map_err(|e| io::Error::other(format!("SetWindowsHookEx 键盘钩子失败: {e}")))?;
+    let mouse = match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
+        Ok(m) => m,
+        Err(e) => {
+            // 只挂上一半等于「键盘能用、鼠标键不能用」，不如整体退回让看门狗整轮重试。
+            unsafe { _ = UnhookWindowsHookEx(kbd) };
+            return Err(io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")));
+        }
+    };
+    HOOK.store(kbd.0 as isize, Ordering::Relaxed);
+    MOUSE_HOOK.store(mouse.0 as isize, Ordering::Relaxed);
+    // 心跳从这一刻重新起算：否则「最后一次钩子事件」还停在很久以前，看门狗下一轮
+    // 就会把刚装好的钩子再判成失效。
+    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+    Ok(())
+}
+
+/// 卸下两个钩子（幂等：句柄已清零时什么也不做）。
+fn unhook() {
+    let kbd = HOOK.swap(0, Ordering::Relaxed);
+    let mouse = MOUSE_HOOK.swap(0, Ordering::Relaxed);
+    unsafe {
+        if kbd != 0 {
+            _ = UnhookWindowsHookEx(HHOOK(kbd as *mut c_void));
+        }
+        if mouse != 0 {
+            _ = UnhookWindowsHookEx(HHOOK(mouse as *mut c_void));
+        }
+    }
+}
+
+/// 重建两个钩子（只在钩子线程上调用）：先卸旧、复位运行时状态、再装新的。
+///
+/// 先卸旧的这步不能省：钩子已经被系统摘除时 `UnhookWindowsHookEx` 只是失败（无害），
+/// 但若旧钩子还活着而不卸就直接装新的，旧钩子会留在钩子链里**每个按键被处理两遍**
+/// （快捷键触发两次）。
+fn reinstall_hooks() {
+    unhook();
+    // 重装意味着中间丢过事件：那些物理键的抬起已经不可能再经过我们，只能就地复位，
+    // 否则「按住集合」里的键永远等不到抬起（`detect_repeat` 把它的后续每次按下都
+    // 当成自动重复 → 该键彻底变哑），被替换的键也永远收不到配对的 up。
+    reset_runtime_state();
+    match install_hooks() {
+        Ok(()) => {
+            REINSTALLS.fetch_add(1, Ordering::Relaxed);
+        }
+        Err(e) => eprintln!("kada-hook: 重装钩子失败（{e}）；看门狗稍后重试"),
+    }
+}
+
+/// 复位钩子层运行时状态（重装 / 退钩子时调用）。丢一次 keyup（钩子被摘除、锁屏、
+/// Alt-Tab、提权窗口吞键）就会留下两份脏状态：`HELD_KEYS` 里那个键再也收不到抬起，
+/// `SWALLOWED` / `REPLACED_DOWN` 里那条记录也永远等不到配对的抬起——后者尤其糟，
+/// 被替换的目标键（常是 Ctrl 之类的修饰键）会在系统看来一直按着。
+fn reset_runtime_state() {
+    // 先把「已注入且被认为按着」的目标键补一个 up，再清登记表。
+    for target in take_replaced_down() {
+        simulate::up(target);
+    }
+    SWALLOWED.lock().unwrap().clear();
+    HELD_KEYS.lock().unwrap().clear();
+}
+
+/// 取走所有待释放的替换目标键（宿主原键 → 已注入并按住的键），并清空登记表。
+fn take_replaced_down() -> Vec<Key> {
+    REPLACED_DOWN.lock().unwrap().drain().map(|(_, target)| target).collect()
+}
+
+/// 两个 `GetTickCount` 时间戳之差（毫秒，可正可负）。该计数是 32 位、约 49.7 天回绕，
+/// 按无符号回绕相减再按有符号解释，在 ±24.8 天窗口内就是真实差值。
+fn tick_diff(a: u32, b: u32) -> i32 {
+    a.wrapping_sub(b) as i32
+}
+
+/// 钩子是否已经收不到事件了（判定依据见 [`watchdog_loop`]）。
+///
+/// 只看「系统记下的最后输入」与「钩子最后事件」的**先后**，不看绝对时间：机器闲置
+/// 时钩子没有事件是正常的（两个时间戳一起停在原处），只有系统收到了输入而钩子的
+/// 时间戳还落在后面，才说明钩子漏事件了。
+///
+/// 局限（已知，不打算在应用层解决）：`GetLastInputInfo` 是键盘与鼠标**合并**的信号，
+/// 所以「键盘钩子单独被摘除、鼠标钩子还活着」这一种情形发现不了——心跳一直被鼠标事件
+/// 喂着。两个钩子装在同一个线程、共用同一个处理函数，把回调拖慢的成因对两者是同一个，
+/// 通常一起被摘掉，故这种半边失效并不常见；真正要修的是把耗时操作移出回调（规划
+/// 7.2-⑤），本看门狗只是兜底。
+fn hook_dead(now: u32, last_input: u32, last_hook: u32) -> bool {
+    let input_fresh = tick_diff(now, last_input) < HEARTBEAT_GRACE_MS;
+    let hook_lagging = tick_diff(last_input, last_hook) > HEARTBEAT_GRACE_MS;
+    input_fresh && hook_lagging
+}
+
+/// 系统最后一次键盘 / 鼠标输入的时间戳（与 `GetTickCount` 同源）。查询失败返回 0 ——
+/// `hook_dead` 会把它当成「很久没有输入」，不会据此重装。
+fn last_input_tick() -> u32 {
+    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        info.dwTime
+    } else {
+        0
+    }
+}
+
+/// 本会话是否已锁屏；`None` = 查不出来（当作「不知道」，不据此重装）。
+///
+/// `WTSSessionInfoEx` 的 `SessionFlags` 是**反直觉**字段：0 = 锁定、1 = 未锁定，
+/// 不能当布尔值读；老系统只回 Level 0（没有这个标志位）时同样返回 None。
+fn session_locked() -> Option<bool> {
+    let mut buf = PWSTR::null();
+    let mut len: u32 = 0;
+    unsafe {
+        WTSQuerySessionInformationW(
+            Some(WTS_CURRENT_SERVER_HANDLE),
+            WTS_CURRENT_SESSION,
+            WTSSessionInfoEx,
+            &mut buf,
+            &mut len,
+        )
+    }
+    .ok()?;
+    let locked = if buf.is_null() || (len as usize) < size_of::<WTSINFOEXW>() {
+        None
+    } else {
+        let info = unsafe { &*buf.0.cast::<WTSINFOEXW>() };
+        // Level 1 才带 SessionFlags；更高版本按「不知道」处理，别猜。
+        if info.Level == 1 {
+            Some(unsafe { info.Data.WTSInfoExLevel1.SessionFlags == 0 })
+        } else {
+            None
+        }
+    };
+    if !buf.is_null() {
+        unsafe { WTSFreeMemory(buf.0 as *mut c_void) };
+    }
+    locked
+}
+
+/// 请求钩子线程重建钩子（看门狗用；也可作为「钩子疑似失效」时的人工兜底）。
+/// 返回 false = 投递失败（钩子线程已退出）。
+pub fn request_reinstall() -> bool {
+    let tid = HOOK_TID.load(Ordering::Relaxed);
+    tid != 0 && unsafe { PostThreadMessageW(tid, WM_APP_REINSTALL, WPARAM(0), LPARAM(0)) }.is_ok()
+}
+
+/// 自愈重装累计次数（诊断 / 冒烟测试用）。
+pub fn reinstall_count() -> u64 {
+    REINSTALLS.load(Ordering::Relaxed)
+}
+
+/// 看门狗线程：盯住「钩子还活着」的证据，失效时把重装请求投回钩子线程。
+///
+/// 三条触发路径对应钩子静默失效的三种成因（托盘那时都还看着正常）：
+/// 1. **回调超时被系统摘除**——回调超过 `LowLevelHooksTimeout`（默认 300ms）系统会
+///    静默摘掉钩子且不给任何通知；靠 `GetLastInputInfo` 与心跳对照发现。
+/// 2. **休眠唤醒**——`GetTickCount` 把睡眠时间算在内，两次巡检的间隔突然变大即说明
+///    机器睡过（唤醒后钩子常常收不到事件）。
+/// 3. **会话解锁**——锁屏期间的输入走安全桌面、不经过我们的钩子，解锁是用户回来继续
+///    用快捷键的时刻，主动重建一次（`WTSInfoEx` 查本会话状态）。
+fn watchdog_loop(stop: mpsc::Receiver<()>) {
+    let mut prev_tick = unsafe { GetTickCount() };
+    let mut locked = session_locked();
+    // 连续触发次数：一次成功的重装会让触发条件下一轮自然消失（心跳被刷新、gap 归零、
+    // 解锁是一次性跃迁），所以「下一轮又触发」就等于上次没修好 → 指数退避，别每秒重装。
+    let mut streak: u32 = 0;
+    loop {
+        let wait = WATCHDOG_INTERVAL_MS << streak.min(4); // 1s → 最多 16s
+        match stop.recv_timeout(Duration::from_millis(wait)) {
+            Ok(()) | Err(RecvTimeoutError::Disconnected) => return,
+            Err(RecvTimeoutError::Timeout) => {}
+        }
+        let now = unsafe { GetTickCount() };
+        let gap = tick_diff(now, prev_tick);
+        prev_tick = now;
+
+        let session = session_locked();
+        let just_unlocked = locked == Some(true) && session == Some(false);
+        locked = session;
+
+        let reason = if hook_dead(now, last_input_tick(), LAST_HOOK_TICK.load(Ordering::Relaxed)) {
+            Some("回调超时被系统摘除")
+        } else if gap > SUSPEND_GAP_MS {
+            Some("休眠唤醒")
+        } else if just_unlocked {
+            Some("会话解锁")
+        } else {
+            None
+        };
+
+        let Some(reason) = reason else {
+            streak = 0;
+            continue;
+        };
+        streak = streak.saturating_add(1);
+        if !request_reinstall() {
+            return; // 钩子线程没了，看门狗没有意义
+        }
+        // 自愈是「无声兜底」（用户此刻没有动作可做），只在 stderr 留痕 + 累加计数，
+        // 不进消息中心。
+        eprintln!(
+            "kada-hook: 看门狗重建输入钩子（{reason}）{}",
+            if streak > 1 { format!("，连续第 {streak} 次") } else { String::new() }
+        );
+    }
+}
+
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // 心跳：钩子被系统摘除后就再也不会被调用，看门狗靠这个时间戳判断它是否还活着。
+    // `GetTickCount` 只读内核共享页，不算「回调里的耗时操作」。
+    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         // 注入事件一律放行，防回环。
@@ -209,6 +466,9 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
 }
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // 心跳：鼠标钩子对**所有**鼠标事件都会被调用（不止我们翻译的中键/侧键），所以
+    // 只要用户在动鼠标，这里就能证明钩子还活着。
+    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         // 注入事件一律放行，防回环。
@@ -495,8 +755,10 @@ mod tests {
     use kada_core::key_name;
     use std::sync::Arc;
 
-    /// 占用全局 [`HANDLER`] 的用例必须串行——cargo test 默认多线程并行，两个用例同时
-    /// 换 HANDLER 会互相打断。中毒（上一个用例 panic）也继续跑，别让一个失败连带整片红。
+    /// 动全局状态的用例必须串行——cargo test 默认多线程并行，两个用例同时改
+    /// [`HANDLER`] / [`SWALLOWED`] / [`HELD_KEYS`] / [`REPLACED_DOWN`] 会互相打断
+    /// （尤其「复位运行时状态」的那条会把别人正依赖的状态清掉）。中毒（上一个用例
+    /// panic）也继续跑，别让一个失败连带整片红。
     static HANDLER_LOCK: Mutex<()> = Mutex::new(());
 
     fn lock_handler() -> std::sync::MutexGuard<'static, ()> {
@@ -594,6 +856,7 @@ mod tests {
 
     #[test]
     fn auto_repeat_requires_key_still_held() {
+        let _g = lock_handler();
         // 同键连打两次（中间有抬起）不是自动重复：热串触发词 `addr` 的双写 d、双击/三击
         // 改键都依赖第二击被当成独立按下，否则热串缓冲缺字（不触发扩展）、连击不计击数。
         assert!(!detect_repeat(Key::D), "首次按下不是重复");
@@ -612,6 +875,7 @@ mod tests {
 
     #[test]
     fn modifier_and_toggle_keys_never_repeat_after_release() {
+        let _g = lock_handler();
         // 双击唤醒（双击 Alt）依赖两次独立 down：抬起后再按不能被判成重复。
         for k in [Key::Alt, Key::Control, Key::Shift, Key::Meta, Key::CapsLock, Key::NumLock] {
             assert!(!detect_repeat(k), "{} 首次按下不是重复", key_name(k));
@@ -619,5 +883,88 @@ mod tests {
             assert!(!detect_repeat(k), "{} 抬起后再按不是重复", key_name(k));
             note_key_up(k);
         }
+    }
+
+    #[test]
+    fn watchdog_spots_hook_that_stopped_receiving_events() {
+        // 系统刚有输入，而钩子最后一次事件还停在同样久之前 → 钩子已被摘除。
+        assert!(hook_dead(10_000, 10_000, 7_000), "系统有输入而钩子漏了 → 失效");
+        // 正常时序：输入到了，钩子回调也跟着跑了（落差远小于宽限）。
+        assert!(!hook_dead(10_000, 9_900, 9_950), "钩子跟得上就不能重装");
+        // 机器闲置：没有新输入，钩子没有事件是正常的——两个时间戳一起停在原处。
+        assert!(!hook_dead(60_000, 30_000, 30_000), "闲置不是失效");
+        // 输入刚到、钩子回调还没跑完（落差在宽限内）→ 不能判失效。
+        assert!(!hook_dead(10_000, 10_000, 9_200), "回调延迟不算失效");
+        // 钩子事件比系统记录的最后输入还新（我们自己的注入同样会刷新心跳）→ 活的。
+        assert!(!hook_dead(10_000, 9_900, 10_000), "心跳比输入新就是活的");
+    }
+
+    #[test]
+    fn tick_diff_survives_32bit_wrap() {
+        // GetTickCount 约 49.7 天归零：跨回绕的差值必须仍是对的，否则看门狗会在回绕点
+        // 前后连续误判（误判本身无害，但会连着重装、把按键吃掉）。
+        let before_wrap = u32::MAX - 4_000;
+        assert_eq!(tick_diff(1_000, before_wrap), 5_001);
+        assert_eq!(tick_diff(before_wrap, 1_000), -5_001);
+        assert!(hook_dead(1_000, 1_000, before_wrap), "跨回绕也要判得出失效");
+    }
+
+    #[test]
+    fn reset_releases_stale_state() {
+        let _g = lock_handler();
+        // 模拟「钩子被摘除时正按着 / 正吞着键」留下的脏状态。
+        SWALLOWED.lock().unwrap().insert(Key::K);
+        HELD_KEYS.lock().unwrap().insert(Key::K);
+        reset_runtime_state();
+        assert!(
+            SWALLOWED.lock().unwrap().is_empty(),
+            "被吞的键必须清空，否则它永远等不到抬起"
+        );
+        assert!(
+            HELD_KEYS.lock().unwrap().is_empty(),
+            "按住集合必须清空，否则该键的后续按下全被判成自动重复（键变哑）"
+        );
+        assert!(REPLACED_DOWN.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn reset_hands_out_replaced_keys_for_release() {
+        let _g = lock_handler();
+        // 重装前必须把「已注入并按着」的目标键取出来补一个 up：不补的话目标键在系统
+        // 看来一直按着（常是 Ctrl 这类修饰键）。这里只验证登记表被取走并清空——真的
+        // 注入走 simulate，单测不敲真键盘。
+        REPLACED_DOWN.lock().unwrap().insert(Key::K, Key::Control);
+        assert_eq!(take_replaced_down(), vec![Key::Control]);
+        assert!(REPLACED_DOWN.lock().unwrap().is_empty(), "取走后要清空，避免重复释放");
+    }
+
+    #[test]
+    #[ignore = "诊断用：需人工在有交互会话的机器上跑（锁屏与解锁各跑一次对比）"]
+    fn probe_wts_session_state() {
+        // 看门狗的「会话解锁」触发路径唯一无法自动化的部分：锁屏/解锁是一次性的人工
+        // 状态，测试里造不出来。手动验证方式：解锁状态跑一次应打印 `locked=Some(false)`，
+        // 锁屏（Win+L）后跑一次应打印 `locked=Some(true)`；查询失败打印 len=0。
+        let mut buf = PWSTR::null();
+        let mut len: u32 = 0;
+        let query = unsafe {
+            WTSQuerySessionInformationW(
+                Some(WTS_CURRENT_SERVER_HANDLE),
+                WTS_CURRENT_SESSION,
+                WTSSessionInfoEx,
+                &mut buf,
+                &mut len,
+            )
+        };
+        assert!(query.is_ok(), "WTSInfoEx 查询失败：{query:?}");
+        assert!(!buf.is_null(), "查询成功但缓冲区为空");
+        let info = unsafe { &*buf.0.cast::<WTSINFOEXW>() };
+        println!(
+            "WTSInfoEx: len={len} Level={} SessionState={:?} SessionFlags={} → locked={:?}",
+            info.Level,
+            unsafe { info.Data.WTSInfoExLevel1.SessionState },
+            unsafe { info.Data.WTSInfoExLevel1.SessionFlags },
+            session_locked(),
+        );
+        unsafe { WTSFreeMemory(buf.0 as *mut c_void) };
     }
 }
