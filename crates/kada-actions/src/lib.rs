@@ -149,7 +149,12 @@ fn run_chain(
         match run_action(action, ctx, vars, last_copied) {
             Ok(Some(result)) => commit(result),
             Ok(None) => {}
-            Err(e) => eprintln!("动作执行失败: {e}"),
+            Err(e) => {
+                // 失败同样进消息中心：此前只写 stderr 日志，而发布版是没有控制台的 GUI 程序，
+                // 用户看到的现象就是「按了没反应」——注入失败、路径不存在、程序起不来全都查不到原因。
+                eprintln!("动作执行失败: {e}");
+                commit(failure_result(action, ctx, vars, &e));
+            }
         }
     }
 }
@@ -169,6 +174,210 @@ fn abort_result(ctx: &Ctx) -> CommandResult {
         exit_code: None,
         show_output: false,
         time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
+/// 动作失败时进消息中心的一条记录。
+///
+/// 展示上用「哪种动作失败」当标签（tab 标题是「标签 · 名称」，一眼能看出坏在哪一步），
+/// 「命令」一栏放动作摘要（用户写的说明优先，其次是动作本体渲染，如 `删除 D:\x.txt`）——
+/// 同一个快捷键挂了多个同类动作时，只给类型是分不清哪一条炸了的。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> CommandResult {
+    CommandResult {
+        kind: "error".into(),
+        label: action_label(action).into(),
+        command: action_summary(action, vars),
+        trigger: ctx.t.trigger.into(),
+        name: ctx.t.name.into(),
+        stdout: String::new(),
+        stderr: err.to_string(),
+        exit_code: None,
+        show_output: action_show_output(action),
+        time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+    }
+}
+
+/// 失败记录的展示标签（消息中心 tab 上「标签 · 名称」的左半）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn action_label(action: &Action) -> &'static str {
+    match action {
+        Action::Text { mode: TextMode::Input, .. } => "文本注入失败",
+        Action::Text { .. } => "大小写转换失败",
+        Action::Keys { .. } => "按键注入失败",
+        Action::PauseMs { .. } => "暂停失败",
+        #[cfg(feature = "automation")]
+        Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
+        #[cfg(feature = "automation")]
+        Action::Launch { .. } | Action::App { operation: AppOperation::Launch { .. }, .. } => {
+            "启动程序失败"
+        }
+        #[cfg(feature = "automation")]
+        Action::OpenFolder { .. }
+        | Action::Os { operation: OsOperation::OpenFolder { .. }, .. } => "打开目录失败",
+        #[cfg(feature = "automation")]
+        Action::CloseProgram { .. } | Action::App { operation: AppOperation::Close { .. }, .. } => {
+            "关闭程序失败"
+        }
+        #[cfg(feature = "automation")]
+        Action::App { operation: AppOperation::Restart { .. }, .. } => "重启程序失败",
+        #[cfg(feature = "automation")]
+        Action::App { operation: AppOperation::Status { .. }, .. } => "查询程序失败",
+        #[cfg(feature = "automation")]
+        Action::Script { .. } => "脚本失败",
+        #[cfg(feature = "automation")]
+        Action::OpenUrl { .. } => "打开网址失败",
+        #[cfg(feature = "automation")]
+        Action::Os { .. } => "文件操作失败",
+        #[cfg(feature = "automation")]
+        Action::If { .. } => "条件判断失败",
+    }
+}
+
+/// 失败记录是否弹窗：沿用动作自己的 `show_output`——用户给命令 / 脚本开了「显示输出」，
+/// 那它连启动都没成功这件事同样该弹出来；其余动作静默记入消息中心 + 未读红点。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn action_show_output(action: &Action) -> bool {
+    match action {
+        #[cfg(feature = "automation")]
+        Action::Command { show_output, .. }
+        | Action::Cmd { show_output, .. }
+        | Action::Powershell { show_output, .. }
+        | Action::Script { show_output, .. } => *show_output,
+        _ => false,
+    }
+}
+
+/// 「命令」一栏的内容：用户写的动作说明优先（它才是用户认得的那句话），
+/// 没有说明则渲染动作本体摘要。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn action_summary(action: &Action, vars: &Vars) -> String {
+    let body = action_body(action, vars);
+    match action_description(action).map(str::trim).filter(|d| !d.is_empty()) {
+        Some(d) => format!("{d}（{body}）"),
+        None => body,
+    }
+}
+
+/// 动作本体摘要（变量已按本次触发的取值代入，展示的是「实际做了什么」）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn action_body(action: &Action, vars: &Vars) -> String {
+    let sub = |s: &str| substitute_vars(s, vars);
+    match action {
+        Action::Text { text, mode, .. } => match mode {
+            TextMode::Input => format!("输入文本 {}", preview(&sub(text))),
+            TextMode::ToUpper => "把选中/剪贴板文本转为大写".into(),
+            TextMode::ToLower => "把选中/剪贴板文本转为小写".into(),
+        },
+        Action::Keys { keys, .. } => format!("按下 {}", keys.join("+")),
+        Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
+        #[cfg(feature = "automation")]
+        Action::Command { command, .. }
+        | Action::Cmd { command, .. }
+        | Action::Powershell { command, .. } => preview(&sub(command)),
+        #[cfg(feature = "automation")]
+        Action::Launch { program, args, .. } => {
+            format!("启动程序 {}", join_args(&sub(program), args, vars))
+        }
+        #[cfg(feature = "automation")]
+        Action::OpenFolder { path, .. } => format!("打开目录 {}", sub(path)),
+        #[cfg(feature = "automation")]
+        Action::CloseProgram { program, .. } => format!("关闭程序 {}", sub(program)),
+        #[cfg(feature = "automation")]
+        Action::Os { operation, .. } => os_body(operation, vars),
+        #[cfg(feature = "automation")]
+        Action::App { operation, .. } => app_body(operation, vars),
+        #[cfg(feature = "automation")]
+        Action::OpenUrl { url, .. } => format!("打开网址 {}", sub(url)),
+        #[cfg(feature = "automation")]
+        Action::Script { path, interpreter, .. } => match interpreter {
+            Some(i) => format!("运行 {} {}", sub(i), sub(path)),
+            None => format!("运行脚本 {}", sub(path)),
+        },
+        #[cfg(feature = "automation")]
+        Action::If { .. } => "条件判断".into(),
+    }
+}
+
+#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+fn os_body(op: &OsOperation, vars: &Vars) -> String {
+    let sub = |s: &str| substitute_vars(s, vars);
+    match op {
+        OsOperation::Copy { source, dest } => format!("复制 {} → {}", sub(source), sub(dest)),
+        OsOperation::Cut { source, dest } => format!("剪切 {} → {}", sub(source), sub(dest)),
+        OsOperation::Paste { dest } => format!("粘贴到 {}", sub(dest)),
+        OsOperation::Delete { path } => format!("删除 {}", sub(path)),
+        OsOperation::NewFile { path } => format!("新建文件 {}", sub(path)),
+        OsOperation::NewFolder { path } => format!("新建目录 {}", sub(path)),
+        OsOperation::OpenFolder { path } => format!("打开目录 {}", sub(path)),
+        OsOperation::Zip { source, dest } => format!("压缩 {} → {}", sub(source), sub(dest)),
+        OsOperation::Unzip { source, dest } => format!("解压 {} → {}", sub(source), sub(dest)),
+        OsOperation::GetFileProps { path, var } => {
+            format!("读取 {} 的属性写入变量 {var}", sub(path))
+        }
+    }
+}
+
+#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+fn app_body(op: &AppOperation, vars: &Vars) -> String {
+    let sub = |s: &str| substitute_vars(s, vars);
+    match op {
+        AppOperation::Launch { program, args } => {
+            format!("启动程序 {}", join_args(&sub(program), args, vars))
+        }
+        AppOperation::Close { program } => format!("关闭程序 {}", sub(program)),
+        AppOperation::Status { program, .. } => format!("查询程序 {} 是否在运行", sub(program)),
+        AppOperation::Restart { program, args } => {
+            format!("重启程序 {}", join_args(&sub(program), args, vars))
+        }
+    }
+}
+
+/// 程序名 + 参数渲染成一行（参数同样代入变量）。
+#[cfg(all(any(target_os = "windows", target_os = "linux"), feature = "automation"))]
+fn join_args(program: &str, args: &[String], vars: &Vars) -> String {
+    let args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
+    if args.is_empty() {
+        program.to_string()
+    } else {
+        format!("{program} {}", args.join(" "))
+    }
+}
+
+/// 取动作上用户写的说明（`Action` 各变体都带可选 `description`）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn action_description(action: &Action) -> Option<&str> {
+    match action {
+        Action::Text { description, .. }
+        | Action::Keys { description, .. }
+        | Action::PauseMs { description, .. } => description.as_deref(),
+        #[cfg(feature = "automation")]
+        Action::Command { description, .. }
+        | Action::Cmd { description, .. }
+        | Action::Powershell { description, .. }
+        | Action::Launch { description, .. }
+        | Action::OpenFolder { description, .. }
+        | Action::CloseProgram { description, .. }
+        | Action::Os { description, .. }
+        | Action::App { description, .. }
+        | Action::OpenUrl { description, .. }
+        | Action::Script { description, .. }
+        | Action::If { description, .. } => description.as_deref(),
+    }
+}
+
+/// 摘要里字段长度的上限：这一栏是给用户认「哪一步」的短上下文，
+/// 整段替换文本 / 长命令原样铺开会把消息卡片撑得没法看。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+const PREVIEW_MAX_CHARS: usize = 160;
+
+/// 压成单行并截断（换行在卡片里是多行，摘要只需要一眼能认出来）。
+#[cfg(any(target_os = "windows", target_os = "linux"))]
+fn preview(s: &str) -> String {
+    let one_line: String = s.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    match one_line.char_indices().nth(PREVIEW_MAX_CHARS) {
+        Some((idx, _)) => format!("{}…", &one_line[..idx]),
+        None => one_line,
     }
 }
 
@@ -1119,5 +1328,134 @@ mod tests {
             );
         }
         assert!(results.is_empty(), "新一轮执行不该被上一次的中止影响");
+    }
+
+    /// 跑一串动作并收集提交的结果（失败上报用例共用；调用方负责先拿 [`abort::test_lock`]）。
+    fn run_collect(actions: &[Action], vars: &mut Vars) -> Vec<CommandResult> {
+        let mut results: Vec<CommandResult> = Vec::new();
+        {
+            let mut commit = |r: CommandResult| results.push(r);
+            let mut last_copied = None;
+            run_actions(
+                &mut commit,
+                actions,
+                trigger_ctx(),
+                vars,
+                &mut last_copied,
+                &RunOptions::default(),
+            );
+        }
+        results
+    }
+
+    /// 一个必然失败的删除动作（路径不存在）。
+    fn failing_delete(description: Option<&str>) -> Action {
+        Action::Os {
+            operation: OsOperation::Delete { path: "D:\\kada_missing_dir\\nope.txt".into() },
+            description: description.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn failed_action_is_reported_with_type_and_summary() {
+        let _g = abort::test_lock();
+        let actions = vec![failing_delete(Some("清理临时文件"))];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+
+        assert_eq!(results.len(), 1, "失败必须产出一条记录（此前只有控制台日志，用户看不到）");
+        let r = &results[0];
+        assert_eq!(r.kind, "error");
+        assert_eq!(r.label, "文件操作失败");
+        assert_eq!(r.trigger, "Ctrl+Alt+T");
+        assert_eq!(r.name, "测试宏");
+        assert!(r.stderr.contains("不存在"), "失败原因要写进 stderr：{}", r.stderr);
+        assert_eq!(r.exit_code, None, "没跑起来的动作没有退出码");
+        assert!(!r.show_output, "没开「显示输出」的动作失败只记消息中心，不弹窗");
+        assert!(!r.time.is_empty());
+        assert!(r.command.contains("清理临时文件"), "用户写的说明要展示：{}", r.command);
+        assert!(r.command.contains("删除"), "还要看得出是哪一步：{}", r.command);
+    }
+
+    #[test]
+    fn failed_action_does_not_stop_remaining_actions() {
+        let _g = abort::test_lock();
+        let actions = vec![
+            Action::Keys { keys: vec!["NotAKey".into()], description: None },
+            failing_delete(None),
+        ];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+
+        assert_eq!(results.len(), 2, "一步失败不该吞掉后面的动作");
+        assert_eq!(results[0].label, "按键注入失败");
+        assert!(results[0].stderr.contains("NotAKey"), "要点出坏在哪个键名：{}", results[0].stderr);
+        assert!(results[0].command.contains("NotAKey"), "摘要要有键名：{}", results[0].command);
+        assert_eq!(results[1].label, "文件操作失败");
+    }
+
+    #[test]
+    fn failed_command_start_is_reported_and_honors_show_output() {
+        let _g = abort::test_lock();
+        // 指向一个不存在的脚本文件：进程根本起不来，走的是 `Err` 而不是「非零退出码」。
+        let missing =
+            std::env::temp_dir().join("kada_missing_script_never_exists").display().to_string();
+        let actions = vec![Action::Script {
+            path: missing,
+            interpreter: None,
+            show_output: true,
+            var: String::new(),
+            description: None,
+        }];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+
+        assert_eq!(results.len(), 1, "命令/脚本起不来同样要上报（此前只在控制台留一行）");
+        assert_eq!(results[0].label, "脚本失败");
+        assert!(results[0].stderr.contains("失败"), "错误原因进 stderr：{}", results[0].stderr);
+        assert!(results[0].show_output, "动作开了「显示输出」，连启动失败也该弹出来");
+    }
+
+    #[test]
+    fn failure_summary_substitutes_variables() {
+        let _g = abort::test_lock();
+        let missing = "D:\\kada_missing_dir\\nope.txt".to_string();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert(
+            "target".into(),
+            Value::Text(TextValue { text: missing.clone(), exit_code: None }),
+        );
+        let actions = vec![Action::Os {
+            operation: OsOperation::Delete { path: "{target}".into() },
+            description: None,
+        }];
+        let results = run_collect(&actions, &mut vars);
+
+        assert_eq!(results.len(), 1);
+        assert!(
+            results[0].command.contains("nope.txt"),
+            "摘要要展示本次实际生效的取值：{}",
+            results[0].command
+        );
+        assert!(
+            !results[0].command.contains("{target}"),
+            "占位符不该原样留在给用户看的摘要里：{}",
+            results[0].command
+        );
+    }
+
+    #[test]
+    fn long_failure_summary_is_truncated_to_one_line() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Text {
+            text: format!("第一行\n{}", "长".repeat(500)),
+            mode: TextMode::Input,
+            description: None,
+        }];
+        // 文本注入通常成功，这里只验摘要渲染本身：换行压平 + 截断。
+        let summary = super::action_summary(&actions[0], &BTreeMap::new());
+        assert!(!summary.contains('\n'), "摘要要压成单行：{summary}");
+        assert!(summary.contains('…'), "超长文本要截断：{summary}");
+        assert!(summary.chars().count() <= PREVIEW_MAX_CHARS + 8, "截断后不该还很长：{summary}");
     }
 }
