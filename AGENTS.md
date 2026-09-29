@@ -47,7 +47,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/update.rs             # 软件更新：启动静默检查/手动检查/下载安装状态机 + 进度节流，Tauri 无关部分可单测
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点/安装模式）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键（含动作流程图可视化编排）/改键/文本扩展/宏录制/消息中心/设置页
+  src/main.ts               # 配置界面：快捷键（含动作流程图可视化编排）/改键/文本扩展/宏录制/消息中心/设置页；编辑草稿与 cfg 隔离 + 未保存改动守卫
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（dev server 直开浏览器调试）
   src/style.css             # 深色 UI 样式
 .github/workflows/          # ci.yml（双平台构建+测试）；release.yml（打 v* tag 签名发版）
@@ -110,6 +110,6 @@ M0–M4 已完成：工程骨架 / 核心键模型 + Windows 钩子 / 配置模�
 
 ## 文档清单
 
-- `README.md`（简介）；`docs/README.md`（索引 + 阅读顺序）；`docs/架构设计.md`（分层 / 事件流 / 机制 / 天花板）；`docs/需求设计说明书.md`（功能需求 + 规划 §7 + 修订记录）；`docs/安装与更新-Windows.md`（安装 + 更新 / 密钥 / 发版）；`docs/变量提取与引用指南.md`（变量 Q&A）；`docs/竞品分析与优化规划.md`（竞品对比）；`docs/人工验证清单.md`（人工验收步骤 + 逐条验证状态：锁屏/唤醒/切窗复位、超时中止、失败上报、更新）；`docs/变更归档.md`（已实现变更 + 决策）。
+- `README.md`（简介）；`docs/README.md`（索引 + 阅读顺序）；`docs/架构设计.md`（分层 / 事件流 / 机制 / 天花板）；`docs/需求设计说明书.md`（功能需求 + 规划 §7 + 修订记录）；`docs/安装与更新-Windows.md`（安装 + 更新 / 密钥 / 发版）；`docs/变量提取与引用指南.md`（变量 Q&A）；`docs/竞品分析与优化规划.md`（竞品对比）；`docs/人工验证清单.md`（人工验收步骤 + 逐条验证状态：锁屏/唤醒/切窗复位、超时中止、失败上报、未保存守卫、更新）；`docs/变更归档.md`（已实现变更 + 决策）。
 - **落点分工**：规则/约定/命名 → 本文件；功能需求与规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`（新归档追加到那里，不写回本文件）。代码事实以源码为准，先 `grep` 再动手。
 - 本机已装：Rust toolchain、Node、Tauri CLI（`@tauri-apps/cli`）。前端依赖 `npm --prefix ui ci`；构建在 Windows 下进行。
