@@ -1358,6 +1358,104 @@ pub fn match_expansion<'a>(
 /// 永不执行、线程也收不回来（见规划 7.2-⑦）。
 pub const DEFAULT_ACTION_TIMEOUT_MS: u64 = 30_000;
 
+/// 文本注入方式（[`Settings::text_inject_mode`]，见规划 7.3-㉒）。
+///
+/// 默认「剪贴板粘贴」：整段一次到位、中文最稳，但会短暂占用剪贴板，且被吞粘贴的
+/// 目标程序（多数游戏 / 部分终端）直接无视；「逐字直发」把每个字符合成键盘事件
+/// （Windows `KEYEVENTF_UNICODE` / macOS unicode string 事件），不经过剪贴板，
+/// 专治吞粘贴的目标程序，代价是长文本逐字送、极快的流个别程序可能丢字。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TextInjectMode {
+    /// 剪贴板 + 粘贴组合键（默认）。
+    #[default]
+    Clipboard,
+    /// 字符事件直发（`KEYEVENTF_UNICODE` / CGEvent unicode string）。
+    Unicode,
+}
+
+// 手工实现 Deserialize 而非 derive：手改配置把值写错（如笔误 "unicod"）时回落默认的
+// 剪贴板模式，而不是让整份配置解析失败——加载路径对解析失败是「留档 + 告警」的硬处理，
+// 为一个可忽略的字段触发它不值当。
+impl<'de> Deserialize<'de> for TextInjectMode {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(match s.as_str() {
+            "unicode" => TextInjectMode::Unicode,
+            _ => TextInjectMode::Clipboard,
+        })
+    }
+}
+
+/// 快捷键提示框（常显浮窗，见规划 7.3-㊳）的持久化状态。
+///
+/// 单独一个结构而不是往 `Settings` 里再摊几个字段：这一组值同生共死（可见性 + 位置 + 外观），
+/// 摊平了写一处就得连改好几个字段，读配置的人还得自己把它们拼回去。
+///
+/// 量纲刻意都是**整数**：`Config` 是全量 `Eq` 的类型，浮点会让它丢掉 `Eq`；百分比/逻辑像素
+/// 也正好是人类可读、可手改 JSON 的值。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HintsWindow {
+    /// 是否显示这份提示框。关掉（窗口上的 × / 设置页取消勾选 / 托盘菜单）只置 `false`，
+    /// 位置与外观都留着，下次打开还在原地。
+    #[serde(default)]
+    pub visible: bool,
+    /// 上次拖到的位置（逻辑像素，窗口左上角）；`None` = 还没拖过，首次显示落到工作区右侧。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub x: Option<i32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub y: Option<i32>,
+    /// 字号缩放百分比（`100` = 基准），滚轮调整。
+    #[serde(default = "default_hints_scale")]
+    pub scale: u16,
+    /// 不透明度百分比（`100` = 完全不透明），Ctrl + 滚轮调整。
+    #[serde(default = "default_hints_opacity")]
+    pub opacity: u8,
+}
+
+impl HintsWindow {
+    /// 字号缩放的上下限（百分比）：下限保证还看得清，上限避免一个快捷键占满屏。
+    pub const SCALE_RANGE: (u16, u16) = (60, 220);
+    /// 不透明度的上下限（百分比）：下限留一点可见性（全透明等于关不掉又看不见）。
+    pub const OPACITY_RANGE: (u8, u8) = (20, 100);
+    /// 默认字号缩放（百分比）。
+    pub const DEFAULT_SCALE: u16 = 100;
+    /// 默认不透明度（百分比）：留一点点透，压在上面不挡视线。
+    pub const DEFAULT_OPACITY: u8 = 92;
+
+    /// 归一化：手改 JSON / 从别的机器同步过来的越界值在这里钳住（[`Config::migrate`] 调用）。
+    ///
+    /// 越界值不钳的后果很具体：`scale: 0` 会把提示框缩成看不见的一条，而用户明明勾着
+    /// 「显示提示框」——想关掉它有的是正经开关，不该靠非法值达成。
+    pub fn normalized(mut self) -> Self {
+        self.scale = self.scale.clamp(Self::SCALE_RANGE.0, Self::SCALE_RANGE.1);
+        self.opacity = self.opacity.clamp(Self::OPACITY_RANGE.0, Self::OPACITY_RANGE.1);
+        self
+    }
+}
+
+impl Default for HintsWindow {
+    fn default() -> Self {
+        Self {
+            visible: false,
+            x: None,
+            y: None,
+            scale: Self::DEFAULT_SCALE,
+            opacity: Self::DEFAULT_OPACITY,
+        }
+    }
+}
+
+/// `HintsWindow::scale` 的缺省值（供 serde 与 [`HintsWindow::default`] 共用）。
+pub fn default_hints_scale() -> u16 {
+    HintsWindow::DEFAULT_SCALE
+}
+
+/// `HintsWindow::opacity` 的缺省值（供 serde 与 [`HintsWindow::default`] 共用）。
+pub fn default_hints_opacity() -> u8 {
+    HintsWindow::DEFAULT_OPACITY
+}
+
 /// 应用设置（配置的一部分，随 JSON 一起落盘/跨平台同步）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -1399,6 +1497,18 @@ pub struct Settings {
     /// 静默拿不到这个指示。
     #[serde(default = "default_true")]
     pub show_status_hud: bool,
+    /// 文本注入方式：`clipboard`（默认）剪贴板 + 粘贴 / `unicode` 逐字直发字符事件。
+    ///
+    /// 缺字段取剪贴板（[`TextInjectMode::Clipboard`]）：默认方案对中文最稳；只有目标程序
+    /// 吞粘贴（游戏 / 终端，规划 7.3-㉒ 的场景）才需要切到直发，故不做「缺字段也开」。
+    #[serde(default)]
+    pub text_inject_mode: TextInjectMode,
+    /// 快捷键提示框（常显速查浮窗）的可见性 / 位置 / 外观，见 [`HintsWindow`]。
+    ///
+    /// 缺字段取 [`HintsWindow::default`]（**默认不显示**）：它是一块常挂屏幕上的浮层，
+    /// 和一个只在生效时才出现的状态指示不同——不请自来地占着屏幕比「找不到入口」更烦人。
+    #[serde(default)]
+    pub hints: HintsWindow,
 }
 
 /// `show_status_hud` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1431,6 +1541,8 @@ impl Default for Settings {
             sequence_timeout_ms: DEFAULT_SEQUENCE_TIMEOUT_MS,
             chord_timeout_ms: DEFAULT_CHORD_TIMEOUT_MS,
             show_status_hud: true,
+            text_inject_mode: TextInjectMode::Clipboard,
+            hints: HintsWindow::default(),
         }
     }
 }
@@ -1470,6 +1582,40 @@ pub struct Conflict {
     /// 涉及的主要快捷键名称（无名称为空字符串），供 UI「消息→冲突」页标识是哪个快捷键。
     #[serde(default)]
     pub name: String,
+}
+
+/// 平台输入能力声明（冲突检测据此标注「当前平台用不了」的条目，见规划 7.3-⑲）。
+///
+/// 同一份配置可能在多平台间同步，而各平台能力不同：Linux 取不到前台窗口（前台类条件
+/// 恒不成立）、macOS 绑不了媒体键与 F21~F24、鼠标键在部分平台监听/注入受限。这类
+/// 「配置本身合法、只是当前平台不支持」按 [`Severity::Warn`] 提示，**不阻止保存**——
+/// 同一份配置在别的平台可能是完全正常的。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlatformCaps {
+    /// 监听不到的键：不能作触发键（组合/序列/和弦）与改键来源，配置了也不会触发。
+    pub listen_unsupported: BTreeSet<Key>,
+    /// 注入不了的键：不能作改键目标与 `Keys` 动作成员，执行到会静默无输出。
+    pub inject_unsupported: BTreeSet<Key>,
+    /// 「前台应用 / 窗口标题」类条件是否可用（不可用时恒不成立，`If` 恒走 `otherwise`）。
+    pub frontmost_conditions: bool,
+}
+
+impl Default for PlatformCaps {
+    /// 全支持（Windows 的口径；Linux 在 7.3-㉔ 鼠标钩子落地后也是）。
+    fn default() -> Self {
+        Self {
+            listen_unsupported: BTreeSet::new(),
+            inject_unsupported: BTreeSet::new(),
+            frontmost_conditions: true,
+        }
+    }
+}
+
+impl PlatformCaps {
+    /// 是否全支持：全支持时平台扫描整段跳过（零误报零开销）。
+    fn is_full(&self) -> bool {
+        self.listen_unsupported.is_empty() && self.inject_unsupported.is_empty() && self.frontmost_conditions
+    }
 }
 
 /// 和弦成员的指纹：`(成员键, 修饰要求)` 表（[`chord_signature`] 排序后成表，无序可比）。
@@ -1526,8 +1672,9 @@ fn chord_groups(cfg: &Config) -> Vec<(Option<String>, Vec<ChordEntry>)> {
 /// - 硬冲突（[`Severity::Error`]，应阻止保存）：重复触发键（组合/序列/和弦）、
 ///   序列 leader 遮蔽单组合、重复改键来源、改键来源与快捷键主键相同（改键优先，快捷键将失效）。
 /// - 软冲突（[`Severity::Warn`]，仅提示）：触发键超集重叠（更宽松的组合会遮蔽更具体的组合）；
-///   和弦之间「一个的要求被另一个全覆盖」（更宽松的那个会先凑齐 → 更严的永远轮不到）。
-pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
+///   和弦之间「一个的要求被另一个全覆盖」（更宽松的那个会先凑齐 → 更严的永远轮不到）；
+///   平台能力缺失（[`PlatformCaps`]：监听不到的触发键、注入不了的目标、恒不成立的前台条件）。
+pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     use std::collections::HashMap;
 
     let mut out: Vec<Conflict> = Vec::new();
@@ -1818,7 +1965,181 @@ pub fn detect_conflicts(cfg: &Config) -> Vec<Conflict> {
         }
     }
 
+    // 6) 平台能力缺失：本平台监听不到的触发键/改键来源、注入不了的目标键、恒不成立的
+    //    前台条件（7.3-⑲）。跨平台同步的配置在能力短板的平台上会「静默失效」，这些条目
+    //    本身合法，只报 Warn 提示「在你这台机器上不会生效」。
+    out.extend(platform_conflicts(cfg, caps));
+
     out
+}
+
+/// 平台能力缺失扫描（[`detect_conflicts`] 的第 6 段）。全支持（[`PlatformCaps::is_full`]）
+/// 时直接返回空，不影响已有检测。
+fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
+    let mut out: Vec<Conflict> = Vec::new();
+    if caps.is_full() {
+        return out;
+    }
+    let name_of = |s: &ShortcutItem| s.name.clone().unwrap_or_default();
+    let key_list = |keys: &BTreeSet<Key>| {
+        keys.iter().map(|k| key_name(*k)).collect::<Vec<_>>().join("、")
+    };
+
+    for s in &cfg.shortcuts {
+        if !s.enabled {
+            continue;
+        }
+        // 触发键（组合/序列/和弦）里监听不到的键。
+        for t in &s.triggers {
+            let mut bad: BTreeSet<Key> = BTreeSet::new();
+            match Trigger::parse(t) {
+                Ok(Trigger::Combo(sc)) => collect_unlistenable(&sc, caps, &mut bad),
+                Ok(Trigger::Sequence(steps)) => {
+                    for sc in &steps {
+                        collect_unlistenable(sc, caps, &mut bad);
+                    }
+                }
+                Ok(Trigger::Chord(members)) => {
+                    for sc in &members {
+                        collect_unlistenable(sc, caps, &mut bad);
+                    }
+                }
+                Err(_) => {}
+            }
+            if !bad.is_empty() {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    message: format!(
+                        "触发键「{t}」要用到{}，当前平台监听不到这个键，这条触发不会生效",
+                        key_list(&bad)
+                    ),
+                    name: name_of(s),
+                });
+            }
+        }
+        // 动作树：注入不了的键、恒不成立的前台条件（`If` 可嵌套，递归扫）。
+        let mut bad_inject: BTreeSet<Key> = BTreeSet::new();
+        let mut bad_frontmost = false;
+        scan_actions_platform(&s.actions, caps, &mut bad_inject, &mut bad_frontmost);
+        if !bad_inject.is_empty() {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: format!(
+                    "动作要用到{}，当前平台注入不了这个键，执行到这一步会没有输出",
+                    key_list(&bad_inject)
+                ),
+                name: name_of(s),
+            });
+        }
+        if bad_frontmost {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: "动作里的「前台应用 / 窗口标题」条件在当前平台取不到前台窗口，恒不成立（恒走「否则」分支）".into(),
+                name: name_of(s),
+            });
+        }
+    }
+
+    for r in &cfg.remaps {
+        if !r.enabled {
+            continue;
+        }
+        if let Ok(k) = r.from.parse::<Key>() {
+            if caps.listen_unsupported.contains(&k) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    message: format!(
+                        "改键来源「{}」当前平台监听不到，这条改键不会生效",
+                        r.from
+                    ),
+                    name: String::new(),
+                });
+            }
+        }
+        // 各形态的输出目标（to/tap/hold/oneshot/sticky/tap2/tap3）都是要注入的键。
+        let mut bad: BTreeSet<Key> = BTreeSet::new();
+        let fields = [
+            r.to.as_str(),
+            r.tap.as_deref().unwrap_or(""),
+            r.hold.as_deref().unwrap_or(""),
+            r.oneshot.as_deref().unwrap_or(""),
+            r.sticky.as_deref().unwrap_or(""),
+            r.tap2.as_deref().unwrap_or(""),
+            r.tap3.as_deref().unwrap_or(""),
+        ];
+        for field in fields {
+            if let Ok(k) = field.trim().parse::<Key>() {
+                if caps.inject_unsupported.contains(&k) {
+                    bad.insert(k);
+                }
+            }
+        }
+        if !bad.is_empty() {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: format!(
+                    "改键「{} → {}」的目标键当前平台注入不了，触发后没有输出",
+                    r.from,
+                    key_list(&bad)
+                ),
+                name: String::new(),
+            });
+        }
+    }
+    out
+}
+
+/// 一个 [`Shortcut`]（组合键）用到的全部键：主键 + 修饰键。
+fn shortcut_keys(sc: &Shortcut) -> impl Iterator<Item = Key> + '_ {
+    std::iter::once(sc.key).chain(sc.mods.iter().map(|m| modifier_key(*m)))
+}
+
+/// 把组合键里监听不到的键收进 `bad`。
+fn collect_unlistenable(sc: &Shortcut, caps: &PlatformCaps, bad: &mut BTreeSet<Key>) {
+    for k in shortcut_keys(sc) {
+        if caps.listen_unsupported.contains(&k) {
+            bad.insert(k);
+        }
+    }
+}
+
+/// 递归扫描动作树，收集注入不了的键（`Keys` 成员）与恒不成立的前台条件（`If` 条件）。
+/// 基础版没有 `If`/`Condition`，`bad_frontmost` 无从写入。
+#[cfg_attr(not(feature = "automation"), allow(unused_variables))]
+fn scan_actions_platform(
+    actions: &[Action],
+    caps: &PlatformCaps,
+    bad_inject: &mut BTreeSet<Key>,
+    bad_frontmost: &mut bool,
+) {
+    for a in actions {
+        match a {
+            Action::Keys { keys, .. } => {
+                for k in keys {
+                    if let Ok(key) = k.trim().parse::<Key>() {
+                        if caps.inject_unsupported.contains(&key) {
+                            bad_inject.insert(key);
+                        }
+                    }
+                }
+            }
+            #[cfg(feature = "automation")]
+            Action::If { condition, then, otherwise, .. } => {
+                if matches!(
+                    condition,
+                    Condition::FrontmostApp { .. }
+                        | Condition::NotFrontmostApp { .. }
+                        | Condition::WindowTitleContains { .. }
+                ) && !caps.frontmost_conditions
+                {
+                    *bad_frontmost = true;
+                }
+                scan_actions_platform(then, caps, bad_inject, bad_frontmost);
+                scan_actions_platform(otherwise, caps, bad_inject, bad_frontmost);
+            }
+            _ => {}
+        }
+    }
 }
 
 /// 常见系统快捷键（Windows，中性键名：`Meta` = Win / ⌘ 键）+ 用途说明。
@@ -2023,7 +2344,7 @@ pub fn migrate_action(a: Action) -> Action {
 }
 
 impl Config {
-    /// 原地归一化：把旧版动作迁移为 `App` 动作。
+    /// 原地归一化：把旧版动作迁移为 `App` 动作，并把设置的越界值钳回合法区间。
     pub fn migrate(&mut self) {
         for s in &mut self.shortcuts {
             s.actions = std::mem::take(&mut s.actions)
@@ -2031,6 +2352,7 @@ impl Config {
                 .map(migrate_action)
                 .collect();
         }
+        self.settings.hints = std::mem::take(&mut self.settings.hints).normalized();
     }
 }
 
@@ -2461,14 +2783,14 @@ mod conflict_tests {
     }
 
     fn errors(cfg: &Config) -> Vec<Conflict> {
-        detect_conflicts(cfg)
+        detect_conflicts(cfg, &PlatformCaps::default())
             .into_iter()
             .filter(|c| c.severity == Severity::Error)
             .collect()
     }
 
     fn warns(cfg: &Config) -> Vec<Conflict> {
-        detect_conflicts(cfg)
+        detect_conflicts(cfg, &PlatformCaps::default())
             .into_iter()
             .filter(|c| c.severity == Severity::Warn)
             .collect()
@@ -2519,7 +2841,7 @@ mod conflict_tests {
             remaps: vec![remap("CapsLock", "Ctrl")],
             ..Default::default()
         };
-        assert!(detect_conflicts(&cfg).is_empty());
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 
     #[test]
@@ -2670,6 +2992,25 @@ mod conflict_tests {
         lo.layer = Some("L2".into());
         let cfg = Config { shortcuts: vec![hi, lo], ..Default::default() };
         assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
+    }
+}
+
+#[cfg(test)]
+mod settings_text_mode_tests {
+    use super::*;
+
+    #[test]
+    fn text_inject_mode_parses_tolerantly() {
+        let parse = |s: &str| serde_json::from_str::<Settings>(s).unwrap().text_inject_mode;
+        assert_eq!(parse(r#"{"text_inject_mode":"unicode"}"#), TextInjectMode::Unicode);
+        assert_eq!(parse(r#"{"text_inject_mode":"clipboard"}"#), TextInjectMode::Clipboard);
+        // 老配置缺字段 = 默认剪贴板（7.3-㉒ 之前一直只有这一种方式）。
+        assert_eq!(parse("{}"), TextInjectMode::Clipboard);
+        // 手改写错值回落默认，不让整份配置解析失败（加载路径对解析失败是硬处理）。
+        assert_eq!(parse(r#"{"text_inject_mode":"unicod"}"#), TextInjectMode::Clipboard);
+        // 序列化用小写值，与解析约定一致。
+        assert_eq!(serde_json::to_string(&TextInjectMode::Unicode).unwrap(), r#""unicode""#);
+        assert_eq!(serde_json::to_string(&TextInjectMode::Clipboard).unwrap(), r#""clipboard""#);
     }
 }
 
@@ -3516,7 +3857,7 @@ mod layer_tests {
             shortcuts: vec![layered],
             ..Default::default()
         };
-        let hits = detect_conflicts(&base);
+        let hits = detect_conflicts(&base, &PlatformCaps::default());
         assert!(
             hits.iter().any(|c| c.message.contains("没有切层键")),
             "无切层键的层应被报出"
@@ -3533,7 +3874,7 @@ mod layer_tests {
             }],
             ..base.clone()
         };
-        assert!(!detect_conflicts(&with_key).iter().any(|c| c.message.contains("没有切层键")));
+        assert!(!detect_conflicts(&with_key, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")));
 
         // 「长按锁定层」同样是切层键，指向它也算可达（层内放和弦/序列只能用这种）。
         let with_lock = Config {
@@ -3547,9 +3888,9 @@ mod layer_tests {
             ..base.clone()
         };
         assert!(
-            !detect_conflicts(&with_lock).iter().any(|c| c.message.contains("没有切层键")),
+            !detect_conflicts(&with_lock, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")),
             "长按锁定层也应算可达：{:?}",
-            detect_conflicts(&with_lock)
+            detect_conflicts(&with_lock, &PlatformCaps::default())
         );
 
         // 层里没有启用的条目时不报（空层不算问题）。
@@ -3557,7 +3898,7 @@ mod layer_tests {
             layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
             ..Default::default()
         };
-        assert!(!detect_conflicts(&empty).iter().any(|c| c.message.contains("没有切层键")));
+        assert!(!detect_conflicts(&empty, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")));
     }
 
     #[test]
@@ -4050,6 +4391,68 @@ mod settings_timeout_tests {
 }
 
 #[cfg(test)]
+mod hints_window_tests {
+    use super::*;
+
+    /// 老配置（写于提示框出现之前）缺 `hints`：默认**不显示**（常挂屏幕的浮层不请自来更烦人），
+    /// 但字号 / 透明度要有正经初值，别落到 0 变成看不见的一条。
+    #[test]
+    fn old_config_without_hints_gets_defaults() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert!(!old.settings.hints.visible);
+        assert_eq!(old.settings.hints.scale, HintsWindow::DEFAULT_SCALE);
+        assert_eq!(old.settings.hints.opacity, HintsWindow::DEFAULT_OPACITY);
+        assert_eq!(old.settings.hints.x, None);
+    }
+
+    /// 位置 / 外观要能原样往返：重启后提示框得回到用户拖到的地方、保持他调好的大小与透明度。
+    #[test]
+    fn hints_roundtrip_keeps_position_and_look() {
+        let cfg = Config {
+            settings: Settings {
+                hints: HintsWindow {
+                    visible: true,
+                    x: Some(-1200),
+                    y: Some(48),
+                    scale: 140,
+                    opacity: 60,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.settings, cfg.settings);
+    }
+
+    /// 没拖过的窗口不必往 JSON 里写 `null`：`skip_serializing_if` 让「没位置」就是个缺字段，
+    /// 手改配置时也少两行噪音。
+    #[test]
+    fn unplaced_hints_omit_coordinates() {
+        let json = serde_json::to_string(&Settings::default()).unwrap();
+        assert!(!json.contains("\"x\""), "缺省位置不该落进 JSON：{json}");
+        assert!(json.contains("\"hints\""));
+    }
+
+    /// 归一化：手改 JSON / 别的机器同步过来的越界值必须被钳住，且 `migrate` 会顺手调用它
+    /// （加载路径只 `migrate()` 不 `sanitize_config()`，这里是唯一的兜底）。
+    #[test]
+    fn migrate_clamps_out_of_range_look() {
+        let mut cfg = Config {
+            settings: Settings {
+                hints: HintsWindow { visible: true, scale: 0, opacity: 250, ..Default::default() },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cfg.migrate();
+        assert_eq!(cfg.settings.hints.scale, HintsWindow::SCALE_RANGE.0, "缩成 0 等于把窗口弄没");
+        assert_eq!(cfg.settings.hints.opacity, HintsWindow::OPACITY_RANGE.1);
+        assert!(cfg.settings.hints.visible, "钳值不该顺手改可见性");
+    }
+}
+
+#[cfg(test)]
 mod advanced_modifier_tests {
     use super::*;
 
@@ -4237,5 +4640,174 @@ mod advanced_modifier_tests {
         assert!(ignored.iter().any(|m| m.contains("NotAKey")));
         assert!(ignored.iter().any(|m| m.contains("Bad")));
         assert!(ignored.iter().any(|m| m.contains("保留粘滞")));
+    }
+}
+#[cfg(test)]
+mod platform_caps_tests {
+    use super::*;
+
+    /// Linux 口径的 caps：前台条件不可用（Wayland / X11 都未接前台查询）。
+    fn linux_caps() -> PlatformCaps {
+        PlatformCaps { frontmost_conditions: false, ..Default::default() }
+    }
+
+    /// macOS 口径的 caps：媒体键 + F21~F24 无对应键码，监听与注入都不行。
+    fn macos_caps() -> PlatformCaps {
+        let mut keys = BTreeSet::new();
+        for k in [
+            Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
+            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp,
+            Key::F21, Key::F22, Key::F23, Key::F24,
+        ] {
+            keys.insert(k);
+        }
+        PlatformCaps {
+            listen_unsupported: keys.clone(),
+            inject_unsupported: keys,
+            frontmost_conditions: true,
+        }
+    }
+
+    fn shortcut(name: &str, trigger: &str, actions: Vec<Action>) -> ShortcutItem {
+        ShortcutItem {
+            name: Some(name.into()),
+            triggers: vec![trigger.into()],
+            actions,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn full_caps_zero_false_positives() {
+        // 全支持（Windows）：平台扫描不产出任何条目。
+        let cfg = Config {
+            shortcuts: vec![shortcut("s", "Ctrl+VolumeUp", vec![])],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    #[test]
+    fn frontmost_condition_flagged_on_linux() {
+        let cfg = Config {
+            shortcuts: vec![shortcut(
+                "s",
+                "Ctrl+K",
+                vec![Action::If {
+                    condition: Condition::FrontmostApp { app: "firefox".into() },
+                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), description: None }],
+                    otherwise: vec![],
+                    description: None,
+                }],
+            )],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &linux_caps());
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].message.contains("前台"));
+        assert!(hits[0].message.contains("恒不成立"));
+        // Windows 口径下同配置零提示。
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    #[test]
+    fn nested_if_frontmost_also_flagged() {
+        let cfg = Config {
+            shortcuts: vec![shortcut(
+                "s",
+                "F9",
+                vec![Action::If {
+                    condition: Condition::Exists { path: "/tmp".into() },
+                    then: vec![Action::If {
+                        condition: Condition::WindowTitleContains { text: "编辑".into() },
+                        then: vec![],
+                        otherwise: vec![],
+                        description: None,
+                    }],
+                    otherwise: vec![],
+                    description: None,
+                }],
+            )],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &linux_caps());
+        assert!(hits.iter().any(|c| c.message.contains("前台")), "{hits:?}");
+    }
+
+    #[test]
+    fn unsupported_trigger_key_flagged() {
+        let cfg = Config {
+            shortcuts: vec![shortcut("s", "Ctrl+VolumeUp", vec![])],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &macos_caps());
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].message.contains("VolumeUp"));
+        assert!(hits[0].message.contains("监听不到"));
+        // 序列 leader 与和弦成员同样要报。
+        let cfg2 = Config {
+            shortcuts: vec![
+                shortcut("seq", "F9 F21 K", vec![]),
+                shortcut("chord", "F22&J", vec![]),
+            ],
+            ..Default::default()
+        };
+        let hits2 = detect_conflicts(&cfg2, &macos_caps());
+        assert!(hits2.iter().any(|c| c.message.contains("「F9 F21 K」")), "{hits2:?}");
+        assert!(hits2.iter().any(|c| c.message.contains("「F22&J」")), "{hits2:?}");
+    }
+
+    #[test]
+    fn disabled_entries_not_flagged() {
+        let mut s = shortcut("s", "Ctrl+VolumeUp", vec![]);
+        s.enabled = false;
+        let cfg = Config { shortcuts: vec![s], ..Default::default() };
+        assert!(detect_conflicts(&cfg, &macos_caps()).is_empty());
+    }
+
+    #[test]
+    fn remap_sides_flagged() {
+        let cfg = Config {
+            remaps: vec![
+                Remap { from: "VolumeMute".into(), to: "A".into(), enabled: true, ..Default::default() },
+                Remap { from: "B".into(), to: "F24".into(), enabled: true, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &macos_caps());
+        assert!(hits.iter().any(|c| c.message.contains("改键来源") && c.message.contains("VolumeMute")), "{hits:?}");
+        assert!(hits.iter().any(|c| c.message.contains("目标键") && c.message.contains("F24")), "{hits:?}");
+    }
+
+    #[test]
+    fn keys_action_inject_flagged() {
+        let cfg = Config {
+            shortcuts: vec![shortcut(
+                "s",
+                "Ctrl+K",
+                vec![Action::Keys { keys: vec!["F21".into(), "Enter".into()], description: None }],
+            )],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &macos_caps());
+        assert!(!hits.is_empty(), "{hits:?}");
+        assert!(hits.iter().any(|c| c.message.contains("F21") && c.message.contains("注入不了")));
+    }
+
+    #[test]
+    fn listen_and_inject_reported_separately() {
+        // 同一条快捷键：触发键监听不到 + 动作注入不了，两条提示分开报。
+        let cfg = Config {
+            shortcuts: vec![shortcut(
+                "s",
+                "VolumeUp",
+                vec![Action::Keys { keys: vec!["F23".into()], description: None }],
+            )],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &macos_caps());
+        assert!(hits.iter().any(|c| c.message.contains("监听不到")), "{hits:?}");
+        assert!(hits.iter().any(|c| c.message.contains("注入不了")), "{hits:?}");
     }
 }

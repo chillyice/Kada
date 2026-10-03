@@ -22,7 +22,8 @@
 //!
 //! 已知天花板（升级路径）：
 //! - 低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截（Interception）。
-//! - `type_text` 用剪贴板粘贴（中文最稳），会短暂占用剪贴板。
+//! - 文本注入默认走剪贴板粘贴（中文最稳），会短暂占用剪贴板；目标程序吞粘贴时
+//!   用 `type_text_unicode` 逐字符直发兜底（规划 7.3-㉒）。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;

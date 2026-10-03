@@ -16,13 +16,13 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
     detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
-    Shortcut, Severity, Vars, SYSTEM_SHORTCUTS,
+    Settings, Shortcut, Severity, TextInjectMode, Vars, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -76,17 +76,21 @@ mod input {
 mod input {
     //! Linux：evdev + uinput 全局钩子（kada-hook），X11 / Wayland 通用。
     pub use kada_hook::linux::{
-        frontmost_context, simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        frontmost_context, reinstall_count, simulate, start, Action as HookAction, HookHandle,
+        KeyEvent,
     };
 
+    /// 输入层是否已启动：无权限（没进 input 组 / udev 没放行 /dev/uinput）时
+    /// `start` 会失败，这里如实报 false——录制入口据此给解释，而不是录到一片空白。
     pub fn hooks_supported() -> bool {
-        true
+        kada_hook::linux::hooks_supported()
     }
 
-    /// evdev 钩子没有「被系统摘除后重装」这条路（不依赖系统钩子链），恒 0 = 没重装过；
-    /// 设备被拔掉导致的丢事件另见规划 7.3-⑱。
+    /// evdev 钩子没有「被系统摘除后重装」这条路（不依赖系统钩子链），0 = 没重装过；
+    /// 设备拔出导致的丢事件由 `reinstall_count`（`kada-hook::linux`）计数，语义与
+    /// Windows 的钩子重装一致：壳层 `ResetWatch` 轮询本计数复位 `Engine` 状态。
     pub fn reinstall_count() -> u64 {
-        0
+        kada_hook::linux::reinstall_count()
     }
 
     /// evdev 层拿不到前台窗口（要接 X11 / Wayland 协议，见规划 7.3-⑲），故「前台切换复位」
@@ -220,6 +224,24 @@ impl StatusPayload {
     }
 }
 
+/// 快捷键提示框（`index.html#hints`）的当前状态，见规划 7.3-㊳。
+///
+/// `x` / `y` 是窗口**当前**位置（逻辑像素），不是配置里存的那份：前端拖动时用它做差量基准，
+/// 配置里的值可能比窗口实际位置旧（拖动中还没落盘）。首次摆放由后端算（工作区右侧），
+/// 所以由 `hints_ready` 一并把落地坐标回给前端——不然前端手上的 (0,0) 会让第一次拖动跳一下。
+#[derive(Clone, Debug, PartialEq, Serialize)]
+struct HintsState {
+    /// 是否应该显示（配置里的期望值）。
+    visible: bool,
+    /// 字号缩放百分比。
+    scale: u16,
+    /// 不透明度百分比。
+    opacity: u8,
+    /// 窗口当前左上角（逻辑像素）。
+    x: f64,
+    y: f64,
+}
+
 /// 修饰键形态的中文用词（托盘摘要与悬浮指示共用，避免前后端两份说法）。
 fn mod_kind_label(kind: &str) -> &'static str {
     match kind {
@@ -295,6 +317,12 @@ struct KadaState {
     tray_base: Option<tauri::image::Image<'static>>,
     /// 托盘带红点图标（未读态）。
     tray_unread: Option<tauri::image::Image<'static>>,
+    /// 托盘菜单里的「快捷键提示」勾选项：提示框的可见性可能被窗口上的 × 改掉，
+    /// 那时得把勾也抹掉——不记住它就只能干看着菜单与现状不一致。
+    hints_tray: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    /// 本次会话是否已经给提示框摆过位：摆过之后原地不动（拖动 / 缩放都不再重定位），
+    /// 免得「内容重排 → 又按配置里的旧坐标摆一次」把刚拖到的位置弹回去。
+    hints_placed: AtomicBool,
 }
 
 /// 单条事件的决定。
@@ -426,6 +454,17 @@ fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
     }
 }
 
+/// 按「文本注入方式」设置发文本（规划 7.3-㉒）：默认剪贴板粘贴；目标程序吞粘贴
+/// （游戏 / 终端）时切「逐字直发」。热串扩展与 Text 动作共用同一口径（后者在
+/// kada-actions 内按 `RunOptions.text_inject_mode` 分派）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn type_text_by_mode(text: &str, mode: TextInjectMode) -> std::io::Result<()> {
+    match mode {
+        TextInjectMode::Clipboard => input::simulate::type_text(text),
+        TextInjectMode::Unicode => input::simulate::type_text_unicode(text),
+    }
+}
+
 /// 后台执行一次文本扩展：回删触发词 → 注入替换文本 → 补回后缀键。
 ///
 /// 必须另起线程：注入走剪贴板 + `SendInput`，要上百毫秒，跑在钩子回调里会被系统判超时
@@ -437,13 +476,14 @@ fn spawn_hotstring(
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
     hit: HotstringHit,
+    text_mode: TextInjectMode,
 ) {
     std::thread::spawn(move || {
         for _ in 0..hit.backspaces {
             input::simulate::tap(Key::Backspace);
         }
         let expanded = resolve_hotstring(&hit.replace);
-        if let Err(e) = input::simulate::type_text(&expanded) {
+        if let Err(e) = type_text_by_mode(&expanded, text_mode) {
             commit_result(
                 &app,
                 &results,
@@ -812,9 +852,10 @@ fn fire(
     trigger: String,
     name: String,
     timeout_ms: u64,
+    text_mode: TextInjectMode,
 ) {
     // 气泡窗口首次懒创建较慢（WebView 冷启动），放后台线程，避免阻塞钩子回调——
-    // WH_KEYBOARD_LL 回调超时会被系统摘除，导致后续快捷键/热串/改键全部失效。
+    // WH_KEYBOARD_LL 回调超时会被系统摘除，导致后续快捷键/改键/热串全部失效。
     {
         let app = app.clone();
         let name = name.clone();
@@ -822,18 +863,59 @@ fn fire(
         std::thread::spawn(move || show_toast(&app, &name, &trigger));
     }
     std::thread::spawn(move || {
-        // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，直接注入会被污染成
-        // Ctrl+Alt+<键>（粘贴 Ctrl+V 变成 Ctrl+Alt+V）。等修饰键全部释放后再执行动作，
-        // 保证文本/按键能正确落到目标程序。
-        input::simulate::wait_modifiers_released(300);
+        // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，此时注入按键会被
+        // 污染成 Ctrl+Alt+<键>（粘贴 Ctrl+V 变成 Ctrl+Alt+V）。只对真正注入按键的链
+        // （Text / Keys，含 If 分支内）等修饰键释放：300ms 还没松就不注入——污染键打进
+        // 目标程序轻则无效、重则误触别的快捷键（如 Ctrl+Alt+方向键转屏），跳过并记消息
+        // 中心让用户知道为什么没生效。纯命令 / 文件 / 开 URL 的链不受修饰键影响，等
+        // 300ms 只是白拖手感，照常直接执行（7.3-㉒ 顺带修「返回值被丢弃」）。
+        if injects_keys(&actions) && !input::simulate::wait_modifiers_released(300) {
+            commit_result(
+                &app,
+                &results,
+                &unread,
+                CommandResult {
+                    kind: "error".into(),
+                    label: "动作未执行".into(),
+                    command: trigger.clone(),
+                    trigger: trigger.clone(),
+                    name: name.clone(),
+                    stdout: String::new(),
+                    stderr: "修饰键（Ctrl/Alt/Shift/Meta）在 300ms 内没有松开，为避免注入被污染 \
+                             成 Ctrl+Alt+<键>，本次文本/按键动作已跳过——松键再触发即可。"
+                        .into(),
+                    exit_code: None,
+                    show_output: false,
+                    time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                },
+            );
+            return;
+        }
         let mut vars: Vars = BTreeMap::new();
         let mut last_copied: Option<String> = None;
         let frontmost = input::frontmost_context();
         let mut commit = |result: CommandResult| commit_result(&app, &results, &unread, result);
-        let opts = RunOptions { action_timeout: Duration::from_millis(timeout_ms) };
+        let opts = RunOptions {
+            action_timeout: Duration::from_millis(timeout_ms),
+            text_inject_mode: text_mode,
+        };
         let t = TriggerCtx { trigger: &trigger, name: &name, frontmost: frontmost.as_ref() };
         run_actions(&mut commit, &actions, t, &mut vars, &mut last_copied, &opts);
     });
+}
+
+/// 这串动作里有没有「往目标程序注入按键」的动作（Text / Keys，含 If 分支内的）。
+///
+/// 修饰键没松时只有这类动作会被污染（见 [`fire`]），命令 / 文件 / 应用类照常执行；
+/// 静态过一遍链足够准，If 的分支两路都算「可能有」。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn injects_keys(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Text { .. } | Action::Keys { .. } => true,
+        #[cfg(feature = "automation")]
+        Action::If { then, otherwise, .. } => injects_keys(then) || injects_keys(otherwise),
+        _ => false,
+    })
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -845,6 +927,7 @@ fn fire(
     _trigger: String,
     _name: String,
     _timeout_ms: u64,
+    _text_mode: TextInjectMode,
 ) {
     // 无钩子即无触发入口，本分支不会运行（macOS 占位）。
 }
@@ -1007,6 +1090,241 @@ fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
 #[tauri::command]
 fn get_status_payload(state: tauri::State<'_, KadaState>) -> Option<StatusPayload> {
     state.status.lock().unwrap().clone()
+}
+
+// ---- 快捷键提示框（常显速查浮窗，见规划 7.3-㊳） ----
+
+/// 按需创建快捷键提示框窗口（`index.html#hints`）：常显的快捷键速查表，可拖动、滚轮调大小 /
+/// 透明度。首次打开（或启动时配置里勾着显示）才建 WebView，冷启动零成本。
+///
+/// **必须 `focusable(false)`**（Windows 即 `WS_EX_NOACTIVATE`），理由与 [`ensure_hud`] 完全一致：
+/// 这个窗是**常显**的，一整天挂在所有窗口之上，一旦它能被激活，点它一下就把它自己变成了
+/// `GetForegroundWindow`——前台条件（前台应用 / 窗口标题）全读成我们自己这个窗，`ResetWatch`
+/// 还会把它当作「前台切换」复位输入状态（按住的层当场被踢掉）。
+///
+/// 与 hud / toast 的关键差别：**不能** `set_ignore_cursor_events(true)`——拖动、滚轮、关闭按钮
+/// 都要靠鼠标事件；`WS_EX_NOACTIVATE` 只挡激活，不挡鼠标消息，所以交互照常。
+fn ensure_hints(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("hints") {
+        return Some(w);
+    }
+    let w = match tauri::WebviewWindowBuilder::new(
+        app,
+        "hints",
+        tauri::WebviewUrl::App("index.html#hints".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .focusable(false)
+    // Ctrl+滚轮在本窗口是「调透明度」，不能让它同时把整个 WebView 的缩放也改了
+    // （Chromium 默认把 Ctrl+wheel 当浏览器缩放，两件事叠在一起会互相打架）。
+    .zoom_hotkeys_enabled(false)
+    .inner_size(320.0, 420.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("创建快捷键提示框失败: {e}");
+            return None;
+        }
+    };
+    Some(w)
+}
+
+/// 提示框的当前状态（`hints_ready` 回给前端做拖动基准，`hints-state` 事件推给窗口）。
+fn hints_state_of(app: &tauri::AppHandle) -> HintsState {
+    let hints = app
+        .state::<KadaState>()
+        .config
+        .read()
+        .map(|c| c.settings.hints.clone())
+        .unwrap_or_default();
+    // 窗口真实位置优先于配置：拖动中配置还是旧的（松手才落盘），拿它当基准会跳。
+    let pos = app.get_webview_window("hints").and_then(|w| {
+        let scale = w.scale_factor().unwrap_or(1.0);
+        w.outer_position().ok().map(|p| (p.x as f64 / scale, p.y as f64 / scale))
+    });
+    let (x, y) = pos.unwrap_or((hints.x.map(f64::from).unwrap_or(0.0), hints.y.map(f64::from).unwrap_or(0.0)));
+    HintsState { visible: hints.visible, scale: hints.scale, opacity: hints.opacity, x, y }
+}
+
+/// 保存位置是否落在某块显示器的工作区里（至少露出一角够拖回来）。
+///
+/// 配置是跨平台同步的：在双屏机器上拖到副屏，同步到单屏机器上就落在屏幕外了——
+/// 那时宁可回到默认位，也不能让提示框「显示着但看不见」。
+fn hints_position_on_screen(app: &tauri::AppHandle, x: i32, y: i32, w: f64, h: f64) -> bool {
+    let Ok(monitors) = app.available_monitors() else { return false };
+    monitors.iter().any(|m| {
+        let s = m.scale_factor();
+        let area = m.work_area();
+        let (mx, my) = (area.position.x as f64 / s, area.position.y as f64 / s);
+        let (mw, mh) = (area.size.width as f64 / s, area.size.height as f64 / s);
+        let visible_w = (x as f64 + w).min(mx + mw) - (x as f64).max(mx);
+        let visible_h = (y as f64 + h).min(my + mh) - (y as f64).max(my);
+        visible_w >= 120.0 && visible_h >= 40.0
+    })
+}
+
+/// 提示框该落在哪：优先用保存的位置；没保存过、或那个位置已经不在任何显示器工作区里
+/// （换过显示器 / 跨平台同步来的坐标）就回到主显示器工作区右侧的默认位。
+fn hints_target_position(
+    app: &tauri::AppHandle,
+    logical_w: f64,
+    logical_h: f64,
+    x: Option<i32>,
+    y: Option<i32>,
+) -> Option<tauri::LogicalPosition<f64>> {
+    if let (Some(x), Some(y)) = (x, y) {
+        if hints_position_on_screen(app, x, y, logical_w, logical_h) {
+            return Some(tauri::LogicalPosition::new(x as f64, y as f64));
+        }
+    }
+    let m = app.primary_monitor().ok().flatten()?;
+    let scale = m.scale_factor();
+    let area = m.work_area();
+    let (mx, my) = (area.position.x as f64 / scale, area.position.y as f64 / scale);
+    let (mw, mh) = (area.size.width as f64 / scale, area.size.height as f64 / scale);
+    // 默认贴右侧、垂直居中：不挡正在打字的输入框，也不挡底部居中的状态指示。
+    let x = mx + mw - logical_w - 24.0;
+    let y = my + (mh - logical_h) / 2.0;
+    Some(tauri::LogicalPosition::new(x.max(mx + 8.0), y.max(my + 8.0)))
+}
+
+/// 提示框渲染完成（前端量出内容宽高后调用）：按内容定尺寸、首次落地并显示。
+///
+/// 尺寸由界面量（`hints_ready` 与 `hud_ready` 同一个套路）：内容随快捷键条数与字号变，
+/// 后端不该去猜；但界面给的值不可全信，钳一下免得异常值把窗口撑满屏或只剩一条缝。
+#[tauri::command]
+fn hints_ready(app: tauri::AppHandle, width: f64, height: f64) -> Option<HintsState> {
+    let w = app.get_webview_window("hints")?;
+    let logical_w = width.clamp(180.0, 900.0);
+    let logical_h = height.clamp(120.0, 2000.0);
+    let _ = w.set_size(tauri::LogicalSize::new(logical_w, logical_h));
+    let state = app.try_state::<KadaState>()?;
+    let (visible, x, y) = {
+        let guard = state.config.read().ok()?;
+        (guard.settings.hints.visible, guard.settings.hints.x, guard.settings.hints.y)
+    };
+    if !visible {
+        // 量尺寸这段时间里它已经被关掉了：别把刚藏起来的窗又亮回来（同 `hud_ready`）。
+        let _ = w.hide();
+        return Some(hints_state_of(&app));
+    }
+    // 只在本次会话还没摆过位时落地：摆过之后位置由用户拖拽掌控，重排/缩放都不再挪它。
+    if !state.hints_placed.swap(true, Ordering::Relaxed) {
+        if let Some(pos) = hints_target_position(&app, logical_w, logical_h, x, y) {
+            let _ = w.set_position(pos);
+        }
+    }
+    let _ = w.show();
+    Some(hints_state_of(&app))
+}
+
+/// 读取提示框状态（窗口懒创建后前端加载时拉一次，拿到字号 / 透明度 / 实际位置）。
+#[tauri::command]
+fn get_hints_state(app: tauri::AppHandle) -> HintsState {
+    hints_state_of(&app)
+}
+
+/// 拖动中：把窗口移到指定逻辑坐标。**不落盘**——拖动时每帧写盘既慢又浪费，
+/// 松手由 [`hints_commit`] 一次记下。
+#[tauri::command]
+fn hints_move(app: tauri::AppHandle, x: f64, y: f64) {
+    if let Some(w) = app.get_webview_window("hints") {
+        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+    }
+}
+
+/// 拖动结束：把当前位置记进配置，下次启动还在原地。
+#[tauri::command]
+fn hints_commit(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> Result<(), String> {
+    let Some(w) = app.get_webview_window("hints") else { return Ok(()) };
+    let scale = w.scale_factor().unwrap_or(1.0);
+    let Ok(pos) = w.outer_position() else { return Ok(()) };
+    let (x, y) = ((pos.x as f64 / scale).round() as i32, (pos.y as f64 / scale).round() as i32);
+    save_settings_patch(&app, &state, |s| {
+        s.hints.x = Some(x);
+        s.hints.y = Some(y);
+    })
+}
+
+/// 滚轮调完大小 / 透明度后落盘（前端已经就地应用，这里只负责持久化；前端做了节流）。
+#[tauri::command]
+fn hints_prefs(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    scale: u16,
+    opacity: u8,
+) -> Result<(), String> {
+    save_settings_patch(&app, &state, |s| {
+        s.hints.scale = scale;
+        s.hints.opacity = opacity;
+    })
+}
+
+/// 显示 / 隐藏提示框（设置页勾选、托盘菜单、窗口上的 × 都走这里）。
+///
+/// 关掉只把 `visible` 置 false，位置与外观留着——这是「关掉了还能从软件里再打开」的前提：
+/// 下次打开必须还在原地、还是他调好的样子。
+#[tauri::command]
+fn hints_set_visible(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    visible: bool,
+) -> Result<(), String> {
+    save_settings_patch(&app, &state, |s| s.hints.visible = visible)?;
+    apply_hints_visible(&app, visible);
+    Ok(())
+}
+
+/// 把提示框的可见性落到窗口与托盘：显示 / 隐藏 + 抹平托盘勾选 + 通知窗口。
+///
+/// 可见性有四个入口（窗口 × / 设置页勾选 / 托盘菜单 / 外部改配置后重载），无论从哪进来
+/// 都得把另外三处对齐，否则会出现「菜单勾着、窗口却没了」这种查不出原因的错位。
+fn apply_hints_visible(app: &tauri::AppHandle, visible: bool) {
+    if let Some(item) = app.state::<KadaState>().hints_tray.lock().unwrap().as_ref() {
+        let _ = item.set_checked(visible);
+    }
+    if visible {
+        // 建 WebView 是重活（首次上百毫秒）：别占着托盘事件线程 / 命令线程。
+        let app = app.clone();
+        std::thread::spawn(move || {
+            let _ = ensure_hints(&app);
+        });
+    } else if let Some(w) = app.get_webview_window("hints") {
+        let _ = w.hide();
+    }
+    let _ = app.emit("hints-state", hints_state_of(app));
+}
+
+/// 保存配置的一小处改动（提示框的位置 / 外观 / 可见性）：与 [`set_config`] 同一套口径——
+/// 「写盘 + 改内存 + 给监听销账」同持 `cfg_watch` 锁。
+///
+/// 走它而不是让提示框窗口回传整份配置：那个窗口手上没有（也不该有）用户正在编辑的草稿，
+/// 整份回传等于用一个只看得到提示框的视图去覆盖配置。
+fn save_settings_patch(
+    app: &tauri::AppHandle,
+    state: &KadaState,
+    patch: impl FnOnce(&mut Settings),
+) -> Result<(), String> {
+    let mut watch = state.cfg_watch.lock().unwrap();
+    let mut cfg = state.config.read().unwrap().clone();
+    patch(&mut cfg.settings);
+    // 位置 / 外观都是「手改 JSON 也允许」的值：顺手钳一下越界，别存进去一个 scale: 0。
+    cfg.settings.hints = std::mem::take(&mut cfg.settings.hints).normalized();
+    config_io::save(&state.file, &cfg)?;
+    *state.config.write().unwrap() = cfg.clone();
+    watch.adopt_own_write(&state.file);
+    drop(watch);
+    // 广播给别的窗口：主界面的 `cfg.settings.hints` 已经旧了，它下次保存会把旧值写回去
+    // （用户在提示框里拖了位置、旋了滚轮，回设置页改个快捷键就被打回原形）。
+    let _ = app.emit("config-updated", &cfg);
+    Ok(())
 }
 
 /// 在屏幕右下角弹一个短暂的气泡（常驻 3 秒后自动消失）。
@@ -1208,6 +1526,46 @@ fn key_name(k: Key) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injects_keys_only_matches_key_injecting_actions() {
+        // 只有 Text / Keys 会往目标程序注入按键：修饰键没松时等的是它们（见 fire）。
+        let text = vec![Action::Text {
+            text: "x".into(),
+            mode: kada_core::TextMode::Input,
+            description: None,
+        }];
+        let keys = vec![Action::Keys { keys: vec!["Ctrl".into(), "C".into()], description: None }];
+        assert!(injects_keys(&text));
+        assert!(injects_keys(&keys));
+
+        // 命令 / 暂停不受修饰键影响，不该白等 300ms。
+        let plain = vec![
+            Action::PauseMs { ms: 10, description: None },
+            #[cfg(feature = "automation")]
+            Action::OpenUrl { url: "https://kada.test".into(), description: None },
+        ];
+        assert!(!injects_keys(&plain));
+
+        // If 分支里的注入动作也算数（两路并查）。
+        #[cfg(feature = "automation")]
+        {
+            let branched = vec![Action::If {
+                condition: kada_core::Condition::Exists { path: "C:\\".into() },
+                then: vec![],
+                otherwise: keys,
+                description: None,
+            }];
+            assert!(injects_keys(&branched));
+            let empty_branch = vec![Action::If {
+                condition: kada_core::Condition::Exists { path: "C:\\".into() },
+                then: vec![],
+                otherwise: vec![],
+                description: None,
+            }];
+            assert!(!injects_keys(&empty_branch));
+        }
+    }
 
     /// 假注入器：只记录发出的键，绝不真的注入（会打到跑测试的这台机器上）。
     #[derive(Default)]
@@ -1762,6 +2120,10 @@ fn set_config(
 ) -> Result<Vec<String>, String> {
     let (clean, ignored) = sanitize_config(&config);
     let autostart = clean.settings.autostart;
+    // 提示框的显示开关也在这份配置里（设置页勾选 / 取消就走的这条路）：改了就顺带把窗口与
+    // 托盘勾选对齐——否则「设置里勾上了但窗口不出来」得重启才知道。
+    let hints_visible = clean.settings.hints.visible;
+    let hints_before = state.config.read().unwrap().settings.hints.visible;
     // 「写盘 + 改内存 + 给监听销账」三件事同持 `cfg_watch` 锁：巡检线程拿同一把锁，
     // 不会插在中间把刚写的配置当成外部修改再加载一遍（外部真的改了也照样检得出）。
     let mut watch = state.cfg_watch.lock().unwrap();
@@ -1770,6 +2132,14 @@ fn set_config(
     watch.adopt_own_write(&state.file);
     drop(watch);
     sync_autostart(&app, autostart);
+    // 广播给别的窗口（提示框窗口据 `config-updated` 重画列表，主界面据它跟上提示框的位置 /
+    // 外观）——`set_config` 只改内存不通知的话，提示框会一直显示保存前的旧快捷键。
+    if let Ok(snapshot) = state.config.read() {
+        let _ = app.emit("config-updated", &*snapshot);
+    }
+    if hints_visible != hints_before {
+        apply_hints_visible(&app, hints_visible);
+    }
     Ok(ignored)
 }
 
@@ -1791,12 +2161,49 @@ fn launched_by_autostart() -> bool {
     std::env::args().any(|a| a == "--autostart")
 }
 
+/// 当前平台的输入能力声明（[`get_conflicts`] 第④段用，见规划 7.3-⑲）。
+///
+/// 各平台口径（与钩子层的实际能力一一对应，改钩子时同步这里）：
+/// - **Windows**：全支持。
+/// - **Linux**：前台窗口取不到（X11 未接 / Wayland 无通用协议）→ 前台类条件恒不成立；
+///   键盘与鼠标键（中键/侧键）监听 + 注入都可用（7.3-㉔ 落地后）。
+/// - **macOS**：媒体键与 F21~F24 无对应键码，监听与注入都不行；前台走 AX 可用。
+fn platform_caps() -> kada_core::PlatformCaps {
+    #[cfg(target_os = "linux")]
+    {
+        kada_core::PlatformCaps { frontmost_conditions: false, ..Default::default() }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let mut keys = std::collections::BTreeSet::new();
+        for k in [
+            Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
+            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp,
+            Key::F21, Key::F22, Key::F23, Key::F24,
+        ] {
+            keys.insert(k);
+        }
+        kada_core::PlatformCaps {
+            listen_unsupported: keys.clone(),
+            inject_unsupported: keys,
+            frontmost_conditions: true,
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        kada_core::PlatformCaps::default()
+    }
+}
+
 /// 计算给定配置的冲突列表（前端把当前正在编辑的配置传入，实时展示警告）。
-/// 三部分：① 内部冲突（重复触发键/改键遮蔽/超集重叠）；② 系统快捷键清单命中；
-/// ③ Windows 下 RegisterHotKey 探测「其他应用/系统已注册」的真实占用。
+/// 四部分：① 内部冲突（重复触发键/改键遮蔽/超集重叠）；② 系统快捷键清单命中；
+/// ③ Windows 下 RegisterHotKey 探测「其他应用/系统已注册」的真实占用；
+/// ④ 平台能力缺失（`PlatformCaps`：本平台监听不到的触发键、注入不了的目标键、
+///   恒不成立的前台条件——从 Windows 同步过来的配置在 Linux/macOS 上会静默失效，
+///   在这里点出来，别让用户自己猜，见规划 7.3-⑲）。
 #[tauri::command]
 fn get_conflicts(config: Config) -> Vec<Conflict> {
-    let mut out = detect_conflicts(&config);
+    let mut out = detect_conflicts(&config, &platform_caps());
 
     // ② 系统快捷键清单（跨平台）：精确匹配；命中的触发键记下，供③跳过避免重复提示。
     let mut sys_hits: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -1921,12 +2328,21 @@ fn import_config(
     };
 
     // 与 set_config 同一套口径：写盘 + 改内存 + 给监听销账同持一把锁（导入也是一种「自己写的盘」）。
+    let hints_before = state.config.read().unwrap().settings.hints.visible;
+    let hints_after = next.settings.hints.visible;
     let mut watch = state.cfg_watch.lock().unwrap();
     config_io::save(&state.file, &next)?;
     *state.config.write().unwrap() = next;
     watch.adopt_own_write(&state.file);
     drop(watch);
     sync_autostart(&app, autostart);
+    // 导入也可能换掉提示框的设置（替换导入会连设置一起覆盖）：与 set_config 走同一条对齐路径。
+    if let Ok(snapshot) = state.config.read() {
+        let _ = app.emit("config-updated", &*snapshot);
+    }
+    if hints_after != hints_before {
+        apply_hints_visible(&app, hints_after);
+    }
     Ok(ImportOutcome {
         mode: if replace { "replace".into() } else { "merge".into() },
         added,
@@ -1954,12 +2370,13 @@ fn abort_actions() -> usize {
 
 /// 录制不可用时给用户的解释（[`input::hooks_supported`] 为 false 时用）。
 ///
-/// macOS 的 false 不表示「没实现」，而是「还没拿到辅助功能权限」——说成「平台不支持」会让
-/// 用户彻底放弃（他不知道要去授权）。Windows / Linux 恒支持，这句在那里用不到。
-#[cfg(target_os = "macos")]
-const RECORD_UNAVAILABLE: &str = "宏录制不可用：请先在「系统设置 → 隐私与安全性 → 辅助功能」里勾选 Kada，\
-并重启 Kada（macOS 不允许未授权的应用监听与注入键盘事件）";
-#[cfg(not(target_os = "macos"))]
+/// false 不表示「平台没实现」，而是「输入层没起来」——macOS 是还没拿到辅助功能权限，
+/// Linux 是 input 组 / udev 没配好（启动时消息中心里已有一条能照抄的修复指引）。
+/// 说成「平台不支持」会让用户彻底放弃（他不知道要去修权限）。
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+const RECORD_UNAVAILABLE: &str = "宏录制不可用：输入层未启动（见「消息」页启动时的权限指引），\
+    按指引修复权限并重启 Kada 后可用";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 const RECORD_UNAVAILABLE: &str = "当前平台暂不支持宏录制";
 
 /// 开始录制宏：快捷键/改键随即暂停，所有按键进时间线。
@@ -2050,6 +2467,12 @@ pub fn run() {
             get_toast_payload,
             get_status_payload,
             hud_ready,
+            get_hints_state,
+            hints_ready,
+            hints_move,
+            hints_commit,
+            hints_prefs,
+            hints_set_visible,
             mark_results_read,
             clear_command_results,
             update::get_update_status,
@@ -2120,6 +2543,7 @@ pub fn run() {
                         // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
                         // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
                         let action_timeout = guard.settings.action_timeout_ms;
+                        let text_mode = guard.settings.text_inject_mode;
                         let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                             fire(
                                 app_handle.clone(),
@@ -2129,6 +2553,7 @@ pub fn run() {
                                 trigger,
                                 name,
                                 action_timeout,
+                                text_mode,
                             );
                         };
                         let Some(ev) =
@@ -2147,6 +2572,7 @@ pub fn run() {
                                     trigger,
                                     name,
                                     action_timeout,
+                                    text_mode,
                                 );
                                 input::HookAction::Block
                             }
@@ -2162,6 +2588,7 @@ pub fn run() {
                                             results.clone(),
                                             unread.clone(),
                                             hit,
+                                            text_mode,
                                         );
                                         input::HookAction::Block
                                     }
@@ -2172,21 +2599,22 @@ pub fn run() {
                     })
             };
 
-            // 起不来的处置分两种，因为「起不来」在两个平台的含义完全不同：
+            // 起不来的处置分两种，因为「起不来」在平台的含义不同：
             //
-            // - Windows / Linux：起不来是异常（权限配错、资源被占），让 setup 失败、应用报错退出，
+            // - Windows：起不来是异常（资源被占），让 setup 失败、应用报错退出，
             //   用户至少能看见「哪里不对」，而不是一个看着还活着、按键全不响的托盘。
-            // - macOS：**首次启动必然起不来**——tap 要「辅助功能」权限，而这份权限只能由用户
-            //   在系统设置里手动授予。此时若让 setup 失败，应用根本起不来，用户连设置页都进不去，
-            //   也就永远拿不到那份权限（`start` 已经顺手弹过系统授权框）。改为照常启动 + 把
-            //   「怎么授权」记进消息中心（托盘建好后统一推，见下面 startup_warnings）。
-            #[cfg(any(target_os = "windows", target_os = "linux"))]
+            // - Linux / macOS：起不来多半是**权限没配好**（Linux 没进 input 组 / udev 没放行
+            //   /dev/uinput；macOS 没授「辅助功能」）。此时若让 setup 失败，用户连设置页都
+            //   进不去，也就永远拿不到指引（Linux 的 `start` 错误串带能照抄的修复命令，
+            //   macOS 的 `start` 已顺手弹过系统授权框）。改为照常启动 + 把指引记进消息中心
+            //   （托盘建好后统一推，见下面 startup_warnings），修好权限重启即可。
+            #[cfg(windows)]
             let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) = (
                 Some(hook_start.map_err(|e: std::io::Error| e.to_string())?),
                 None,
             );
 
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) =
                 match hook_start {
                     Ok(h) => (Some(h), None),
@@ -2224,6 +2652,8 @@ pub fn run() {
                 tray_unread: unread_icon,
                 toast: Arc::new(Mutex::new(None)),
                 status: Arc::new(Mutex::new(None)),
+                hints_tray: Mutex::new(None),
+                hints_placed: AtomicBool::new(false),
             };
             app.manage(state);
             // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
@@ -2246,11 +2676,27 @@ pub fn run() {
                 show_main_window(app.handle());
             }
 
+            // 快捷键提示框的初值：托盘菜单的勾选态与「启动时要不要建窗」都用它。
+            let hints_visible_at_startup = app
+                .state::<KadaState>()
+                .config
+                .read()
+                .map(|c| c.settings.hints.visible)
+                .unwrap_or(false);
+
             // 托盘：常驻后台，关窗不退出。
             let show_i = MenuItem::with_id(app, "show", "打开咔哒", true, None::<&str>)?;
+            let hints_i = CheckMenuItem::with_id(
+                app,
+                "hints",
+                "快捷键提示",
+                true,
+                hints_visible_at_startup,
+                None::<&str>,
+            )?;
             let update_i = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &update_i, &quit_i])?;
+            let menu = Menu::with_items(app, &[&show_i, &hints_i, &update_i, &quit_i])?;
             let tray_icon = TrayIconBuilder::new()
                 .icon(base_icon.unwrap())
                 // 托盘提示的初值；有层 / 修饰键生效时由 publish_status 换成当前状态摘要。
@@ -2259,6 +2705,19 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    // 提示框的开关：常显浮窗的入口得在「随时够得着」的地方——窗口上的 × 一按，
+                    // 设置界面要是没开着，用户就只剩托盘这一个入口。
+                    "hints" => {
+                        let visible = app
+                            .state::<KadaState>()
+                            .config
+                            .read()
+                            .map(|c| c.settings.hints.visible)
+                            .unwrap_or(false);
+                        if let Err(e) = hints_set_visible(app.clone(), app.state(), !visible) {
+                            eprintln!("切换快捷键提示框失败: {e}");
+                        }
+                    }
                     "update" => update::spawn(app, update::Mode::Manual),
                     "quit" => app.exit(0),
                     _ => {}
@@ -2270,7 +2729,22 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-            *app.state::<KadaState>().tray.lock().unwrap() = Some(tray_icon);
+            {
+                let st = app.state::<KadaState>();
+                *st.tray.lock().unwrap() = Some(tray_icon);
+                // 记住这个勾选项：提示框被窗口上的 × 关掉时，得把勾抹掉。
+                *st.hints_tray.lock().unwrap() = Some(hints_i.clone());
+            }
+
+            // 快捷键提示框：配置里记着要显示才建（懒创建，冷启动零 WebView）。
+            // 与主窗口同一个时机——托盘建好之后，`ensure_hints` 只是建窗，位置与显示交给
+            // 前端量完内容后的 `hints_ready`。
+            if hints_visible_at_startup {
+                let app = app.handle().clone();
+                std::thread::spawn(move || {
+                    let _ = ensure_hints(&app);
+                });
+            }
 
             // 启动期的告警推给消息中心：配置损坏 / 自愈（`load_warnings`），以及输入层起不来
             // （macOS 缺「辅助功能」权限——这条必须让用户看见，否则「按键全不响」无从下手）。

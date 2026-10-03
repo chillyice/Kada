@@ -97,6 +97,8 @@ const DEMO_CONFIG = {
     sequence_timeout_ms: 1000,
     chord_timeout_ms: 1000,
     show_status_hud: true,
+    text_inject_mode: "clipboard",
+    hints: { visible: false, x: null, y: null, scale: 100, opacity: 92 },
   },
 };
 
@@ -186,6 +188,17 @@ export function installBrowserMock() {
           };
         // 悬浮指示窗渲染完回报尺寸（演示模式不真的改窗口大小）。
         case "hud_ready":
+          return null;
+        // 快捷键提示框：演示模式给一份「常显」状态，`index.html#hints` 直开即可看样式
+        // （真实位置 / 外观只有壳内的窗口会记）。
+        case "get_hints_state":
+          return { visible: true, scale: 100, opacity: 92, x: 0, y: 0 };
+        case "hints_ready":
+          return { visible: true, scale: 100, opacity: 92, x: 0, y: 0 };
+        case "hints_move":
+        case "hints_commit":
+        case "hints_prefs":
+        case "hints_set_visible":
           return null;
         // 对话框（plugin:dialog）：文件对话框演示模式一律返回空（用户取消）。
         case "plugin:dialog|open":

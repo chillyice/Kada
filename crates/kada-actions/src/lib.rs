@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod abort;
 
-use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextMode, Vars};
+use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, TextMode, Vars};
 
 #[cfg(feature = "automation")]
 use kada_core::{AppOperation, FileObject, OsOperation, Shell, TextValue, Value};
@@ -71,11 +71,17 @@ pub struct RunOptions {
     /// 死循环、弹了个看不见的确认框）就永久占住这条触发的执行线程——后续动作永不执行、
     /// 线程也收不回来。
     pub action_timeout: Duration,
+    /// 文本注入方式（读自 `Settings.text_inject_mode`，规划 7.3-㉒）：文本动作与
+    /// 「转大小写」按它选「剪贴板粘贴」或「逐字直发」。
+    pub text_inject_mode: TextInjectMode,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { action_timeout: Duration::from_millis(kada_core::DEFAULT_ACTION_TIMEOUT_MS) }
+        Self {
+            action_timeout: Duration::from_millis(kada_core::DEFAULT_ACTION_TIMEOUT_MS),
+            text_inject_mode: TextInjectMode::Clipboard,
+        }
     }
 }
 
@@ -96,6 +102,8 @@ struct Ctx<'a> {
     /// 见 [`RunOptions::action_timeout`]。
     #[cfg_attr(not(feature = "automation"), allow(dead_code))]
     timeout: Duration,
+    /// 见 [`RunOptions::text_inject_mode`]（文本动作与「转大小写」用）。
+    text_mode: TextInjectMode,
     /// 本次执行开始时记下的中止代数（[`abort::aborted`] 的比对基准）。
     gen: u64,
 }
@@ -117,7 +125,7 @@ pub fn run_actions(
 ) {
     // 「正在执行」计数（UI 据此回答「有没有东西可以停」）；整个动作链期间有效。
     let _running = abort::RunGuard::new();
-    let ctx = Ctx { t, timeout: opts.action_timeout, gen: abort::generation() };
+    let ctx = Ctx { t, timeout: opts.action_timeout, text_mode: opts.text_inject_mode, gen: abort::generation() };
     run_chain(commit, actions, &ctx, vars, last_copied);
 }
 
@@ -400,10 +408,10 @@ fn run_action(
         Action::Text { text, mode, .. } => match mode {
             TextMode::Input => {
                 let text = substitute_vars(text, vars);
-                simulate::type_text(&text).map_err(|e| e.to_string())?;
+                inject_text(&text, ctx.text_mode)?;
             }
             TextMode::ToUpper | TextMode::ToLower => {
-                transform_case(matches!(mode, TextMode::ToUpper))?;
+                transform_case(matches!(mode, TextMode::ToUpper), ctx.text_mode)?;
             }
         },
         Action::Keys { keys, .. } => {
@@ -625,16 +633,26 @@ fn run_os(
     Ok(())
 }
 
+/// 按配置的注入方式发文本（规划 7.3-㉒）：默认剪贴板粘贴；目标程序吞粘贴
+/// （游戏 / 终端）时用「逐字直发」绕过剪贴板。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn inject_text(text: &str, mode: TextInjectMode) -> Result<(), String> {
+    match mode {
+        TextInjectMode::Clipboard => simulate::type_text(text).map_err(|e| e.to_string()),
+        TextInjectMode::Unicode => simulate::type_text_unicode(text).map_err(|e| e.to_string()),
+    }
+}
+
 /// 把当前选中/剪贴板文本转为大写或小写后粘贴回原处：
-/// 复制选中（平台组合键）→ 读剪贴板 → 转换 → 粘贴（`type_text` 内部自己处理平台差异）。
+/// 复制选中（平台组合键）→ 读剪贴板 → 转换 → 粘贴（注入方式同文本动作，见 [`inject_text`]）。
 /// 无选中时复制通常不改剪贴板，即退化为「转换剪贴板文本」。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-fn transform_case(upper: bool) -> Result<(), String> {
+fn transform_case(upper: bool, text_mode: TextInjectMode) -> Result<(), String> {
     copy_chord();
     std::thread::sleep(Duration::from_millis(80));
     let clip = simulate::get_clipboard_text().map_err(|e| e.to_string())?;
     let out = if upper { clip.to_uppercase() } else { clip.to_lowercase() };
-    simulate::type_text(&out).map_err(|e| e.to_string())?;
+    inject_text(&out, text_mode)?;
     Ok(())
 }
 
@@ -1210,6 +1228,7 @@ mod tests {
             t: trigger_ctx(),
             // 0 = 不限时（与配置里的 0 同义），用于只测「中止」的用例。
             timeout: Duration::from_millis(timeout_ms),
+            text_mode: TextInjectMode::Clipboard,
             gen: abort::generation(),
         }
     }
@@ -1325,7 +1344,7 @@ mod tests {
                 trigger_ctx(),
                 &mut vars,
                 &mut last_copied,
-                &RunOptions { action_timeout: Duration::ZERO },
+                &RunOptions { action_timeout: Duration::ZERO, ..Default::default() },
             );
         }
         requester.join().unwrap();
