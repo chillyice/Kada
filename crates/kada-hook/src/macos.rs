@@ -1115,6 +1115,70 @@ pub mod simulate {
         Ok(())
     }
 
+    /// 把文本逐字符直发到当前焦点控件（unicode string 事件，不经过剪贴板）。
+    ///
+    /// 目标程序吞 ⌘V（游戏 / 终端）时的兜底（规划 7.3-㉒），与 Windows 的
+    /// `KEYEVENTF_UNICODE` 同位：给每个字符造一个键码 0xFFFF（不对应任何实体键）的
+    /// 键盘事件，字符写在事件的 unicode string 字段（`CGEventKeyboardSetUnicodeString`），
+    /// 目标程序直接收到字符、不经过键盘布局，物理修饰键（⌃⌥⇧⌘）污染不了它。
+    /// 换行 / 制表发真实键码（Return / Tab，`\r` 跳过）——多数程序不认 Unicode 控制码。
+    pub fn type_text_unicode(text: &str) -> io::Result<()> {
+        let steps = unicode_steps(text);
+        if steps.is_empty() {
+            return Ok(());
+        }
+        for step in steps {
+            match step {
+                UnicodeStep::Key(k) => tap(k),
+                UnicodeStep::Chars(units) => post_unicode(&units)?,
+            }
+        }
+        Ok(())
+    }
+
+    /// 文本直发的单个步骤（拆分逻辑可单测）：真实按键，或一组 UTF-16 码元。
+    #[derive(Debug, PartialEq, Eq)]
+    enum UnicodeStep {
+        Key(Key),
+        Chars(Vec<u16>),
+    }
+
+    /// 把文本拆成直发步骤：`\n`→Return、`\t`→Tab、`\r` 跳过，其余每字符一组码元
+    /// （BMP 外字符的代理对整组放进同一个事件，由系统 / 目标程序拼回）。
+    fn unicode_steps(text: &str) -> Vec<UnicodeStep> {
+        let mut steps = Vec::new();
+        // 一个 char 最多两个 UTF-16 码元（char::encode_utf16 写缓冲区，非迭代器）。
+        let mut buf = [0u16; 2];
+        for ch in text.chars() {
+            match ch {
+                '\r' => {}
+                '\n' => steps.push(UnicodeStep::Key(Key::Enter)),
+                '\t' => steps.push(UnicodeStep::Key(Key::Tab)),
+                _ => steps.push(UnicodeStep::Chars(ch.encode_utf16(&mut buf).to_vec())),
+            }
+        }
+        steps
+    }
+
+    /// 发一个「无实体键」的字符事件（down 带码元 + up）。事件造不出来按失败上报——
+    /// 与 Windows 版对 `SendInput` 被拦截的上报同口径，别让「贴不出」变成无声无息。
+    fn post_unicode(units: &[u16]) -> io::Result<()> {
+        let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+            return Err(io::Error::other("CGEventSource 创建失败"));
+        };
+        let down = CGEvent::new_keyboard_event(source, 0xFFFF, true)
+            .map_err(|_| io::Error::other("字符事件创建失败"))?;
+        down.set_string_from_utf16_unchecked(units);
+        down.post(CGEventTapLocation::HID);
+        // up 事件不带字符串、失败不值得报：字符已送出，只影响「按住」时长的口径。
+        if let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) {
+            if let Ok(up) = CGEvent::new_keyboard_event(source, 0xFFFF, false) {
+                up.post(CGEventTapLocation::HID);
+            }
+        }
+        Ok(())
+    }
+
     /// 读取剪贴板文本（用于「转大小写」动作：复制选中 → 读剪贴板 → 转换 → 粘贴）。
     pub fn get_clipboard_text() -> io::Result<String> {
         let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
@@ -1136,6 +1200,27 @@ pub mod simulate {
                 return false;
             }
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[cfg(test)]
+    mod unicode_tests {
+        use super::*;
+
+        #[test]
+        fn unicode_steps_split() {
+            // \r\n 只打一次回车；换行 / 制表发真实键码。
+            assert_eq!(unicode_steps("\r\n"), vec![UnicodeStep::Key(Key::Enter)]);
+            assert_eq!(unicode_steps("\t"), vec![UnicodeStep::Key(Key::Tab)]);
+            // 普通字符与 BMP 外字符（emoji，代理对整组进同一事件）。
+            assert_eq!(
+                unicode_steps("a\u{1F600}"),
+                vec![
+                    UnicodeStep::Chars(vec![0x61]),
+                    UnicodeStep::Chars(vec![0xD83D, 0xDE00]),
+                ]
+            );
+            assert!(unicode_steps("").is_empty());
         }
     }
 }

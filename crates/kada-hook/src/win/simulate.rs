@@ -1,8 +1,10 @@
 //! 输入注入：按键/组合键/文本。
 //!
-//! 文本走剪贴板 + `Ctrl+V`（对中文等 Unicode 最稳）；副作用是短暂占用并
-//! 恢复剪贴板。`// ponytail: 若目标程序吞粘贴（游戏/终端），后续可用
-//! KEYEVENTF_UNICODE 直发兜底，两者加开关。
+//! 文本有两种注入方式（规划 7.3-㉒，按 `Settings.text_inject_mode` 二选一）：
+//! - [`type_text`]：剪贴板 + `Ctrl+V` 粘贴（默认，对中文等 Unicode 最稳）；副作用是
+//!   短暂占用并恢复剪贴板。
+//! - [`type_text_unicode`]：`KEYEVENTF_UNICODE` 逐字符直发，不经过剪贴板——目标程序
+//!   吞粘贴（游戏 / 终端）时的兜底。
 
 use std::io;
 use std::time::Duration;
@@ -93,7 +95,7 @@ pub fn chord(keys: &[Key]) {
     }
 }
 
-/// 把文本粘贴到当前焦点控件。
+/// 把文本粘贴到当前焦点控件（剪贴板方式，默认）。
 pub fn type_text(text: &str) -> io::Result<()> {
     if text.is_empty() {
         return Ok(());
@@ -109,6 +111,69 @@ pub fn type_text(text: &str) -> io::Result<()> {
         let _ = cb.set_text(p);
     }
     Ok(())
+}
+
+/// 把文本逐字符直发到当前焦点控件（`KEYEVENTF_UNICODE`，不经过剪贴板）。
+///
+/// 目标程序吞剪贴板粘贴（游戏 / 终端）时的兜底（规划 7.3-㉒）：每个 UTF-16 码元合成
+/// 一对按下/抬起事件（`wVk=0`、`wScan=码元`），目标程序直接收到字符、不经过键盘布局，
+/// 物理修饰键（Ctrl/Alt 等）污染不了它，也就无需先等修饰键释放。BMP 外字符（emoji 等）
+/// 的代理对按两个码元连发，由目标程序自行拼回。全部事件一次 `SendInput` 送入；被安全
+/// 桌面 / UIPI 拦下（返回数不足）按失败上报——粘贴路径遇拦截只会「贴不出」，这里能
+/// 把失败讲出来。
+pub fn type_text_unicode(text: &str) -> io::Result<()> {
+    let events = unicode_key_events(text);
+    if events.is_empty() {
+        return Ok(());
+    }
+    let len = events.len();
+    let sent = unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize != len {
+        return Err(io::Error::other(format!(
+            "SendInput 只送出 {sent}/{len} 个字符事件（可能被安全桌面 / 提权窗口拦截）"
+        )));
+    }
+    Ok(())
+}
+
+/// 纯事件构造（可单测）：文本 → `KEYEVENTF_UNICODE` 键盘事件序列（按下+抬起成对）。
+fn unicode_key_events(text: &str) -> Vec<INPUT> {
+    let mut events: Vec<INPUT> = Vec::new();
+    for unit in text.encode_utf16() {
+        match unit {
+            // \r\n 的 \r 跳过：回车由 \n 发，两遍会打两次回车。
+            0x0D => {}
+            // 换行 / 制表发真实虚拟键：多数程序不认 Unicode 控制码（0x0A/0x0D）。
+            0x0A | 0x09 => {
+                let vk = key_to_vk(if unit == 0x0A { Key::Enter } else { Key::Tab });
+                if let Some(vk) = vk {
+                    events.push(keyboard_input(vk, KEYBD_EVENT_FLAGS(0)));
+                    events.push(keyboard_input(vk, KEYEVENTF_KEYUP));
+                }
+            }
+            u => {
+                events.push(unicode_input(u, KEYEVENTF_UNICODE));
+                events.push(unicode_input(u, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+            }
+        }
+    }
+    events
+}
+
+/// 一个 `KEYEVENTF_UNICODE` 字符事件（`wVk=0`，`wScan=UTF-16 码元`）。
+fn unicode_input(unit: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: unit,
+                time: 0,
+                dwExtraInfo: 0,
+                dwFlags: flags,
+            },
+        },
+    }
 }
 
 /// 读取剪贴板文本（用于「转大小写」动作：复制选中 → 读剪贴板 → 转换 → 粘贴）。
@@ -149,5 +214,42 @@ fn keyboard_input(w_vk: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
                 dwFlags: flags,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 取事件关键字段（INPUT 不支持 PartialEq，借联合体读字段拼视图）。
+    fn key_of(input: &INPUT) -> (u16, u16, KEYBD_EVENT_FLAGS) {
+        let ki = unsafe { input.Anonymous.ki };
+        (ki.wVk.0, ki.wScan, ki.dwFlags)
+    }
+
+    #[test]
+    fn unicode_events_shape() {
+        // 普通字符：按下+抬起成对，wVk=0、wScan=UTF-16 码元。
+        let ev = unicode_key_events("a");
+        assert_eq!(ev.len(), 2);
+        assert_eq!(key_of(&ev[0]), (0, 'a' as u16, KEYEVENTF_UNICODE));
+        assert_eq!(key_of(&ev[1]), (0, 'a' as u16, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+
+        // BMP 外字符（emoji）：按两个代理码元连发，由目标程序拼回。
+        let ev = unicode_key_events("\u{1F600}");
+        assert_eq!(ev.len(), 4);
+        assert_eq!(key_of(&ev[0]).1, 0xD83D);
+        assert_eq!(key_of(&ev[2]).1, 0xDE00);
+
+        // \n / \t 发真实虚拟键（wScan=0），\r 跳过（\r\n 只打一次回车）。
+        let (vk_enter, vk_tab) = (key_to_vk(Key::Enter).unwrap(), key_to_vk(Key::Tab).unwrap());
+        let ev = unicode_key_events("x\r\ny\t");
+        assert_eq!(ev.len(), 8, "x(2) + 回车(2) + y(2) + Tab(2)");
+        assert_eq!(key_of(&ev[2]), (vk_enter, 0, KEYBD_EVENT_FLAGS(0)));
+        assert_eq!(key_of(&ev[3]), (vk_enter, 0, KEYEVENTF_KEYUP));
+        assert_eq!(key_of(&ev[6]), (vk_tab, 0, KEYBD_EVENT_FLAGS(0)));
+
+        // 空文本不产生事件（type_text_unicode 据此直接成功返回）。
+        assert!(unicode_key_events("").is_empty());
     }
 }

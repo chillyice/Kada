@@ -1,35 +1,52 @@
-//! Linux 键盘钩子（evdev + uinput）。
+//! Linux 键盘 / 鼠标钩子（evdev + uinput）。
 //!
-//! 职责与 Windows 后端对齐：把键盘事件翻译成 [`KeyEvent`]，回调决定
+//! 职责与 Windows 后端对齐：把键盘 / 鼠标键事件翻译成 [`KeyEvent`]，回调决定
 //! [`Action`]，注入由 `simulate` 完成。
 //!
 //! 机制：
-//! - 打开 `/dev/input/event*` 中的键盘设备并用 [EVIOCGRAB] 独占抓取：被
-//!   抓设备的所有按键事件只到达我们，原事件不再进应用。
-//! - 用 `/dev/uinput` 建一个虚拟键盘，把 [`Action`] 结果转发给系统。事件
-//!   全部走我们的 uinput 设备，天然不存在"收到自己注入事件"的回环。
+//! - 打开 `/dev/input/event*` 中的键盘与鼠标设备并用 [EVIOCGRAB] 独占抓取：被
+//!   抓设备的所有事件只到达我们，原事件不再进应用。
+//! - 用 `/dev/uinput` 建一个「键盘 + 鼠标合一」的虚拟设备（键码 1..=0x2ff 已含
+//!   `BTN_*`，再加相对轴承载移动 / 滚轮），把 [`Action`] 结果与不认识的原始事件
+//!   （左右键、移动、滚轮）全部转发给系统。事件全走我们的 uinput 设备，天然不存在
+//!   「收到自己注入事件」的回环。
+//! - 鼠标键（中键 / 侧键 MB4 / MB5）与键盘键走同一套状态机；左右键 / 移动 / 滚轮
+//!   不进键模型、原样转发（与 Windows 钩子「只处理中键与侧键」同口径）。
 //! - 自动重复：物理键长按时内核产生 value=2 的事件，`Allow` 原样转发、
 //!   `Replace` 按目标键转发，长按连发不丢。
 //! - 修饰键状态按事件流维护（`MODS_DOWN`），吞键/改键不影响真实状态位，
 //!   与 Windows 的 `GetKeyState` 语义对齐。
 //!
+//! 权限（7.3-⑱）：抓取需要 root，或 `input` 组 + udev 放行 `/dev/uinput`。起不来时
+//! [`start`] 返回**能照抄的指引**（分清「读不了键盘」「uinput 不在」「被其它工具独占」），
+//! 壳层把它记进消息中心、应用照常启动，用户看得见「为什么按键全不响」。
+//!
 //! 已知天花板（升级路径）：
-//! - 抓取需要 root 或 `input` 组 + udev 放开 `/dev/uinput`；无权限时
-//!   `start` 报错，能读到的其它键盘静默跳过。
-//! - 热插拔不在监听列表里（重启应用即可）；Wayland 上同一套代码可用。
+//! - 触摸板 / 触摸屏 / 指点杆**不抓取**：多点与 ABS 协议原样转发做不到，抓了等于废掉；
+//!   它们的中键 / 侧键不能作触发键（键盘与真鼠标不受影响）。
+//! - 热插拔不在监听列表里（重启应用即可；7.4-㉜）；Wayland 上同一套代码可用。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use evdev::{AttributeSet, Device, EventType, InputEvent, KeyCode, VirtualDevice};
+use evdev::{
+    AttributeSet, Device, EventType, InputEvent, KeyCode, PropType, RelativeAxisCode,
+    uinput::VirtualDevice,
+};
 
 use kada_core::{FrontmostContext, Key, Modifier};
 
-/// 一次键盘事件。
+/// Linux errno（grab / open 失败原因判定用；跨架构取值一致）。
+const EPERM: i32 = 1;
+const ENOENT: i32 = 2;
+const EACCES: i32 = 13;
+const EBUSY: i32 = 16;
+
+/// 一次键盘/鼠标键事件。
 #[derive(Clone, Debug)]
 pub enum KeyEvent {
     Down { key: Key, mods: BTreeSet<Modifier>, repeat: bool },
@@ -56,8 +73,25 @@ static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(Ha
 static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 物理按下的修饰键码。吞键/改键不动它（与 Windows 的 GetKeyState 对齐）。
 static MODS_DOWN: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-/// uinput 虚拟键盘：`start` 创建，事件转发与 simulate 共用。
+/// uinput 虚拟设备（键盘 + 鼠标合一）：`start` 创建，事件转发与 simulate 共用。
 static VDEV: LazyLock<Mutex<Option<VirtualDevice>>> = LazyLock::new(|| Mutex::new(None));
+/// `start` 是否成功（抓到设备 + 虚拟设备建成）。壳层据此拦「录制不可用」。
+static STARTED: AtomicBool = AtomicBool::new(false);
+/// 「设备线断过」累计次数（诊断 / 壳层输入状态复位用）。
+static REINSTALLS: AtomicU64 = AtomicU64::new(0);
+
+/// 输入层是否已启动。Linux 与 macOS 一样存在「起不来但应用该照常活着」的场景
+/// （权限没配好）：如实报 false，录制入口给出解释而不是录到一片空白。
+pub fn hooks_supported() -> bool {
+    STARTED.load(Ordering::Relaxed)
+}
+
+/// 「设备线断过」计数：设备拔出等导致事件丢失时 +1。壳层 `ResetWatch` 轮询本计数
+/// 跟着复位 `Engine` 状态——拔掉的设备上还按着的键永远等不到抬起，状态机会一直以为
+/// 「Ctrl 还按着」。与 Windows 的钩子重装计数同一通道、同一语义。
+pub fn reinstall_count() -> u64 {
+    REINSTALLS.load(Ordering::Relaxed)
+}
 
 /// 钩子句柄。Drop 时停止钩子线程并回收。
 pub struct HookHandle {
@@ -74,38 +108,64 @@ impl Drop for HookHandle {
     }
 }
 
-/// 安装全局键盘钩子。处理函数在钩子线程回调内同步执行。
+/// 安装全局键盘/鼠标钩子。处理函数在钩子线程回调内同步执行。
+///
+/// 起不来时返回的 [`io::Error`] 带**能照抄的修复指引**（7.3-⑱）：分清没权限读键盘、
+/// `/dev/uinput` 缺失 / 没权限、设备被其它独占工具占用。错误串直接面向用户，别再包一层。
 pub fn start<F>(handler: F) -> io::Result<HookHandle>
 where
     F: FnMut(KeyEvent) -> Action + Send + 'static,
 {
     *HANDLER.lock().unwrap() = Some(Box::new(handler));
 
-    // 抓取所有键盘设备；无权限/已被其它 grab 占用的静默跳过。
+    // 抓取键盘与鼠标设备。能枚举到 = 打开成功（权限够）；抓取失败按 errno 分诊。
     let mut devices: Vec<Device> = Vec::new();
+    let mut saw_keyboard = false;
+    let mut keyboard_busy = false;
     for (_, mut dev) in evdev::enumerate() {
-        if is_keyboard(&dev) && dev.grab().is_ok() {
-            devices.push(dev);
+        if is_keyboard(&dev) {
+            saw_keyboard = true;
+            match dev.grab() {
+                Ok(()) => devices.push(dev),
+                Err(e) if e.raw_os_error() == Some(EBUSY) => keyboard_busy = true,
+                Err(e) => eprintln!("kada-hook: 键盘抓取失败，跳过：{e}"),
+            }
+        } else if is_pointer(&dev) {
+            // 鼠标抓不到不致命：中键/侧键改键不可用，键盘照常工作。
+            match dev.grab() {
+                Ok(()) => devices.push(dev),
+                Err(e) => eprintln!("kada-hook: 鼠标抓取失败，跳过：{e}"),
+            }
         }
     }
     if devices.is_empty() {
         *HANDLER.lock().unwrap() = None;
-        return Err(io::Error::other(
-            "未能抓取任何键盘：需要 root，或加入 input 组并允许访问 /dev/uinput",
-        ));
+        return Err(start_error(saw_keyboard, keyboard_busy));
     }
 
-    // 虚拟键盘：声明全部键盘键码，保证转发的任意键都被内核接受。
+    // 虚拟设备：键盘 + 鼠标合一。键码 1..=0x2ff 覆盖全部 KEY_* 与 BTN_*（鼠标键注入
+    // 不再是缺口，7.3-㉔）；相对轴 0x00..=0x0f 覆盖移动 / 滚轮（含高分辨率滚轮）。
     let keys: AttributeSet<KeyCode> = (1..=0x2ff).map(KeyCode).collect();
-    let vdev = VirtualDevice::builder()?
-        .name("kada-virtual-keyboard")
-        .with_keys(&keys)?
-        .build()?;
+    let rels: AttributeSet<RelativeAxisCode> = (0x00..=0x0f).map(RelativeAxisCode).collect();
+    let vdev = match VirtualDevice::builder()
+        .map_err(|e| uinput_error(&e))?
+        .name("kada-virtual-input")
+        .with_keys(&keys)
+        .and_then(|b| b.with_relative_axes(&rels))
+        .and_then(|b| b.build())
+    {
+        Ok(v) => v,
+        Err(e) => {
+            *HANDLER.lock().unwrap() = None;
+            return Err(uinput_error(&e));
+        }
+    };
     *VDEV.lock().unwrap() = Some(vdev);
 
     for dev in &devices {
         dev.set_nonblocking(true)?;
     }
+    STARTED.store(true, Ordering::Relaxed);
 
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = Arc::clone(&stop);
@@ -119,15 +179,109 @@ where
     Ok(HookHandle { stop, join: Some(join) })
 }
 
+/// 组装「一个设备都没抓到」的错误（[`start`]）。
+fn start_error(saw_keyboard: bool, keyboard_busy: bool) -> io::Error {
+    if saw_keyboard && keyboard_busy {
+        return io::Error::other(
+            "键盘设备被其它程序独占（另一个 Kada 实例，或 keyd / xremap 等改键工具在运行），\n\
+             关掉它们后重启 Kada",
+        );
+    }
+    if !saw_keyboard && keyboard_files_exist() {
+        // /dev/input/event* 就在那里、却一个都枚举不到 = 连打开的权限都没有
+        // （无权限的设备在 evdev 枚举阶段就被静默跳过）。
+        return io::Error::other(
+            "无权限读取键盘设备（/dev/input/event*）。把当前用户加入 input 组并注销重登：\n\
+             sudo usermod -aG input $USER\n\
+             然后重启 Kada。加组后仍提示无权限的话，检查桌面会话是否重新登录过（组只在新会话生效）",
+        );
+    }
+    io::Error::other("未发现可用的键盘设备（/dev/input/event* 下没有键盘）")
+}
+
+/// `/dev/input` 下是否存在 event* 设备文件（权限分诊用：文件在而枚举不到 = 打不开）。
+fn keyboard_files_exist() -> bool {
+    let Ok(rd) = std::fs::read_dir("/dev/input") else { return false };
+    rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("event"))
+}
+
+/// `/dev/uinput` 建不出来时的错误（[`start`]）：缺失与无权限各给一条能照抄的修复命令。
+fn uinput_error(e: &io::Error) -> io::Error {
+    match e.raw_os_error() {
+        Some(ENOENT) => io::Error::other(format!(
+            "系统没有 /dev/uinput（虚拟输入设备）。加载 uinput 内核模块并开机自动加载：\n\
+             sudo modprobe uinput\n\
+             echo uinput | sudo tee /etc/modules-load.d/uinput.conf\n\
+             （原始错误：{e}）"
+        )),
+        Some(EACCES) | Some(EPERM) => io::Error::other(format!(
+            "无权限写 /dev/uinput。创建 udev 规则放行（当前用户须已在 input 组，\
+             没有就先执行 sudo usermod -aG input $USER）：\n\
+             echo 'KERNEL==\"uinput\", MODE=\"0660\", GROUP=\"input\"' | sudo tee /etc/udev/rules.d/60-kada.rules\n\
+             sudo udevadm control --reload && sudo udevadm trigger\n\
+             然后注销重登并重启 Kada（原始错误：{e}）"
+        )),
+        _ => io::Error::other(format!("创建虚拟输入设备失败：{e}")),
+    }
+}
+
+/// 是不是键盘：报出字母键区（排除只有几个功能键的电源 / 蓝牙配对设备）。
+fn is_keyboard(dev: &Device) -> bool {
+    let Some(keys) = dev.supported_keys() else {
+        return false;
+    };
+    keys.contains(KeyCode::KEY_A) && keys.contains(KeyCode::KEY_Z)
+}
+
+/// 是不是该抓取的「真鼠标」：有相对移动轴 + 左键，且**不是**触摸板 / 触摸屏 /
+/// 指点杆。触摸类设备协议复杂（多点、ABS 坐标、压力），原样转发做不到，抓了等于
+/// 废掉整个触摸板，一律不碰（7.3-㉔ 的边界：这些设备的中键 / 侧键不能作触发键）。
+fn is_pointer(dev: &Device) -> bool {
+    let Some(rel) = dev.supported_relative_axes() else { return false };
+    if !(rel.contains(RelativeAxisCode::REL_X) && rel.contains(RelativeAxisCode::REL_Y)) {
+        return false;
+    }
+    let Some(keys) = dev.supported_keys() else { return false };
+    if !keys.contains(KeyCode::BTN_LEFT) {
+        return false;
+    }
+    let props = dev.properties();
+    // INPUT_PROP_* 标记；老内核没属性时靠触摸类按键（BTN_TOOL_FINGER / BTN_TOUCH）兜底。
+    let touch_props = props.contains(PropType::POINTER)
+        && (props.contains(PropType::DIRECT)
+            || props.contains(PropType::BUTTONPAD)
+            || props.contains(PropType::SEMI_MT)
+            || props.contains(PropType::TOPBUTTONPAD));
+    if touch_props
+        || props.contains(PropType::POINTING_STICK)
+        || props.contains(PropType::ACCELEROMETER)
+        || keys.contains(KeyCode::BTN_TOOL_FINGER)
+        || keys.contains(KeyCode::BTN_TOUCH)
+    {
+        return false;
+    }
+    true
+}
+
 fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
     while !stop.load(Ordering::Relaxed) {
         let mut i = 0;
         while i < devices.len() {
-            match devices[i].fetch_events() {
+            // 先 collect 再进 match：fetch_events 的迭代器借住 devices[i]，
+            // 匹配臂里的 devices.remove(i) 会撞上第二次可变借用。
+            let fetched: io::Result<Vec<InputEvent>> =
+                devices[i].fetch_events().map(|it| it.collect());
+            match fetched {
                 Ok(events) => {
                     for ev in events {
-                        if ev.event_type() == EventType::KEY {
-                            handle(ev.code(), ev.value());
+                        match ev.event_type() {
+                            EventType::KEY => handle_key(ev.code(), ev.value()),
+                            // 移动 / 滚轮：不进键模型，原样转发（虚拟设备已声明相对轴）。
+                            EventType::RELATIVE => {
+                                forward_raw(EventType::RELATIVE.0, ev.code(), ev.value())
+                            }
+                            // SYN 由 emit 自动补；LED / SND 等不转发（用户态用不到）。
+                            _ => {}
                         }
                     }
                     i += 1;
@@ -135,6 +289,7 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => i += 1,
                 Err(_) => {
                     devices.remove(i); // 设备拔出等
+                    on_device_lost();
                 }
             }
         }
@@ -143,10 +298,27 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
     Ok(())
 }
 
-fn handle(code: u16, value: i32) {
+/// 设备断线（拔出 / USB 抖动）：这台设备上还按着的键永远等不到抬起，状态机却会一直
+/// 以为「Ctrl 还按着」，之后所有快捷键误判。就地复位三张表（与 Windows 重装钩子
+/// [`win`] 的 `reset_runtime_state` 同口径）并把已注入的目标键补一个 up，计一次
+/// 「线断过」让壳层 `ResetWatch` 跟着复位 `Engine`（序列 / 和弦等等待态）。
+fn on_device_lost() {
+    for (_, target) in REPLACED_DOWN.lock().unwrap().drain() {
+        if let Some(tc) = key_to_code(target) {
+            forward_raw(EventType::KEY.0, tc, 0);
+        }
+    }
+    SWALLOWED.lock().unwrap().clear();
+    MODS_DOWN.lock().unwrap().clear();
+    REINSTALLS.fetch_add(1, Ordering::Relaxed);
+    eprintln!("kada-hook: 输入设备断开，已复位按键状态（计数 {}）", reinstall_count());
+}
+
+fn handle_key(code: u16, value: i32) {
     let Some(key) = code_to_key(code) else {
-        // 未知键（媒体键等）：原样转发，保持设备功能可用。
-        forward_raw(code, value);
+        // 未知键（媒体键等）与左右键（BTN_LEFT/RIGHT 不进键模型）：原样转发，
+        // 保持设备功能可用。
+        forward_raw(EventType::KEY.0, code, value);
         return;
     };
     if value == 0 {
@@ -169,7 +341,7 @@ fn press(key: Key, code: u16, value: i32) {
         }
     };
     match action {
-        Action::Allow => forward_raw(code, value),
+        Action::Allow => forward_raw(EventType::KEY.0, code, value),
         Action::Block => {
             SWALLOWED.lock().unwrap().insert(key);
         }
@@ -177,7 +349,7 @@ fn press(key: Key, code: u16, value: i32) {
             SWALLOWED.lock().unwrap().insert(key);
             REPLACED_DOWN.lock().unwrap().insert(key, target);
             if let Some(tc) = key_to_code(target) {
-                forward_raw(tc, value);
+                forward_raw(EventType::KEY.0, tc, value);
             }
         }
     }
@@ -191,7 +363,7 @@ fn release(code: u16, key: Key) {
     if swallowed {
         if let Some(target) = REPLACED_DOWN.lock().unwrap().remove(&key) {
             if let Some(tc) = key_to_code(target) {
-                forward_raw(tc, 0);
+                forward_raw(EventType::KEY.0, tc, 0);
             }
         }
     }
@@ -200,7 +372,7 @@ fn release(code: u16, key: Key) {
         let _ = f(KeyEvent::Up { key, mods: current_mods(key) });
     }
     if !swallowed {
-        forward_raw(code, 0);
+        forward_raw(EventType::KEY.0, code, 0);
     }
 }
 
@@ -245,21 +417,15 @@ fn key_as_modifier(k: Key) -> Option<Modifier> {
     }
 }
 
-fn is_keyboard(dev: &Device) -> bool {
-    let Some(keys) = dev.supported_keys() else {
-        return false;
-    };
-    keys.contains(KeyCode::KEY_A) && keys.contains(KeyCode::KEY_Z)
-}
-
-fn forward_raw(code: u16, value: i32) {
+fn forward_raw(type_: u16, code: u16, value: i32) {
     let mut v = VDEV.lock().unwrap();
     if let Some(vdev) = v.as_mut() {
-        let _ = vdev.emit(&[InputEvent::new(EventType::KEY.0, code, value)]);
+        let _ = vdev.emit(&[InputEvent::new(type_, code, value)]);
     }
 }
 
-/// [`Key`] → evdev 键码。通用修饰键归一到左键（与 Windows 的 VK_* 归一一致）。
+/// [`Key`] → evdev 键码。通用修饰键归一到左键（与 Windows 的 VK_* 归一一致）；
+/// 鼠标键映射到 `BTN_*`（键事件类型，虚拟设备已声明，注入与改键目标都不再是缺口）。
 pub fn key_to_code(k: Key) -> Option<u16> {
     use Key::*;
     let code = match k {
@@ -312,13 +478,17 @@ pub fn key_to_code(k: Key) -> Option<u16> {
         NumpadMultiply => KeyCode::KEY_KPASTERISK, NumpadDivide => KeyCode::KEY_KPSLASH,
         NumpadDecimal => KeyCode::KEY_KPDOT, NumpadEnter => KeyCode::KEY_KPENTER,
         NumLock => KeyCode::KEY_NUMLOCK,
-        // 鼠标键注入需虚拟鼠标设备（uinput REL/BTN），Linux 侧暂未实现，返回 None。
-        MouseMiddle | MouseBack | MouseForward => return None,
+        // 鼠标键：BTN_* 是键事件类型（码位在 0x110..0x117 键码区），改键目标与
+        // Keys 动作注入都走虚拟设备的键能力（7.3-㉔）。
+        MouseMiddle => KeyCode::BTN_MIDDLE,
+        MouseBack => KeyCode::BTN_SIDE,
+        MouseForward => KeyCode::BTN_EXTRA,
     };
     Some(code.0)
 }
 
-/// evdev 键码 → [`Key`]（左右修饰键归一）。
+/// evdev 键码 → [`Key`]（左右修饰键归一）。中键 / 侧键来自鼠标设备；左右键
+/// （`BTN_LEFT` / `BTN_RIGHT`）不进键模型——返回 `None` 走原样转发。
 fn code_to_key(code: u16) -> Option<Key> {
     use Key::*;
     Some(match code {
@@ -390,6 +560,9 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::KEY_KPDOT.0 => NumpadDecimal,
         c if c == KeyCode::KEY_KPENTER.0 => NumpadEnter,
         c if c == KeyCode::KEY_NUMLOCK.0 => NumLock,
+        c if c == KeyCode::BTN_MIDDLE.0 => MouseMiddle,
+        c if c == KeyCode::BTN_SIDE.0 => MouseBack,
+        c if c == KeyCode::BTN_EXTRA.0 => MouseForward,
         _ => return None,
     })
 }
@@ -397,8 +570,9 @@ fn code_to_key(code: u16) -> Option<Key> {
 /// 取当前前台窗口上下文（进程名 + 窗口标题），供「按前台应用/窗口」类条件求值。
 ///
 /// Linux 下取前台窗口依赖桌面环境：X11 可用 `_NET_ACTIVE_WINDOW`（需 `xprop`），
-/// Wayland 无通用查询协议。当前返回 None（前台类条件在此平台恒不成立），后续
-/// 按规划接 X11 + 已知 WM 适配（见 `docs/竞品分析与优化规划.md` 阶段二第 3 项）。
+/// Wayland 无通用查询协议。当前返回 None（前台类条件在此平台恒不成立，冲突检测
+/// 会据 [`kada_core::PlatformCaps`] 标出，见 7.3-⑲），后续按规划接 X11 + 已知 WM
+/// 适配（见 `docs/竞品分析与优化规划.md` 阶段二第 3 项）。
 pub fn frontmost_context() -> Option<FrontmostContext> {
     None
 }
@@ -468,6 +642,16 @@ pub mod simulate {
         Ok(())
     }
 
+    /// 把文本逐字符直发（Linux 无对应通道，回落剪贴板粘贴）。
+    ///
+    /// 接口与 Windows / macOS 保持统一，但 uinput 虚拟设备只有键码、没有字符层
+    /// （X11 的 XTEST 键符号注入到 Wayland 又不可用），「逐字直发」在此平台没有
+    /// 通用实现——落回 [`type_text`] 的剪贴板粘贴。规划 7.3-㉒ 的直发兜底只在
+    /// Windows / macOS 真正生效。
+    pub fn type_text_unicode(text: &str) -> io::Result<()> {
+        type_text(text)
+    }
+
     /// 读取剪贴板文本（用于「转大小写」动作：复制选中 → 读剪贴板 → 转换 → 粘贴）。
     pub fn get_clipboard_text() -> io::Result<String> {
         let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
@@ -502,8 +686,13 @@ mod tests {
             let code = key_to_code(k).unwrap();
             assert_eq!(code_to_key(code), Some(k), "roundtrip {}", key_name(k));
         }
-        // 鼠标键在 Linux 侧暂未实现注入（需虚拟鼠标设备），返回 None。
-        assert_eq!(key_to_code(Key::MouseBack), None);
+        // 鼠标键注入与识别（7.3-㉔）：BTN_* 双向映射，左右键不进键模型。
+        for k in [Key::MouseMiddle, Key::MouseBack, Key::MouseForward] {
+            let code = key_to_code(k).unwrap();
+            assert_eq!(code_to_key(code), Some(k), "mouse roundtrip {}", key_name(k));
+        }
+        assert_eq!(code_to_key(KeyCode::BTN_LEFT.0), None);
+        assert_eq!(code_to_key(KeyCode::BTN_RIGHT.0), None);
     }
 
     #[test]
@@ -513,5 +702,20 @@ mod tests {
         assert_eq!(code_modifier(KeyCode::KEY_RIGHTALT.0), Some(Modifier::Alt));
         assert_eq!(code_modifier(KeyCode::KEY_LEFTMETA.0), Some(Modifier::Meta));
         assert_eq!(code_modifier(KeyCode::KEY_BACKSPACE.0), None);
+    }
+
+    /// 设备断线复位（7.3-⑱）：三张表清空、被替换的目标键补 up（经假 VDEV 验证）。
+    /// 真设备路径（poll_loop 的 Err 分支）只能真机验证，这里锁行为口径。
+    #[test]
+    fn device_lost_resets_state() {
+        SWALLOWED.lock().unwrap().insert(Key::MouseBack);
+        REPLACED_DOWN.lock().unwrap().insert(Key::K, Key::Control);
+        MODS_DOWN.lock().unwrap().insert(KeyCode::KEY_LEFTCTRL.0);
+        let before = reinstall_count();
+        on_device_lost();
+        assert!(SWALLOWED.lock().unwrap().is_empty());
+        assert!(REPLACED_DOWN.lock().unwrap().is_empty());
+        assert!(MODS_DOWN.lock().unwrap().is_empty());
+        assert_eq!(reinstall_count(), before + 1);
     }
 }

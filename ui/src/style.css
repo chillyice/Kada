@@ -265,8 +265,18 @@ body {
 }
 
 .row:hover .row-more,
-.folder-row:hover .row-more {
+.folder-row:hover .row-more,
+.row:focus-within .row-more,
+.folder-row:focus-within .row-more,
+.row-more:focus {
   opacity: 1;
+}
+
+/* 键盘聚焦：行画内描边焦点环（与拖拽 drop-into 同款），否则 Tab 到行上看不出选中谁 */
+.row:focus-visible,
+.folder-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 .row-more:hover {
@@ -933,6 +943,8 @@ body {
   display: flex;
   gap: 8px;
   align-items: center;
+  /* 内联校验的小字要换行排到输入框下面 */
+  flex-wrap: wrap;
 }
 
 .action-input,
@@ -984,12 +996,19 @@ body {
   position: relative;
 }
 
-.help:hover {
+.help:hover,
+.help:focus-visible {
   color: var(--text);
   border-color: var(--muted);
 }
 
-.help:hover::after {
+.help:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.help:hover::after,
+.help:focus-visible::after {
   content: attr(data-tip);
   position: absolute;
   bottom: calc(100% + 8px);
@@ -1504,6 +1523,164 @@ body:has(.hud-box) {
   border-color: rgba(214, 164, 66, 0.55);
 }
 
+/* 快捷键提示框（hints 窗口，独立常显浮窗；见规划 7.3-㊳） */
+/* 同 toast / hud：transparent 窗口的 body 必须透明，否则会显示成实心深色矩形 */
+body:has(.hints-panel) {
+  background: transparent;
+}
+
+/* 面板尺寸由内容决定（窗口大小 = 量出来的面板 + bootstrapHints 里留的 10px 边），
+   所以宽度写成定值、高度随内容；整块面板再按 `--hints-scale` 等比缩放——字号是基准，
+   间距 / 宽度 / 圆角一律用 em，于是「滚轮调大小」只是一个量。
+   注意：这个变量只能由 JS 设在 :root 上（用 var 的缺省值兜底），**不能在这里再声明一次**
+   ——本地声明会遮蔽继承来的值，滚轮改了 :root 也没用（字体死活不动）。 */
+.hints-panel {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  width: 21em;
+  font-size: calc(13px * var(--hints-scale, 1));
+  color: var(--text);
+  background: rgba(22, 26, 34, 0.96);
+  border: 1px solid var(--line);
+  border-radius: 0.85em;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  user-select: none;
+}
+
+.hints-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.55em 0.7em 0.5em 0.9em;
+  border-bottom: 1px solid var(--line);
+  cursor: grab;
+}
+
+.hints-panel.dragging .hints-head {
+  cursor: grabbing;
+}
+
+.hints-title {
+  flex: 1;
+  min-width: 0;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #ffd9cf;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hints-close {
+  flex: none;
+  width: 1.6em;
+  height: 1.6em;
+  font-size: 1.1em;
+  line-height: 1;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-radius: 0.4em;
+  cursor: pointer;
+}
+
+.hints-close:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 条目多时列表自身可滚（Shift+滚轮或拖滚动条）。上限由 bootstrapHints 按**屏幕**高度
+   算好写进 style.maxHeight——不能用 100vh：窗口高度正是要按内容量出来的东西，用 vh 做上限
+   会变成自增长循环。 */
+.hints-body {
+  padding: 0.4em 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line) transparent;
+}
+
+.hints-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.hints-body::-webkit-scrollbar-thumb {
+  background: var(--line);
+  border-radius: 4px;
+}
+
+.hints-group + .hints-group {
+  margin-top: 0.35em;
+  padding-top: 0.35em;
+  border-top: 1px dashed rgba(255, 255, 255, 0.07);
+}
+
+.hints-group-title {
+  padding: 0.15em 0.9em;
+  font-size: 0.8em;
+  color: var(--muted);
+  letter-spacing: 0.06em;
+}
+
+.hints-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6em;
+  padding: 0.22em 0.9em;
+  white-space: nowrap;
+}
+
+.hints-keys {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3em;
+}
+
+.hints-key {
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 0.88em;
+  line-height: 1.35;
+  padding: 0.05em 0.4em;
+  color: #e8eaf0;
+  background: #262b35;
+  border: 1px solid #3a4150;
+  border-bottom-width: 2px;
+  border-radius: 0.35em;
+}
+
+.hints-sep {
+  color: var(--muted);
+  font-size: 0.9em;
+}
+
+.hints-label {
+  flex: 1;
+  min-width: 0;
+  color: #cfd5e1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hints-empty {
+  padding: 0.6em 0.9em;
+  color: var(--muted);
+}
+
+.hints-foot {
+  padding: 0.35em 0.9em 0.45em;
+  font-size: 0.75em;
+  color: var(--muted);
+  border-top: 1px solid var(--line);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ---------- 消息中心 ---------- */
 .badge {
   position: absolute;
@@ -1795,4 +1972,74 @@ pre.msg-v {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* ---- 7.3-⑳ 列表筛选 / 批量启停 / 内联校验 ---- */
+#filter-bar {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+
+#filter-bar button {
+  flex: 1;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+#filter-bar button.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-dim);
+}
+
+#batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+#batch-bar .flex-spacer {
+  flex: 1;
+}
+
+#batch-bar button {
+  padding: 3px 8px;
+  font-size: 12px;
+}
+
+#batch-bar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#batch-bar button:disabled:hover {
+  color: var(--muted);
+  border-color: var(--line);
+}
+
+#batch-bar b {
+  color: var(--text);
+}
+
+/* Ctrl+点选中（待批量操作）的行：虚线框，与「正在编辑」的实底选中区分 */
+.row.picked {
+  border-color: var(--accent);
+  border-style: dashed;
+}
+
+/* 内联校验：红边 + 行下小字（字段 :focus 会抢边框色画成 accent，故用 important 压住） */
+input.invalid,
+textarea.invalid {
+  border-color: #e5484d !important;
+}
+
+.field-error {
+  flex-basis: 100%;
+  color: #e5484d;
+  font-size: 11px;
+  line-height: 1.4;
 }
