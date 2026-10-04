@@ -29,7 +29,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
 use std::io;
 use std::mem::size_of;
-use std::sync::atomic::{AtomicIsize, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
@@ -77,6 +77,10 @@ static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
 static HOOK: AtomicIsize = AtomicIsize::new(0);
 /// 鼠标低层钩子句柄（与键盘钩子同一线程、同一消息循环）。
 static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
+/// 是否需要挂鼠标钩子：只有配置里引用了鼠标键（中键 / 侧键作触发键或改键来源）时才挂，
+/// 否则少一个全局钩子 = 更小的拦截面。由壳层按配置设置（见 [`set_mouse_enabled`]）。
+/// 默认 `true` 保险：没人显式关掉时维持旧行为（鼠标键照常可用）。
+static MOUSE_ENABLED: AtomicBool = AtomicBool::new(true);
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
@@ -185,20 +189,25 @@ fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     Ok(())
 }
 
-/// 装上键盘与鼠标两个低层钩子，并从头刷新心跳。只在钩子线程上调用。
+/// 装上键盘钩子，并在需要时（配置引用了鼠标键）一并装鼠标钩子。只在钩子线程上调用。
 fn install_hooks() -> io::Result<()> {
     let kbd = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
         .map_err(|e| io::Error::other(format!("SetWindowsHookEx 键盘钩子失败: {e}")))?;
-    let mouse = match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
-        Ok(m) => m,
-        Err(e) => {
-            // 只挂上一半等于「键盘能用、鼠标键不能用」，不如整体退回让看门狗整轮重试。
-            unsafe { _ = UnhookWindowsHookEx(kbd) };
-            return Err(io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")));
+    // 鼠标钩子按需安装：配置没过鼠标键就不挂，缩小全局拦截面（见 [`MOUSE_ENABLED`]）。
+    let mouse = if MOUSE_ENABLED.load(Ordering::Relaxed) {
+        match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
+            Ok(m) => m.0 as isize,
+            Err(e) => {
+                // 只挂上一半等于「键盘能用、鼠标键不能用」，不如整体退回让看门狗整轮重试。
+                unsafe { _ = UnhookWindowsHookEx(kbd) };
+                return Err(io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")));
+            }
         }
+    } else {
+        0
     };
     HOOK.store(kbd.0 as isize, Ordering::Relaxed);
-    MOUSE_HOOK.store(mouse.0 as isize, Ordering::Relaxed);
+    MOUSE_HOOK.store(mouse, Ordering::Relaxed);
     // 心跳从这一刻重新起算：否则「最后一次钩子事件」还停在很久以前，看门狗下一轮
     // 就会把刚装好的钩子再判成失效。
     LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
@@ -329,6 +338,15 @@ fn session_locked() -> Option<bool> {
 pub fn request_reinstall() -> bool {
     let tid = HOOK_TID.load(Ordering::Relaxed);
     tid != 0 && unsafe { PostThreadMessageW(tid, WM_APP_REINSTALL, WPARAM(0), LPARAM(0)) }.is_ok()
+}
+
+/// 告诉钩子层「配置现在（不）需要鼠标钩子」：值变了才请求重装（重装会在钩子线程上按新值
+/// 重挂，鼠标钩子随之增删）。启动前调用同样有效——此刻钩子线程还没起来，`request_reinstall`
+/// 返回 false 什么也不做，值已被记下，首次安装即按它决定。见 [`MOUSE_ENABLED`]。
+pub fn set_mouse_enabled(on: bool) {
+    if MOUSE_ENABLED.swap(on, Ordering::Relaxed) != on {
+        request_reinstall();
+    }
 }
 
 /// 自愈重装累计次数（诊断 / 冒烟测试用）。

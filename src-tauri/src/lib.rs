@@ -22,7 +22,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
     detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
-    Settings, Shortcut, Severity, TextInjectMode, Vars, SYSTEM_SHORTCUTS,
+    Settings, Shortcut, Severity, TextInjectMode, Trigger, Vars, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -64,7 +64,7 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, foreground_window, frontmost_context, hotkey_occupied, reinstall_count,
-        simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        set_mouse_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     pub fn hooks_supported() -> bool {
@@ -85,6 +85,10 @@ mod input {
     pub fn hooks_supported() -> bool {
         kada_hook::linux::hooks_supported()
     }
+
+    /// 鼠标钩子按需安装是 Windows 低层钩子（`WH_MOUSE_LL`）的优化；Linux 的鼠标键与键盘
+    /// 同走 evdev，无此开关，这里是空实现。
+    pub fn set_mouse_enabled(_on: bool) {}
 
     /// evdev 钩子没有「被系统摘除后重装」这条路（不依赖系统钩子链），0 = 没重装过；
     /// 设备拔出导致的丢事件由 `reinstall_count`（`kada-hook::linux`）计数，语义与
@@ -115,6 +119,10 @@ mod input {
     pub fn hooks_supported() -> bool {
         kada_hook::macos::accessibility_granted()
     }
+
+    /// 鼠标钩子按需安装是 Windows 低层钩子的优化；macOS 的 `CGEventTap` 本就一把抓全部
+    /// 事件，无此开关，这里是空实现。
+    pub fn set_mouse_enabled(_on: bool) {}
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -128,6 +136,9 @@ mod input {
     pub fn hooks_supported() -> bool {
         false
     }
+
+    /// 无输入层实现：无鼠标钩子可开关。
+    pub fn set_mouse_enabled(_on: bool) {}
 
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
@@ -707,6 +718,8 @@ fn spawn_engine_ticker(
         // 上一次推给界面的指示（载荷 + 指示开关）：两者任一变了才重新推。开关也参与比对，
         // 否则「关掉悬浮指示」要等到下次状态变化才生效（锁定层能让它一直挂着）。
         let mut last_status: Option<(StatusPayload, bool)> = None;
+        // 上一次「配置是否需要鼠标钩子」：变了才通知钩子层（避免每拍都发重装请求）。
+        let mut last_mouse: Option<bool> = None;
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
             let reset_reason = watch.poll();
@@ -718,7 +731,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled) = {
+            let (payload, hud_enabled, use_mouse) = {
                 let guard = cfg.read().unwrap();
                 let frozen =
                     rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused;
@@ -738,7 +751,7 @@ fn spawn_engine_ticker(
                     engine.tick(&guard, &mut SimulatedInject);
                     engine.status()
                 };
-                (build_status(&status, &guard), guard.settings.show_status_hud)
+                (build_status(&status, &guard), guard.settings.show_status_hud, config_uses_mouse(&guard))
             };
             // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
             let changed = match last_status.as_ref() {
@@ -748,6 +761,11 @@ fn spawn_engine_ticker(
             if changed {
                 publish_status(&app, &payload, hud_enabled);
                 last_status = Some((payload, hud_enabled));
+            }
+            // 鼠标钩子按需安装：配置里增删了鼠标键触发（含外部改动 / 导入）就通知钩子层重挂。
+            if last_mouse != Some(use_mouse) {
+                input::set_mouse_enabled(use_mouse);
+                last_mouse = Some(use_mouse);
             }
         }
     });
@@ -1413,15 +1431,45 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 消息中心保留的最大条数（超出丢最旧的）。命令输出是内存态、重启即清，但常驻数周不设
+/// 上限会把每条命令的全量输出都留在内存里。热串缓冲早有 64 上限，此处对齐。
+const MAX_RESULTS: usize = 200;
+/// 单条 stdout / stderr 保留的最大字节数（超出截断并加提示）。避免一条 `npm install`
+/// 之类的大输出把整份消息中心撑大。
+const MAX_RESULT_TEXT: usize = 16 * 1024;
+
+/// 把超长文本截到至多 `max` 字节，落在字符边界上（不腰断 UTF-8），并附截断提示。
+fn truncate_text(s: &mut String, max: usize) {
+    if s.len() <= max {
+        return;
+    }
+    let mut cut = max;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    s.truncate(cut);
+    s.push_str("\n…（输出过长，已截断）");
+}
+
 /// 记录一条命令结果：写入消息中心；弹窗开则唤起主窗口，否则亮未读红点。
 /// 两种情况都会向主窗口发 `command-result` 事件。
 fn commit_result(
     app: &tauri::AppHandle,
     results: &Mutex<Vec<CommandResult>>,
     unread: &AtomicBool,
-    result: CommandResult,
+    mut result: CommandResult,
 ) {
-    results.lock().unwrap().push(result.clone());
+    truncate_text(&mut result.stdout, MAX_RESULT_TEXT);
+    truncate_text(&mut result.stderr, MAX_RESULT_TEXT);
+    {
+        let mut g = results.lock().unwrap();
+        g.push(result.clone());
+        // 超上限丢最旧的（消息中心按时间顺序追加，前面即最早）。
+        if g.len() > MAX_RESULTS {
+            let drop = g.len() - MAX_RESULTS;
+            g.drain(0..drop);
+        }
+    }
     if result.show_output {
         show_main_window(app);
     } else {
@@ -2228,6 +2276,30 @@ fn launched_by_autostart() -> bool {
     std::env::args().any(|a| a == "--autostart")
 }
 
+/// 配置里是否引用了鼠标键（中键 / 侧键）作为**触发侧**：快捷键触发键（组合 / 序列 /
+/// 和弦成员）或改键来源（`from`）。仅作注入目标（`Action::Keys` 成员 / 改键的 `to` 等）不算——
+/// 注入不需要监听，无需鼠标钩子。用于 Windows 按需安装鼠标低层钩子（见规划 7.4-㉛）。
+fn config_uses_mouse(cfg: &Config) -> bool {
+    fn is_mouse(k: Key) -> bool {
+        matches!(k, Key::MouseMiddle | Key::MouseBack | Key::MouseForward)
+    }
+    fn trigger_uses_mouse(t: &str) -> bool {
+        Trigger::parse(t)
+            .map(|t| t.steps().iter().any(|s| is_mouse(s.key)))
+            .unwrap_or(false)
+    }
+    cfg.shortcuts
+        .iter()
+        .any(|s| s.enabled && s.triggers.iter().any(|t| trigger_uses_mouse(t)))
+        || cfg.remaps.iter().any(|r| {
+            r.enabled
+                && r.from
+                    .parse::<Shortcut>()
+                    .map(|s| is_mouse(s.key))
+                    .unwrap_or(false)
+        })
+}
+
 /// 当前平台的输入能力声明（[`get_conflicts`] 第④段用，见规划 7.3-⑲）。
 ///
 /// 各平台口径（与钩子层的实际能力一一对应，改钩子时同步这里）：
@@ -2483,9 +2555,8 @@ fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String
 /// 读取消息中心全部命令结果（最新在前）。
 #[tauri::command]
 fn get_command_results(state: tauri::State<'_, KadaState>) -> Vec<CommandResult> {
-    let mut v = state.results.lock().unwrap().clone();
-    v.reverse();
-    v
+    // 倒序产出，免去先克隆整表再 reverse 的那一趟。
+    state.results.lock().unwrap().iter().rev().cloned().collect()
 }
 
 /// 当前是否有未读命令结果（红点）。
@@ -2578,6 +2649,11 @@ pub fn run() {
             // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let engine = Arc::new(Mutex::new(Engine::new()));
+
+            // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发就不挂，
+            // 缩小全局拦截面）。运行中配置变化由状态机定时器线程跟进（见 spawn_engine_ticker）。
+            // 此刻钩子还没起，`set_mouse_enabled` 只记下值，首次安装按它决定。
+            input::set_mouse_enabled(config_uses_mouse(&config.read().unwrap()));
 
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let hook_start = {
