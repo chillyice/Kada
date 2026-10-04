@@ -79,6 +79,15 @@ static VDEV: LazyLock<Mutex<Option<VirtualDevice>>> = LazyLock::new(|| Mutex::ne
 static STARTED: AtomicBool = AtomicBool::new(false);
 /// 「设备线断过」累计次数（诊断 / 壳层输入状态复位用）。
 static REINSTALLS: AtomicU64 = AtomicU64::new(0);
+/// 最近一次事件来自哪台设备（[`current_device`]）：poll_loop 每个事件前更新，供壳层在
+/// 触发动作时读出「这次触发是哪台键盘按的」（多键盘按设备区分，见规划 7.3-㉓）。
+static LAST_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+
+/// 最近一次键盘/鼠标事件的设备标识（evdev 设备名；取不到名字时退回 unique name）。
+/// 无事件时为 `None`。事件的设备名在 poll_loop 里随每个事件更新。
+pub fn current_device() -> Option<String> {
+    LAST_DEVICE.lock().unwrap().clone()
+}
 
 /// 输入层是否已启动。Linux 与 macOS 一样存在「起不来但应用该照常活着」的场景
 /// （权限没配好）：如实报 false，录制入口给出解释而不是录到一片空白。
@@ -273,9 +282,15 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
                 devices[i].fetch_events().map(|it| it.collect());
             match fetched {
                 Ok(events) => {
+                    // 设备名只取一次（每次轮询每个设备）；KEY 事件前更新 LAST_DEVICE，
+                    // 供壳层判断「这次触发是哪台键盘」（移动 / 滚轮不刷新，它们不触发动作）。
+                    let dev_name = devices[i].name().map(str::to_string);
                     for ev in events {
                         match ev.event_type() {
-                            EventType::KEY => handle_key(ev.code(), ev.value()),
+                            EventType::KEY => {
+                                *LAST_DEVICE.lock().unwrap() = dev_name.clone();
+                                handle_key(ev.code(), ev.value());
+                            }
                             // 移动 / 滚轮：不进键模型，原样转发（虚拟设备已声明相对轴）。
                             EventType::RELATIVE => {
                                 forward_raw(EventType::RELATIVE.0, ev.code(), ev.value())

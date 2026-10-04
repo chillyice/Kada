@@ -46,7 +46,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点/安装模式）
 ui/                         # Vite + TypeScript 前端（kada-ui）
   src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页；草稿隔离 + 未保存守卫
-  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（dev server 直开浏览器调试）
+  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含冲突/录制/更新事件桩，dev server 直开浏览器调试）
   src/style.css             # 深色 UI 样式
 .github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
 ```
@@ -55,7 +55,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 > 模型逐字段定义见 `docs/需求设计说明书.md` §2（键模型）/ §3（配置模型）/ §4（钩子）/ §5（壳层）；下面只列**动手时必须遵守的约束**。
 
-- **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`。`Key` 覆盖字母/数字/F1-F24/标点/功能键/方向键/媒体键/NumPad/NumLock/鼠标键（中键·侧键可作触发键与改键两端）。触发键 `Trigger` = 单组合 `"Ctrl+K"` / 按键序列 `"F9 J K"` / 和弦 `"F&J"`（`&` 分隔，成员可带修饰）。`Action` = Text / Command / Keys / PauseMs / Os / App / OpenUrl / If / Script。`Condition` = 路径 / 变量 / 时间 / 前台应用·窗口标题。`Remap` = 普通 `to` / tap-hold（`tap`+`hold`）/ 切层键（`hold_layer` 长按进入、`lock_layer` 长按锁定，**互斥、同设保留 lock**）/ 进阶修饰（`oneshot`/`sticky`/`tap2`/`tap3`，形态互斥，优先级 `sticky > oneshot > tap-hold > 普通 to`，单次/粘滞值域任意键）。
+- **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`。`Key` 覆盖字母/数字/F1-F24/标点/功能键/方向键/媒体键/NumPad/NumLock/鼠标键（中键·侧键可作触发键与改键两端）。触发键 `Trigger` = 单组合 `"Ctrl+K"` / 按键序列 `"F9 J K"` / 和弦 `"F&J"`（`&` 分隔，成员可带修饰）。`Action` = Text / Command / Keys / PauseMs / Os / App / OpenUrl / If / Script。`Condition` = 路径 / 变量 / 时间 / 前台应用·窗口标题 / 设备（`DeviceIs`，设备名子串·通配）。`Remap` = 普通 `to` / tap-hold（`tap`+`hold`）/ 切层键（`hold_layer` 长按进入、`lock_layer` 长按锁定，**互斥、同设保留 lock**）/ 进阶修饰（`oneshot`/`sticky`/`tap2`/`tap3`，形态互斥，优先级 `sticky > oneshot > tap-hold > 普通 to`，单次/粘滞值域任意键）。
 - **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。否则配了 `F&J` / `F9 J K` / 只设「长按进入层」的切层键，这些键就彻底变哑。机制见 `docs/架构设计.md` §3.1。
 - **配置落盘铁律**（`src-tauri/src/config_io.rs`）：保存走「唯一临时文件 → `fsync` → `rename` 覆盖」原子替换（留 `config.json.bak` 上次良好副本），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——留档、能从 `.bak` 恢复就恢复并回写主文件，都失败才空配置启动 + 告警。加载只 `migrate()` **不** `sanitize_config()`（清洗只在保存/导入路径）。**导入必须选方式**（`import_config(path, mode)`）：`merge` 只增不删、不制造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档。**删除已保存条目要先确认**（`ui/` `confirmDelete`），未落盘新增项可不问。**外部修改监听**（`config_watch.rs`）：**能解析才采纳、解析不动就别碰磁盘**（自愈只属启动 `load`，监听走只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收 `config-changed` 有未保存草稿必须问用户。**应用内写盘广播 `config-updated`**（`set_config` / 导入 / `save_settings_patch`）：提示框据它重画、主界面跟上 `settings.hints`；与 `config-changed`（外部改动）语义分离，不可混用。
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
@@ -77,7 +77,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
 - **自愈看门狗**（`win.rs` 与 `macos.rs` 各一套，机制见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**（回调超时被摘除 / 休眠唤醒 / 解锁后收不到事件，托盘看着还活着）。`start` 另起 1s 巡检线程 + 指数退避；Windows 命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 按键被处理两遍），并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`（已注入目标键补 up）；解锁判据 `WTSInfoEx.SessionFlags` **反直觉：0=锁定、1=未锁定**。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。通道在状态机定时器线程：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置走 `cfg_stale` 旗标。
-- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 暂 `None`（Wayland 受限），前台类条件恒不成立——**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
+- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 暂 `None`（Wayland 受限），前台类条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
 - **已知天花板（升级路径）**：低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截；macOS 同拦不住提权进程与安全输入；Linux 热插拔不在监听列表（重启应用，拔出复位已有）、触摸板/指点杆的中键/侧键不能作触发键；macOS 媒体键与 F21~F24 无法绑定（媒体键原样放行）。
 
 ## 软件更新（Windows 已落地）

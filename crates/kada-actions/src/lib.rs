@@ -85,15 +85,17 @@ impl Default for RunOptions {
     }
 }
 
-/// 一次触发的现场：谁触发的（触发键 / 名称）与触发瞬间的前台窗口。
+/// 一次触发的现场：谁触发的（触发键 / 名称）与触发瞬间的前台窗口、触发设备。
 ///
-/// 与 [`RunOptions`]（执行边界，读自配置）分开：这些是「这一次触发」的事实，而前台窗口
-/// 类条件是按**触发那一刻**的窗口求值的，所以它和超时一样要整条链共享同一份快照。
+/// 与 [`RunOptions`]（执行边界，读自配置）分开：这些是「这一次触发」的事实，而前台窗口 /
+/// 设备类条件是按**触发那一刻**的现场求值的，所以它和超时一样要整条链共享同一份快照。
 #[derive(Clone, Copy)]
 pub struct TriggerCtx<'a> {
     pub trigger: &'a str,
     pub name: &'a str,
     pub frontmost: Option<&'a FrontmostContext>,
+    /// 触发键来自哪台设备（Linux evdev 设备名）；Windows / macOS 恒 `None`。
+    pub device: Option<&'a str>,
 }
 
 /// 一次动作链的执行上下文：整条链共享（触发现场 / 超时 / 中止代数快照）。
@@ -148,7 +150,7 @@ fn run_chain(
         }
         #[cfg(feature = "automation")]
         if let Action::If { condition, then, otherwise, .. } = action {
-            let branch = if condition.matches(vars, ctx.t.frontmost) { then } else { otherwise };
+            let branch = if condition.matches(vars, ctx.t.frontmost, ctx.t.device) { then } else { otherwise };
             run_chain(commit, branch, ctx, vars, last_copied);
             // 分支里已经因中止收尾过（并记了一条结果）：外层别再记一遍。
             if abort::aborted(ctx.gen) {
@@ -1220,7 +1222,7 @@ mod tests {
 
     /// 测试用的触发现场（各用例共用同一组固定值，便于断言结果里的触发键 / 名称）。
     fn trigger_ctx() -> TriggerCtx<'static> {
-        TriggerCtx { trigger: "Ctrl+Alt+T", name: "测试宏", frontmost: None }
+        TriggerCtx { trigger: "Ctrl+Alt+T", name: "测试宏", frontmost: None, device: None }
     }
 
     fn ctx(timeout_ms: u64) -> Ctx<'static> {

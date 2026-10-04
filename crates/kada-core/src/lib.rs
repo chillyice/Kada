@@ -762,14 +762,24 @@ pub enum Condition {
     NotFrontmostApp { app: String },
     /// 前台窗口标题包含该文本（不区分大小写）。
     WindowTitleContains { text: String },
+    /// 触发键来自某台输入设备（多键盘按设备区分，见规划 7.3-㉓）。
+    /// `id` 与设备标识（Linux evdev 的设备名）按「不区分大小写、含 `*`/`?` 走通配、
+    /// 否则子串」匹配；无设备上下文（Windows / macOS / 取不到设备）时恒不成立。
+    DeviceIs { id: String },
 }
 
 #[cfg(feature = "automation")]
 impl Condition {
-    /// 在当前变量上下文 + 前台窗口上下文下求值。路径类条件支持 `{变量名}` 占位符。
+    /// 在当前变量上下文 + 前台窗口上下文 + 设备上下文下求值。路径类条件支持 `{变量名}` 占位符。
     /// 变量/字段不存在时视为「条件不成立」（返回 false）；前台类条件在无前台上下文
-    /// （`frontmost` 为 None，如 Linux/Wayland 受限）时同样视为不成立。
-    pub fn matches(&self, vars: &Vars, frontmost: Option<&FrontmostContext>) -> bool {
+    /// （`frontmost` 为 None，如 Linux/Wayland 受限）时同样视为不成立。设备类条件在无设备
+    /// 上下文（`device` 为 None，如 Windows / macOS）时也不成立。
+    pub fn matches(
+        &self,
+        vars: &Vars,
+        frontmost: Option<&FrontmostContext>,
+        device: Option<&str>,
+    ) -> bool {
         use Condition::*;
         let exists = |path: &str| std::path::Path::new(&substitute_vars(path, vars)).exists();
         match self {
@@ -798,6 +808,8 @@ impl Condition {
             NotFrontmostApp { app } => frontmost.is_some_and(|f| !match_name(app, &f.process_name)),
             WindowTitleContains { text } => frontmost
                 .is_some_and(|f| f.window_title.to_lowercase().contains(&text.to_lowercase())),
+            // 设备条件：依赖平台层抓取的设备标识（无上下文 → 不成立）。
+            DeviceIs { id } => device.is_some_and(|d| match_name(id, d)),
         }
     }
 
@@ -818,6 +830,7 @@ impl Condition {
             ModifiedWithin { path, .. } => non_empty("路径", path),
             FrontmostApp { app } | NotFrontmostApp { app } => non_empty("进程名", app),
             WindowTitleContains { text } => non_empty("窗口标题", text),
+            DeviceIs { id } => non_empty("设备标识", id),
         }
     }
 }
@@ -1598,15 +1611,19 @@ pub struct PlatformCaps {
     pub inject_unsupported: BTreeSet<Key>,
     /// 「前台应用 / 窗口标题」类条件是否可用（不可用时恒不成立，`If` 恒走 `otherwise`）。
     pub frontmost_conditions: bool,
+    /// 「设备是」类条件是否可用（不可用时恒不成立，`If` 恒走 `otherwise`）。目前仅 Linux
+    /// evdev 能给出真实设备标识，Windows / macOS 拿不到设备。
+    pub device_conditions: bool,
 }
 
 impl Default for PlatformCaps {
-    /// 全支持（Windows 的口径；Linux 在 7.3-㉔ 鼠标钩子落地后也是）。
+    /// 全支持（没有任何能力缺失的假想平台；单测「零误报」用它当基准）。
     fn default() -> Self {
         Self {
             listen_unsupported: BTreeSet::new(),
             inject_unsupported: BTreeSet::new(),
             frontmost_conditions: true,
+            device_conditions: true,
         }
     }
 }
@@ -1614,7 +1631,10 @@ impl Default for PlatformCaps {
 impl PlatformCaps {
     /// 是否全支持：全支持时平台扫描整段跳过（零误报零开销）。
     fn is_full(&self) -> bool {
-        self.listen_unsupported.is_empty() && self.inject_unsupported.is_empty() && self.frontmost_conditions
+        self.listen_unsupported.is_empty()
+            && self.inject_unsupported.is_empty()
+            && self.frontmost_conditions
+            && self.device_conditions
     }
 }
 
@@ -2017,10 +2037,17 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 });
             }
         }
-        // 动作树：注入不了的键、恒不成立的前台条件（`If` 可嵌套，递归扫）。
+        // 动作树：注入不了的键、恒不成立的前台/设备条件（`If` 可嵌套，递归扫）。
         let mut bad_inject: BTreeSet<Key> = BTreeSet::new();
         let mut bad_frontmost = false;
-        scan_actions_platform(&s.actions, caps, &mut bad_inject, &mut bad_frontmost);
+        let mut bad_device = false;
+        scan_actions_platform(
+            &s.actions,
+            caps,
+            &mut bad_inject,
+            &mut bad_frontmost,
+            &mut bad_device,
+        );
         if !bad_inject.is_empty() {
             out.push(Conflict {
                 severity: Severity::Warn,
@@ -2035,6 +2062,13 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             out.push(Conflict {
                 severity: Severity::Warn,
                 message: "动作里的「前台应用 / 窗口标题」条件在当前平台取不到前台窗口，恒不成立（恒走「否则」分支）".into(),
+                name: name_of(s),
+            });
+        }
+        if bad_device {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                message: "动作里的「设备是」条件在当前平台取不到设备，恒不成立（恒走「否则」分支）".into(),
                 name: name_of(s),
             });
         }
@@ -2103,14 +2137,15 @@ fn collect_unlistenable(sc: &Shortcut, caps: &PlatformCaps, bad: &mut BTreeSet<K
     }
 }
 
-/// 递归扫描动作树，收集注入不了的键（`Keys` 成员）与恒不成立的前台条件（`If` 条件）。
-/// 基础版没有 `If`/`Condition`，`bad_frontmost` 无从写入。
+/// 递归扫描动作树，收集注入不了的键（`Keys` 成员）与恒不成立的前台 / 设备条件（`If` 条件）。
+/// 基础版没有 `If`/`Condition`，两个 `bad_*` 旗标无从写入。
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
 fn scan_actions_platform(
     actions: &[Action],
     caps: &PlatformCaps,
     bad_inject: &mut BTreeSet<Key>,
     bad_frontmost: &mut bool,
+    bad_device: &mut bool,
 ) {
     for a in actions {
         match a {
@@ -2134,8 +2169,11 @@ fn scan_actions_platform(
                 {
                     *bad_frontmost = true;
                 }
-                scan_actions_platform(then, caps, bad_inject, bad_frontmost);
-                scan_actions_platform(otherwise, caps, bad_inject, bad_frontmost);
+                if matches!(condition, Condition::DeviceIs { .. }) && !caps.device_conditions {
+                    *bad_device = true;
+                }
+                scan_actions_platform(then, caps, bad_inject, bad_frontmost, bad_device);
+                scan_actions_platform(otherwise, caps, bad_inject, bad_frontmost, bad_device);
             }
             _ => {}
         }
@@ -3192,17 +3230,17 @@ mod os_and_sanitize_tests {
     fn condition_equals_and_field_resolution() {
         let vars = sample_vars();
         assert!(Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         assert!(Condition::NotEquals { var: "f".into(), field: "ext".into(), value: ".zip".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         // field 为空 → 比较完整路径
         assert!(Condition::Equals { var: "f".into(), field: String::new(), value: "C:\\d\\a.txt".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         // 变量或字段不存在 → 条件不成立
         assert!(!Condition::Equals { var: "f".into(), field: "nope".into(), value: "x".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         assert!(!Condition::Equals { var: "missing".into(), field: String::new(), value: "x".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
     }
 
     #[cfg(feature = "automation")]
@@ -3210,10 +3248,10 @@ mod os_and_sanitize_tests {
     fn condition_path_predicates() {
         let mut vars = sample_vars();
         // 当前目录（必然存在、是目录）+ 一个必不存在的路径
-        assert!(Condition::Exists { path: ".".into() }.matches(&vars, None));
-        assert!(Condition::IsDir { path: ".".into() }.matches(&vars, None));
-        assert!(!Condition::IsFile { path: ".".into() }.matches(&vars, None));
-        assert!(Condition::NotExists { path: "___kada_no_such_path___".into() }.matches(&vars, None));
+        assert!(Condition::Exists { path: ".".into() }.matches(&vars, None, None));
+        assert!(Condition::IsDir { path: ".".into() }.matches(&vars, None, None));
+        assert!(!Condition::IsFile { path: ".".into() }.matches(&vars, None, None));
+        assert!(Condition::NotExists { path: "___kada_no_such_path___".into() }.matches(&vars, None, None));
         // 路径支持变量占位符：用指向真实存在的当前目录的变量验证替换。
         vars.insert(
             "cur".into(),
@@ -3228,8 +3266,8 @@ mod os_and_sanitize_tests {
                 is_dir: true,
             }),
         );
-        assert!(Condition::Exists { path: "{cur}".into() }.matches(&vars, None));
-        assert!(Condition::IsDir { path: "{cur}".into() }.matches(&vars, None));
+        assert!(Condition::Exists { path: "{cur}".into() }.matches(&vars, None, None));
+        assert!(Condition::IsDir { path: "{cur}".into() }.matches(&vars, None, None));
     }
 
     #[cfg(feature = "automation")]
@@ -3244,12 +3282,12 @@ mod os_and_sanitize_tests {
         let tmp = std::env::temp_dir().join(format!("kada_mtime_{}_{}.txt", std::process::id(), nanos));
         std::fs::write(&tmp, b"x").unwrap();
         let tmp_path = tmp.to_string_lossy().into_owned();
-        assert!(Condition::ModifiedWithin { path: tmp_path.clone(), minutes: 10 }.matches(&vars, None));
+        assert!(Condition::ModifiedWithin { path: tmp_path.clone(), minutes: 10 }.matches(&vars, None, None));
         let _ = std::fs::remove_file(&tmp);
 
         // 不存在的路径 → 条件不成立
         assert!(!Condition::ModifiedWithin { path: "___kada_no_such_path___".into(), minutes: 10 }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         // 路径为空 → 校验拒绝
         assert!(Condition::ModifiedWithin { path: "  ".into(), minutes: 10 }.validate().is_err());
         assert!(Condition::ModifiedWithin { path: tmp_path, minutes: 10 }.validate().is_ok());
@@ -3266,26 +3304,49 @@ mod os_and_sanitize_tests {
         let none: Option<FrontmostContext> = None;
 
         // 子串匹配（不区分大小写）
-        assert!(Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(Condition::FrontmostApp { app: "CHROME.EXE".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(!Condition::FrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(!Condition::NotFrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref()));
+        assert!(Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp { app: "CHROME.EXE".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::FrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::NotFrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
 
         // 通配匹配（* / ?）
-        assert!(Condition::FrontmostApp { app: "chrome.*".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(Condition::FrontmostApp { app: "chr?me.exe".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(!Condition::FrontmostApp { app: "*.txt".into() }.matches(&Vars::new(), chrome.as_ref()));
+        assert!(Condition::FrontmostApp { app: "chrome.*".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp { app: "chr?me.exe".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::FrontmostApp { app: "*.txt".into() }.matches(&Vars::new(), chrome.as_ref(), None));
 
         // 窗口标题子串（不区分大小写）
-        assert!(Condition::WindowTitleContains { text: "chrome".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(Condition::WindowTitleContains { text: "CHROME".into() }.matches(&Vars::new(), chrome.as_ref()));
-        assert!(!Condition::WindowTitleContains { text: "safari".into() }.matches(&Vars::new(), chrome.as_ref()));
+        assert!(Condition::WindowTitleContains { text: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::WindowTitleContains { text: "CHROME".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::WindowTitleContains { text: "safari".into() }.matches(&Vars::new(), chrome.as_ref(), None));
 
         // 无前台上下文 → 前台条件一律不成立
-        assert!(!Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), none.as_ref()));
-        assert!(!Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), none.as_ref()));
-        assert!(!Condition::WindowTitleContains { text: "x".into() }.matches(&Vars::new(), none.as_ref()));
+        assert!(!Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), none.as_ref(), None));
+        assert!(!Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), none.as_ref(), None));
+        assert!(!Condition::WindowTitleContains { text: "x".into() }.matches(&Vars::new(), none.as_ref(), None));
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn condition_device_matching() {
+        let dev = Some("AT Translated Set 2 keyboard");
+        let other = Some("Logitech USB Keyboard");
+
+        // 子串匹配（不区分大小写）
+        assert!(Condition::DeviceIs { id: "set 2".into() }.matches(&Vars::new(), None, dev));
+        assert!(Condition::DeviceIs { id: "LOGITECH".into() }.matches(&Vars::new(), None, other));
+        assert!(!Condition::DeviceIs { id: "logitech".into() }.matches(&Vars::new(), None, dev));
+
+        // 通配匹配（* / ?）
+        assert!(Condition::DeviceIs { id: "AT Translated*".into() }.matches(&Vars::new(), None, dev));
+        assert!(Condition::DeviceIs { id: "*Set ? keyboard".into() }.matches(&Vars::new(), None, dev));
+
+        // 无设备上下文（Windows / macOS / 取不到设备）→ 恒不成立
+        assert!(!Condition::DeviceIs { id: "keyboard".into() }.matches(&Vars::new(), None, None));
+
+        // 空设备标识 → 校验拒绝
+        assert!(Condition::DeviceIs { id: "  ".into() }.validate().is_err());
+        assert!(Condition::DeviceIs { id: "keyboard".into() }.validate().is_ok());
     }
 
     #[cfg(feature = "automation")]
@@ -3447,9 +3508,9 @@ mod os_and_sanitize_tests {
         assert_eq!(substitute_vars("{text.exit_code}", &vars), "{text.exit_code}");
         // 条件判断能比较布尔变量
         assert!(Condition::Equals { var: "running".into(), field: "".into(), value: "true".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
         assert!(Condition::Equals { var: "text".into(), field: "".into(), value: "hello".into() }
-            .matches(&vars, None));
+            .matches(&vars, None, None));
     }
 }
 
@@ -4665,6 +4726,7 @@ mod platform_caps_tests {
             listen_unsupported: keys.clone(),
             inject_unsupported: keys,
             frontmost_conditions: true,
+            device_conditions: false,
         }
     }
 
@@ -4708,6 +4770,30 @@ mod platform_caps_tests {
         assert!(hits[0].message.contains("前台"));
         assert!(hits[0].message.contains("恒不成立"));
         // Windows 口径下同配置零提示。
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    #[test]
+    fn device_condition_flagged_when_unsupported() {
+        let cfg = Config {
+            shortcuts: vec![shortcut(
+                "s",
+                "Ctrl+K",
+                vec![Action::If {
+                    condition: Condition::DeviceIs { id: "keyboard".into() },
+                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), description: None }],
+                    otherwise: vec![],
+                    description: None,
+                }],
+            )],
+            ..Default::default()
+        };
+        // macOS 不支持设备条件 → 报一条「设备」警告。
+        let hits = detect_conflicts(&cfg, &macos_caps());
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert!(hits[0].message.contains("设备"));
+        assert!(hits[0].message.contains("恒不成立"));
+        // 支持设备条件的平台（Linux / Windows，本例用默认）零提示。
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 

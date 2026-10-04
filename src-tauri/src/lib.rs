@@ -63,8 +63,8 @@ impl Inject for SimulatedInject {
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
-        foreground_window, frontmost_context, hotkey_occupied, reinstall_count, simulate, start,
-        Action as HookAction, HookHandle, KeyEvent,
+        current_device, foreground_window, frontmost_context, hotkey_occupied, reinstall_count,
+        simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     pub fn hooks_supported() -> bool {
@@ -76,8 +76,8 @@ mod input {
 mod input {
     //! Linux：evdev + uinput 全局钩子（kada-hook），X11 / Wayland 通用。
     pub use kada_hook::linux::{
-        frontmost_context, reinstall_count, simulate, start, Action as HookAction, HookHandle,
-        KeyEvent,
+        current_device, frontmost_context, reinstall_count, simulate, start, Action as HookAction,
+        HookHandle, KeyEvent,
     };
 
     /// 输入层是否已启动：无权限（没进 input 组 / udev 没放行 /dev/uinput）时
@@ -104,7 +104,7 @@ mod input {
 mod input {
     //! macOS：CGEventTap 全局钩子（kada-hook），需要「辅助功能」权限。
     pub use kada_hook::macos::{
-        foreground_window, frontmost_context, reinstall_count, simulate, start,
+        current_device, foreground_window, frontmost_context, reinstall_count, simulate, start,
         Action as HookAction, HookHandle, KeyEvent,
     };
 
@@ -127,6 +127,11 @@ mod input {
 
     pub fn hooks_supported() -> bool {
         false
+    }
+
+    /// 无输入层实现：没有设备上下文。
+    pub fn current_device() -> Option<String> {
+        None
     }
 }
 
@@ -862,6 +867,9 @@ fn fire(
         let trigger = trigger.clone();
         std::thread::spawn(move || show_toast(&app, &name, &trigger));
     }
+    // 触发设备在**回调线程上**取（同步）：`current_device` 是「最近一次事件的设备」，
+    // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Windows / macOS 恒 None。
+    let device = input::current_device();
     std::thread::spawn(move || {
         // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，此时注入按键会被
         // 污染成 Ctrl+Alt+<键>（粘贴 Ctrl+V 变成 Ctrl+Alt+V）。只对真正注入按键的链
@@ -899,7 +907,12 @@ fn fire(
             action_timeout: Duration::from_millis(timeout_ms),
             text_inject_mode: text_mode,
         };
-        let t = TriggerCtx { trigger: &trigger, name: &name, frontmost: frontmost.as_ref() };
+        let t = TriggerCtx {
+            trigger: &trigger,
+            name: &name,
+            frontmost: frontmost.as_ref(),
+            device: device.as_deref(),
+        };
         run_actions(&mut commit, &actions, t, &mut vars, &mut last_copied, &opts);
     });
 }
@@ -1913,6 +1926,60 @@ mod tests {
     }
 
     #[test]
+    fn user_real_config_backtick_layer_chord_u_amp_y() {
+        // 复刻用户 2026-09-30 真实配置：` (Backquote) 长按进「和弦层」，层内条目带
+        // "U&Y"（和弦）+ "Alt+Z"；基础层另有一条 Alt+Z。事件流按真人操作：` 按住（含
+        // 自动重复）→ U → Y。
+        const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
+        let cfg = Config {
+            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            remaps: vec![kada_core::Remap {
+                from: "`".into(),
+                to: String::new(),
+                hold_layer: Some(LID.into()),
+                tap_timeout_ms: 200,
+                enabled: true,
+                ..Default::default()
+            }],
+            shortcuts: vec![
+                kada_core::ShortcutItem {
+                    name: Some("生成zcode".into()),
+                    triggers: vec!["Alt+Z".into()],
+                    actions: vec![],
+                    enabled: true,
+                    ..Default::default()
+                },
+                kada_core::ShortcutItem {
+                    name: Some("输入密码".into()),
+                    layer: Some(LID.into()),
+                    triggers: vec!["Alt+Z".into(), "U&Y".into()],
+                    actions: vec![],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+
+        let mut engine = Engine::new();
+        let mut inj = TestInject::default();
+        let mut fired: Vec<String> = Vec::new();
+
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Backquote), &mut fired);
+        // 按住 ` 期间系统会发自动重复的 Down。
+        for _ in 0..5 {
+            let repeat =
+                Ev::Down { key: Key::Backquote, mods: BTreeSet::new(), repeat: true };
+            step_collecting_fire(&mut engine, &mut inj, &cfg, &repeat, &mut fired);
+        }
+        assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::U), &mut fired);
+        assert_eq!(engine.active_layer(), Some(LID), "按住 ` + 按 U → 进层");
+        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
+        assert_eq!(fired, vec!["U&Y"], "按住切层键时 U&Y 应触发");
+    }
+
+    #[test]
     fn recorder_transcribes_events() {
         let down = |key: Key| Ev::Down { key, mods: BTreeSet::new(), repeat: false };
         let up = |key: Key| Ev::Up { key };
@@ -2164,13 +2231,15 @@ fn launched_by_autostart() -> bool {
 /// 当前平台的输入能力声明（[`get_conflicts`] 第④段用，见规划 7.3-⑲）。
 ///
 /// 各平台口径（与钩子层的实际能力一一对应，改钩子时同步这里）：
-/// - **Windows**：全支持。
-/// - **Linux**：前台窗口取不到（X11 未接 / Wayland 无通用协议）→ 前台类条件恒不成立；
-///   键盘与鼠标键（中键/侧键）监听 + 注入都可用（7.3-㉔ 落地后）。
-/// - **macOS**：媒体键与 F21~F24 无对应键码，监听与注入都不行；前台走 AX 可用。
+/// - **Windows**：前台条件可用；但低层钩子拿不到设备 → 设备条件恒不成立。
+/// - **Linux**：前台窗口取不到（X11 未接 / Wayland 无通用协议）→ 前台类条件恒不成立，
+///   但设备条件可用（evdev 设备名）；键盘与鼠标键（中键/侧键）监听 + 注入都可用（7.3-㉔）。
+/// - **macOS**：媒体键与 F21~F24 无对应键码，监听与注入都不行；前台走 AX 可用；
+///   设备条件不可用（CGEventTap 不带设备信息）。
 fn platform_caps() -> kada_core::PlatformCaps {
     #[cfg(target_os = "linux")]
     {
+        // 前台条件 false；设备条件可用（DeviceIs 在 Linux 真生效），故只覆盖前台。
         kada_core::PlatformCaps { frontmost_conditions: false, ..Default::default() }
     }
     #[cfg(target_os = "macos")]
@@ -2187,11 +2256,14 @@ fn platform_caps() -> kada_core::PlatformCaps {
             listen_unsupported: keys.clone(),
             inject_unsupported: keys,
             frontmost_conditions: true,
+            device_conditions: false,
         }
     }
+    // Windows（与其它无输入层平台）：键与前台条件全支持，唯独设备拿不到（`current_device`
+    // 恒 None，见规划 7.3-㉓ 的后续）→ 设备条件标注不可用。
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        kada_core::PlatformCaps::default()
+        kada_core::PlatformCaps { device_conditions: false, ..Default::default() }
     }
 }
 
