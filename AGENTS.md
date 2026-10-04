@@ -38,15 +38,15 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 §3.17）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
-  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建（冷启动零 WebView）
+  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
   src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
-  tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点/安装模式）
+  tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
   src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页；草稿隔离 + 未保存守卫
-  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含冲突/录制/更新事件桩，dev server 直开浏览器调试）
+  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
   src/style.css             # 深色 UI 样式
 .github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
 ```
@@ -63,27 +63,28 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **消息中心**（内存态，重启清空，「命令结果 / 冲突」两标签）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
 - **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**（挂住即永久占住执行线程）——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`）；中止 = **代数计数器** `abort::request()`（判定点：每步动作前 / 进程轮询 / `PauseMs` 分片 / `App::Status` 重试）。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
+- **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 比对，Rust 新增键而前端漏改即红）。
 
 ## 钩子引擎（动手前必读的约束）
 
-- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)` 同一线程跑消息循环，处理函数直接跑在回调内（**回调里绝不能做耗时操作**，超时会被系统摘掉钩子、全部功能静默失效）。自动重复按「该键已按下且未抬起」判定（`HELD_KEYS`；**不用时间窗**）。`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键，**但所有 keyup（含被吞掉的）仍以观察者身份回调 handler**（漏掉会让该键与状态机永久卡死）。注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持「按下-抬起」配对。鼠标钩子只翻译中键/侧键，且**按需安装**——配置引用鼠标键（触发/改键来源）才挂（`set_mouse_enabled` + 壳层 `config_uses_mouse`），新增鼠标键用途要同步该判定。
-- **macOS**（`kada-hook::macos`，机制见 `架构设计.md` §3.19 / `需求设计说明书.md` §4.3）：`CGEventTap` 挂独立线程的 CFRunLoop，处理函数跑在回调内（**回调里绝不能做耗时操作**，同 Windows）。三条硬约束：① tap 位置必须会话级 `kCGSessionEventTap`（HID 只有 root 建得出来，普通用户拿 NULL）；② 「辅助功能」权限是**运行时授权**（`hooks_supported()` = `AXIsProcessTrusted()`），未授权时 `start` 报授权指引 + 弹授权框；③ 注入识别两条判据取或（Private 事件源 ∪ 创建者 pid == 本进程）——单条判据开发机验不了，失效代价是注入的键被自己处理。自愈 = 系统停用回调当场重启用 + 1s 看门狗。
+- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)` 同一线程跑消息循环，处理函数直接跑在回调内（**回调里绝不能做耗时操作**，超时会被系统摘掉钩子、全部功能静默失效）。自动重复按「该键已按下且未抬起」判定（`HELD_KEYS`；**不用时间窗**）。`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键，**但所有 keyup（含被吞掉的）仍以观察者身份回调 handler**。注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持「按下-抬起」配对。鼠标钩子只翻译中键/侧键，且**按需安装**——配置引用鼠标键（触发/改键来源）才挂（`set_mouse_enabled` + 壳层 `config_uses_mouse`），新增鼠标键用途要同步该判定。
+- **macOS**（`kada-hook::macos`，机制见 `架构设计.md` §3.19 / `需求设计说明书.md` §4.3）：`CGEventTap` 挂独立线程的 CFRunLoop，处理函数跑在回调内（**回调里绝不能做耗时操作**，同 Windows）。三条硬约束：① tap 位置必须会话级 `kCGSessionEventTap`（HID 只有 root 建得出来，普通用户拿 NULL）；② 「辅助功能」权限是**运行时授权**（`hooks_supported()` = `AXIsProcessTrusted()`），未授权时 `start` 报授权指引 + 弹授权框；③ 注入识别两条判据取或（Private 事件源 ∪ 创建者 pid == 本进程）。自愈 = 系统停用回调当场重启用 + 1s 看门狗。
 - **输入层起不来的处置**：Windows 失败退出（异常）；macOS / Linux（权限没配好）**照常启动**，`start` 的错误串（带可照抄指引）经消息中心推给用户——退出应用用户就连设置页都进不去。
-- **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定（读配置、比时间、状态机）——同步建 WebView 会拖过系统约 300ms 的超时线，钩子被摘掉后全部功能静默失效（已踩两次，机制见 `docs/架构设计.md` §3.6）。判定与副作用分开写：判定用不持有 `AppHandle` 的纯函数。
-- **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**：`focused(false)` 只保证**首次** show 不抢焦点，而这些窗会反复 show；一旦能被激活就成了 `GetForegroundWindow`——前台条件全读错，`ResetWatch` 还会误判「前台切换」→ 复位输入状态、踢掉按住的 momentary 层。**`hints`（快捷键提示框，7.3-㊳）是唯一可交互浮窗——不能 `set_ignore_cursor_events`**（拖动/滚轮/× 靠鼠标事件，`WS_EX_NOACTIVATE` 只挡激活不挡鼠标消息），且 `zoom_hotkeys_enabled(false)` 防 Ctrl+wheel 被当成浏览器缩放。
-- **Linux**（`kada-hook::linux`，细节见 §4.2）：evdev + uinput，`EVIOCGRAB` 抓键盘与**真鼠标**（触摸板/指点杆**不抓**，抓了等于废掉），`/dev/uinput` 建键鼠合一虚拟设备（X11 / Wayland 通用）；鼠标键 `BTN_*`↔中键/侧键与键盘同走状态机，移动/滚轮原样转发。权限 = `input` 组 + udev 放行 uinput（起不来错误分诊见 §4.2）。**设备拔出就地复位三张表**并递增 `reinstall_count()`（壳层 `ResetWatch` 轮询接通）；热插拔仍无（重启应用）。修饰键按事件流维护（`MODS_DOWN`）、自动重复 `value==2`。**改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`（evdev 纯 Rust，本机交叉类型检查可用）。
+- **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定（读配置、比时间、状态机）——同步建 WebView 会拖过系统约 300ms 的超时线，钩子被摘掉后全部功能静默失效（机制见 `docs/架构设计.md` §3.6）。判定与副作用分开写：判定用不持有 `AppHandle` 的纯函数。
+- **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**：`focused(false)` 只保证**首次** show 不抢焦点，而这些窗会反复 show；一旦能被激活就成了 `GetForegroundWindow`——前台条件全读错，`ResetWatch` 还会误判「前台切换」→ 复位输入状态、踢掉按住的 momentary 层。**`hints`（快捷键提示框，7.3-㊳）是唯一可交互浮窗——不能 `set_ignore_cursor_events`**（拖动/滚轮/× 靠鼠标事件，`WS_EX_NOACTIVATE` 只挡激活不挡鼠标消息），且 `zoom_hotkeys_enabled(false)` 防 Ctrl+wheel 被当成浏览器缩放；**一律 `shadow(false)`**（tao 给无边框+投影保留 DWM 边框挂在透明边上，投影交 CSS、用 px 不随字号缩放）。
+- **Linux**（`kada-hook::linux`，细节见 §4.2）：evdev + uinput，`EVIOCGRAB` 抓键盘与**真鼠标**（触摸板/指点杆**不抓**），`/dev/uinput` 建键鼠合一虚拟设备（X11 / Wayland 通用）；鼠标键 `BTN_*`↔中键/侧键与键盘同走状态机，移动/滚轮原样转发。权限 = `input` 组 + udev 放行 uinput（起不来错误分诊见 §4.2）。**设备拔出就地复位三张表**并递增 `reinstall_count()`（壳层 `ResetWatch` 轮询接通）；热插拔仍无（重启应用）。修饰键按事件流维护（`MODS_DOWN`）、自动重复 `value==2`。**改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`（evdev 纯 Rust，本机交叉类型检查可用）。
 - **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V` / macOS 的 ⌘V（中文最稳）；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放——否则仍按住的触发修饰键会把注入污染成 `Ctrl+Alt+V`（Linux 同接口空实现；macOS 投递到 HID 位置不需要 root，与「建 tap」的要求相反）。
 - **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、走 `Inject` trait 假注入可单测，`lib.rs` 只剩接线）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`：序列超时回放、和弦窗超时回放、连击窗提交，事件路径另有懒判定兜底；`tick` 传 `cfg`——**配置读锁必须先于 `Engine` 锁**，同序否则死锁）。热串命中后吞掉后缀键，由**后台线程**回删 + 注入 + 补回后缀。输入状态指示也由这条线程每拍比快照推送。
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
 - **自愈看门狗**（`win.rs` 与 `macos.rs` 各一套，机制见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**（回调超时被摘除 / 休眠唤醒 / 解锁后收不到事件，托盘看着还活着）。`start` 另起 1s 巡检线程 + 指数退避；Windows 命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 按键被处理两遍），并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`（已注入目标键补 up）；解锁判据 `WTSInfoEx.SessionFlags` **反直觉：0=锁定、1=未锁定**。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。通道在状态机定时器线程：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置走 `cfg_stale` 旗标。
-- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 暂 `None`（Wayland 受限），前台类条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
+- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 恒 `None`（Wayland），前台条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
 - **已知天花板（升级路径）**：低层钩子拦不住 UAC 提权进程 / 部分游戏 → 驱动级拦截；macOS 同拦不住提权进程与安全输入；Linux 热插拔不在监听列表（重启应用，拔出复位已有）、触摸板/指点杆的中键/侧键不能作触发键；macOS 媒体键与 F21~F24 无法绑定（媒体键原样放行）。
 
 ## 软件更新（Windows 已落地）
 
 - **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（故流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。
-- **行为口径**（`update.rs`，详见 §5.5）：三种触发的打扰等级刻意不同（启动静默 / 手动先确认 / 设置页点击即确认）；**Windows 上「安装」会退出应用**，故启动检查只提示不自动装。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
+- **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
 
 ## 构建与验证命令
 
@@ -96,7 +97,7 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**（exe 被占用报「拒绝访问」）。发版要签名（本机拉不到 NSIS 工具链，发版走 CI）：`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key"; npx tauri build --bundles nsis`（缺签名则客户端拒装，是设计使然）。
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。发版要签名（本机拉不到 NSIS 工具链，发版走 CI）：`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key"; npx tauri build --bundles nsis`（缺签名则客户端拒装，是设计使然）。
 - **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check（命令见上）能真编到 `macos.rs`，`-p kada` 必然失败（`ring` 要真 clang）——壳层 macOS 分支与链接期/运行时行为只能靠 CI 或真机验。
 
 ## 里程碑与规划
