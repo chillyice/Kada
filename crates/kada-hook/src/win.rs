@@ -887,6 +887,38 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_block_marks_swallowed_and_release_notifies() {
+        let _g = lock_handler();
+        // 键盘路径的 Block 登记与释放（鼠标路径有单独用例，键盘这条此前没覆盖）：
+        // 被吞的按下要进 SWALLOWED（否则 keyup 放行会留下「幽灵按键」），抬起要从登记表
+        // 移除，且按下/抬起都得以观察者身份回调 handler——漏掉抬起会让状态机永久卡死。
+        let events: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        *HANDLER.lock().unwrap() = Some(Box::new(move |ev: KeyEvent| {
+            sink.lock().unwrap().push(format!("{ev:?}"));
+            Action::Block
+        }));
+
+        let kb = KBDLLHOOKSTRUCT { vkCode: 0x4D, ..Default::default() }; // VK_M
+        assert!(swallow(WM_KEYDOWN, &kb), "Block 的按下要被吞");
+        assert!(
+            SWALLOWED.lock().unwrap().contains(&Key::M),
+            "被吞的键要登记，keyup 才能一并吞掉（防幽灵按键）"
+        );
+        assert!(swallow(WM_KEYUP, &kb), "被吞键的抬起也要吞");
+        assert!(
+            !SWALLOWED.lock().unwrap().contains(&Key::M),
+            "抬起后要从登记表移除"
+        );
+
+        let seen = events.lock().unwrap().clone();
+        *HANDLER.lock().unwrap() = None;
+        note_key_up(Key::M);
+        assert_eq!(seen.len(), 2, "按下与抬起都要回调 handler，实际：{seen:?}");
+        assert!(seen[0].contains("Down") && seen[1].contains("Up"), "实际：{seen:?}");
+    }
+
+    #[test]
     fn second_press_of_same_key_is_not_repeat() {
         let _g = lock_handler();
         // 敲两下同一个键（`addr` 的双写 d）：第二击不能被判成自动重复，否则热串缓冲少一个

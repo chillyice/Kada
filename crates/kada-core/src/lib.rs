@@ -3512,6 +3512,58 @@ mod os_and_sanitize_tests {
         assert!(Condition::Equals { var: "text".into(), field: "".into(), value: "hello".into() }
             .matches(&vars, None, None));
     }
+
+    /// `sanitize_config` 的往返稳定性（原规划 7.3-⑰ 点名的缺口）：一份**全合法**的配置
+    /// 过清洗后必须原样保留（无 ignored）、能 JSON 往返、且清洗幂等（再洗一次仍不变）。
+    /// 已有的一堆用例锁的是「坏条目被丢掉」；这条锁另一面——合法配置不被误伤。
+    #[test]
+    fn sanitize_valid_config_is_unchanged_roundtrip_and_idempotent() {
+        let cfg = Config {
+            folders: vec![Folder { id: "f1".into(), name: "工作".into(), parent: None }],
+            layers: vec![Layer { id: "l1".into(), name: "导航".into() }],
+            shortcuts: vec![ShortcutItem {
+                name: Some("测试".into()),
+                description: Some("说明".into()),
+                folder: Some("f1".into()),
+                layer: Some("l1".into()),
+                // 组合 / 序列 / 和弦三种触发都合法。
+                triggers: vec!["Ctrl+K".into(), "F9 J".into(), "F&J".into()],
+                actions: vec![
+                    Action::Text { text: "hi".into(), mode: TextMode::Input, description: None },
+                    Action::Keys { keys: vec!["Ctrl".into(), "S".into()], description: None },
+                    Action::PauseMs { ms: 100, description: None },
+                ],
+                enabled: true,
+            }],
+            remaps: vec![
+                // tap-hold（短按/长按）与普通改键各一条。
+                Remap {
+                    from: "CapsLock".into(),
+                    tap: Some("Escape".into()),
+                    hold: Some("Control".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+                Remap { from: "F1".into(), to: "Home".into(), enabled: true, ..Default::default() },
+            ],
+            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true }],
+            settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
+        };
+
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert!(ignored.is_empty(), "合法配置不该有忽略项：{ignored:?}");
+        assert_eq!(clean, cfg, "合法配置过清洗后必须原样保留");
+
+        // JSON 往返（配置是跨平台同步介质，保存 / 加载不能变形）。
+        let json = serde_json::to_string(&clean).unwrap();
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, clean, "JSON 往返后配置应不变");
+
+        // 幂等：清洗结果再洗一次仍不变、也无提示。
+        let (again, ignored2) = sanitize_config(&clean);
+        assert!(ignored2.is_empty(), "二次清洗不该有新提示：{ignored2:?}");
+        assert_eq!(again, clean, "清洗应幂等");
+    }
 }
 
 #[cfg(test)]
