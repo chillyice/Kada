@@ -839,8 +839,24 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
 }
 
 /// 当前前台应用的标识（壳层做「前台切换 → 复位输入状态」的变化检测）。
+///
+/// **本进程自己成为前台时报 `None`**（同 Windows 版口径）：主窗 / 气泡 / 状态指示 / 提示框
+/// 都是我们自己弹的，不是用户换应用；被 `FocusTracker` 当成切换会复位输入状态，踢掉按住的
+/// momentary 层、丢弃凑到一半的和弦（锁定层不受影响——正是「hold_layer 触发和弦失败、
+/// lock_layer 正常」的来源）。
 pub fn foreground_window() -> Option<isize> {
-    frontmost_pid().map(|p| p as isize)
+    let pid = frontmost_pid()?;
+    if pid == std::process::id() as i32 {
+        return None;
+    }
+    Some(pid as isize)
+}
+
+/// 最近一次事件的设备标识。**macOS 恒 `None`**：`CGEventTap` 事件不带设备信息
+/// （真实区分多键盘要接 IOHIDManager，见规划 7.3-㉓ 的后续）。壳层据此把「设备是」
+/// 条件在本平台标注为不可用。
+pub fn current_device() -> Option<String> {
+    None
 }
 
 /// 「辅助功能」权限是否已授予（CGEventTap 监听与注入的前置条件）。

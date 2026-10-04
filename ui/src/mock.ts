@@ -13,7 +13,7 @@ const DEMO_CONFIG = {
       description: "查盘符 → 确认 → 复制",
       folder: null,
       layer: null,
-      triggers: ["Ctrl+Alt+B"],
+      triggers: ["Ctrl+Alt+B", "Ctrl+Alt+S"],
       enabled: true,
       actions: [
         {
@@ -117,6 +117,29 @@ const DEMO_RESULTS = [
   },
 ];
 
+// 演示冲突：与 DEMO_CONFIG 一致的真实冲突（Ctrl+Alt+S 被「备份到移动硬盘」与「搜索选中内容」
+// 同时占用；「导航层」有条目却没有切层键指向）。恒返回空会让纯浏览器验收误判「冲突检测坏了」。
+const DEMO_CONFLICTS = [
+  {
+    severity: "error",
+    name: "搜索选中内容",
+    message: "触发键「Ctrl+Alt+S」被多条快捷键使用（与「备份到移动硬盘」重复）",
+  },
+  {
+    severity: "warn",
+    name: "",
+    message: "层「导航层」没有任何切层键指向，配在该层的条目不会触发",
+  },
+];
+
+// 演示录制结果：点「■ 停止」后注入这段宏（真实录制只有 Tauri 壳内才有）。
+const DEMO_RECORDED_ACTIONS = [
+  { type: "keys", keys: ["Ctrl", "Shift", "N"] },
+  { type: "pause_ms", ms: 300 },
+  { type: "text", text: "演示模式录制的文本", mode: "input" },
+  { type: "keys", keys: ["Enter"] },
+];
+
 export function installBrowserMock() {
   if ("__TAURI_INTERNALS__" in window) return;
   let unread = false;
@@ -125,6 +148,14 @@ export function installBrowserMock() {
   const w = window as unknown as {
     __TAURI_INTERNALS__: unknown;
     [key: string]: unknown;
+  };
+  // 事件监听登记：`plugin:event|listen` 存下回调 id，`emit` 据此把事件推回界面
+  // （演示模式没有真正的后端事件源，更新检查/安装的进度必须自己推）。
+  const listeners: Record<string, number> = {};
+  const emit = (eventName: string, payload: unknown) => {
+    const id = listeners[eventName];
+    const cb = id == null ? undefined : w[`_${id}`];
+    if (typeof cb === "function") cb({ event: eventName, id, payload });
   };
   w.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: "main" }, currentWebview: {} },
@@ -151,11 +182,41 @@ export function installBrowserMock() {
           results.length = 0;
           return null;
         case "get_conflicts":
-          return args?.config ? [] : [];
+          // 演示冲突见 DEMO_CONFLICTS（与演示配置一致），不再恒返回空。
+          return structuredClone(DEMO_CONFLICTS);
         case "get_update_status":
           return { current: "0.6.0", phase: "idle" };
         case "check_update":
+          // 推事件让设置页看到「检查中 → 发现新版本」；否则按钮点了没反应像坏了。
+          emit("update-status", { current: "0.6.0", phase: "checking" });
+          setTimeout(
+            () =>
+              emit("update-status", {
+                current: "0.6.0",
+                phase: "available",
+                version: "0.6.1",
+                notes: "演示模式：这是一条模拟的更新说明。",
+              }),
+            600,
+          );
+          return null;
         case "install_update":
+          // 模拟下载进度 → 安装中（真实安装会退出应用，演示模式只推状态）。
+          emit("update-status", { current: "0.6.0", phase: "downloading", version: "0.6.1", percent: 0 });
+          setTimeout(
+            () =>
+              emit("update-status", {
+                current: "0.6.0",
+                phase: "downloading",
+                version: "0.6.1",
+                percent: 100,
+              }),
+            800,
+          );
+          setTimeout(
+            () => emit("update-status", { current: "0.6.0", phase: "installing", version: "0.6.1" }),
+            1200,
+          );
           return null;
         case "set_paused":
           paused = !!args?.paused;
@@ -167,10 +228,14 @@ export function installBrowserMock() {
         // （后端 ImportOutcome 的形状）并在将来放开文件选择时不至于崩在「不支持命令」。
         case "import_config":
           return { mode: args?.mode ?? "replace", added: 0, notes: [], backup: null };
+        // 导出：对话框现在返回路径（不是取消），导出必须成功收场，否则演示成「导出坏了」。
+        case "export_config":
+          return null;
         case "start_record":
           return null;
         case "stop_record":
-          return [];
+          // 演示录制结果：非空，点「■ 停止」能看到录下来的动作进草稿。
+          return structuredClone(DEMO_RECORDED_ACTIONS);
         case "get_toast_payload":
           return null;
         // 输入状态指示：演示模式给一份「层 + 三种修饰键」的样例，让 `index.html#hud`
@@ -200,10 +265,18 @@ export function installBrowserMock() {
         case "hints_prefs":
         case "hints_set_visible":
           return null;
-        // 对话框（plugin:dialog）：文件对话框演示模式一律返回空（用户取消）。
-        case "plugin:dialog|open":
-        case "plugin:dialog|save":
-          return null;
+        // 对话框（plugin:dialog）：文件对话框演示模式返回一个**示例路径**（不再一律取消），
+        // 让「浏览 / 导入 / 导出」在纯浏览器里能走完整条流程；`options.directory` 决定返回
+        // 目录还是文件路径。
+        case "plugin:dialog|open": {
+          const options = (args?.options ?? {}) as { directory?: boolean; multiple?: boolean };
+          const path = options.directory ? "D:\\工作\\演示文件夹" : "C:\\Users\\demo\\kada-config.json";
+          return options.multiple ? [path] : path;
+        }
+        case "plugin:dialog|save": {
+          const options = (args?.options ?? {}) as { defaultPath?: string };
+          return `C:\\Users\\demo\\${options.defaultPath ?? "kada-config.json"}`;
+        }
         // 确认框要返回**被点击按钮的文案**，不是布尔：`ask()` 拿它跟 okLabel（默认 "Yes"）比、
         // `confirm()` 跟 "Ok" 比，`message()` 直接把它当结果。以前这里返回 true，于是演示模式下
         // 所有确认框都被判成「取消」——删除目录/删除层点了没反应，且看不出原因。
@@ -212,11 +285,18 @@ export function installBrowserMock() {
           if (buttons && typeof buttons === "object") return buttons.ok ?? "Ok";
           return buttons === "YesNo" ? "Yes" : "Ok";
         }
-        // 事件监听（plugin:event）：演示模式下没有事件源，登记即返回句柄。
-        case "plugin:event|listen":
+        // 事件监听（plugin:event）：登记回调，供 `emit` 推事件（更新状态等）。
+        case "plugin:event|listen": {
+          const eventName = String(args?.event ?? "");
+          const handler = args?.handler;
+          if (eventName && typeof handler === "number") listeners[eventName] = handler;
           return Math.floor(Math.random() * 2 ** 31);
-        case "plugin:event|unlisten":
+        }
+        case "plugin:event|unlisten": {
+          const eventName = String(args?.event ?? "");
+          if (eventName) delete listeners[eventName];
           return null;
+        }
         default:
           throw new Error(`演示模式不支持命令 ${cmd}（请在 Tauri 壳内使用）`);
       }

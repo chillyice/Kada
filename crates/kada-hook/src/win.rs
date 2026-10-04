@@ -36,15 +36,15 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::RemoteDesktop::{
     WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
     WTSSessionInfoEx, WTSINFOEXW,
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
-    GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
-    PROCESS_QUERY_LIMITED_INFORMATION,
+    GetCurrentProcessId, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
+    PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -664,18 +664,34 @@ pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
     }
 }
 
-/// 当前前台窗口句柄（`None` = 当前没有前台窗口）；无句柄时返回 `None`。
+/// 当前前台窗口句柄（`None` = 当前没有前台窗口，**或前台是本进程自己的窗口**）。
 ///
 /// 壳层用它做「前台切换 → 输入状态复位」的变化检测（见规划 7.2-④）：**只看句柄变没变**，
 /// 不查标题与进程名——[`frontmost_context`] 要 `OpenProcess` 拿镜像路径，那是判定条件时
 /// 才值得付的代价，而这里每 60ms 轮询一次，必须便宜（`GetForegroundWindow` 只读一个全局）。
+///
+/// **本进程自己的窗口一律报 `None`**：主窗 / 触发气泡 / 状态指示 / 快捷键提示框都是「我们
+/// 自己弹出来的」，不是用户换了工作窗口。浮窗虽是 `focusable(false)`，但 WebView2 的子窗
+/// 仍可能让顶层窗口短暂成为前台；一旦被 `FocusTracker` 当成「前台切换」，就会 `Engine::reset`
+/// ——按住的 momentary 层被踢掉、凑到一半的和弦被丢弃（锁定层因复位保留而不受影响，正是
+/// 「按住切层键触发和弦失败、锁定层却正常」这个不对称的来源）。取不到 pid 时按「不是自己」
+/// 处理（宁可多复位一次，也不错杀真实切换）。
 pub fn foreground_window() -> Option<isize> {
     let hwnd = unsafe { GetForegroundWindow() };
     if hwnd.0.is_null() {
-        None
-    } else {
-        Some(hwnd.0 as isize)
+        return None;
     }
+    if is_own_window(hwnd) {
+        return None;
+    }
+    Some(hwnd.0 as isize)
+}
+
+/// 窗口句柄是否属于本进程（[`foreground_window`] 据此忽略我们自己的窗口）。
+fn is_own_window(hwnd: HWND) -> bool {
+    let mut pid: u32 = 0;
+    unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    pid != 0 && pid == unsafe { GetCurrentProcessId() }
 }
 
 /// 取当前前台窗口上下文（进程名 + 窗口标题），供「按前台应用/窗口」类条件求值。
@@ -694,6 +710,13 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     let process_name = process_name_of(pid).unwrap_or_default();
     Some(FrontmostContext { process_name, window_title })
+}
+
+/// 最近一次事件的设备标识。**Windows 恒 `None`**：`WH_KEYBOARD_LL` 拿不到设备信息
+/// （真实区分多键盘要另挂 Raw Input `WM_INPUT` 旁路 + SetupAPI 枚举设备名，见规划
+/// 7.3-㉓ 的后续）。壳层据此把「设备是」条件在本平台标注为不可用。
+pub fn current_device() -> Option<String> {
+    None
 }
 
 /// 由进程 id 取可执行文件名（如 `chrome.exe`）；失败返回 None。
@@ -809,6 +832,34 @@ mod tests {
     fn swallow_up_only_for_registered_keys() {
         // 未登记的 keyup 放行
         assert!(!swallow(WM_KEYUP, &KBDLLHOOKSTRUCT::default()));
+    }
+
+    #[test]
+    fn own_process_window_is_not_a_foreground_switch() {
+        // 前台句柄落在本进程自己的窗口上（主窗 / 气泡 / 指示 / 提示框）时必须报 None：
+        // 壳层的 `FocusTracker` 靠它判「前台切换 → 复位」，误判会踢掉按住的 momentary 层、
+        // 丢掉凑到一半的和弦（锁定层因复位保留，正是 hold_layer 触发和弦失败、lock_layer
+        // 正常这个不对称的来源）。用 message-only 窗口验证 pid 判定，不依赖真实前台。
+        use windows::core::w;
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("kada-test"),
+                WINDOW_STYLE(0),
+                0,
+                0,
+                0,
+                0,
+                Some(HWND_MESSAGE),
+                None,
+                None,
+                None,
+            )
+        }
+        .expect("创建 message-only 窗口");
+        assert!(is_own_window(hwnd), "本进程创建的窗口应判为「自己」");
+        unsafe { let _ = DestroyWindow(hwnd); }
     }
 
     #[test]

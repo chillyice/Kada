@@ -24,7 +24,8 @@ type Condition =
   | { kind: "modified_within"; path: string; minutes: number }
   | { kind: "frontmost_app"; app: string }
   | { kind: "not_frontmost_app"; app: string }
-  | { kind: "window_title_contains"; text: string };
+  | { kind: "window_title_contains"; text: string }
+  | { kind: "device_is"; id: string };
 type AppOperation =
   | { op: "launch"; program: string; args: string[] }
   | { op: "close"; program: string }
@@ -250,6 +251,7 @@ const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
   { value: "frontmost_app", label: "前台应用是" },
   { value: "not_frontmost_app", label: "前台应用不是" },
   { value: "window_title_contains", label: "窗口标题包含" },
+  { value: "device_is", label: "设备是" },
 ];
 
 function newCondition(kind: Condition["kind"]): Condition {
@@ -269,6 +271,8 @@ function newCondition(kind: Condition["kind"]): Condition {
       return { kind, app: "" };
     case "window_title_contains":
       return { kind, text: "" };
+    case "device_is":
+      return { kind, id: "" };
   }
   return { kind: "exists", path: "" };
 }
@@ -393,6 +397,8 @@ function condHasContent(c: Condition): boolean {
       return c.app.trim().length > 0;
     case "window_title_contains":
       return c.text.trim().length > 0;
+    case "device_is":
+      return c.id.trim().length > 0;
   }
   return false;
 }
@@ -480,6 +486,8 @@ function condSummary(c: Condition): string {
       return `前台应用不是：${c.app}`;
     case "window_title_contains":
       return `窗口标题包含：${c.text}`;
+    case "device_is":
+      return `设备是：${c.id}`;
   }
   return "";
 }
@@ -3065,6 +3073,24 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       });
       line.append(el("span", "unit-hint", "包含文本"), text);
       body.append(line);
+    } else if (cond.kind === "device_is") {
+      const line = el("div", "action-line");
+      const id = el("input", "action-input") as HTMLInputElement;
+      id.type = "text";
+      id.value = cond.id;
+      id.placeholder = "设备名，如 AT Translated Set 2 keyboard（含 * / ? 走通配，否则子串匹配）";
+      id.addEventListener("input", () => {
+        cond.id = id.value;
+      });
+      line.append(el("span", "unit-hint", "设备名"), id);
+      body.append(line);
+      body.append(
+        el(
+          "div",
+          "unit-hint",
+          "按触发键来自哪台键盘区分（仅 Linux 生效；Windows / macOS 取不到设备，恒走「否则」分支）。",
+        ),
+      );
     } else {
       const lineVar = el("div", "action-line");
       const vname = el("input", "action-input") as HTMLInputElement;
