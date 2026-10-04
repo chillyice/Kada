@@ -56,6 +56,22 @@ impl UpdatePhase {
     }
 }
 
+/// 由累计下载字节与总字节算整数百分比；总字节未知 / 为 0 时返回 `None`（不推进度）。
+/// 累计超过总量时按 100 封顶（分片回调可能略过总量）。
+fn progress_percent(got: u64, total: Option<u64>) -> Option<u64> {
+    let total = total.filter(|t| *t > 0)?;
+    // u128 中间量：`got * 100` 在超大 total（理论上）下会让 u64 溢出。
+    let percent = (got.min(total) as u128 * 100 / total as u128).min(100);
+    Some(percent as u64)
+}
+
+/// 进度节流：整数百分比与上次相同就不推（返回 false，调用方跳过 emit）。
+/// 首次调用（`last` = `u64::MAX`）一定推。下载分片回调极密集，每片都 emit 会把
+/// IPC 与前端渲染刷爆，所以只按整数百分比变化推。
+fn should_emit_progress(last: &AtomicU64, percent: u64) -> bool {
+    last.swap(percent, Ordering::Relaxed) != percent
+}
+
 /// 更新状态快照：设置页 `get_update_status` 读取，也随 `update-status` 事件推送。
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateStatus {
@@ -232,9 +248,8 @@ pub fn spawn_install(app: tauri::AppHandle) {
             .download_and_install(
                 move |chunk: usize, total: Option<u64>| {
                     let got = downloaded.fetch_add(chunk as u64, Ordering::Relaxed) + chunk as u64;
-                    let Some(total) = total.filter(|t| *t > 0) else { return };
-                    let percent = (got.min(total) * 100 / total).min(100);
-                    if last_percent.swap(percent, Ordering::Relaxed) == percent {
+                    let Some(percent) = progress_percent(got, total) else { return };
+                    if !should_emit_progress(&last_percent, percent) {
                         return;
                     }
                     set_phase(
@@ -306,5 +321,35 @@ mod tests {
 
         let idle = serde_json::to_value(UpdateStatus { current: "0.1.0".into(), phase: UpdatePhase::Idle }).unwrap();
         assert_eq!(idle["phase"], "idle");
+    }
+
+    #[test]
+    fn progress_percent_clamps_and_ignores_unknown_total() {
+        // 总字节未知（None / 0）→ 不推进度（否则会算出除零或恒 0 的假进度）。
+        assert_eq!(progress_percent(500, None), None);
+        assert_eq!(progress_percent(500, Some(0)), None);
+        // 正常换算。
+        assert_eq!(progress_percent(0, Some(1000)), Some(0));
+        assert_eq!(progress_percent(250, Some(1000)), Some(25));
+        assert_eq!(progress_percent(1000, Some(1000)), Some(100));
+        // 累计超过总量（分片回调可能略过）→ 封顶 100，不溢出。
+        assert_eq!(progress_percent(2000, Some(1000)), Some(100));
+        // 极端大小不溢出（内部用 u128 中间量）。
+        assert_eq!(progress_percent(u64::MAX, Some(u64::MAX)), Some(100));
+    }
+
+    #[test]
+    fn progress_throttle_only_emits_on_percent_change() {
+        let last = AtomicU64::new(u64::MAX);
+        // 首次 0% 必须推（初始哨兵 u64::MAX ≠ 0）。
+        assert!(should_emit_progress(&last, 0));
+        // 同一整数百分比的分片不再推——这是避免 IPC 刷爆的关键。
+        assert!(!should_emit_progress(&last, 0));
+        assert!(!should_emit_progress(&last, 0));
+        // 变化才推。
+        assert!(should_emit_progress(&last, 1));
+        assert!(!should_emit_progress(&last, 1));
+        assert!(should_emit_progress(&last, 100));
+        assert!(!should_emit_progress(&last, 100));
     }
 }

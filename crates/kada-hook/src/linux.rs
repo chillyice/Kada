@@ -686,6 +686,15 @@ mod tests {
     use super::*;
     use kada_core::key_name;
 
+    /// 动全局状态（`HANDLER` / `SWALLOWED` / `MODS_DOWN` / `REPLACED_DOWN`）的用例必须串行：
+    /// cargo test 默认多线程并行，两个用例同时改这些表会互相打断。中毒（上一个用例 panic）
+    /// 也继续跑，别让一个失败连带整片红。
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_test() -> std::sync::MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     #[test]
     fn mapping_roundtrip() {
         for k in [
@@ -723,6 +732,7 @@ mod tests {
     /// 真设备路径（poll_loop 的 Err 分支）只能真机验证，这里锁行为口径。
     #[test]
     fn device_lost_resets_state() {
+        let _g = lock_test();
         SWALLOWED.lock().unwrap().insert(Key::MouseBack);
         REPLACED_DOWN.lock().unwrap().insert(Key::K, Key::Control);
         MODS_DOWN.lock().unwrap().insert(KeyCode::KEY_LEFTCTRL.0);
@@ -732,5 +742,46 @@ mod tests {
         assert!(REPLACED_DOWN.lock().unwrap().is_empty());
         assert!(MODS_DOWN.lock().unwrap().is_empty());
         assert_eq!(reinstall_count(), before + 1);
+    }
+
+    /// 修饰键跟踪与吞键登记（`press` / `release` 状态机）——此前只测了键映射。
+    #[test]
+    fn modifier_and_swallow_bookkeeping() {
+        let _g = lock_test();
+        MODS_DOWN.lock().unwrap().clear();
+        SWALLOWED.lock().unwrap().clear();
+        REPLACED_DOWN.lock().unwrap().clear();
+        let events: Arc<Mutex<Vec<KeyEvent>>> = Arc::new(Mutex::new(Vec::new()));
+        let sink = events.clone();
+        *HANDLER.lock().unwrap() = Some(Box::new(move |ev: KeyEvent| {
+            sink.lock().unwrap().push(ev);
+            Action::Block
+        }));
+
+        // Ctrl 按下 → MODS_DOWN 记录，current_mods 合并进来（修饰键按事件流维护）。
+        press(Key::Control, KeyCode::KEY_LEFTCTRL.0, 1);
+        assert!(MODS_DOWN.lock().unwrap().contains(&KeyCode::KEY_LEFTCTRL.0));
+        assert!(current_mods(Key::A).contains(&Modifier::Ctrl));
+
+        // 普通键按下被 Block → 登记 SWALLOWED（抬起才能一并吞掉，防幽灵）。
+        press(Key::A, KeyCode::KEY_A.0, 1);
+        assert!(SWALLOWED.lock().unwrap().contains(&Key::A));
+
+        release(KeyCode::KEY_A.0, Key::A);
+        assert!(!SWALLOWED.lock().unwrap().contains(&Key::A), "抬起后移出登记表");
+
+        // Ctrl 抬起 → MODS_DOWN 清空。
+        release(KeyCode::KEY_LEFTCTRL.0, Key::Control);
+        assert!(MODS_DOWN.lock().unwrap().is_empty());
+        assert!(current_mods(Key::A).is_empty());
+
+        *HANDLER.lock().unwrap() = None;
+        // 每个按下 / 抬起都要回调 handler（状态机靠抬起维护按住集合）。
+        let seen = events.lock().unwrap();
+        assert_eq!(seen.len(), 4, "Ctrl↓ + A↓ + A↑ + Ctrl↑ 共 4 次回调，实际：{seen:?}");
+        assert!(matches!(seen[0], KeyEvent::Down { key: Key::Control, .. }));
+        assert!(matches!(seen[1], KeyEvent::Down { key: Key::A, .. }));
+        assert!(matches!(seen[2], KeyEvent::Up { key: Key::A, .. }));
+        assert!(matches!(seen[3], KeyEvent::Up { key: Key::Control, .. }));
     }
 }
