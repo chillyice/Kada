@@ -59,8 +59,8 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。否则配了 `F&J` / `F9 J K` / 只设「长按进入层」的切层键，这些键就彻底变哑。机制见 `docs/架构设计.md` §3.1。
 - **配置落盘铁律**（`src-tauri/src/config_io.rs`）：保存走「唯一临时文件 → `fsync` → `rename` 覆盖」原子替换（留 `config.json.bak` 上次良好副本），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——留档、能从 `.bak` 恢复就恢复并回写主文件，都失败才空配置启动 + 告警。加载只 `migrate()` **不** `sanitize_config()`（清洗只在保存/导入路径）。**导入必须选方式**（`import_config(path, mode)`）：`merge` 只增不删、不制造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档。**删除已保存条目要先确认**（`ui/` `confirmDelete`），未落盘新增项可不问。**外部修改监听**（`config_watch.rs`）：**能解析才采纳、解析不动就别碰磁盘**（自愈只属启动 `load`，监听走只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收 `config-changed` 有未保存草稿必须问用户。**应用内写盘广播 `config-updated`**（`set_config` / 导入 / `save_settings_patch`）：提示框据它重画、主界面跟上 `settings.hints`；与 `config-changed`（外部改动）语义分离，不可混用。
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
-- **冲突检测**（`detect_conflicts`）：硬冲突（重复触发键 / 序列 leader 遮蔽同层单组合）/ 软冲突（超集，含和弦间超集/子集）/ 系统快捷键清单命中 / **层可达性**（层有条目却无切层键指向 → 警告，这是「层配了但不触发」最难自查的原因）/ **平台能力缺失**（`PlatformCaps`，见钩子引擎段）。
-- **消息中心**（内存态，重启清空，「命令结果 / 冲突」两标签）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
+- **冲突检测**（`detect_conflicts`）：硬冲突（重复触发键 / 序列 leader 遮蔽同层单组合）/ 软冲突（超集，含和弦间超集/子集）/ 系统快捷键清单命中 / **层可达性**（层有条目却无切层键指向 → 警告）/ **平台能力缺失**（`PlatformCaps`，见钩子引擎段）。
+- **消息中心**（内存态，重启清空）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
 - **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**（挂住即永久占住执行线程）——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`）；中止 = **代数计数器** `abort::request()`（判定点：每步动作前 / 进程轮询 / `PauseMs` 分片 / `App::Status` 重试）。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
 - **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 比对，Rust 新增键而前端漏改即红）。
@@ -83,7 +83,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 ## 软件更新（Windows 已落地）
 
-- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（故流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。
+- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**——发版 CLI 必须把版本号写进签名 `trusted comment`（本地 2.11.4 / CI `tauri-action@v0` 都写），否则客户端以 `MissingSignedVersion` 拒装。
 - **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
 
 ## 构建与验证命令
@@ -97,8 +97,8 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。发版要签名（本机拉不到 NSIS 工具链，发版走 CI）：`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key"; npx tauri build --bundles nsis`（缺签名则客户端拒装，是设计使然）。
-- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check（命令见上）能真编到 `macos.rs`，`-p kada` 必然失败（`ring` 要真 clang）——壳层 macOS 分支与链接期/运行时行为只能靠 CI 或真机验。
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。发版要签名（发版走 CI）：`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key"; npx tauri build --bundles nsis`（缺签名客户端拒装）。
+- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 能真编 `macos.rs`，`-p kada` 必失败（`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 
 ## 里程碑与规划
 

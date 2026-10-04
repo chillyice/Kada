@@ -80,7 +80,7 @@ npm run tauri build
 - 本地发版（不走 CI）也要签：设 `TAURI_SIGNING_PRIVATE_KEY_PATH` 指向私钥文件即可（实测 `TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key" tauri build --bundles nsis` 能出 `.sig`）。
 - 客户端只认内嵌公钥校验签名，**私钥泄露才需轮换公钥并随新版客户端下发**。
 - ⚠ **私钥丢失 = 现有用户再也收不到更新**（只能轮换公钥 + 让用户手动装一次新版）。请把 `kada.key` 备份进密码管理器。
-- 可选加固：`plugins.updater.requireSignedVersion = true` 要求签名里带版本号，挡「拿旧版有效签名冒充新版」的降级攻击。默认关闭：需要较新的 Tauri CLI 才会在签名里记录版本号，而本项目尚未发过版（没有历史包包袱），确认 CLI 行为后可打开。
+- **已开启加固**：`plugins.updater.requireSignedVersion = true` 要求签名里带版本号，挡「拿旧版有效签名冒充新版」的降级攻击（端点响应不走签名，`version` 字段可被篡改；校验签名里的版本号与端点声明是否一致）。**发版必须用会把版本号写进签名 `trusted comment` 的 Tauri CLI**（`version:X.Y.Z` 字段）：本地 CLI 2.11.4、CI 的 `tauri-action@v0` 都会写；不写版本号的老签名包会被客户端以 `MissingSignedVersion` 直接拒装。本项目此前从未发过版，无历史签名包袱，故可直接开启。
 - （可选，与更新机制正交）对安装包做 **Windows 代码签名证书**签名，可降低 SmartScreen 拦截；正式对外分发时建议补。
 
 ### 2.4 客户端更新流程（已实现）
