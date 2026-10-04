@@ -19,30 +19,58 @@ pub enum Modifier {
     Meta,
 }
 
-/// 单个按键。与具体 OS 键码无关，由平台层映射进来。
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub enum Key {
-    A, B, C, D, E, F, G, H, I, J, K, L, M,
-    N, O, P, Q, R, S, T, U, V, W, X, Y, Z,
-    Digit0, Digit1, Digit2, Digit3, Digit4,
-    Digit5, Digit6, Digit7, Digit8, Digit9,
-    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
-    F13, F14, F15, F16, F17, F18, F19, F20, F21, F22, F23, F24,
-    Comma, Period, Slash, Backslash, Semicolon, Quote, Backquote,
-    Minus, Equal, BracketLeft, BracketRight,
-    Enter, Escape, Tab, Space, Backspace, Delete, Insert,
-    CapsLock, Shift, Control, Alt, Meta,
-    Home, End, PageUp, PageDown,
-    ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
+/// 用一个宏从**同一份清单**同时定义枚举与 [`key_name`]，保证两者不会漂移；顺带给出
+/// [`Key::ALL`]（前端全键表一致性校验、任何「遍历所有键」的需求都据它）。
+macro_rules! keys {
+    ($($variant:ident => $name:literal),* $(,)?) => {
+        /// 单个按键。与具体 OS 键码无关，由平台层映射进来。
+        #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+        pub enum Key { $($variant),* }
+
+        impl Key {
+            /// 全部按键，按声明顺序（与 [`key_name`] 同源，不可能漏项）。
+            pub const ALL: &'static [Key] = &[$(Key::$variant),*];
+        }
+
+        /// 键的中性名（显示与配置落盘用）。
+        pub fn key_name(k: Key) -> &'static str {
+            match k { $(Key::$variant => $name),* }
+        }
+    };
+}
+
+keys! {
+    A => "A", B => "B", C => "C", D => "D", E => "E", F => "F", G => "G", H => "H",
+    I => "I", J => "J", K => "K", L => "L", M => "M", N => "N", O => "O", P => "P",
+    Q => "Q", R => "R", S => "S", T => "T", U => "U", V => "V", W => "W", X => "X",
+    Y => "Y", Z => "Z",
+    Digit0 => "0", Digit1 => "1", Digit2 => "2", Digit3 => "3", Digit4 => "4",
+    Digit5 => "5", Digit6 => "6", Digit7 => "7", Digit8 => "8", Digit9 => "9",
+    F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4", F5 => "F5", F6 => "F6",
+    F7 => "F7", F8 => "F8", F9 => "F9", F10 => "F10", F11 => "F11", F12 => "F12",
+    Comma => ",", Period => ".", Slash => "/", Backslash => "\\",
+    Semicolon => ";", Quote => "\"", Backquote => "`",
+    Minus => "-", Equal => "=", BracketLeft => "[", BracketRight => "]",
+    Enter => "Enter", Escape => "Esc", Tab => "Tab", Space => "Space",
+    Backspace => "Backspace", Delete => "Delete", Insert => "Insert", CapsLock => "CapsLock",
+    Shift => "Shift", Control => "Ctrl", Alt => "Alt", Meta => "Meta",
+    Home => "Home", End => "End", PageUp => "PageUp", PageDown => "PageDown",
+    ArrowUp => "Up", ArrowDown => "Down", ArrowLeft => "Left", ArrowRight => "Right",
+    F13 => "F13", F14 => "F14", F15 => "F15", F16 => "F16", F17 => "F17", F18 => "F18",
+    F19 => "F19", F20 => "F20", F21 => "F21", F22 => "F22", F23 => "F23", F24 => "F24",
     // 媒体键（音量/播放控制）。
-    MediaPlayPause, MediaPrev, MediaNext, VolumeMute, VolumeDown, VolumeUp,
+    MediaPlayPause => "MediaPlayPause", MediaPrev => "MediaPrev", MediaNext => "MediaNext",
+    VolumeMute => "VolumeMute", VolumeDown => "VolumeDown", VolumeUp => "VolumeUp",
     // 小键盘数字区 + NumLock（独立映射，与主键区数字键区分）。
-    Numpad0, Numpad1, Numpad2, Numpad3, Numpad4, Numpad5, Numpad6, Numpad7,
-    Numpad8, Numpad9, NumpadAdd, NumpadSubtract, NumpadMultiply, NumpadDivide,
-    NumpadDecimal, NumpadEnter, NumLock,
+    Numpad0 => "Numpad0", Numpad1 => "Numpad1", Numpad2 => "Numpad2", Numpad3 => "Numpad3",
+    Numpad4 => "Numpad4", Numpad5 => "Numpad5", Numpad6 => "Numpad6", Numpad7 => "Numpad7",
+    Numpad8 => "Numpad8", Numpad9 => "Numpad9",
+    NumpadAdd => "NumpadAdd", NumpadSubtract => "NumpadSubtract",
+    NumpadMultiply => "NumpadMultiply", NumpadDivide => "NumpadDivide",
+    NumpadDecimal => "NumpadDecimal", NumpadEnter => "NumpadEnter", NumLock => "NumLock",
     // 鼠标键（中键 / 侧键，作为触发键与改键目标；左右键与滚轮不纳入，
     // 避免全局误拦截点击）。
-    MouseMiddle, MouseBack, MouseForward,
+    MouseMiddle => "MouseMiddle", MouseBack => "MouseBack", MouseForward => "MouseForward",
 }
 
 impl Key {
@@ -262,43 +290,6 @@ pub fn format_shortcut(s: &Shortcut) -> String {
     }
     parts.push(key_name(s.key));
     parts.join("+")
-}
-
-pub fn key_name(k: Key) -> &'static str {
-    use Key::*;
-    match k {
-        A => "A", B => "B", C => "C", D => "D", E => "E", F => "F",
-        G => "G", H => "H", I => "I", J => "J", K => "K", L => "L",
-        M => "M", N => "N", O => "O", P => "P", Q => "Q", R => "R",
-        S => "S", T => "T", U => "U", V => "V", W => "W", X => "X",
-        Y => "Y", Z => "Z",
-        Digit0 => "0", Digit1 => "1", Digit2 => "2", Digit3 => "3",
-        Digit4 => "4", Digit5 => "5", Digit6 => "6", Digit7 => "7",
-        Digit8 => "8", Digit9 => "9",
-        F1 => "F1", F2 => "F2", F3 => "F3", F4 => "F4",
-        F5 => "F5", F6 => "F6", F7 => "F7", F8 => "F8",
-        F9 => "F9", F10 => "F10", F11 => "F11", F12 => "F12",
-        Comma => ",", Period => ".", Slash => "/", Backslash => "\\",
-        Semicolon => ";", Quote => "\"", Backquote => "`",
-        Minus => "-", Equal => "=", BracketLeft => "[", BracketRight => "]",
-        Enter => "Enter", Escape => "Esc", Tab => "Tab", Space => "Space",
-        Backspace => "Backspace", Delete => "Delete", Insert => "Insert",
-        CapsLock => "CapsLock",
-        Shift => "Shift", Control => "Ctrl", Alt => "Alt", Meta => "Meta",
-        Home => "Home", End => "End", PageUp => "PageUp", PageDown => "PageDown",
-        ArrowUp => "Up", ArrowDown => "Down", ArrowLeft => "Left", ArrowRight => "Right",
-        F13 => "F13", F14 => "F14", F15 => "F15", F16 => "F16", F17 => "F17", F18 => "F18",
-        F19 => "F19", F20 => "F20", F21 => "F21", F22 => "F22", F23 => "F23", F24 => "F24",
-        MediaPlayPause => "MediaPlayPause", MediaPrev => "MediaPrev", MediaNext => "MediaNext",
-        VolumeMute => "VolumeMute", VolumeDown => "VolumeDown", VolumeUp => "VolumeUp",
-        Numpad0 => "Numpad0", Numpad1 => "Numpad1", Numpad2 => "Numpad2", Numpad3 => "Numpad3",
-        Numpad4 => "Numpad4", Numpad5 => "Numpad5", Numpad6 => "Numpad6", Numpad7 => "Numpad7",
-        Numpad8 => "Numpad8", Numpad9 => "Numpad9",
-        NumpadAdd => "NumpadAdd", NumpadSubtract => "NumpadSubtract",
-        NumpadMultiply => "NumpadMultiply", NumpadDivide => "NumpadDivide",
-        NumpadDecimal => "NumpadDecimal", NumpadEnter => "NumpadEnter", NumLock => "NumLock",
-        MouseMiddle => "MouseMiddle", MouseBack => "MouseBack", MouseForward => "MouseForward",
-    }
 }
 
 /// 事件 `e` 是否命中快捷键 `s`：主键一致，且事件修饰键 ⊇ 快捷键修饰键。

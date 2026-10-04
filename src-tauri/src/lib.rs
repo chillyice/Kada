@@ -336,6 +336,9 @@ struct KadaState {
     /// 托盘菜单里的「快捷键提示」勾选项：提示框的可见性可能被窗口上的 × 改掉，
     /// 那时得把勾也抹掉——不记住它就只能干看着菜单与现状不一致。
     hints_tray: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
+    /// 托盘菜单里的「暂停快捷键触发」勾选项：`settings.paused` 也可能被设置页改掉，
+    /// 由状态机定时器线程统一把勾对齐（见 [`spawn_engine_ticker`]）。
+    pause_tray: Mutex<Option<CheckMenuItem<tauri::Wry>>>,
     /// 本次会话是否已经给提示框摆过位：摆过之后原地不动（拖动 / 缩放都不再重定位），
     /// 免得「内容重排 → 又按配置里的旧坐标摆一次」把刚拖到的位置弹回去。
     hints_placed: AtomicBool,
@@ -720,6 +723,9 @@ fn spawn_engine_ticker(
         let mut last_status: Option<(StatusPayload, bool)> = None;
         // 上一次「配置是否需要鼠标钩子」：变了才通知钩子层（避免每拍都发重装请求）。
         let mut last_mouse: Option<bool> = None;
+        // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
+        // 外部改配置都能改它，这里是唯一一处常驻且拿得到最新配置的地方）。
+        let mut last_paused: Option<bool> = None;
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
             let reset_reason = watch.poll();
@@ -731,7 +737,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse) = {
+            let (payload, hud_enabled, use_mouse, user_paused) = {
                 let guard = cfg.read().unwrap();
                 let frozen =
                     rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused;
@@ -751,7 +757,12 @@ fn spawn_engine_ticker(
                     engine.tick(&guard, &mut SimulatedInject);
                     engine.status()
                 };
-                (build_status(&status, &guard), guard.settings.show_status_hud, config_uses_mouse(&guard))
+                (
+                    build_status(&status, &guard),
+                    guard.settings.show_status_hud,
+                    config_uses_mouse(&guard),
+                    guard.settings.paused,
+                )
             };
             // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
             let changed = match last_status.as_ref() {
@@ -766,6 +777,14 @@ fn spawn_engine_ticker(
             if last_mouse != Some(use_mouse) {
                 input::set_mouse_enabled(use_mouse);
                 last_mouse = Some(use_mouse);
+            }
+            // 托盘「暂停快捷键触发」的勾选对齐：设置页勾选、外部改配置、托盘自身点击都汇总到
+            // 这一处比对（点菜单时 CheckMenuItem 已自动翻转，这里把状态钉死到真实配置值）。
+            if last_paused != Some(user_paused) {
+                if let Some(item) = app.state::<KadaState>().pause_tray.lock().unwrap().as_ref() {
+                    let _ = item.set_checked(user_paused);
+                }
+                last_paused = Some(user_paused);
             }
         }
     });
@@ -860,6 +879,97 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
         );
         let _ = app.emit("config-changed", &cfg);
     });
+}
+
+/// 托盘「暂停 / 恢复快捷键触发」：切换 `settings.paused` 并落盘。
+///
+/// 与设置页的「暂停」勾选是同一个字段（走 [`save_settings_patch`]，会广播 `config-updated`，
+/// 设置页随即跟上）；勾选态由状态机定时器线程统一对齐（见 [`spawn_engine_ticker`]）。
+fn toggle_pause(app: &tauri::AppHandle) {
+    let st = app.state::<KadaState>();
+    let paused = !st.config.read().unwrap().settings.paused;
+    if let Err(e) = save_settings_patch(app, &st, |s| s.paused = paused) {
+        eprintln!("切换暂停失败: {e}");
+    }
+}
+
+/// 托盘「重载配置」：立即从磁盘再读一份（手改 JSON 后想马上生效，不等监听线程的下一拍）。
+///
+/// 与 [`spawn_config_watcher`] 同口径——**能解析才采纳、解析不动就别碰磁盘**；区别是这条由
+/// 用户主动触发，无论结果如何都给一条可见反馈，免得点了没反应。
+fn reload_config_now(app: &tauri::AppHandle) {
+    let st = app.state::<KadaState>();
+    let result = config_io::read_only(&st.file);
+    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let command = match result {
+        Ok(cfg) => {
+            // 与 set_config 同一把锁序（cfg_watch → config.write，巡检线程也按此序）。
+            let mut watch = st.cfg_watch.lock().unwrap();
+            if *st.config.read().unwrap() == cfg {
+                watch.adopt_own_write(&st.file);
+                drop(watch);
+                "配置已是最新，无需重载".to_string()
+            } else {
+                let autostart_changed =
+                    st.config.read().unwrap().settings.autostart != cfg.settings.autostart;
+                *st.config.write().unwrap() = cfg.clone();
+                // 与外部改动同一条复位通道：旧配置绑定的按住层 / 待定和弦 / 注入修饰键作废。
+                st.cfg_stale.store(true, Ordering::Relaxed);
+                watch.adopt_own_write(&st.file);
+                drop(watch);
+                if autostart_changed {
+                    sync_autostart(app, cfg.settings.autostart);
+                }
+                // 用 config-changed（而非 config-updated）：内存配置真被整份换掉了，界面若有
+                // 未保存草稿得按「外部改动」的流程问用户，不能静默覆盖。
+                let _ = app.emit("config-changed", &cfg);
+                format!(
+                    "已从磁盘重载配置：快捷键 {} 条、改键 {} 条、文本扩展 {} 条、层 {} 个。",
+                    cfg.shortcuts.len(),
+                    cfg.remaps.len(),
+                    cfg.expansions.len(),
+                    cfg.layers.len(),
+                )
+            }
+        }
+        Err(e) => {
+            commit_result(
+                app,
+                &st.results,
+                &st.unread,
+                CommandResult {
+                    kind: "error".into(),
+                    label: "配置".into(),
+                    trigger: "重载配置".into(),
+                    name: String::new(),
+                    command: "配置重载失败：磁盘内容无法解析，当前配置保持不变".into(),
+                    stdout: String::new(),
+                    stderr: e,
+                    exit_code: None,
+                    show_output: false,
+                    time: now.clone(),
+                },
+            );
+            return;
+        }
+    };
+    commit_result(
+        app,
+        &st.results,
+        &st.unread,
+        CommandResult {
+            kind: "config".into(),
+            label: "配置".into(),
+            trigger: "重载配置".into(),
+            name: String::new(),
+            command,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            show_output: false,
+            time: now,
+        },
+    );
 }
 
 /// 执行一串动作（异步跑，避免阻塞钩子回调）；命令类动作的结果进消息中心。
@@ -978,6 +1088,11 @@ fn ensure_toast(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     )
     .decorations(false)
     .transparent(true)
+    // 浮窗一律 `shadow(false)`：tao 对「无边框 + 有投影」的窗会保留整套 DWM 边框（Win11 上是
+    // 一圈 1px 圆角亮边 + 外投影），而这几个窗的内容都比窗口矩形小一圈（透明边是留给 CSS 投影
+    // 的），那圈边框就挂在面板外面，看着像凭空多了一个空框。投影由 CSS 自己画，见 `style.css`
+    // 里 `.toast-bubble` / `.hud-row` / `.hints-panel` 的 `box-shadow`。
+    .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
     .resizable(false)
@@ -1028,6 +1143,8 @@ fn ensure_hud(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     )
     .decorations(false)
     .transparent(true)
+    // 同 `ensure_toast`：别借系统投影，那圈 DWM 边框会挂在面板外面。
+    .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
     .resizable(false)
@@ -1146,6 +1263,8 @@ fn ensure_hints(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     )
     .decorations(false)
     .transparent(true)
+    // 同 `ensure_toast`：别借系统投影，那圈 DWM 边框会挂在面板外面。
+    .shadow(false)
     .skip_taskbar(true)
     .always_on_top(true)
     .resizable(false)
@@ -1587,6 +1706,73 @@ fn key_name(k: Key) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `ui/src/main.ts` 的键表是 `kada-core` 的手抄副本（改键下拉 / 组合键录入显示名），
+    /// 一旦 Rust 新增 `Key` 而前端漏了，下拉会静默空白、保存时可能写空值（见规划 7.4-㉘）。
+    /// 这里按字面量解析前端数组 / 对象，跟 [`Key::ALL`]（与 `key_name` 同源生成）逐一比对。
+    ///
+    /// 前端这两处必须是**显式字面量**（不能 spread / 循环拼），否则解析不到——这是有意的约束。
+    #[test]
+    fn frontend_key_table_matches_core() {
+        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/main.ts"))
+            .expect("读取 ui/src/main.ts 失败");
+        let names: std::collections::BTreeSet<&str> =
+            Key::ALL.iter().map(|k| key_name(*k)).collect();
+
+        // ① 改键下拉的全键表：必须与 core 完全一致（不多不少）。
+        let options = quoted_literals(region(&src, "const KEY_OPTIONS = ["));
+        let options: std::collections::BTreeSet<&str> =
+            options.iter().map(String::as_str).collect();
+        let missing: Vec<&&str> = names.difference(&options).collect();
+        let extra: Vec<&&str> = options.difference(&names).collect();
+        assert!(missing.is_empty(), "KEY_OPTIONS 缺少 core 里的键：{missing:?}");
+        assert!(extra.is_empty(), "KEY_OPTIONS 有 core 里没有的键（拼写错 / 已删除）：{extra:?}");
+
+        // ② 录入时 KeyboardEvent.code → 键名的映射：每个显示名都必须是合法键名。
+        for table in ["const CODE_TABLE", "const CODE_PUNCT"] {
+            for lit in quoted_literals(region(&src, table)) {
+                assert!(names.contains(lit.as_str()), "{table} 里的「{lit}」不是合法键名");
+            }
+        }
+    }
+
+    /// 取 `marker` 起到其后第一个 `];` / `};` 之间的源码片段。
+    fn region<'a>(src: &'a str, marker: &str) -> &'a str {
+        let start = src.find(marker).unwrap_or_else(|| panic!("找不到标记：{marker}"));
+        let rest = &src[start..];
+        let end = ["\n];", "\n};"]
+            .iter()
+            .filter_map(|m| rest.find(m))
+            .min()
+            .unwrap_or_else(|| panic!("找不到结束标记：{marker}"));
+        &rest[..end]
+    }
+
+    /// 抽出片段里所有双引号字面量的内容（处理 `\\` 与 `\"` 两种转义）。
+    fn quoted_literals(s: &str) -> Vec<String> {
+        let bytes = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'"' {
+                let (mut j, mut val) = (i + 1, String::new());
+                while j < bytes.len() && bytes[j] != b'"' {
+                    if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                        j += 1;
+                        val.push(bytes[j] as char);
+                    } else {
+                        val.push(bytes[j] as char);
+                    }
+                    j += 1;
+                }
+                out.push(val);
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
 
     #[test]
     fn injects_keys_only_matches_key_injecting_actions() {
@@ -2801,6 +2987,7 @@ pub fn run() {
                 toast: Arc::new(Mutex::new(None)),
                 status: Arc::new(Mutex::new(None)),
                 hints_tray: Mutex::new(None),
+                pause_tray: Mutex::new(None),
                 hints_placed: AtomicBool::new(false),
             };
             app.manage(state);
@@ -2831,9 +3018,23 @@ pub fn run() {
                 .read()
                 .map(|c| c.settings.hints.visible)
                 .unwrap_or(false);
+            let paused_at_startup = app
+                .state::<KadaState>()
+                .config
+                .read()
+                .map(|c| c.settings.paused)
+                .unwrap_or(false);
 
             // 托盘：常驻后台，关窗不退出。
             let show_i = MenuItem::with_id(app, "show", "打开咔哒", true, None::<&str>)?;
+            let pause_i = CheckMenuItem::with_id(
+                app,
+                "pause",
+                "暂停快捷键触发",
+                true,
+                paused_at_startup,
+                None::<&str>,
+            )?;
             let hints_i = CheckMenuItem::with_id(
                 app,
                 "hints",
@@ -2842,9 +3043,11 @@ pub fn run() {
                 hints_visible_at_startup,
                 None::<&str>,
             )?;
+            let reload_i = MenuItem::with_id(app, "reload", "重载配置", true, None::<&str>)?;
             let update_i = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_i, &hints_i, &update_i, &quit_i])?;
+            let menu =
+                Menu::with_items(app, &[&show_i, &pause_i, &hints_i, &reload_i, &update_i, &quit_i])?;
             let tray_icon = TrayIconBuilder::new()
                 .icon(base_icon.unwrap())
                 // 托盘提示的初值；有层 / 修饰键生效时由 publish_status 换成当前状态摘要。
@@ -2853,6 +3056,9 @@ pub fn run() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main_window(app),
+                    // 暂停 / 恢复快捷键触发（勾选态由状态机定时器线程对齐，见 spawn_engine_ticker）。
+                    "pause" => toggle_pause(app),
+                    "reload" => reload_config_now(app),
                     // 提示框的开关：常显浮窗的入口得在「随时够得着」的地方——窗口上的 × 一按，
                     // 设置界面要是没开着，用户就只剩托盘这一个入口。
                     "hints" => {
@@ -2882,6 +3088,8 @@ pub fn run() {
                 *st.tray.lock().unwrap() = Some(tray_icon);
                 // 记住这个勾选项：提示框被窗口上的 × 关掉时，得把勾抹掉。
                 *st.hints_tray.lock().unwrap() = Some(hints_i.clone());
+                // 记住暂停勾选项：设置页改 `settings.paused` 时定时器线程据此对齐勾选。
+                *st.pause_tray.lock().unwrap() = Some(pause_i.clone());
             }
 
             // 快捷键提示框：配置里记着要显示才建（懒创建，冷启动零 WebView）。

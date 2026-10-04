@@ -622,20 +622,24 @@ interface ActionDragState {
 }
 let actionDrag: ActionDragState | null = null;
 
-// ---- 键名选项（改键下拉用），对齐 kada-core 的 key_name ----
+// ---- 键名选项（改键下拉用），对齐 kada-core 的 `Key::ALL` / key_name ----
+// 必须是**显式字面量数组**（不要用 spread/循环拼）：`crates/kada-core` 的测试会按字面量
+// 解析这里，跟 `Key::ALL` 逐一比对——Rust 新增按键而这里漏了，测试就会红。
 const KEY_OPTIONS = [
-  ..."ABCDEFGHIJKLMNOPQRSTUVWXYZ".split(""),
-  ..."0123456789".split(""),
-  ...Array.from({ length: 24 }, (_, i) => `F${i + 1}`),
-  ",", ".", "/", "\\", ";", '"', "`", "-", "=", "[", "]",
+  "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
+  "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
+  "0", "1", "2", "3", "4", "5", "6", "7", "8", "9",
+  "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+  "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20", "F21", "F22", "F23", "F24",
+  ",", ".", "/", "\\", ";", "\"", "`", "-", "=", "[", "]",
   "Enter", "Esc", "Tab", "Space", "Backspace", "Delete", "Insert", "CapsLock",
   "Shift", "Ctrl", "Alt", "Meta",
   "Home", "End", "PageUp", "PageDown", "Up", "Down", "Left", "Right",
-  "NumLock", "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4",
+  "MediaPlayPause", "MediaPrev", "MediaNext", "VolumeMute", "VolumeDown", "VolumeUp",
+  "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4",
   "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9",
   "NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide",
-  "NumpadDecimal", "NumpadEnter",
-  "MediaPlayPause", "MediaPrev", "MediaNext", "VolumeMute", "VolumeDown", "VolumeUp",
+  "NumpadDecimal", "NumpadEnter", "NumLock",
   "MouseMiddle", "MouseBack", "MouseForward",
 ];
 
@@ -738,7 +742,7 @@ const CODE_TABLE: Record<string, string> = {
 };
 const CODE_PUNCT: Record<string, string> = {
   Comma: ",", Period: ".", Slash: "/", Backslash: "\\", Semicolon: ";",
-  Quote: '"', Backquote: "`", Minus: "-", Equal: "=",
+  Quote: "\"", Backquote: "`", Minus: "-", Equal: "=",
   BracketLeft: "[", BracketRight: "]",
 };
 
@@ -1335,12 +1339,28 @@ function renameFolder(id: string) {
   renderListPane();
 }
 
+// 确认框统一入口。ask() 走 Tauri 的 dialog 插件（需 capabilities 放行 `dialog:allow-message`，
+// 光放行 open/save 不够——ask 调的是插件的 message 命令）；被 ACL 拒绝或插件异常时它会 reject，
+// 而 reject 直接冒出去只会变成一条没人看的 unhandled rejection，用户看到的就是「点了删除没反应」。
+// 这里兜住并把原因摆到提示条上。
+async function confirmAsk(
+  message: string,
+  opts: Parameters<typeof ask>[1],
+): Promise<boolean> {
+  try {
+    return await ask(message, opts);
+  } catch (e) {
+    toast(`确认框打开失败：${e}`);
+    return false;
+  }
+}
+
 // 删除单条内容的统一确认。原先只有「删除目录 / 删除层」问一句，同为破坏性操作的单条删除
 // （快捷键 / 改键 / 文本扩展）却是点了就没了——同类实体的安全级别不该不一致。
 // 未落盘的新增项不弹：删除它等同「取消」，没有任何已保存的内容会丢。
 async function confirmDelete(kind: string, name: string, discardsDraft: boolean): Promise<boolean> {
   const dirty = discardsDraft ? "该条还有未保存的改动，会一并丢弃。" : "";
-  return await ask(`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
+  return await confirmAsk(`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
     kind: "warning",
     title: `删除${kind}`,
   });
@@ -1356,7 +1376,7 @@ async function deleteFolder(id: string) {
   if (!target) return;
   const ids = collectDescendantIds(id);
   const n = cfg.shortcuts.filter((s) => s.folder && ids.has(s.folder)).length;
-  const ok = await ask(
+  const ok = await confirmAsk(
     `删除目录「${target.name}」${n ? `及其中的 ${n} 条快捷键` : "及其所有内容"}？删除后无法撤销。`,
     { title: "删除目录", kind: "warning" },
   );
@@ -2334,7 +2354,7 @@ async function applyExternalConfig(next: Config) {
   const editing = draft !== null || remapDraft !== null || expansionDraft !== null;
   if (editing) {
     if (isDraftDirty()) {
-      const take = await ask(
+      const take = await confirmAsk(
         `${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
           "加载新内容会放弃这些改动。",
         {
@@ -3677,10 +3697,10 @@ function addLayer() {
 async function deleteLayer(id: string) {
   const target = cfg.layers.find((l) => l.id === id);
   if (!target) return;
-  const ok = await ask(`删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`, {
-    title: "删除层",
-    kind: "warning",
-  });
+  const ok = await confirmAsk(
+    `删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`,
+    { title: "删除层", kind: "warning" },
+  );
   if (!ok) return;
   cfg.layers = cfg.layers.filter((l) => l.id !== id);
   cfg.shortcuts.forEach((s) => {
@@ -4271,15 +4291,22 @@ async function initEvents() {
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);
   });
-  // 应用内别的窗口写盘后广播（`set_config` / 导入 / 提示框窗口拖了位置调了滚轮）：
-  // 只跟上提示框那一小块——它在别的窗口里被改过，本界面手上这份已经旧了，下次保存
-  // 会把旧值写回去（拖好的位置、调好的透明度被打回原形）。其余字段本界面自己就是权威。
+  // 应用内别的窗口写盘后广播（`set_config` / 导入 / 提示框窗口拖了位置调了滚轮 / 托盘暂停）：
+  // 只跟上「本界面不是唯一写入者」的那几块——它们在别处被改过，本界面手上这份已经旧了，
+  // 下次保存会把旧值写回去（拖好的位置、调好的透明度、托盘刚切的暂停被打回原形）。
+  // 其余字段本界面自己就是权威。
   await listen<Config>("config-updated", (event) => {
     const next = event.payload.settings?.hints;
-    if (!next) return;
-    cfg.settings.hints = next;
-    // 只动这一个勾：整份 `syncSettings()` 会把用户正在输入框里敲到一半的超时数字覆盖掉。
-    (document.getElementById("set-hints") as HTMLInputElement).checked = next.visible === true;
+    if (next) {
+      cfg.settings.hints = next;
+      // 只动这一个勾：整份 `syncSettings()` 会把用户正在输入框里敲到一半的超时数字覆盖掉。
+      (document.getElementById("set-hints") as HTMLInputElement).checked = next.visible === true;
+    }
+    const paused = event.payload.settings?.paused === true;
+    if (paused !== cfg.settings.paused) {
+      cfg.settings.paused = paused;
+      (document.getElementById("set-paused") as HTMLInputElement).checked = paused;
+    }
   });
 }
 
@@ -4373,12 +4400,17 @@ async function bootstrapHints() {
   const foot = el(
     "div",
     "hints-foot",
-    "滚轮：大小 · Ctrl+滚轮：透明度 · Shift+滚轮：滚动 · 拖标题移动",
+    // 两行是量着排的，别合回一行：21em 面板的内容宽只有 ~250px，这串提示单行要 288px，
+    // 挤成一行末尾的「拖标题移动」就会被省略号吃掉（`style.css` 里 `.hints-foot` 配合）。
+    "滚轮：大小 · Ctrl+滚轮：透明度\nShift+滚轮：滚动 · 拖标题移动",
   );
   panel.append(head, body, foot);
   document.body.append(panel);
-  // 窗口尺寸按 `.hints-panel` 量：面板外留一圈透明边给投影（transparent 窗口会把
-  // 阴影一起裁掉，除非窗口本身比面板大）。
+  // 窗口尺寸按 `.hints-panel` 量：面板外留一圈透明边给投影（transparent 窗口会把投影
+  // 一起裁掉，除非窗口本身比面板大）。**这一圈必须大于 CSS 投影的扩散半径**（见
+  // `.hints-panel` 的 `box-shadow: 0 2px 8px` → 最远约 10px），留小了投影会在窗口边界上
+  // 被切出一条直边。窗口也不借系统投影（`ensure_hints` 里 `shadow(false)`）——否则 tao
+  // 给无边框窗保留的那圈 DWM 边框会挂在这条透明边上，像外面多套了一个空框。
   const PANEL_MARGIN = 10;
 
   let scale = 100;
@@ -4483,11 +4515,16 @@ async function bootstrapHints() {
   panel.addEventListener(
     "wheel",
     (e) => {
-      // Shift+滚轮留给长列表滚动（列表超高时列表自身可滚，见 CSS 的 overflow）。
-      if (e.shiftKey) return;
+      // 一律 preventDefault：三种手势全归本窗口管，别让浏览器再插一脚（Shift+滚轮在 Chromium
+      // 里默认是「换轴横滚」，列表横向没得滚，轮子就白转了）。
       e.preventDefault();
       if (e.ctrlKey || e.metaKey) {
         opacity = clampNum(opacity + (e.deltaY < 0 ? 4 : -4), HINTS_OPACITY_RANGE);
+      } else if (e.shiftKey) {
+        // 长列表自己滚（列表超高时 `.hints-body` 自身可滚）。deltaMode=1 是「行」不是像素。
+        const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+        body.scrollTop += dy;
+        return;
       } else {
         scale = clampNum(scale + (e.deltaY < 0 ? 5 : -5), HINTS_SCALE_RANGE);
       }

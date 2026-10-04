@@ -1431,7 +1431,10 @@ body:has(.toast-bubble) {
   background: rgba(22, 26, 34, 0.96);
   border: 1px solid var(--line);
   border-radius: 10px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  /* 投影必须落在窗口那一圈透明边（下面 `inset: 12px` 让出来的那圈）之内：透明窗贴边裁切，
+     投影一旦伸过窗口边界就会被切出一条直边，看着像窗外还套了个空框。blur = 扩散半径，
+     所以 blur(8px) + 下移 2px ≈ 最远 10px < 12px。 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
   overflow: hidden;
 }
 
@@ -1480,7 +1483,8 @@ body:has(.hud-box) {
   background: rgba(22, 26, 34, 0.96);
   border: 1px solid var(--line);
   border-radius: 999px;
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+  /* 同 `.toast-bubble`：窗口只比内容大 7px（`bootstrapHud` 量完 + 7 各边），投影不能伸出去。 */
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
   white-space: nowrap;
 }
 
@@ -1546,7 +1550,10 @@ body:has(.hints-panel) {
   background: rgba(22, 26, 34, 0.96);
   border: 1px solid var(--line);
   border-radius: 0.85em;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  /* 同 `.toast-bubble`：窗口比面板大一圈（`bootstrapHints` 的 PANEL_MARGIN，10px），投影
+     得留在这圈里。这里**必须用 px 不能用 em**——`--hints-scale` 只放大字号（面板跟着涨到
+     21em），那圈透明边却是固定的 10px，em 投影在放大档位下会被窗口边界切出直边。 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   user-select: none;
 }
@@ -1671,14 +1678,16 @@ body:has(.hints-panel) {
   color: var(--muted);
 }
 
+/* 手势提示排两行（前端文案里的 `\n` 就是换行点）：21em 面板的内容宽约 250px，而这串提示
+   单行要 288px——`nowrap` 时末尾的「拖标题移动」永远是被省略号吃掉的那截。两行各自约
+   145px，任何缩放档位都放得下（字号与面板宽等比，比例恒定）。 */
 .hints-foot {
   padding: 0.35em 0.9em 0.45em;
   font-size: 0.75em;
   color: var(--muted);
   border-top: 1px solid var(--line);
-  white-space: nowrap;
+  white-space: pre-line;
   overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ---------- 消息中心 ---------- */

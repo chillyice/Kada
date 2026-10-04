@@ -3,5 +3,10 @@
   "identifier": "main",
   "description": "主窗口能力",
   "windows": ["main", "toast", "hud", "hints"],
-  "permissions": ["core:default", "dialog:allow-open", "dialog:allow-save"]
+  "permissions": [
+    "core:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-message"
+  ]
 }
