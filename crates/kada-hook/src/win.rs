@@ -87,9 +87,12 @@ static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(Ha
 static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 当前物理按下的键（down 且未 up），用于识别自动重复。
 static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
-/// 看门狗心跳：钩子回调每次被调用都刷新它（`GetTickCount` 毫秒）。钩子被系统摘除后
-/// 就再也不会被调用，这个时间戳随停止前进——这是「钩子还活着」唯一的证据。
-static LAST_HOOK_TICK: AtomicU32 = AtomicU32::new(0);
+/// 看门狗心跳（键盘 / 鼠标各一路）：钩子回调每次被调用都刷新对应那一路（`GetTickCount`
+/// 毫秒）。钩子被系统摘除后就再也不会被调用、对应时间戳随之停摆——看门狗拿它和系统
+/// `GetLastInputInfo` 对照，并靠「另一半是否看得到这次输入」把两路分开，从而发现
+/// 「键盘钩子单独被摘、鼠标钩子还活着」这类半边失效（判据见 [`dead_hook`]）。
+static LAST_KEY_TICK: AtomicU32 = AtomicU32::new(0);
+static LAST_MOUSE_TICK: AtomicU32 = AtomicU32::new(0);
 /// 钩子线程 id。看门狗靠它把重装请求投递到拥有消息循环的钩子线程：`SetWindowsHookEx`
 /// 必须在那个线程上调用（钩子回调也在那儿跑）。0 = 钩子线程已退出。
 static HOOK_TID: AtomicU32 = AtomicU32::new(0);
@@ -102,6 +105,11 @@ const WATCHDOG_INTERVAL_MS: u64 = 1_000;
 /// 判定「钩子已失效」的宽限：系统记下的最后输入比钩子最后事件新这么多毫秒，就说明
 /// 钩子漏掉了事件。**必须大于巡检间隔**，否则两轮之间的输入可能整段落空、永远不被发现。
 const HEARTBEAT_GRACE_MS: i32 = 1_500;
+/// 「归因」宽限：系统最后一次输入比某一路钩子心跳新出这么多毫秒，就认定那次输入不是
+/// 该路带来的（该路钩子若活着必然看得到它），好让另一半去解释它。取值要小——它只做
+/// 「排除」、不是失效判据；太大则「键盘紧贴着鼠标刚动完就按」这类紧邻输入会被漏判
+/// （且系统记下的最后输入会钉在那一刻、不再增长）。回调解调度的抖动用它兜住。
+const ATTRIB_GRACE_MS: i32 = 100;
 /// 相邻两次巡检的间隔超过这个值 → 机器睡过（`GetTickCount` 把睡眠时间也算进去）。
 /// 取 10s 是为了让一次调度延迟不至于被误判成唤醒——误判的代价只是一次无害的重装。
 const SUSPEND_GAP_MS: i32 = 10_000;
@@ -210,7 +218,9 @@ fn install_hooks() -> io::Result<()> {
     MOUSE_HOOK.store(mouse, Ordering::Relaxed);
     // 心跳从这一刻重新起算：否则「最后一次钩子事件」还停在很久以前，看门狗下一轮
     // 就会把刚装好的钩子再判成失效。
-    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+    let now = unsafe { GetTickCount() };
+    LAST_KEY_TICK.store(now, Ordering::Relaxed);
+    LAST_MOUSE_TICK.store(now, Ordering::Relaxed);
     Ok(())
 }
 
@@ -271,25 +281,51 @@ fn tick_diff(a: u32, b: u32) -> i32 {
     a.wrapping_sub(b) as i32
 }
 
-/// 钩子是否已经收不到事件了（判定依据见 [`watchdog_loop`]）。
+/// 判定哪一路钩子已经收不到事件（判据见 [`watchdog_loop`]）。`None` = 都还活着。
 ///
-/// 只看「系统记下的最后输入」与「钩子最后事件」的**先后**，不看绝对时间：机器闲置
-/// 时钩子没有事件是正常的（两个时间戳一起停在原处），只有系统收到了输入而钩子的
-/// 时间戳还落在后面，才说明钩子漏事件了。
+/// 只看「系统记下的最后输入」与两路心跳的**先后**，不看绝对时间：机器闲置时三者的
+/// 时间戳一起停在原处，不构成失效。分路的关键在**归因**——`GetLastInputInfo` 是键盘
+/// 与鼠标**合并**的信号，但鼠标钩子能看到**全部**鼠标事件（含移动），所以：
+/// - 系统最后输入比鼠标心跳新出 `ATTRIB_GRACE_MS` ⇒ 那次输入不是鼠标（鼠标钩子活着
+///   就看得到）⇒ 它是键盘输入；此时键盘心跳仍落后 >`HEARTBEAT_GRACE_MS` ⇒ **键盘钩子失效**。
+/// - 对称地，系统最后输入比键盘心跳新出 `ATTRIB_GRACE_MS` ⇒ 它是鼠标输入；鼠标心跳
+///   仍落后 >`HEARTBEAT_GRACE_MS` ⇒ **鼠标钩子失效**。
 ///
-/// 局限（已知，不打算在应用层解决）：`GetLastInputInfo` 是键盘与鼠标**合并**的信号，
-/// 所以「键盘钩子单独被摘除、鼠标钩子还活着」这一种情形发现不了——心跳一直被鼠标事件
-/// 喂着。两个钩子装在同一个线程、共用同一个处理函数，把回调拖慢的成因对两者是同一个，
-/// 通常一起被摘掉，故这种半边失效并不常见；真正要修的是把耗时操作移出回调（规划
-/// 7.2-⑤），本看门狗只是兜底。
-fn hook_dead(now: u32, last_input: u32, last_hook: u32) -> bool {
-    let input_fresh = tick_diff(now, last_input) < HEARTBEAT_GRACE_MS;
-    let hook_lagging = tick_diff(last_input, last_hook) > HEARTBEAT_GRACE_MS;
-    input_fresh && hook_lagging
+/// `mouse_hooked` = 鼠标钩子是否装着。没装就没有鼠标事件的观察者，无法把输入归因到
+/// 键盘，退化为旧的「只看键盘心跳是否落后」（并保留鼠标活动造成的既有误判，维持原行为）。
+///
+/// 残留局限（已知）：鼠标**持续**移动时，系统最后输入始终约等于鼠标心跳，键盘输入被
+/// 夹在两次鼠标事件之间、归因不出来——这半边失效要等到某次键盘输入处于两次巡检之间
+/// 且其后没有鼠标事件时才被发现。
+fn dead_hook(
+    now: u32,
+    last_input: u32,
+    last_key: u32,
+    last_mouse: u32,
+    mouse_hooked: bool,
+) -> Option<&'static str> {
+    // 没有新输入：闲置不是失效。
+    if tick_diff(now, last_input) >= HEARTBEAT_GRACE_MS {
+        return None;
+    }
+    // 键盘失效：这次输入不是鼠标（鼠标钩子看得见全部鼠标事件）却键盘心跳停摆。
+    if (!mouse_hooked || tick_diff(last_input, last_mouse) > ATTRIB_GRACE_MS)
+        && tick_diff(last_input, last_key) > HEARTBEAT_GRACE_MS
+    {
+        return Some("键盘钩子回调超时被系统摘除");
+    }
+    // 鼠标失效：这次输入不是键盘（键盘钩子看得见全部键盘事件）却鼠标心跳停摆。
+    if mouse_hooked
+        && tick_diff(last_input, last_key) > ATTRIB_GRACE_MS
+        && tick_diff(last_input, last_mouse) > HEARTBEAT_GRACE_MS
+    {
+        return Some("鼠标钩子回调超时被系统摘除");
+    }
+    None
 }
 
 /// 系统最后一次键盘 / 鼠标输入的时间戳（与 `GetTickCount` 同源）。查询失败返回 0 ——
-/// `hook_dead` 会把它当成「很久没有输入」，不会据此重装。
+/// `dead_hook` 会把它当成「很久没有输入」，不会据此重装。
 fn last_input_tick() -> u32 {
     let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
     if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
@@ -358,7 +394,8 @@ pub fn reinstall_count() -> u64 {
 ///
 /// 三条触发路径对应钩子静默失效的三种成因（托盘那时都还看着正常）：
 /// 1. **回调超时被系统摘除**——回调超过 `LowLevelHooksTimeout`（默认 300ms）系统会
-///    静默摘掉钩子且不给任何通知；靠 `GetLastInputInfo` 与心跳对照发现。
+///    静默摘掉钩子且不给任何通知；靠 `GetLastInputInfo` 与**键盘 / 鼠标两路心跳**对照
+///    发现，并能定出是哪一路（[`dead_hook`]）。
 /// 2. **休眠唤醒**——`GetTickCount` 把睡眠时间算在内，两次巡检的间隔突然变大即说明
 ///    机器睡过（唤醒后钩子常常收不到事件）。
 /// 3. **会话解锁**——锁屏期间的输入走安全桌面、不经过我们的钩子，解锁是用户回来继续
@@ -383,8 +420,14 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
         let just_unlocked = locked == Some(true) && session == Some(false);
         locked = session;
 
-        let reason = if hook_dead(now, last_input_tick(), LAST_HOOK_TICK.load(Ordering::Relaxed)) {
-            Some("回调超时被系统摘除")
+        let reason = if let Some(dead) = dead_hook(
+            now,
+            last_input_tick(),
+            LAST_KEY_TICK.load(Ordering::Relaxed),
+            LAST_MOUSE_TICK.load(Ordering::Relaxed),
+            MOUSE_HOOK.load(Ordering::Relaxed) != 0,
+        ) {
+            Some(dead)
         } else if gap > SUSPEND_GAP_MS {
             Some("休眠唤醒")
         } else if just_unlocked {
@@ -411,9 +454,9 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
 }
 
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
-    // 心跳：钩子被系统摘除后就再也不会被调用，看门狗靠这个时间戳判断它是否还活着。
+    // 心跳：键盘钩子被系统摘除后就再也不会被调用，看门狗靠这个时间戳判断它是否还活着。
     // `GetTickCount` 只读内核共享页，不算「回调里的耗时操作」。
-    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+    LAST_KEY_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
         // 注入事件一律放行，防回环。
@@ -486,8 +529,8 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
 
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // 心跳：鼠标钩子对**所有**鼠标事件都会被调用（不止我们翻译的中键/侧键），所以
-    // 只要用户在动鼠标，这里就能证明钩子还活着。
-    LAST_HOOK_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
+    // 只要用户在动鼠标，这里就能证明鼠标钩子还活着。
+    LAST_MOUSE_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         // 注入事件一律放行，防回环。
@@ -1003,16 +1046,38 @@ mod tests {
 
     #[test]
     fn watchdog_spots_hook_that_stopped_receiving_events() {
-        // 系统刚有输入，而钩子最后一次事件还停在同样久之前 → 钩子已被摘除。
-        assert!(hook_dead(10_000, 10_000, 7_000), "系统有输入而钩子漏了 → 失效");
-        // 正常时序：输入到了，钩子回调也跟着跑了（落差远小于宽限）。
-        assert!(!hook_dead(10_000, 9_900, 9_950), "钩子跟得上就不能重装");
-        // 机器闲置：没有新输入，钩子没有事件是正常的——两个时间戳一起停在原处。
-        assert!(!hook_dead(60_000, 30_000, 30_000), "闲置不是失效");
+        // 系统刚有输入，而两路钩子最后一次事件都停在同样久之前 → 钩子已被摘除。
+        assert!(dead_hook(10_000, 10_000, 7_000, 7_000, true).is_some(), "系统有输入而钩子漏了 → 失效");
+        // 正常时序：输入到了，对应钩子回调也跟着跑了（落差远小于宽限）。
+        assert!(dead_hook(10_000, 9_900, 9_900, 9_900, true).is_none(), "钩子跟得上就不能重装");
+        // 机器闲置：没有新输入，钩子没有事件是正常的——三个时间戳一起停在原处。
+        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, true).is_none(), "闲置不是失效");
         // 输入刚到、钩子回调还没跑完（落差在宽限内）→ 不能判失效。
-        assert!(!hook_dead(10_000, 10_000, 9_200), "回调延迟不算失效");
+        assert!(dead_hook(10_000, 10_000, 9_200, 9_200, true).is_none(), "回调延迟不算失效");
         // 钩子事件比系统记录的最后输入还新（我们自己的注入同样会刷新心跳）→ 活的。
-        assert!(!hook_dead(10_000, 9_900, 10_000), "心跳比输入新就是活的");
+        assert!(dead_hook(10_000, 9_900, 9_900, 10_000, true).is_none(), "心跳比输入新就是活的");
+    }
+
+    #[test]
+    fn watchdog_separates_keyboard_and_mouse_half_failures() {
+        // 键盘半边失效：鼠标刚动过（鼠标心跳新鲜），随后用户按键——系统最后输入是键盘那次、
+        // 比鼠标心跳新出 > 归因宽限，而键盘心跳停在很久以前 → 定出是键盘失效。
+        assert_eq!(
+            dead_hook(10_000, 10_000, 7_000, 9_500, true),
+            Some("键盘钩子回调超时被系统摘除"),
+        );
+        // 鼠标半边失效：键盘刚打过（键盘心跳新鲜），随后用户动鼠标，而鼠标心跳停在很久以前。
+        assert_eq!(
+            dead_hook(10_000, 10_000, 9_500, 7_000, true),
+            Some("鼠标钩子回调超时被系统摘除"),
+        );
+        // 鼠标持续移动时系统最后输入≈鼠标心跳，键盘输入夹在两次鼠标事件之间归因不出来
+        // ——已知残留局限：这一拍不判失效。
+        assert!(dead_hook(10_000, 10_000, 7_000, 10_000, true).is_none(), "鼠标喂着心跳时键盘半边失效这一拍探不到");
+        // 鼠标钩子没装：没有鼠标事件的观察者，退化为只看键盘心跳是否落后（与旧行为一致）。
+        assert!(dead_hook(10_000, 10_000, 7_000, 0, false).is_some(), "没装鼠标钩子时仍能判键盘失效");
+        // 闲置 / 没有新输入时不判。
+        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, true).is_none());
     }
 
     #[test]
@@ -1022,7 +1087,10 @@ mod tests {
         let before_wrap = u32::MAX - 4_000;
         assert_eq!(tick_diff(1_000, before_wrap), 5_001);
         assert_eq!(tick_diff(before_wrap, 1_000), -5_001);
-        assert!(hook_dead(1_000, 1_000, before_wrap), "跨回绕也要判得出失效");
+        assert!(
+            dead_hook(1_000, 1_000, before_wrap, before_wrap, true).is_some(),
+            "跨回绕也要判得出失效"
+        );
     }
 
     #[test]
