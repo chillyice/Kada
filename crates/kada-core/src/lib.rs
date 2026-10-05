@@ -921,6 +921,32 @@ pub enum Shell {
     Powershell,
 }
 
+/// 鼠标按键（[`Action::Mouse`] 的点击目标）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MouseButton {
+    /// 左键。
+    #[default]
+    Left,
+    /// 右键。
+    Right,
+    /// 中键（滚轮按下）。
+    Middle,
+}
+
+/// 鼠标模拟操作（[`Action::Mouse`]，规划 7.1-㊱）：坐标与滚轮量都是**相对**值。
+/// 移动 / 滚动不改按键状态；点击作用在**当前**光标位置，故常见用法是先 `Move` 再 `Click`。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum MouseOp {
+    /// 光标相对当前位置移动 `(dx, dy)` 像素（屏幕坐标系：右下为正）。
+    Move { dx: i32, dy: i32 },
+    /// 在当前光标位置点击一下（按下 + 抬起）。
+    Click { #[serde(default)] button: MouseButton },
+    /// 滚轮滚动：`dy>0` 上滚 / `dy<0` 下滚、`dx` 为横向滚轮（单位「格」）。
+    Scroll { dx: i32, dy: i32 },
+}
+
 /// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -946,6 +972,8 @@ pub enum Action {
     Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 暂停 ms 毫秒。
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
+    Mouse { op: MouseOp, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
@@ -1002,6 +1030,15 @@ impl Action {
         };
         match self {
             Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            Action::Mouse { op, .. } => match op {
+                MouseOp::Move { dx, dy } | MouseOp::Scroll { dx, dy } => {
+                    if *dx == 0 && *dy == 0 {
+                        return Err("鼠标移动 / 滚轮的偏移不能同时为 0".into());
+                    }
+                    Ok(())
+                }
+                MouseOp::Click { .. } => Ok(()),
+            },
             #[cfg(feature = "automation")]
             Action::Command { command, .. } => non_empty("命令", command),
             #[cfg(feature = "automation")]
@@ -2791,6 +2828,36 @@ mod config_tests {
         assert!(Action::Keys { keys: vec![], description: None }.validate().is_err());
         assert!(Action::Cmd { command: "  ".into(), show_output: false, var: "".into(), description: None }.validate().is_err());
         assert!(Action::Launch { program: "".into(), args: vec![], description: None }.validate().is_err());
+    }
+
+    /// 鼠标模拟动作（7.1-㊱）：序列化往返、点击缺省左键、全 0 偏移被拒（不依赖 automation）。
+    #[test]
+    fn mouse_action_roundtrip_and_validate() {
+        let actions = vec![
+            Action::Mouse { op: MouseOp::Move { dx: 10, dy: -5 }, description: None },
+            Action::Mouse { op: MouseOp::Click { button: MouseButton::Middle }, description: None },
+            Action::Mouse {
+                op: MouseOp::Scroll { dx: 0, dy: 3 },
+                description: Some("向上滚".into()),
+            },
+        ];
+        for a in &actions {
+            assert!(a.validate().is_ok(), "动作应通过校验: {a:?}");
+        }
+        let json = serde_json::to_string(&actions).unwrap();
+        assert!(json.contains("\"type\":\"mouse\""), "序列化带 type=mouse：{json}");
+        assert!(json.contains("\"op\":\"move\""), "序列化带 op=move：{json}");
+        let back: Vec<Action> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, actions);
+
+        // 点击缺省左键；移动 / 滚轮偏移全 0 被拒。
+        let click: Action = serde_json::from_str(r#"{"type":"mouse","op":{"op":"click"}}"#).unwrap();
+        assert_eq!(
+            click,
+            Action::Mouse { op: MouseOp::Click { button: MouseButton::Left }, description: None }
+        );
+        assert!(Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None }.validate().is_err());
+        assert!(Action::Mouse { op: MouseOp::Scroll { dx: 0, dy: 0 }, description: None }.validate().is_err());
     }
 }
 

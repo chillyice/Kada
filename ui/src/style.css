@@ -641,6 +641,7 @@ body {
 .flow-step.type-command { --type-color: #4f9cf9; }
 .flow-step.type-script { --type-color: #b07cf9; }
 .flow-step.type-keys { --type-color: #f97a50; }
+.flow-step.type-mouse { --type-color: #9aa7ff; }
 .flow-step.type-pause_ms { --type-color: #98a0b3; }
 .flow-step.type-os { --type-color: #d9a441; }
 .flow-step.type-app { --type-color: #38c7d8; }

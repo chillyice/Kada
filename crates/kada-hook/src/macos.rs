@@ -993,10 +993,13 @@ pub mod simulate {
     use std::io;
     use std::time::{Duration, Instant};
 
-    use core_graphics::event::{CGEvent, CGEventFlags, CGEventTapLocation, CGEventType};
+    use core_graphics::event::{
+        CGEvent, CGEventFlags, CGEventTapLocation, CGEventType, ScrollEventUnit,
+    };
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    use core_graphics::geometry::CGPoint;
 
-    use kada_core::Key;
+    use kada_core::{Key, MouseButton, MouseOp};
 
     use super::{
         key_to_code, key_to_mouse_button, modifier_flag, CFRelease, CGEventCreate,
@@ -1102,6 +1105,76 @@ pub mod simulate {
             }
             CFRelease(source as *const c_void);
         }
+    }
+
+    /// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱）。
+    /// 移动与滚轮都是**相对**量（移动 = 当前坐标 + 增量）；点击作用在当前光标位置。
+    pub fn mouse(op: &MouseOp) -> io::Result<()> {
+        match op {
+            MouseOp::Move { dx, dy } => {
+                let p = current_pos();
+                let target = CGPoint::new(p.x + f64::from(*dx), p.y + f64::from(*dy));
+                post_mouse_at(CGEventType::MouseMoved, target, 0)?;
+            }
+            MouseOp::Click { button } => {
+                let (down, up, num) = match button {
+                    MouseButton::Left => (CGEventType::LeftMouseDown, CGEventType::LeftMouseUp, 0),
+                    MouseButton::Right => {
+                        (CGEventType::RightMouseDown, CGEventType::RightMouseUp, 1)
+                    }
+                    MouseButton::Middle => {
+                        (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 2)
+                    }
+                };
+                let p = current_pos();
+                post_mouse_at(down, p, num)?;
+                post_mouse_at(up, p, num)?;
+            }
+            MouseOp::Scroll { dx, dy } => {
+                let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
+                    return Err(io::Error::other("CGEventSource 创建失败"));
+                };
+                let event = CGEvent::new_scroll_event(source, ScrollEventUnit::LINE, 2, *dy, *dx, 0)
+                    .map_err(|_| io::Error::other("滚动事件创建失败"))?;
+                event.post(CGEventTapLocation::HID);
+            }
+        }
+        Ok(())
+    }
+
+    /// 读当前光标位置（`CGEventCreate(NULL)` 生成的事件带的就是当前鼠标位置）。
+    fn current_pos() -> CGPoint {
+        unsafe {
+            let probe = CGEventCreate(std::ptr::null_mut());
+            if probe.is_null() {
+                CGPoint::new(0.0, 0.0)
+            } else {
+                let p = CGEventGetLocation(probe);
+                CFRelease(probe as *const c_void);
+                p
+            }
+        }
+    }
+
+    /// 在指定坐标投递一个鼠标事件（`button`：0 左 / 1 右 / 2 中）。
+    fn post_mouse_at(ty: CGEventType, pos: CGPoint, button: u32) -> io::Result<()> {
+        unsafe {
+            let source = CGEventSourceCreate(CGEventSourceStateID::Private);
+            if source.is_null() {
+                return Err(io::Error::other("CGEventSource 创建失败"));
+            }
+            let event = CGEventCreateMouseEvent(source, ty, pos, button);
+            let ok = !event.is_null();
+            if ok {
+                CGEventPost(CGEventTapLocation::HID, event);
+                CFRelease(event as *const c_void);
+            }
+            CFRelease(source as *const c_void);
+            if !ok {
+                return Err(io::Error::other("鼠标事件创建失败"));
+            }
+        }
+        Ok(())
     }
 
     /// 当前物理修饰键（Shift / Ctrl / Option / Command）状态位。

@@ -600,9 +600,9 @@ pub mod simulate {
     use std::io;
     use std::time::Duration;
 
-    use evdev::{EventType, InputEvent};
+    use evdev::{EventType, InputEvent, KeyCode, RelativeAxisCode};
 
-    use kada_core::Key;
+    use kada_core::{Key, MouseButton, MouseOp};
 
     use super::{key_to_code, VDEV};
 
@@ -638,6 +638,48 @@ pub mod simulate {
         if let Some(vdev) = v.as_mut() {
             let _ = vdev.emit(&[InputEvent::new(EventType::KEY.0, code, value)]);
         }
+    }
+
+    /// 鼠标模拟：移动 / 点击 / 滚轮（[`MouseOp`]，7.1-㊱）。
+    /// 走虚拟设备的 `EV_REL`（移动 / 滚轮）与 `EV_KEY`（按键）通道，X11 与 Wayland 通用。
+    pub fn mouse(op: &MouseOp) -> io::Result<()> {
+        let mut v = VDEV.lock().unwrap();
+        let Some(vdev) = v.as_mut() else {
+            return Err(io::Error::other("输入层未启动（虚拟设备不可用）"));
+        };
+        let mut events: Vec<InputEvent> = Vec::new();
+        match op {
+            MouseOp::Move { dx, dy } => {
+                if *dx != 0 {
+                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, *dx));
+                }
+                if *dy != 0 {
+                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, *dy));
+                }
+            }
+            MouseOp::Scroll { dx, dy } => {
+                if *dy != 0 {
+                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_WHEEL.0, *dy));
+                }
+                if *dx != 0 {
+                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_HWHEEL.0, *dx));
+                }
+            }
+            MouseOp::Click { button } => {
+                let code = match button {
+                    MouseButton::Left => KeyCode::BTN_LEFT,
+                    MouseButton::Right => KeyCode::BTN_RIGHT,
+                    MouseButton::Middle => KeyCode::BTN_MIDDLE,
+                };
+                events.push(InputEvent::new(EventType::KEY.0, code.0, 1));
+                events.push(InputEvent::new(EventType::KEY.0, code.0, 0));
+            }
+        }
+        if events.is_empty() {
+            return Ok(());
+        }
+        vdev.emit(&events).map_err(io::Error::other)?;
+        Ok(())
     }
 
     /// 把文本粘贴到当前焦点控件。
