@@ -31,6 +31,8 @@ const DEMO_CONFIG = {
         },
         { type: "pause_ms", ms: 500 },
         { type: "keys", keys: ["Ctrl", "S"] },
+        { type: "mouse", op: { op: "move", dx: 200, dy: 120 } },
+        { type: "mouse", op: { op: "click", button: "left" } },
       ],
     },
     {

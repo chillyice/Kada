@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 
-use kada_core::Key;
+use kada_core::{Key, MouseButton, MouseOp};
 
 use crate::win::key_to_vk;
 
@@ -93,6 +93,58 @@ pub fn chord(keys: &[Key]) {
     for k in keys.iter().rev() {
         up(*k);
     }
+}
+
+/// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱）。
+/// 移动与滚轮都是**相对**量；点击作用在当前光标位置。
+pub fn mouse(op: &MouseOp) -> io::Result<()> {
+    match op {
+        MouseOp::Move { dx, dy } => send_mouse(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE))?,
+        MouseOp::Scroll { dx, dy } => {
+            // WHEEL_DELTA = 120：mouseData 是「格数 × 120」的带符号值（负数按补码传）。
+            if *dy != 0 {
+                send_mouse(mouse_input(0, 0, wheel_data(*dy), MOUSEEVENTF_WHEEL))?;
+            }
+            if *dx != 0 {
+                send_mouse(mouse_input(0, 0, wheel_data(*dx), MOUSEEVENTF_HWHEEL))?;
+            }
+        }
+        MouseOp::Click { button } => {
+            let (down, up) = match button {
+                MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+                MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+                MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+            };
+            send_mouse(mouse_input(0, 0, 0, down))?;
+            send_mouse(mouse_input(0, 0, 0, up))?;
+        }
+    }
+    Ok(())
+}
+
+/// 滚轮格数 → `mouseData`（带符号值按 u32 补码，`SendInput` 会原样读回 i32）。
+fn wheel_data(delta: i32) -> u32 {
+    delta.wrapping_mul(120) as u32
+}
+
+/// 构造一个鼠标事件（纯函数，可单测）。
+fn mouse_input(dx: i32, dy: i32, data: u32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT { dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+        },
+    }
+}
+
+fn send_mouse(input: INPUT) -> io::Result<()> {
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+    if sent != 1 {
+        return Err(io::Error::other(
+            "SendInput 鼠标事件被系统拦截（目标可能处于安全桌面 / 提权窗口）",
+        ));
+    }
+    Ok(())
 }
 
 /// 把文本粘贴到当前焦点控件（剪贴板方式，默认）。
@@ -251,5 +303,20 @@ mod tests {
 
         // 空文本不产生事件（type_text_unicode 据此直接成功返回）。
         assert!(unicode_key_events("").is_empty());
+    }
+
+    /// 鼠标事件构造（7.1-㊱）：移动带 `MOUSEEVENTF_MOVE` + 相对位移；滚轮 `mouseData`
+    /// 是「格数 × 120」的带符号补码（向下滚为负）。
+    #[test]
+    fn mouse_event_shape() {
+        let mi = |i: &INPUT| unsafe { i.Anonymous.mi };
+        let mv = mi(&mouse_input(15, -8, 0, MOUSEEVENTF_MOVE));
+        assert_eq!((mv.dx, mv.dy), (15, -8));
+        assert_eq!(mv.dwFlags, MOUSEEVENTF_MOVE);
+
+        assert_eq!(wheel_data(1), 120);
+        assert_eq!(wheel_data(-1) as i32, -120, "向下滚是负值（补码）");
+        let sc = mi(&mouse_input(0, 0, wheel_data(-3), MOUSEEVENTF_WHEEL));
+        assert_eq!(sc.mouseData as i32, -360);
     }
 }

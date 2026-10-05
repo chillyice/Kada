@@ -27,6 +27,9 @@ pub mod abort;
 
 use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, TextMode, Vars};
 
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+use kada_core::{MouseButton, MouseOp};
+
 #[cfg(feature = "automation")]
 use kada_core::{AppOperation, FileObject, OsOperation, Shell, TextValue, Value};
 
@@ -218,6 +221,7 @@ fn action_label(action: &Action) -> &'static str {
         Action::Text { .. } => "大小写转换失败",
         Action::Keys { .. } => "按键注入失败",
         Action::PauseMs { .. } => "暂停失败",
+        Action::Mouse { .. } => "鼠标模拟失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
         #[cfg(feature = "automation")]
@@ -283,6 +287,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         },
         Action::Keys { keys, .. } => format!("按下 {}", keys.join("+")),
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
+        Action::Mouse { op, .. } => mouse_body(op),
         #[cfg(feature = "automation")]
         Action::Command { command, .. }
         | Action::Cmd { command, .. }
@@ -308,6 +313,23 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         },
         #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断".into(),
+    }
+}
+
+/// 鼠标动作摘要（消息中心「命令」一栏）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn mouse_body(op: &MouseOp) -> String {
+    match op {
+        MouseOp::Move { dx, dy } => format!("鼠标移动 ({dx}, {dy})"),
+        MouseOp::Click { button } => {
+            let b = match button {
+                MouseButton::Left => "左键",
+                MouseButton::Right => "右键",
+                MouseButton::Middle => "中键",
+            };
+            format!("鼠标点击{b}")
+        }
+        MouseOp::Scroll { dx, dy } => format!("鼠标滚轮 ({dx}, {dy})"),
     }
 }
 
@@ -362,7 +384,8 @@ fn action_description(action: &Action) -> Option<&str> {
     match action {
         Action::Text { description, .. }
         | Action::Keys { description, .. }
-        | Action::PauseMs { description, .. } => description.as_deref(),
+        | Action::PauseMs { description, .. }
+        | Action::Mouse { description, .. } => description.as_deref(),
         #[cfg(feature = "automation")]
         Action::Command { description, .. }
         | Action::Cmd { description, .. }
@@ -429,6 +452,9 @@ fn run_action(
             for k in ks.iter().rev() {
                 simulate::up(*k);
             }
+        }
+        Action::Mouse { op, .. } => {
+            simulate::mouse(op).map_err(|e| e.to_string())?;
         }
         // 长等待也要能被中止：一次 `PauseMs` 可以是几十秒，睡死在里面的话「停止」要等到
         // 它自然睡醒才生效（用户看到的是「点了停止还在继续」）。切成小片睡，每片查一次。

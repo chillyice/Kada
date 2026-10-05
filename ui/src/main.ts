@@ -33,11 +33,17 @@ type AppOperation =
   | { op: "restart"; program: string; args: string[] };
 type TextMode = "input" | "to_upper" | "to_lower";
 type Shell = "cmd" | "powershell";
+type MouseButton = "left" | "right" | "middle";
+type MouseOp =
+  | { op: "move"; dx: number; dy: number }
+  | { op: "click"; button: MouseButton }
+  | { op: "scroll"; dx: number; dy: number };
 type Action =
   | { type: "text"; text: string; mode: TextMode; description?: string }
   | { type: "command"; shell: Shell; command: string; show_output: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
+  | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
@@ -140,6 +146,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "open_url", label: "打开网址" },
   { value: "os", label: "文件/目录操作" },
   { value: "keys", label: "按键组合" },
+  { value: "mouse", label: "鼠标操作" },
   { value: "pause_ms", label: "延迟" },
   { value: "if", label: "条件判断" },
 ];
@@ -150,6 +157,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   command: "💻",
   script: "📜",
   keys: "⌨️",
+  mouse: "🖱️",
   pause_ms: "⏱️",
   os: "📁",
   app: "🚀",
@@ -338,6 +346,25 @@ function newAppOp(op: AppOperation["op"]): AppOperation {
   return { op: "launch", program: "", args: [] };
 }
 
+// ---- 鼠标动作的子操作（移动 / 点击 / 滚轮） ----
+const MOUSE_OPS: { value: MouseOp["op"]; label: string }[] = [
+  { value: "move", label: "移动光标" },
+  { value: "click", label: "点击" },
+  { value: "scroll", label: "滚轮滚动" },
+];
+
+function newMouseOp(op: MouseOp["op"]): MouseOp {
+  switch (op) {
+    case "move":
+      return { op, dx: 100, dy: 0 };
+    case "click":
+      return { op, button: "left" };
+    case "scroll":
+      return { op, dx: 0, dy: -3 };
+  }
+  return { op: "move", dx: 100, dy: 0 };
+}
+
 function newAction(type: Action["type"]): Action {
   switch (type) {
     case "text":
@@ -348,6 +375,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
     case "keys":
       return { type: "keys", keys: [] };
+    case "mouse":
+      return { type: "mouse", op: newMouseOp("move") };
     case "pause_ms":
       return { type: "pause_ms", ms: 0 };
     case "os":
@@ -424,6 +453,8 @@ function actionHasContent(a: Action): boolean {
       return a.path.trim().length > 0;
     case "keys":
       return a.keys.length > 0;
+    case "mouse":
+      return a.op.op === "click" || a.op.dx !== 0 || a.op.dy !== 0;
     case "pause_ms":
       return a.ms > 0;
     case "os":
@@ -506,6 +537,23 @@ function appSummary(o: AppOperation): string {
   return "";
 }
 
+const MOUSE_BUTTON_LABELS: Record<MouseButton, string> = {
+  left: "左键",
+  right: "右键",
+  middle: "中键",
+};
+
+function mouseSummary(op: MouseOp): string {
+  switch (op.op) {
+    case "move":
+      return `鼠标移动 (${op.dx}, ${op.dy})`;
+    case "click":
+      return `鼠标点击${MOUSE_BUTTON_LABELS[op.button]}`;
+    case "scroll":
+      return `鼠标滚轮 (${op.dx}, ${op.dy})`;
+  }
+}
+
 function actionSummary(a: Action): string {
   switch (a.type) {
     case "text":
@@ -523,6 +571,8 @@ function actionSummary(a: Action): string {
     }
     case "keys":
       return `按键：${a.keys.join("+")}`;
+    case "mouse":
+      return mouseSummary(a.op);
     case "pause_ms":
       return `延迟 ${a.ms}ms`;
     case "os":
@@ -2741,6 +2791,21 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "mouse") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of MOUSE_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.op.op;
+    sel.addEventListener("change", () => {
+      a.op = newMouseOp(sel.value as MouseOp["op"]);
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "if") {
     const cond = a.condition;
     const sel = el("select", "action-type") as HTMLSelectElement;
@@ -2880,6 +2945,50 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       }, btn);
     });
     line.append(keys, cap);
+    body.append(line);
+  } else if (a.type === "mouse") {
+    const op = a.op;
+    const line = el("div", "action-line");
+    if (op.op === "move" || op.op === "scroll") {
+      const dx = el("input", "action-input") as HTMLInputElement;
+      dx.type = "number";
+      dx.value = String(op.dx);
+      dx.placeholder = "横向";
+      dx.addEventListener("input", () => {
+        op.dx = intIn(dx.value, -10000, 0, 10000);
+      });
+      const dy = el("input", "action-input") as HTMLInputElement;
+      dy.type = "number";
+      dy.value = String(op.dy);
+      dy.placeholder = "纵向";
+      dy.addEventListener("input", () => {
+        op.dy = intIn(dy.value, -10000, 0, 10000);
+      });
+      line.append(
+        dx,
+        dy,
+        el(
+          "span",
+          "unit-hint",
+          op.op === "move"
+            ? "像素，相对当前位置（右下为正）"
+            : "格数：纵向正数上滚 / 负数下滚，横向正数右滚",
+        ),
+      );
+    } else {
+      const sel = el("select", "action-input") as HTMLSelectElement;
+      for (const b of ["left", "right", "middle"] as MouseButton[]) {
+        const o = el("option") as HTMLOptionElement;
+        o.value = b;
+        o.textContent = MOUSE_BUTTON_LABELS[b];
+        sel.append(o);
+      }
+      sel.value = op.button;
+      sel.addEventListener("change", () => {
+        op.button = sel.value as MouseButton;
+      });
+      line.append(el("span", "unit-hint", "在当前光标位置点击"), sel);
+    }
     body.append(line);
   } else if (a.type === "pause_ms") {
     const line = el("div", "action-line");

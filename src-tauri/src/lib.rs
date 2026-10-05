@@ -1052,7 +1052,7 @@ fn fire(
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
-        Action::Text { .. } | Action::Keys { .. } => true,
+        Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
         #[cfg(feature = "automation")]
         Action::If { then, otherwise, .. } => injects_keys(then) || injects_keys(otherwise),
         _ => false,
@@ -1785,6 +1785,13 @@ mod tests {
         let keys = vec![Action::Keys { keys: vec!["Ctrl".into(), "C".into()], description: None }];
         assert!(injects_keys(&text));
         assert!(injects_keys(&keys));
+
+        // 鼠标模拟也注入输入：物理修饰键没松时同样会变成 Ctrl+点击 / 拖拽，等它释放。
+        let mouse = vec![Action::Mouse {
+            op: kada_core::MouseOp::Click { button: kada_core::MouseButton::Left },
+            description: None,
+        }];
+        assert!(injects_keys(&mouse));
 
         // 命令 / 暂停不受修饰键影响，不该白等 300ms。
         let plain = vec![
