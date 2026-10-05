@@ -61,7 +61,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
 - **冲突检测**（`detect_conflicts`）：硬冲突（重复触发键 / 序列 leader 遮蔽同层单组合）/ 软冲突（超集，含和弦间超集/子集）/ 系统快捷键清单命中 / **层可达性**（层有条目却无切层键指向 → 警告）/ **平台能力缺失**（`PlatformCaps`，见钩子引擎段）。
 - **消息中心**（内存态，重启清空）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
-- **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**（挂住即永久占住执行线程）——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`）；中止 = **代数计数器** `abort::request()`（判定点：每步动作前 / 进程轮询 / `PauseMs` 分片 / `App::Status` 重试）。
+- **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**（挂住即永久占住执行线程）——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`；Linux / macOS 自成进程组后 `kill(-pgid)`）；中止 = **代数计数器** `abort::request()`（判定点：每步动作前 / 进程轮询 / `PauseMs` 分片 / `App::Status` 重试）。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
 - **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 比对，Rust 新增键而前端漏改即红）。
 

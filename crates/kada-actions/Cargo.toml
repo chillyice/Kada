@@ -10,6 +10,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 
+# 只有 `kill_tree` 的 unix 分支用得到（`kill(-pgid)` 杀整棵进程树）：
+# 按 `cfg(unix)` 声明，免得 Windows 白编一个用不上的绑定。
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [features]
 # 与 kada-core 的 `automation` 对齐：命令 / 文件 / 应用 / 条件 / 脚本 等执行逻辑。
 default = ["automation"]
