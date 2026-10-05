@@ -682,6 +682,14 @@ pub fn key_to_char(key: Key, shift: bool) -> Option<char> {
 
 use serde::{Deserialize, Serialize};
 
+/// 触发侧 `when` 门控的判重指纹：把条件本身算进去——同触发键 + 不同 `when` 是两条独立
+/// 条目（正是「同快捷键按前台分流」的用法），不该报「触发键重复」。基础版没有 `Condition`，
+/// 恒为 `None`（判重行为与从前一致）。
+#[cfg(feature = "automation")]
+type WhenKey = Option<Condition>;
+#[cfg(not(feature = "automation"))]
+type WhenKey = Option<()>;
+
 /// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩或取属性。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -728,9 +736,66 @@ pub struct FrontmostContext {
     pub window_title: String,
 }
 
-/// 条件：供「条件判断」动作在触发前求值，为真才执行后续动作。
+/// 触发侧条件（`when`）求值上下文：当前前台窗口 + 输入设备。
+///
+/// 前台上下文**惰性获取**：只有当某个带 `when` 的条目真的被判定时才查询（macOS 的前台
+/// 查询走 AX 调用，不该让每次按键都买单）。壳层用 [`TriggerContext::lazy`] 传平台查询函数，
+/// 单测用 [`TriggerContext::empty`] / [`TriggerContext::fixed`]。
+#[cfg_attr(not(feature = "automation"), allow(dead_code))]
+pub struct TriggerContext<'a> {
+    /// 固定前台（单测）；`Some` 时直接用它、不查。
+    fixed: Option<&'a FrontmostContext>,
+    /// 惰性前台查询（壳层）；只在首次需要时调用一次。
+    fetch: Option<&'a dyn Fn() -> Option<FrontmostContext>>,
+    /// 触发事件的设备标识（仅 Linux 拿得到真设备名）。
+    device: Option<&'a str>,
+    /// 惰性查询的缓存（固定值不走这里）。
+    cached: std::cell::OnceCell<Option<FrontmostContext>>,
+}
+
+impl<'a> TriggerContext<'a> {
+    /// 无前台 / 无设备的空上下文（无 `when` 的按键路径、基础版、单测用）。
+    pub fn empty() -> TriggerContext<'static> {
+        TriggerContext { fixed: None, fetch: None, device: None, cached: std::cell::OnceCell::new() }
+    }
+
+    /// 固定前台 + 设备（单测用）。
+    pub fn fixed(frontmost: Option<&'a FrontmostContext>, device: Option<&'a str>) -> Self {
+        TriggerContext { fixed: frontmost, fetch: None, device, cached: std::cell::OnceCell::new() }
+    }
+
+    /// 惰性前台查询 + 设备（壳层用）：`fetch` 只在该事件真的需要判定 `when` 时被调用一次。
+    pub fn lazy(fetch: &'a dyn Fn() -> Option<FrontmostContext>, device: Option<&'a str>) -> Self {
+        TriggerContext {
+            fixed: None,
+            fetch: Some(fetch),
+            device,
+            cached: std::cell::OnceCell::new(),
+        }
+    }
+
+    /// 当前前台上下文（固定值优先；否则首次调用时查询并缓存）。
+    #[cfg(feature = "automation")]
+    fn frontmost(&self) -> Option<&FrontmostContext> {
+        if let Some(f) = self.fixed {
+            return Some(f);
+        }
+        self.cached.get_or_init(|| self.fetch.and_then(|f| f())).as_ref()
+    }
+
+    /// `when` 条件是否满足（`None` = 无门控，恒真）。触发时无变量，`vars` 为空表。
+    #[cfg(feature = "automation")]
+    fn when_ok(&self, when: Option<&Condition>) -> bool {
+        match when {
+            None => true,
+            Some(c) => c.matches(&Vars::new(), self.frontmost(), self.device),
+        }
+    }
+}
+
+/// 条件：供「条件判断」动作 / 触发侧 `when` 门控求值，为真才生效。
 #[cfg(feature = "automation")]
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Condition {
     /// 路径存在（文件或目录）。
@@ -1152,6 +1217,12 @@ pub struct ShortcutItem {
     /// 归属层 id（`None` = 基础层，始终生效；`Some` = 仅该层激活时生效）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
+    /// 触发侧条件门控（`when`，规划 7.2-㊶）：仅当条件成立时这条才参与匹配，否则跳过
+    /// （落到下一条同触发键的条目，没有就放行原键）。`None` = 无条件。
+    /// 触发前求值（此刻没有变量，`Condition::Equals` 之类永假）。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Condition>,
     /// 如 ["Ctrl+Alt+K"]，可多个。
     #[serde(default)]
     pub triggers: Vec<String>,
@@ -1160,6 +1231,33 @@ pub struct ShortcutItem {
     pub actions: Vec<Action>,
     #[serde(default)]
     pub enabled: bool,
+}
+
+impl ShortcutItem {
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// `when` 的判重指纹（见 [`WhenKey`]）。
+    fn when_key(&self) -> WhenKey {
+        #[cfg(feature = "automation")]
+        {
+            self.when.clone()
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            None
+        }
+    }
 }
 
 /// 一条改键规则。
@@ -1189,6 +1287,11 @@ pub struct Remap {
     /// 归属层 id（`None` = 基础层；`Some` = 仅该层激活时生效）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
+    /// 触发侧条件门控（`when`，规划 7.2-㊶）：仅当条件成立时这条改键才生效。
+    /// `None` = 无条件。触发（`from` 按下）前求值。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Condition>,
     /// 长按进入的层 id（momentary 切层）；与 `hold`（输出键）互斥。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_layer: Option<String>,
@@ -1250,6 +1353,31 @@ impl Remap {
     /// tap-hold 状态机，而非当普通改键。
     pub fn needs_timing_state(&self) -> bool {
         self.is_tap_hold() || self.is_oneshot() || self.is_sticky()
+    }
+
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// `when` 的判重指纹（见 [`WhenKey`]）。
+    fn when_key(&self) -> WhenKey {
+        #[cfg(feature = "automation")]
+        {
+            self.when.clone()
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            None
+        }
     }
 
     /// 是否 tap-dance（双击/三击输出，短按升级为连击不同义）。
@@ -1731,9 +1859,10 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     //    单组合按 (层, mods, key) 判重；序列按 (层, 完整字符串) 判重；
     //    和弦按 (层, 排序后的成员（键 + 修饰要求）列表) 判重（F&J 与 J&F 等价，
     //    但 F&J 与 Ctrl+F&J 是两条不同的触发键）。
-    let mut seen_combo: HashMap<(Option<String>, BTreeSet<Modifier>, Key), String> = HashMap::new();
-    let mut seen_seq: HashMap<(Option<String>, String), ()> = HashMap::new();
-    let mut seen_chord: HashMap<(Option<String>, ChordSignature), String> = HashMap::new();
+    let mut seen_combo: HashMap<(Option<String>, BTreeSet<Modifier>, Key, WhenKey), String> =
+        HashMap::new();
+    let mut seen_seq: HashMap<(Option<String>, String, WhenKey), ()> = HashMap::new();
+    let mut seen_chord: HashMap<(Option<String>, ChordSignature, WhenKey), String> = HashMap::new();
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
@@ -1741,7 +1870,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         for t in &s.triggers {
             match Trigger::parse(t) {
                 Ok(Trigger::Combo(sc)) => {
-                    let k = (s.layer.clone(), sc.mods, sc.key);
+                    let k = (s.layer.clone(), sc.mods, sc.key, s.when_key());
                     if let Some(first) = seen_combo.get(&k) {
                         out.push(Conflict {
                             severity: Severity::Error,
@@ -1753,7 +1882,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     }
                 }
                 Ok(Trigger::Sequence(_)) => {
-                    if seen_seq.insert((s.layer.clone(), t.clone()), ()).is_some() {
+                    if seen_seq.insert((s.layer.clone(), t.clone(), s.when_key()), ()).is_some() {
                         out.push(Conflict {
                             severity: Severity::Error,
                             message: format!("触发序列「{t}」重复，多个快捷键共用同一序列"),
@@ -1762,7 +1891,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     }
                 }
                 Ok(Trigger::Chord(members)) => {
-                    let k = (s.layer.clone(), chord_signature(&members));
+                    let k = (s.layer.clone(), chord_signature(&members), s.when_key());
                     if let Some(first) = seen_chord.get(&k) {
                         out.push(Conflict {
                             severity: Severity::Error,
@@ -1904,14 +2033,14 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
     }
 
-    // 2) 重复改键来源（同层内；不同层可共用同键）
-    let mut remap_from: HashMap<(Option<String>, Key), String> = HashMap::new();
+    // 2) 重复改键来源（同层内；不同层可共用同键；同键不同 `when` 是两条独立条目）
+    let mut remap_from: HashMap<(Option<String>, Key, WhenKey), String> = HashMap::new();
     for r in &cfg.remaps {
         if !r.enabled {
             continue;
         }
         if let Ok(from) = r.from.parse::<Key>() {
-            let k = (r.layer.clone(), from);
+            let k = (r.layer.clone(), from, r.when_key());
             if let Some(first) = remap_from.get(&k) {
                 out.push(Conflict {
                     severity: Severity::Error,
@@ -2076,6 +2205,22 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             &mut bad_frontmost,
             &mut bad_device,
         );
+        // 触发侧 `when` 门控（7.2-㊶）：恒不成立的前台 / 设备条件同样标出。
+        #[cfg(feature = "automation")]
+        if let Some(c) = &s.when {
+            if matches!(
+                c,
+                Condition::FrontmostApp { .. }
+                    | Condition::NotFrontmostApp { .. }
+                    | Condition::WindowTitleContains { .. }
+            ) && !caps.frontmost_conditions
+            {
+                bad_frontmost = true;
+            }
+            if matches!(c, Condition::DeviceIs { .. }) && !caps.device_conditions {
+                bad_device = true;
+            }
+        }
         if !bad_inject.is_empty() {
             out.push(Conflict {
                 severity: Severity::Warn,
@@ -2089,14 +2234,14 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if bad_frontmost {
             out.push(Conflict {
                 severity: Severity::Warn,
-                message: "动作里的「前台应用 / 窗口标题」条件在当前平台取不到前台窗口，恒不成立（恒走「否则」分支）".into(),
+                message: "「前台应用 / 窗口标题」条件（动作或触发门控）在当前平台取不到前台窗口，恒不成立".into(),
                 name: name_of(s),
             });
         }
         if bad_device {
             out.push(Conflict {
                 severity: Severity::Warn,
-                message: "动作里的「设备是」条件在当前平台取不到设备，恒不成立（恒走「否则」分支）".into(),
+                message: "「设备是」条件（动作或触发门控）在当前平台取不到设备，恒不成立".into(),
                 name: name_of(s),
             });
         }
@@ -2146,6 +2291,30 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 ),
                 name: String::new(),
             });
+        }
+        // 触发侧 `when` 门控（7.2-㊶）：恒不成立的前台 / 设备条件标出。
+        #[cfg(feature = "automation")]
+        if let Some(c) = &r.when {
+            if matches!(
+                c,
+                Condition::FrontmostApp { .. }
+                    | Condition::NotFrontmostApp { .. }
+                    | Condition::WindowTitleContains { .. }
+            ) && !caps.frontmost_conditions
+            {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    message: format!("改键「{}」的触发门控用了「前台应用 / 窗口标题」条件，当前平台取不到前台窗口，恒不成立", r.from),
+                    name: String::new(),
+                });
+            }
+            if matches!(c, Condition::DeviceIs { .. }) && !caps.device_conditions {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    message: format!("改键「{}」的触发门控用了「设备是」条件，当前平台取不到设备，恒不成立", r.from),
+                    name: String::new(),
+                });
+            }
         }
     }
     out
@@ -2548,6 +2717,16 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         item.actions = kept_actions;
 
+        // 触发侧 `when` 门控：字段为空（如「前台应用」没填进程名）会让条件恒真/恒假，
+        // 单条清掉并提示，不拖垮整条快捷键。
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("快捷键「{label}」的触发条件已忽略：{e}"));
+                item.when = None;
+            }
+        }
+
         let has_content = !item.triggers.is_empty()
             || !item.actions.is_empty()
             || item.name.is_some()
@@ -2610,6 +2789,15 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         clear_key(&mut item.sticky, "粘滞键");
         clear_key(&mut item.tap2, "双击键");
         clear_key(&mut item.tap3, "三击键");
+
+        // 触发侧 `when` 门控：字段为空的条件单条清掉并提示。
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("改键「{}」的触发条件已忽略：{e}", r.from));
+                item.when = None;
+            }
+        }
 
         // 归一化（优先级 sticky > oneshot > tap-hold > 普通 to）：修饰模式清掉其它形态字段。
         if item.is_sticky() || item.is_oneshot() {
@@ -2779,6 +2967,7 @@ mod config_tests {
                 folder: None,
                 layer: None,
                 enabled: true,
+                ..Default::default()
             }],
             remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() }],
             expansions: vec![],
@@ -3592,6 +3781,7 @@ mod os_and_sanitize_tests {
                     Action::PauseMs { ms: 100, description: None },
                 ],
                 enabled: true,
+                ..Default::default()
             }],
             remaps: vec![
                 // tap-hold（短按/长按）与普通改键各一条。
@@ -5005,5 +5195,111 @@ mod platform_caps_tests {
         let hits = detect_conflicts(&cfg, &macos_caps());
         assert!(hits.iter().any(|c| c.message.contains("监听不到")), "{hits:?}");
         assert!(hits.iter().any(|c| c.message.contains("注入不了")), "{hits:?}");
+    }
+
+    // ---- 触发侧 when 门控（7.2-㊶） ----
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn when_matches_gates_by_frontmost_and_device() {
+        use Condition::*;
+        let chrome =
+            FrontmostContext { process_name: "chrome.exe".into(), window_title: "Google".into() };
+        let mut s =
+            ShortcutItem { when: Some(FrontmostApp { app: "chrome".into() }), ..Default::default() };
+        assert!(s.when_matches(&TriggerContext::fixed(Some(&chrome), None)));
+        assert!(!s.when_matches(&TriggerContext::empty()), "无前台上下文时恒不成立");
+        // 无条件条目恒真。
+        s.when = None;
+        assert!(s.when_matches(&TriggerContext::empty()));
+
+        let r = Remap {
+            from: "A".into(),
+            to: "B".into(),
+            when: Some(DeviceIs { id: "keyboard".into() }),
+            ..Default::default()
+        };
+        assert!(r.when_matches(&TriggerContext::fixed(None, Some("AT keyboard"))));
+        assert!(!r.when_matches(&TriggerContext::fixed(None, None)));
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn same_trigger_different_when_is_not_a_conflict() {
+        use Condition::*;
+        let hard = |cfg: &Config| {
+            detect_conflicts(cfg, &PlatformCaps::default())
+                .into_iter()
+                .filter(|c| c.severity == Severity::Error)
+                .count()
+        };
+        let mut a = shortcut("chrome 用", "Ctrl+K", vec![]);
+        a.when = Some(FrontmostApp { app: "chrome".into() });
+        let mut b = shortcut("vscode 用", "Ctrl+K", vec![]);
+        b.when = Some(FrontmostApp { app: "code".into() });
+        let cfg = Config { shortcuts: vec![a.clone(), b], ..Default::default() };
+        assert_eq!(hard(&cfg), 0, "同触发键 + 不同 when 是按条件分流，不算重复");
+
+        // 同触发键 + 相同 when（或都无 when）仍是硬冲突。
+        let dup = Config { shortcuts: vec![a.clone(), a], ..Default::default() };
+        assert_eq!(hard(&dup), 1);
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn same_remap_from_different_when_is_not_a_conflict() {
+        use Condition::*;
+        let hard = |cfg: &Config| {
+            detect_conflicts(cfg, &PlatformCaps::default())
+                .into_iter()
+                .filter(|c| c.severity == Severity::Error)
+                .count()
+        };
+        let a = Remap {
+            from: "CapsLock".into(),
+            to: "Escape".into(),
+            when: Some(FrontmostApp { app: "code".into() }),
+            enabled: true,
+            ..Default::default()
+        };
+        let b =
+            Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() };
+        assert_eq!(hard(&Config { remaps: vec![a, b.clone()], ..Default::default() }), 0);
+        let dup = Config { remaps: vec![b.clone(), b], ..Default::default() };
+        assert_eq!(hard(&dup), 1);
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn sanitize_drops_invalid_when() {
+        use Condition::*;
+        let mut s = shortcut("s", "Ctrl+K", vec![]);
+        s.when = Some(FrontmostApp { app: "   ".into() }); // 空进程名 → 非法
+        let (out, ignored) =
+            sanitize_config(&Config { shortcuts: vec![s], ..Default::default() });
+        assert!(out.shortcuts[0].when.is_none(), "非法 when 被清掉");
+        assert!(ignored.iter().any(|m| m.contains("触发条件")), "{ignored:?}");
+
+        let mut r =
+            Remap { from: "A".into(), to: "B".into(), enabled: true, ..Default::default() };
+        r.when = Some(DeviceIs { id: "".into() });
+        let (out, ignored) = sanitize_config(&Config { remaps: vec![r], ..Default::default() });
+        assert!(out.remaps[0].when.is_none());
+        assert!(ignored.iter().any(|m| m.contains("触发条件")), "{ignored:?}");
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn when_frontmost_condition_flagged_on_linux() {
+        use Condition::*;
+        let mut s = shortcut("s", "Ctrl+K", vec![]);
+        s.when = Some(FrontmostApp { app: "chrome".into() });
+        let cfg = Config { shortcuts: vec![s], ..Default::default() };
+        let hits = detect_conflicts(&cfg, &linux_caps());
+        assert!(
+            hits.iter().any(|c| c.message.contains("前台") && c.message.contains("恒不成立")),
+            "{hits:?}"
+        );
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 }
