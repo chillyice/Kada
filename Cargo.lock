@@ -1949,6 +1949,7 @@ dependencies = [
  "chrono",
  "kada-core",
  "kada-hook",
+ "libc",
  "serde",
  "serde_json",
 ]

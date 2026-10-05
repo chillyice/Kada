@@ -1052,6 +1052,7 @@ fn run_with_limits(
     ctx: &Ctx,
 ) -> Result<CmdOutput, String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    make_process_group(cmd);
     let mut child = cmd.spawn().map_err(|e| format!("执行 {label} 失败: {e}"))?;
 
     let stdout = child.stdout.take().map(|mut s| {
@@ -1139,19 +1140,37 @@ fn kill_tree(child: &mut Child) {
     }
 }
 
-/// Linux：`Child::kill` 只发 SIGKILL 给直接子进程（`sh -c` 的孙进程收不到）。
-/// 已知缺口：要杀掉整棵树得让子进程自成进程组（`setsid`）再 `kill(-pgid)`，
-/// 本文档的可靠性目标是「不再永久占住执行线程」，故先只保证 `sh` 被收掉。
-#[cfg(all(target_os = "linux", feature = "automation"))]
-fn kill_tree(child: &mut Child) {
-    let _ = child.kill();
+/// unix（Linux / macOS）：让子进程**自成进程组**（`setpgid(0,0)`）。
+///
+/// 没有这一句，子进程与我们同组，「杀整棵树」就无从下手——`sh -c` 的孙进程既不是
+/// 我们的直接子进程，也分不出来哪些是它的。自成一组后 [`kill_tree`] 打的是
+/// `kill(-pgid)` = 整组一起收。Windows 不需要：`taskkill /T` 自己遍历进程树。
+#[cfg(all(unix, feature = "automation"))]
+fn make_process_group(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
 }
 
-/// macOS：与 Linux 同一处已知缺口（macOS 的 `sh -c "a; b"` 会另起子进程跑 `a`，
-/// `Child::kill` 只收掉 `sh` 自己）。同样先只保证「不再永久占住执行线程」。
-#[cfg(all(target_os = "macos", feature = "automation"))]
+#[cfg(all(not(unix), feature = "automation"))]
+fn make_process_group(_cmd: &mut std::process::Command) {}
+
+/// 强制终止子进程**及其子进程**（Linux / macOS）。
+///
+/// `Child::kill` 只发 SIGKILL 给直接子进程，而我们跑的是 `sh -c <命令>`：真正干活的是
+/// 它的孙进程（脚本本体、被启动的程序）。只杀直接子进程 = 命令「看起来」结束了但脚本
+/// 还在跑，而且它占着 stdout 管道，连读线程都不会结束。子进程在 spawn 时已自成进程组
+/// （见 [`make_process_group`]），这里 `kill(-pgid)` 一次打整组；失败（组已不存在 /
+/// 刚好都退了）退回只杀直接子进程，聊胜于无。
+///
+/// 天花板：孙进程若自己 `setsid` 脱离（服务化 / nohup 守护），组里找不到它，不追。
+#[cfg(all(unix, feature = "automation"))]
 fn kill_tree(child: &mut Child) {
-    let _ = child.kill();
+    let pgid = child.id() as i32;
+    // SAFETY: 只发一个信号；pgid 是本进程刚 spawn 的子进程组 id（`process_group(0)` 定的），
+    // 负号 = 打整组——绝不能是 0，0 会打到我们自己所在的组。
+    if unsafe { libc::kill(-pgid, libc::SIGKILL) } != 0 {
+        let _ = child.kill();
+    }
 }
 
 /// 执行 shell 命令并捕获 UTF-8 输出（限时、可中止，见 [`run_with_limits`]）。
@@ -1320,8 +1339,10 @@ mod tests {
             ]);
             c
         } else {
+            // 标记必须由**孙进程**来建：直接子进程（外层 `sh`）一死就没人 `touch` 了，
+            // 那样「没建出文件」区分不了「树杀干净了」还是「只杀了 `sh`」——见 7.1-㊴。
             let mut c = std::process::Command::new("sh");
-            c.args(["-c", &format!("sleep 3; touch '{}'", marker.display())]);
+            c.args(["-c", &format!("sh -c 'sleep 3; touch \"{}\"' & wait", marker.display())]);
             c
         };
         let out = run_with_limits(&mut cmd, "测试", &ctx(1_200)).expect("进程应能启动");
