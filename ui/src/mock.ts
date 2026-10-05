@@ -29,6 +29,13 @@ const DEMO_CONFIG = {
           then: [{ type: "os", operation: { op: "copy", source: "C:\\工作\\待备份", dest: "{drive}:\\备份\\" } }],
           otherwise: [],
         },
+        {
+          type: "parallel",
+          actions: [
+            { type: "command", shell: "cmd", command: "echo 备份 A", show_output: false, var: "" },
+            { type: "command", shell: "cmd", command: "echo 备份 B", show_output: false, var: "" },
+          ],
+        },
         { type: "pause_ms", ms: 500 },
         { type: "keys", keys: ["Ctrl", "S"] },
         { type: "mouse", op: { op: "move", dx: 200, dy: 120 } },

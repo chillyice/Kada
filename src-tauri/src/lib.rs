@@ -1052,16 +1052,18 @@ fn fire(
     });
 }
 
-/// 这串动作里有没有「往目标程序注入按键」的动作（Text / Keys，含 If 分支内的）。
+/// 这串动作里有没有「往目标程序注入按键」的动作（Text / Keys / Mouse，含 If / Parallel 分支内的）。
 ///
 /// 修饰键没松时只有这类动作会被污染（见 [`fire`]），命令 / 文件 / 应用类照常执行；
-/// 静态过一遍链足够准，If 的分支两路都算「可能有」。
+/// 静态过一遍链足够准，If / Parallel 的嵌套两路都算「可能有」。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
         #[cfg(feature = "automation")]
         Action::If { then, otherwise, .. } => injects_keys(then) || injects_keys(otherwise),
+        #[cfg(feature = "automation")]
+        Action::Parallel { actions, .. } => injects_keys(actions),
         _ => false,
     })
 }
