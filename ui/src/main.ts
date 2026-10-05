@@ -48,6 +48,7 @@ type Action =
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
+  | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string };
@@ -153,6 +154,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "mouse", label: "鼠标操作" },
   { value: "pause_ms", label: "延迟" },
   { value: "if", label: "条件判断" },
+  { value: "parallel", label: "并行执行" },
 ];
 
 // 动作类型图标（收起态展示用）。
@@ -167,6 +169,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   app: "🚀",
   open_url: "🌐",
   if: "🔀",
+  parallel: "⇉",
 };
 
 const ACTION_TYPE_LABELS = Object.fromEntries(
@@ -396,6 +399,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "open_url", url: "" };
     case "if":
       return { type: "if", condition: newCondition("exists"), then: [], otherwise: [] };
+    case "parallel":
+      return { type: "parallel", actions: [] };
   }
   return { type: "text", text: "", mode: "input" };
 }
@@ -474,6 +479,8 @@ function actionHasContent(a: Action): boolean {
       return a.url.trim().length > 0;
     case "if":
       return condHasContent(a.condition) || a.then.length > 0 || a.otherwise.length > 0;
+    case "parallel":
+      return a.actions.length > 0;
   }
   return false;
 }
@@ -592,6 +599,8 @@ function actionSummary(a: Action): string {
       return a.url ? `打开网址：${a.url}` : "打开网址";
     case "if":
       return `如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? `，否则 ${a.otherwise.length} 个` : ""}）`;
+    case "parallel":
+      return `并行执行（${a.actions.length} 个动作同时执行）`;
   }
   return "";
 }
@@ -2499,6 +2508,8 @@ function collapseAllActions(actions: Action[]) {
     if (a.type === "if") {
       collapseAllActions(a.then);
       collapseAllActions(a.otherwise);
+    } else if (a.type === "parallel") {
+      collapseAllActions(a.actions);
     }
   }
 }
@@ -3345,6 +3356,19 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       rerender();
     });
     body.append(elseList, addElse);
+  } else if (a.type === "parallel") {
+    // 成员列表复用 `.action-branch` 容器：拖拽落点识别（`actionDropAt` 只认 `.action-row`
+    // / `.action-branch`）与 `.drop-into` 高亮都自动生效，无需改动拖拽逻辑。
+    body.append(el("div", "branch-label parallel", "⇉ 同时执行（全部成员结束后继续下一步）"));
+    const memberList = el("div", "action-branch branch-parallel");
+    (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
+    renderActionList(memberList, a.actions, rerender);
+    const addMember = el("button", "add-inline", "＋ 添加动作");
+    addMember.addEventListener("click", () => {
+      a.actions.push(newAction("text"));
+      rerender();
+    });
+    body.append(memberList, addMember);
   }
   return body;
 }

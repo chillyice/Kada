@@ -658,6 +658,7 @@ body {
 .flow-step.type-app { --type-color: #38c7d8; }
 .flow-step.type-open_url { --type-color: #e879b9; }
 .flow-step.type-if { --type-color: #ffd166; }
+.flow-step.type-parallel { --type-color: #5ec8c8; }
 
 .flow-step,
 .flow-terminator {
@@ -1099,6 +1100,73 @@ body {
 
 .action-branch.branch-else {
   border-left-color: rgba(139, 147, 163, 0.45);
+}
+
+/* ---------- 脑图式流程节点（第一版 · 并行执行 7.1-㉞ 的界面尝试） ----------
+   把容器动作（条件判断 / 并行执行）画成有辨识度的「节点块」：节点主体淡色底 + 虚线框 +
+   圆点光晕；分支泳道从标签处用圆角连线拐进来并带一个箭头，表达流向（呼应「箭头转个圈」的
+   节点效果）。纯 CSS 伪元素，不改 DOM 拓扑、不动拖拽判定；效果不好可整块删除回退。 */
+.flow-step.type-if .action-body,
+.flow-step.type-parallel .action-body {
+  margin-top: 8px;
+  padding: 10px 10px 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed color-mix(in srgb, var(--type-color) 40%, transparent);
+  background: color-mix(in srgb, var(--type-color) 7%, transparent);
+}
+
+.flow-step.type-if .flow-dot,
+.flow-step.type-parallel .flow-dot {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--type-color) 22%, transparent);
+}
+
+.branch-label.parallel {
+  color: #5ec8c8;
+}
+
+.action-branch.branch-parallel {
+  --lane: rgba(94, 200, 200, 0.5);
+  border-left-color: var(--lane);
+}
+
+.action-branch.branch-then {
+  --lane: rgba(78, 201, 122, 0.55);
+}
+
+.action-branch.branch-else {
+  --lane: rgba(139, 147, 163, 0.45);
+}
+
+.action-branch {
+  position: relative;
+}
+
+/* 泳道拐入的圆角连线（从标签下方弯进泳道）。 */
+.action-branch::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: -8px;
+  width: 11px;
+  height: 9px;
+  border-left: 2px solid var(--lane, var(--line));
+  border-bottom: 2px solid var(--lane, var(--line));
+  border-bottom-left-radius: 9px;
+  pointer-events: none;
+}
+
+/* 连线上指向泳道内容的箭头。 */
+.action-branch::after {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: -4px;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 6px solid var(--lane, var(--line));
+  pointer-events: none;
 }
 
 .add-inline {

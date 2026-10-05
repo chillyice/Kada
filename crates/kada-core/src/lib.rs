@@ -1077,6 +1077,16 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// 并行执行：成员各起一个线程同时开跑，**本步等全部成员结束后才进下一步**（汇合屏障，
+    /// 规划 7.2-㉞）。注入类成员（文本 / 按键 / 鼠标）之间仍由链内注入锁串行，只有命令 /
+    /// 脚本 / 文件 / 延迟这类非注入步骤才真正并发；成员写变量按数组顺序合并（后者胜）。
+    #[cfg(feature = "automation")]
+    Parallel {
+        #[serde(default)]
+        actions: Vec<Action>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
 }
 
 impl Action {
@@ -1170,6 +1180,13 @@ impl Action {
             }
             #[cfg(feature = "automation")]
             Action::Script { path, .. } => non_empty("脚本路径", path),
+            #[cfg(feature = "automation")]
+            Action::Parallel { actions, .. } => {
+                for a in actions {
+                    a.validate()?;
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -2335,7 +2352,7 @@ fn collect_unlistenable(sc: &Shortcut, caps: &PlatformCaps, bad: &mut BTreeSet<K
 }
 
 /// 递归扫描动作树，收集注入不了的键（`Keys` 成员）与恒不成立的前台 / 设备条件（`If` 条件）。
-/// 基础版没有 `If`/`Condition`，两个 `bad_*` 旗标无从写入。
+/// `If` / `Parallel` 都递归进嵌套动作。基础版没有 `If`/`Condition`，两个 `bad_*` 旗标无从写入。
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
 fn scan_actions_platform(
     actions: &[Action],
@@ -2371,6 +2388,10 @@ fn scan_actions_platform(
                 }
                 scan_actions_platform(then, caps, bad_inject, bad_frontmost, bad_device);
                 scan_actions_platform(otherwise, caps, bad_inject, bad_frontmost, bad_device);
+            }
+            #[cfg(feature = "automation")]
+            Action::Parallel { actions, .. } => {
+                scan_actions_platform(actions, caps, bad_inject, bad_frontmost, bad_device);
             }
             _ => {}
         }
@@ -2536,7 +2557,7 @@ fn file_field(obj: &FileObject, field: &str) -> Option<String> {
 
 /// 把旧版动作迁移为新版（幂等）：`Launch` → `App::Launch`、`CloseProgram` → `App::Close`、
 /// `Cmd` → `Command(Cmd)`、`Powershell` → `Command(Powershell)`、`OpenFolder` → `Os::OpenFolder`，
-/// 递归处理 `If` 的嵌套动作。
+/// 递归处理 `If` 与 `Parallel` 的嵌套动作。
 pub fn migrate_action(a: Action) -> Action {
     match a {
         #[cfg(feature = "automation")]
@@ -2572,6 +2593,11 @@ pub fn migrate_action(a: Action) -> Action {
             condition,
             then: then.into_iter().map(migrate_action).collect(),
             otherwise: otherwise.into_iter().map(migrate_action).collect(),
+            description,
+        },
+        #[cfg(feature = "automation")]
+        Action::Parallel { actions, description } => Action::Parallel {
+            actions: actions.into_iter().map(migrate_action).collect(),
             description,
         },
         other => other,
@@ -3645,6 +3671,69 @@ mod os_and_sanitize_tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: Action = serde_json::from_str(&json).unwrap();
         assert_eq!(back, a, "json: {json}");
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn parallel_action_validate_recurses() {
+        // 合法成员 / 空组都放行（空组等价于什么都不做）。
+        assert!(Action::Parallel {
+            actions: vec![Action::PauseMs { ms: 10, description: None }],
+            description: None,
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Parallel { actions: vec![], description: None }.validate().is_ok());
+        // 嵌套成员非法 → 递归拒绝。
+        assert!(Action::Parallel {
+            actions: vec![Action::Keys { keys: vec!["NotAKey".into()], description: None }],
+            description: None,
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn parallel_action_json_roundtrip() {
+        let a = Action::Parallel {
+            actions: vec![
+                Action::Cmd { command: "echo a".into(), show_output: false, var: "".into(), description: None },
+                Action::Parallel {
+                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, description: None }],
+                    description: None,
+                },
+            ],
+            description: None,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a, "json: {json}");
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn migrate_recurses_into_parallel() {
+        // 组内旧版动作同样被迁移（`Cmd` → `Command(Cmd)`）。
+        let migrated = migrate_action(Action::Parallel {
+            actions: vec![Action::Cmd {
+                command: "echo a".into(),
+                show_output: false,
+                var: "".into(),
+                description: None,
+            }],
+            description: None,
+        });
+        match migrated {
+            Action::Parallel { actions, .. } => {
+                assert!(
+                    matches!(actions[0], Action::Command { shell: Shell::Cmd, .. }),
+                    "组内旧版动作应被迁移：{:?}",
+                    actions[0]
+                );
+            }
+            other => panic!("应仍是 Parallel：{other:?}"),
+        }
     }
 
     #[cfg(feature = "automation")]
@@ -5119,6 +5208,51 @@ mod platform_caps_tests {
         };
         let hits = detect_conflicts(&cfg, &linux_caps());
         assert!(hits.iter().any(|c| c.message.contains("前台")), "{hits:?}");
+    }
+
+    #[test]
+    fn parallel_group_is_scanned() {
+        // 并行组内的动作同样参与平台扫描（㉞）：注入不了的键进「注入不了」提示，
+        // 嵌套的前台条件进「恒不成立」提示。
+        let cfg = Config {
+            shortcuts: vec![
+                shortcut(
+                    "注入",
+                    "F9",
+                    vec![Action::Parallel {
+                        actions: vec![Action::Keys {
+                            keys: vec!["MediaPlayPause".into()],
+                            description: None,
+                        }],
+                        description: None,
+                    }],
+                ),
+                shortcut(
+                    "前台",
+                    "F10",
+                    vec![Action::Parallel {
+                        actions: vec![Action::If {
+                            condition: Condition::WindowTitleContains { text: "编辑".into() },
+                            then: vec![],
+                            otherwise: vec![],
+                            description: None,
+                        }],
+                        description: None,
+                    }],
+                ),
+            ],
+            ..Default::default()
+        };
+        let mac = detect_conflicts(&cfg, &macos_caps());
+        assert!(
+            mac.iter().any(|c| c.message.contains("注入不了") && c.name == "注入"),
+            "并行组内的注入不了键要报出来：{mac:?}"
+        );
+        let lin = detect_conflicts(&cfg, &linux_caps());
+        assert!(
+            lin.iter().any(|c| c.message.contains("前台") && c.name == "前台"),
+            "并行组内嵌套的前台条件要报出来：{lin:?}"
+        );
     }
 
     #[test]

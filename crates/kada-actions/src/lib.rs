@@ -8,6 +8,7 @@
 //! 超时连同子进程树一起强制终止；用户随时可以用 [`abort::request`] 叫停正在跑的动作链
 //! （剩余动作不再执行、正在跑的命令立即被杀）。
 
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
@@ -41,7 +42,7 @@ use kada_hook::linux::simulate;
 use kada_hook::macos::simulate;
 
 /// 一次命令类动作（CMD / PowerShell / 关闭程序 / 脚本）的执行结果，进入消息中心。
-#[derive(Clone, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct CommandResult {
     /// 动作种类："cmd" | "powershell" | "close_program" | "script"。
     pub kind: String,
@@ -111,6 +112,9 @@ struct Ctx<'a> {
     text_mode: TextInjectMode,
     /// 本次执行开始时记下的中止代数（[`abort::aborted`] 的比对基准）。
     gen: u64,
+    /// 链内注入串行锁（规划 7.2-㉞）：注入类动作（文本 / 按键 / 鼠标）持锁执行，保证
+    /// 并行分组的成员之间注入不交错、剪贴板不被并发覆盖。单线程链无竞争，取锁零代价。
+    inject_lock: Mutex<()>,
 }
 
 /// 递归执行一串动作：遇到「条件判断」动作时按条件求值选择 `then` / `otherwise` 分支继续。
@@ -130,8 +134,21 @@ pub fn run_actions(
 ) {
     // 「正在执行」计数（UI 据此回答「有没有东西可以停」）；整个动作链期间有效。
     let _running = abort::RunGuard::new();
-    let ctx = Ctx { t, timeout: opts.action_timeout, text_mode: opts.text_inject_mode, gen: abort::generation() };
+    let ctx = Ctx {
+        t,
+        timeout: opts.action_timeout,
+        text_mode: opts.text_inject_mode,
+        gen: abort::generation(),
+        inject_lock: Mutex::new(()),
+    };
     run_chain(commit, actions, &ctx, vars, last_copied);
+}
+
+/// 取链内注入锁。毒化也照样取回：它只是一把「把注入串起来」的空锁，没有需要保护的不变量，
+/// 一个成员 panic 不该让后续注入永久取不到锁。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn lock_inject<'c>(ctx: &'c Ctx<'_>) -> std::sync::MutexGuard<'c, ()> {
+    ctx.inject_lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// 动作链的实际执行（`If` 分支递归时复用同一 [`Ctx`]：超时与中止代数整链共享）。
@@ -161,6 +178,17 @@ fn run_chain(
             }
             continue;
         }
+        #[cfg(feature = "automation")]
+        if let Action::Parallel { actions: members, .. } = action {
+            run_parallel(commit, members, ctx, vars, last_copied);
+            // 并行组被中止：`run_parallel` 已滤掉成员级的中止结果，这里统一补记一条再收尾
+            // （若只是 `continue`，下一轮顶部的中止判定会再记一条，变成两条）。
+            if abort::aborted(ctx.gen) {
+                commit(abort_result(ctx));
+                return;
+            }
+            continue;
+        }
         match run_action(action, ctx, vars, last_copied) {
             Ok(Some(result)) => commit(result),
             Ok(None) => {}
@@ -170,6 +198,57 @@ fn run_chain(
                 eprintln!("动作执行失败: {e}");
                 commit(failure_result(action, ctx, vars, &e));
             }
+        }
+    }
+}
+
+/// 执行一个并行分组（规划 7.2-㉞）：成员各起一个线程同时开跑，**等全部结束才返回**。
+///
+/// 成员拿到 `vars` / `last_copied` 的私有快照，结束后按下标顺序合并回主链（确定性「后者胜」，
+/// 组内兄弟读不到彼此的写——判重与顺序语义见需求文档）。成员结果先在本地收集、join 后按下标
+/// 顺序提交：`commit` 回调不是 `Sync`，不能跨线程共享；成员级的中止结果在此滤掉，由调用方
+/// 统一补记一条（否则 N 个成员各记一条）。注入类成员之间仍由链内注入锁串行（见 [`Ctx::inject_lock`]），
+/// 真正并发的是命令 / 脚本 / 文件 / 延迟这类非注入步骤。
+#[cfg(all(feature = "automation", any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+fn run_parallel(
+    commit: &mut dyn FnMut(CommandResult),
+    members: &[Action],
+    ctx: &Ctx,
+    vars: &mut Vars,
+    last_copied: &mut Option<String>,
+) {
+    // 每个成员：私有 vars / last_copied 快照 + 本地结果表。
+    let outs: Vec<(Vars, Option<String>, Vec<CommandResult>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = members
+            .iter()
+            .map(|m| {
+                let mut member_vars = vars.clone();
+                let mut member_copy = last_copied.clone();
+                scope.spawn(move || {
+                    let mut local: Vec<CommandResult> = Vec::new();
+                    {
+                        let mut collect = |r: CommandResult| local.push(r);
+                        // 单个成员仍走完整链：成员里的 `If` / 嵌套 `Parallel` / 中止判定照常。
+                        run_chain(&mut collect, std::slice::from_ref(m), ctx, &mut member_vars, &mut member_copy);
+                    }
+                    (member_vars, member_copy, local)
+                })
+            })
+            .collect();
+        // 全部 join（不允许 `scope` 在未 join 的 panic 线程上二次 panic）；成员 panic 时按
+        // 无结果 / 无变量回退，不让一个坏成员炸掉整条链。
+        handles.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+    });
+    for (member_vars, member_copy, results) in outs {
+        for r in results {
+            if r.kind == "abort" {
+                continue; // 成员级中止合并成一条，由调用方补记
+            }
+            commit(r);
+        }
+        vars.extend(member_vars);
+        if member_copy.is_some() {
+            *last_copied = member_copy;
         }
     }
 }
@@ -247,6 +326,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::Os { .. } => "文件操作失败",
         #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断失败",
+        #[cfg(feature = "automation")]
+        Action::Parallel { .. } => "并行执行失败",
     }
 }
 
@@ -313,6 +394,8 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         },
         #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断".into(),
+        #[cfg(feature = "automation")]
+        Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
     }
 }
 
@@ -397,7 +480,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::App { description, .. }
         | Action::OpenUrl { description, .. }
         | Action::Script { description, .. }
-        | Action::If { description, .. } => description.as_deref(),
+        | Action::If { description, .. }
+        | Action::Parallel { description, .. } => description.as_deref(),
     }
 }
 
@@ -430,16 +514,25 @@ fn run_action(
     last_copied: &mut Option<String>,
 ) -> Result<Option<CommandResult>, String> {
     match action {
-        Action::Text { text, mode, .. } => match mode {
-            TextMode::Input => {
-                let text = substitute_vars(text, vars);
-                inject_text(&text, ctx.text_mode)?;
+        Action::Text { text, mode, .. } => {
+            // 持链内注入锁：剪贴板 set → 粘贴 → 还原必须原子，否则并行的另一成员会覆盖剪贴板
+            // （或读到别人刚写进去的内容）。转大小写路径同理（它内部再调 `inject_text`，
+            // 是同一把锁的一次持有，不再取第二次，故无重入死锁）。
+            let _inj = lock_inject(ctx);
+            match mode {
+                TextMode::Input => {
+                    let text = substitute_vars(text, vars);
+                    inject_text(&text, ctx.text_mode)?;
+                }
+                TextMode::ToUpper | TextMode::ToLower => {
+                    transform_case(matches!(mode, TextMode::ToUpper), ctx.text_mode)?;
+                }
             }
-            TextMode::ToUpper | TextMode::ToLower => {
-                transform_case(matches!(mode, TextMode::ToUpper), ctx.text_mode)?;
-            }
-        },
+        }
         Action::Keys { keys, .. } => {
+            // 持链内注入锁：down…up 必须成对，不能被别的成员插进来（插进来目标程序收到的是
+            // 一个混合组合键）。
+            let _inj = lock_inject(ctx);
             let ks: Vec<Key> = keys
                 .iter()
                 .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
@@ -454,6 +547,8 @@ fn run_action(
             }
         }
         Action::Mouse { op, .. } => {
+            // 持链内注入锁：点击是「按下 + 抬起」一对，不能被别的成员插进来。
+            let _inj = lock_inject(ctx);
             simulate::mouse(op).map_err(|e| e.to_string())?;
         }
         // 长等待也要能被中止：一次 `PauseMs` 可以是几十秒，睡死在里面的话「停止」要等到
@@ -558,6 +653,11 @@ fn run_action(
         Action::If { .. } => {
             // 条件判断动作由 run_chain 拦截处理，不会到达这里。
             return Err("内部错误：条件判断动作应在运行器内处理".into());
+        }
+        #[cfg(feature = "automation")]
+        Action::Parallel { .. } => {
+            // 并行分组动作由 run_chain 拦截处理，不会到达这里。
+            return Err("内部错误：并行执行动作应在运行器内处理".into());
         }
         #[cfg(feature = "automation")]
         Action::Script { path, interpreter, show_output, var, .. } => {
@@ -1264,6 +1364,7 @@ fn vars_to_json(vars: &Vars) -> String {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// 测试用的触发现场（各用例共用同一组固定值，便于断言结果里的触发键 / 名称）。
     fn trigger_ctx() -> TriggerCtx<'static> {
@@ -1277,6 +1378,7 @@ mod tests {
             timeout: Duration::from_millis(timeout_ms),
             text_mode: TextInjectMode::Clipboard,
             gen: abort::generation(),
+            inject_lock: Mutex::new(()),
         }
     }
 
@@ -1554,5 +1656,189 @@ mod tests {
         assert!(!summary.contains('\n'), "摘要要压成单行：{summary}");
         assert!(summary.contains('…'), "超长文本要截断：{summary}");
         assert!(summary.chars().count() <= PREVIEW_MAX_CHARS + 8, "截断后不该还很长：{summary}");
+    }
+
+    // ---- 并行动作（规划 7.2-㉞） ----
+
+    /// 非注入步骤（延迟 / 命令）在并行组里必须真正重叠：两个 1.5s 延迟应约 1.5s 完成，
+    /// 而不是串行的 3s。
+    #[test]
+    fn parallel_group_overlaps_non_injection_steps() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Parallel {
+            actions: vec![
+                Action::PauseMs { ms: 1_500, description: None },
+                Action::PauseMs { ms: 1_500, description: None },
+            ],
+            description: None,
+        }];
+        let mut vars: Vars = BTreeMap::new();
+        let start = Instant::now();
+        let results = run_collect(&actions, &mut vars);
+        let elapsed = start.elapsed();
+        assert!(results.is_empty(), "延迟动作没有结果产出");
+        assert!(
+            elapsed < Duration::from_millis(2_600),
+            "两个 1.5s 延迟必须重叠（串行要 3s），实际 {elapsed:?}"
+        );
+    }
+
+    /// 成员结果按**下标顺序**提交（确定性），与成员各自跑完的先后无关。
+    #[test]
+    fn parallel_member_results_ordered_by_index() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Parallel {
+            actions: vec![
+                failing_delete(None), // 成员 0：几乎立刻失败
+                Action::Cmd {
+                    command: "echo second".into(),
+                    show_output: false,
+                    var: "".into(),
+                    description: None,
+                }, // 成员 1：要起进程，慢一些
+            ],
+            description: None,
+        }];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert_eq!(results[0].kind, "error", "成员 0 的结果在前");
+        assert_eq!(results[1].kind, "cmd", "成员 1 的结果在后");
+        assert!(results[1].stdout.contains("second"));
+    }
+
+    /// 一步失败不取消兄弟：失败记录照样产出，另一个成员正常完成。
+    #[test]
+    fn parallel_member_failure_does_not_cancel_siblings() {
+        let _g = abort::test_lock();
+        let actions = vec![
+            Action::Parallel {
+                actions: vec![
+                    failing_delete(Some("组内失败")),
+                    Action::Cmd {
+                        command: "echo ok".into(),
+                        show_output: false,
+                        var: "".into(),
+                        description: None,
+                    },
+                ],
+                description: None,
+            },
+            Action::PauseMs { ms: 10, description: None }, // 组后动作仍执行
+        ];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+        assert_eq!(results.len(), 2, "{results:?}");
+        assert!(results[0].stderr.contains("不存在"));
+        assert!(results[0].command.contains("组内失败"));
+        assert!(results[1].stdout.contains("ok"), "兄弟成员应照常跑完");
+    }
+
+    /// 同名变量按成员下标顺序合并（后者胜），确定性可复现。
+    #[test]
+    fn parallel_var_writes_merge_by_index() {
+        let _g = abort::test_lock();
+        let write = |text: &str| Action::Cmd {
+            command: format!("echo {text}"),
+            show_output: false,
+            var: "v".into(),
+            description: None,
+        };
+        let actions =
+            vec![Action::Parallel { actions: vec![write("first"), write("second")], description: None }];
+        let mut vars: Vars = BTreeMap::new();
+        let _ = run_collect(&actions, &mut vars);
+        match vars.get("v") {
+            Some(Value::Text(t)) => assert_eq!(t.text, "second", "后者（下标大）胜"),
+            other => panic!("变量 v 应为 Text：{other:?}"),
+        }
+    }
+
+    /// 并行组被中止：只记**一条**中止结果（不是每个成员一条），且立刻返回。
+    #[test]
+    fn abort_during_parallel_records_single_abort() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Parallel {
+            actions: vec![
+                Action::PauseMs { ms: 5_000, description: None },
+                Action::PauseMs { ms: 5_000, description: None },
+            ],
+            description: None,
+        }];
+        let requester = std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(100));
+            abort::request();
+        });
+        let mut results: Vec<CommandResult> = Vec::new();
+        {
+            let mut commit = |r: CommandResult| results.push(r);
+            let mut vars: Vars = BTreeMap::new();
+            let mut last_copied = None;
+            let start = Instant::now();
+            run_actions(
+                &mut commit,
+                &actions,
+                trigger_ctx(),
+                &mut vars,
+                &mut last_copied,
+                &RunOptions { action_timeout: Duration::ZERO, ..Default::default() },
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(3),
+                "中止要立刻生效，不能等 5s 延迟睡完"
+            );
+        }
+        requester.join().unwrap();
+        let aborts: Vec<_> = results.iter().filter(|r| r.kind == "abort").collect();
+        assert_eq!(aborts.len(), 1, "并行组被中止只记一条：{results:?}");
+        assert_eq!(abort::running(), 0, "执行结束后计数器要归零");
+    }
+
+    /// 嵌套并行 / 成员里的 `If` 都能跑通，不会死锁（注入锁只在动作内取一次）。
+    #[test]
+    fn nested_parallel_and_if_run_without_deadlock() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Parallel {
+            actions: vec![
+                Action::If {
+                    condition: kada_core::Condition::Exists { path: ".".into() },
+                    then: vec![Action::PauseMs { ms: 50, description: None }],
+                    otherwise: vec![],
+                    description: None,
+                },
+                Action::Parallel {
+                    actions: vec![Action::PauseMs { ms: 50, description: None }],
+                    description: None,
+                },
+            ],
+            description: None,
+        }];
+        let mut vars: Vars = BTreeMap::new();
+        let start = Instant::now();
+        let results = run_collect(&actions, &mut vars);
+        assert!(results.is_empty(), "{results:?}");
+        assert!(start.elapsed() < Duration::from_secs(2), "嵌套并行不应死锁或拖长");
+    }
+
+    /// 链内注入锁确实让临界区互斥（这是并行组注入不交错、剪贴板不被覆盖的根据）。
+    #[test]
+    fn inject_lock_serializes_critical_sections() {
+        let ctx = ctx(0);
+        let concurrent = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        std::thread::scope(|s| {
+            for _ in 0..2 {
+                s.spawn(|| {
+                    for _ in 0..20 {
+                        let _g = lock_inject(&ctx);
+                        let now = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                        peak.fetch_max(now, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(2));
+                        concurrent.fetch_sub(1, Ordering::SeqCst);
+                    }
+                });
+            }
+        });
+        assert_eq!(peak.load(Ordering::SeqCst), 1, "注入锁必须让临界区互斥");
     }
 }
