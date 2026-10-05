@@ -585,6 +585,17 @@ body {
   font-size: 12px;
 }
 
+/* 触发侧 when 门控编辑器：类型下拉 + 该条件的字段，纵向排列。 */
+.when-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.when-kind {
+  width: 100%;
+}
+
 .chips-wrap {
   display: flex;
   align-items: flex-start;

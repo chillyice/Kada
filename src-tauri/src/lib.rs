@@ -22,7 +22,7 @@ use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
     detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
-    Settings, Shortcut, Severity, TextInjectMode, Trigger, Vars, SYSTEM_SHORTCUTS,
+    Settings, Shortcut, Severity, TextInjectMode, Trigger, TriggerContext, Vars, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -389,13 +389,19 @@ fn set_pause_lease(until: &AtomicU64, paused: bool) {
 }
 
 /// 层语义匹配普通改键（非 tap-hold）：激活层条目优先、基础层条目兜底。
-fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Option<Key> {
+/// `ctx` 是触发侧 `when` 门控上下文：条件不成立的条目与「不存在」等价（跳过、落到下一条）。
+fn match_plain_remap(
+    cfg: &Config,
+    key: Key,
+    active_layer: Option<&str>,
+    ctx: &TriggerContext,
+) -> Option<Key> {
     for r in &cfg.remaps {
         if !r.enabled || r.needs_timing_state() || r.layer.as_deref() != active_layer {
             continue;
         }
         if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
-            if from == key {
+            if from == key && r.when_matches(ctx) {
                 return Some(to);
             }
         }
@@ -406,7 +412,7 @@ fn match_plain_remap(cfg: &Config, key: Key, active_layer: Option<&str>) -> Opti
                 continue;
             }
             if let (Ok(from), Ok(to)) = (r.from.parse::<Key>(), r.to.parse::<Key>()) {
-                if from == key {
+                if from == key && r.when_matches(ctx) {
                     return Some(to);
                 }
             }
@@ -420,6 +426,7 @@ fn match_shortcut(
     cfg: &Config,
     raw: &RawEvent,
     active_layer: Option<&str>,
+    ctx: &TriggerContext,
 ) -> Option<(Vec<Action>, String, String)> {
     for s in &cfg.shortcuts {
         if !s.enabled || s.layer.as_deref() != active_layer {
@@ -427,7 +434,7 @@ fn match_shortcut(
         }
         for t in &s.triggers {
             if let Ok(sc) = t.parse::<Shortcut>() {
-                if matches(raw, &sc) {
+                if matches(raw, &sc) && s.when_matches(ctx) {
                     return Some((s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
                 }
             }
@@ -440,7 +447,7 @@ fn match_shortcut(
             }
             for t in &s.triggers {
                 if let Ok(sc) = t.parse::<Shortcut>() {
-                    if matches(raw, &sc) {
+                    if matches(raw, &sc) && s.when_matches(ctx) {
                         return Some((
                             s.actions.clone(),
                             t.clone(),
@@ -454,16 +461,16 @@ fn match_shortcut(
     None
 }
 
-fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>) -> Outcome {
+fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>, ctx: &TriggerContext) -> Outcome {
     match ev {
         Ev::Down { key, mods, repeat } => {
             // 改键优先于快捷键：先消耗掉原生键，避免改键后键再触发快捷键。
-            if let Some(to) = match_plain_remap(cfg, *key, active_layer) {
+            if let Some(to) = match_plain_remap(cfg, *key, active_layer, ctx) {
                 return Outcome::Replace(to);
             }
             if !*repeat {
                 let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
-                if let Some((actions, trigger, name)) = match_shortcut(cfg, &raw, active_layer) {
+                if let Some((actions, trigger, name)) = match_shortcut(cfg, &raw, active_layer, ctx) {
                     return Outcome::Shortcut { actions, trigger, name };
                 }
             }
@@ -1852,8 +1859,8 @@ mod tests {
         ev: &Ev,
     ) -> Option<Outcome> {
         let mut fire = |_a: Vec<Action>, _t: String, _n: String| {};
-        let ev = engine.step(ev, cfg, inj, &mut fire)?;
-        Some(decide(&ev, cfg, engine.active_layer()))
+        let ev = engine.step(ev, cfg, &TriggerContext::empty(), inj, &mut fire)?;
+        Some(decide(&ev, cfg, engine.active_layer(), &TriggerContext::empty()))
     }
 
     /// 同 [`decide_via_engine`]，但把触发的触发键收集下来（和弦/序列在 `step` 里就 fire 了）。
@@ -1865,7 +1872,7 @@ mod tests {
         fired: &mut Vec<String>,
     ) -> Option<Ev> {
         let mut fire = |_a: Vec<Action>, t: String, _n: String| fired.push(t);
-        engine.step(ev, cfg, inj, &mut fire)
+        engine.step(ev, cfg, &TriggerContext::empty(), inj, &mut fire)
     }
 
     /// 「长按进入层」的切层键（CapsLock → L1）+ 该层内一条快捷键（触发键由参数给出）。
@@ -1985,7 +1992,7 @@ mod tests {
         };
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &z_down, &mut fired);
         let layer = engine.active_layer().map(str::to_string);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref()) {
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref(), &TriggerContext::empty()) {
             Outcome::Shortcut { trigger, .. } => assert_eq!(trigger, "Alt+Z"),
             other => panic!(
                 "层内 Alt+Z 应命中该层快捷键，实际 {:?}",
@@ -2099,7 +2106,7 @@ mod tests {
         let alt_z = Ev::Down { key: Key::Z, mods: BTreeSet::from([Modifier::Alt]), repeat: false };
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
         let layer = engine.active_layer().map(str::to_string);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref()) {
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref(), &TriggerContext::empty()) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "输入密码", "层内 Alt+Z 应优先"),
             Outcome::Replace(_) => panic!("不该走改键"),
             Outcome::Pass => panic!("层内 Alt+Z 未命中"),
@@ -2111,7 +2118,7 @@ mod tests {
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Tab), &mut fired);
         assert_eq!(engine.active_layer(), None, "再长按一次退出切层");
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, None) {
+        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, None, &TriggerContext::empty()) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "基础层 Alt+Z"),
             Outcome::Replace(_) => panic!("不该走改键"),
             Outcome::Pass => panic!("基础层 Alt+Z 未命中"),
@@ -2164,6 +2171,52 @@ mod tests {
         step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Digit5), &mut fired2);
         step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Y), &mut fired2);
         assert!(fired2.is_empty(), "基础层下不应命中层内和弦，实际：{fired2:?}");
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn when_gate_routes_same_shortcut_by_frontmost() {
+        use kada_core::{Condition, FrontmostContext, TriggerContext};
+        let mk = |name: &str, when: Option<Condition>| kada_core::ShortcutItem {
+            name: Some(name.into()),
+            triggers: vec!["Ctrl+K".into()],
+            actions: vec![],
+            when,
+            enabled: true,
+            ..Default::default()
+        };
+        // 同触发键 Ctrl+K：一条只在 Chrome 生效，另一条无条件兜底。
+        let cfg = Config {
+            shortcuts: vec![
+                mk("Chrome", Some(Condition::FrontmostApp { app: "chrome".into() })),
+                mk("兜底", None),
+            ],
+            ..Default::default()
+        };
+        let ev = Ev::Down { key: Key::K, mods: BTreeSet::from([Modifier::Ctrl]), repeat: false };
+
+        let chrome = FrontmostContext {
+            process_name: "chrome.exe".into(),
+            window_title: String::new(),
+        };
+        match decide(&ev, &cfg, None, &TriggerContext::fixed(Some(&chrome), None)) {
+            Outcome::Shortcut { name, .. } => assert_eq!(name, "Chrome"),
+            other => panic!("应命中 Chrome 条目，实际 Pass={}", matches!(other, Outcome::Pass)),
+        }
+
+        // 别的前台：条件条目跳过，落到兜底条目。
+        let code =
+            FrontmostContext { process_name: "Code.exe".into(), window_title: String::new() };
+        match decide(&ev, &cfg, None, &TriggerContext::fixed(Some(&code), None)) {
+            Outcome::Shortcut { name, .. } => assert_eq!(name, "兜底"),
+            other => panic!("应落到兜底条目，实际 Pass={}", matches!(other, Outcome::Pass)),
+        }
+
+        // 无前台上下文（Linux）：条件条目恒不成立，仍落到兜底。
+        match decide(&ev, &cfg, None, &TriggerContext::empty()) {
+            Outcome::Shortcut { name, .. } => assert_eq!(name, "兜底"),
+            _ => panic!("无前台下应落到兜底条目"),
+        }
     }
 
     #[test]
@@ -2885,6 +2938,12 @@ pub fn run() {
                         // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
                         let action_timeout = guard.settings.action_timeout_ms;
                         let text_mode = guard.settings.text_inject_mode;
+                        // 触发侧 `when` 门控上下文（7.2-㊶）：前台窗口**惰性查询**——只有真的
+                        // 命中带 `when` 的条目时才查（macOS 的前台查询走 AX 调用，不该让每次
+                        // 按键都买单）；设备在该事件上同步取（Windows / macOS 恒 None）。
+                        let device = input::current_device();
+                        let fetch_frontmost = || input::frontmost_context();
+                        let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());
                         let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                             fire(
                                 app_handle.clone(),
@@ -2897,13 +2956,15 @@ pub fn run() {
                                 text_mode,
                             );
                         };
-                        let Some(ev) =
-                            engine.lock().unwrap().step(&ev, &guard, &mut SimulatedInject, &mut fire_hit)
+                        let Some(ev) = engine
+                            .lock()
+                            .unwrap()
+                            .step(&ev, &guard, &when_ctx, &mut SimulatedInject, &mut fire_hit)
                         else {
                             return input::HookAction::Block;
                         };
                         let layer = engine.lock().unwrap().active_layer().map(str::to_string);
-                        match decide(&ev, &guard, layer.as_deref()) {
+                        match decide(&ev, &guard, layer.as_deref(), &when_ctx) {
                             Outcome::Shortcut { actions, trigger, name } => {
                                 fire(
                                     app_handle.clone(),

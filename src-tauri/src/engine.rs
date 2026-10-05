@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use kada_core::{
     is_hotstring_terminator, key_to_char, match_expansion, Action, ChordAdvance, ChordTracker,
     Config, Key, Modifier, RawEvent, Remap, SeqAdvance, SequenceTracker, Shortcut, TextExpansion,
-    Trigger,
+    Trigger, TriggerContext,
 };
 
 use crate::{EngineStatus, Ev};
@@ -93,16 +93,20 @@ impl Engine {
 
     /// 前置状态机：tap-hold（含连击/单次/粘滞/切层）→ 和弦 → 键序列。
     /// 返回 `None` = 事件被吞掉（框架层返回 Block）；`Some(ev)` = 继续走 `decide`。
+    ///
+    /// `ctx` 是触发侧 `when` 门控的求值上下文（前台窗口 / 设备，惰性查询）；
+    /// 带 `when` 的条目条件不成立时与「不存在」等价——不吞键、落到下一条。
     pub fn step(
         &mut self,
         ev: &Ev,
         cfg: &Config,
+        ctx: &TriggerContext,
         inj: &mut dyn Inject,
         fire: &mut dyn FnMut(Vec<Action>, String, String),
     ) -> Option<Ev> {
-        let ev = self.taphold_step(ev, cfg, inj)?;
-        let ev = self.chord_step(&ev, cfg, inj, fire)?;
-        self.sequence_step(&ev, cfg, inj, fire)
+        let ev = self.taphold_step(ev, cfg, ctx, inj)?;
+        let ev = self.chord_step(&ev, cfg, ctx, inj, fire)?;
+        self.sequence_step(&ev, cfg, ctx, inj, fire)
     }
 
     /// 定时推进（壳层用定时器线程驱动，见 `ENGINE_TICK_MS`）：把「只能靠时间判定」的
@@ -390,7 +394,13 @@ impl Engine {
     /// - 待定期间按下其它键 → 立即判 hold（roll 判定，缩短等待）。
     /// - 自动重复的 `from` down 被吞掉、不推进判定。
     /// - 连击（tap-dance）等待窗内再次 down 累计击数，超时懒提交。
-    fn taphold_step(&mut self, ev: &Ev, cfg: &Config, inj: &mut dyn Inject) -> Option<Ev> {
+    fn taphold_step(
+        &mut self,
+        ev: &Ev,
+        cfg: &Config,
+        ctx: &TriggerContext,
+        inj: &mut dyn Inject,
+    ) -> Option<Ev> {
         let (taphold, dance, mods, layers) =
             (&mut self.taphold, &mut self.dance, &mut self.mods, &mut self.layer);
         // 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
@@ -417,7 +427,7 @@ impl Engine {
                     activate_hold(taphold, mods, layers, inj); // 不同键 down → roll 判定 hold。
                 }
                 if taphold.is_none() {
-                    if let Some(r) = find_taphold_rule(cfg, *key, layers.active()) {
+                    if let Some(r) = find_taphold_rule(cfg, *key, layers.active(), ctx) {
                         *taphold = Some(make_pending(*key, r));
                         return None;
                     }
@@ -454,12 +464,17 @@ impl Engine {
 }
 
 /// 按层语义查找命中的 tap-hold/切层规则（激活层优先、基础层兜底）。
-fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) -> Option<&'a Remap> {
+fn find_taphold_rule<'a>(
+    cfg: &'a Config,
+    key: Key,
+    active_layer: Option<&str>,
+    ctx: &TriggerContext,
+) -> Option<&'a Remap> {
     for r in &cfg.remaps {
         if !r.enabled || !r.needs_timing_state() || r.layer.as_deref() != active_layer {
             continue;
         }
-        if r.from.parse::<Key>().ok() == Some(key) {
+        if r.from.parse::<Key>().ok() == Some(key) && r.when_matches(ctx) {
             return Some(r);
         }
     }
@@ -468,7 +483,7 @@ fn find_taphold_rule<'a>(cfg: &'a Config, key: Key, active_layer: Option<&str>) 
             if !r.enabled || !r.needs_timing_state() || r.layer.is_some() {
                 continue;
             }
-            if r.from.parse::<Key>().ok() == Some(key) {
+            if r.from.parse::<Key>().ok() == Some(key) && r.when_matches(ctx) {
                 return Some(r);
             }
         }
@@ -733,6 +748,7 @@ impl Engine {
         &mut self,
         ev: &Ev,
         cfg: &Config,
+        ctx: &TriggerContext,
         inj: &mut dyn Inject,
         fire: &mut dyn FnMut(Vec<Action>, String, String),
     ) -> Option<Ev> {
@@ -741,7 +757,7 @@ impl Engine {
         // 就只能靠它）。
         self.chord_expire(cfg, inj);
 
-        let items = collect_chord_items(cfg, self.layer.active());
+        let items = collect_chord_items(cfg, self.layer.active(), ctx);
         let chords: Vec<Vec<Shortcut>> = items.iter().map(|(c, ..)| c.clone()).collect();
 
         match ev {
@@ -846,10 +862,11 @@ impl Engine {
 fn collect_chord_items(
     cfg: &Config,
     active_layer: Option<&str>,
+    ctx: &TriggerContext,
 ) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
     let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
     for s in &cfg.shortcuts {
-        if !s.enabled || s.layer.as_deref() != active_layer {
+        if !s.enabled || s.layer.as_deref() != active_layer || !s.when_matches(ctx) {
             continue;
         }
         for t in &s.triggers {
@@ -860,7 +877,7 @@ fn collect_chord_items(
     }
     if active_layer.is_some() {
         for s in &cfg.shortcuts {
-            if !s.enabled || s.layer.is_some() {
+            if !s.enabled || s.layer.is_some() || !s.when_matches(ctx) {
                 continue;
             }
             for t in &s.triggers {
@@ -919,6 +936,7 @@ impl Engine {
         &mut self,
         ev: &Ev,
         cfg: &Config,
+        ctx: &TriggerContext,
         inj: &mut dyn Inject,
         fire: &mut dyn FnMut(Vec<Action>, String, String),
     ) -> Option<Ev> {
@@ -937,7 +955,7 @@ impl Engine {
             return if self.seq.pending.contains(key) { None } else { Some(ev.clone()) };
         }
 
-        let items = collect_sequence_items(cfg, self.layer.active());
+        let items = collect_sequence_items(cfg, self.layer.active(), ctx);
         let steps: Vec<Vec<Shortcut>> = items.iter().map(|(s, ..)| s.clone()).collect();
         let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
 
@@ -996,10 +1014,11 @@ impl Engine {
 fn collect_sequence_items(
     cfg: &Config,
     active_layer: Option<&str>,
+    ctx: &TriggerContext,
 ) -> Vec<(Vec<Shortcut>, Vec<Action>, String, String)> {
     let mut out: Vec<(Vec<Shortcut>, Vec<Action>, String, String)> = Vec::new();
     for s in &cfg.shortcuts {
-        if !s.enabled || s.layer.as_deref() != active_layer {
+        if !s.enabled || s.layer.as_deref() != active_layer || !s.when_matches(ctx) {
             continue;
         }
         for t in &s.triggers {
@@ -1010,7 +1029,7 @@ fn collect_sequence_items(
     }
     if active_layer.is_some() {
         for s in &cfg.shortcuts {
-            if !s.enabled || s.layer.is_some() {
+            if !s.enabled || s.layer.is_some() || !s.when_matches(ctx) {
                 continue;
             }
             for t in &s.triggers {
@@ -1101,7 +1120,7 @@ mod tests {
         fired: &mut Fired,
     ) -> Option<Ev> {
         let mut fire = |_a: Vec<Action>, trigger: String, _n: String| fired.log.push(trigger);
-        engine.step(ev, cfg, inj, &mut fire)
+        engine.step(ev, cfg, &TriggerContext::empty(), inj, &mut fire)
     }
 
     /// 把两个等待窗缩到毫秒级（序列 / 和弦）：超时相关用例不必真等默认的 1 秒。
@@ -2233,5 +2252,33 @@ mod tests {
             &mut fired,
         );
         assert_eq!(fired.log, vec!["Ctrl+Alt&J"]);
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn when_gate_skips_chord_when_condition_false() {
+        use kada_core::{Condition, FrontmostContext, TriggerContext};
+        let mut cfg = cfg_with(&["F&J"]);
+        cfg.shortcuts[0].when = Some(Condition::FrontmostApp { app: "chrome".into() });
+
+        // 条件不成立（空上下文）：F 不是可吞的成员，原样放行、不成和弦。
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+        let mut fire = |_a: Vec<Action>, trigger: String, _n: String| fired.log.push(trigger);
+        let out = engine.step(&down(Key::F), &cfg, &TriggerContext::empty(), &mut inj, &mut fire);
+        assert!(out.is_some(), "门控不成立时成员键应放行");
+        assert!(fired.log.is_empty());
+        assert!(inj.log.is_empty());
+
+        // 条件成立：正常凑齐和弦触发。
+        let chrome =
+            FrontmostContext { process_name: "chrome.exe".into(), window_title: String::new() };
+        let ctx = TriggerContext::fixed(Some(&chrome), None);
+        let mut engine2 = Engine::new();
+        let (mut inj2, mut fired2) = (FakeInject::default(), Fired::default());
+        let mut fire2 = |_a: Vec<Action>, trigger: String, _n: String| fired2.log.push(trigger);
+        assert!(engine2.step(&down(Key::F), &cfg, &ctx, &mut inj2, &mut fire2).is_none());
+        assert!(engine2.step(&down(Key::J), &cfg, &ctx, &mut inj2, &mut fire2).is_none());
+        assert_eq!(fired2.log, vec!["F&J"]);
     }
 }

@@ -56,6 +56,8 @@ type ShortcutItem = {
   description?: string | null;
   folder?: string | null;
   layer?: string | null;
+  /** 触发侧条件门控（规划 7.2-㊶）：仅当条件成立时才触发；缺省 = 无条件。 */
+  when?: Condition | null;
   triggers: string[];
   actions: Action[];
   enabled: boolean;
@@ -73,6 +75,8 @@ type Remap = {
   sticky: string | null;
   tap2: string | null;
   tap3: string | null;
+  /** 触发侧条件门控（规划 7.2-㊶）：仅当条件成立时才生效；缺省 = 无条件。 */
+  when?: Condition | null;
   enabled: boolean;
 };
 type TextExpansion = { trigger: string; replace: string; enabled: boolean };
@@ -261,6 +265,11 @@ const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
   { value: "window_title_contains", label: "窗口标题包含" },
   { value: "device_is", label: "设备是" },
 ];
+
+/** 触发侧 `when` 门控可用的条件类型：触发时没有变量，`equals/not_equals` 恒不成立，不列。 */
+const WHEN_CONDITION_TYPES = CONDITION_TYPES.filter(
+  (c) => c.value !== "equals" && c.value !== "not_equals",
+);
 
 function newCondition(kind: Condition["kind"]): Condition {
   switch (kind) {
@@ -2030,6 +2039,14 @@ function fillShortcutEditor() {
   (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
   fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
   renderTriggers(draft);
+  renderWhenEditor(
+    document.getElementById("edit-when")!,
+    () => draft?.when,
+    (c) => {
+      if (draft) draft.when = c;
+    },
+    refreshDirty,
+  );
   renderActions(draft);
   setShortcutTitle();
 }
@@ -2049,6 +2066,14 @@ function fillRemapEditor() {
   fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, remapDraft.lock_layer, "hold");
   (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
     remapDraft.tap_timeout_ms || 200,
+  );
+  renderWhenEditor(
+    document.getElementById("remap-when")!,
+    () => remapDraft?.when,
+    (c) => {
+      if (remapDraft) remapDraft.when = c;
+    },
+    refreshDirty,
   );
   syncRemapEditor();
   document.getElementById("remap-title")!.textContent = draftNew
@@ -2073,14 +2098,14 @@ function openDetail(i: number, isNew = false) {
   draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
   if (section === "shortcuts") {
     draft = isNew
-      ? { name: "", description: "", folder: null, layer: null, triggers: [], actions: [newAction("text")], enabled: true }
+      ? { name: "", description: "", folder: null, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
       : deepClone(cfg.shortcuts[i]);
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
     if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
     fillShortcutEditor();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
+      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
     fillRemapEditor();
   } else if (section === "expansions") {
@@ -2825,6 +2850,143 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
   return null;
 }
 
+/** 条件字段编辑器（`If` 动作与触发侧 `when` 门控共用）：按 `cond.kind` 渲染对应输入，
+ * 原地改写 `cond`。调用方在切换 kind 时重建。 */
+function conditionFields(cond: Condition): HTMLElement {
+  const body = el("div", "action-body");
+
+  if (
+    cond.kind === "exists" ||
+    cond.kind === "not_exists" ||
+    cond.kind === "is_file" ||
+    cond.kind === "is_dir"
+  ) {
+    body.append(pathField(cond.path, (v) => (cond.path = v), { file: true, dir: true }));
+  } else if (cond.kind === "modified_within") {
+    body.append(pathField(cond.path, (v) => (cond.path = v), { file: true, dir: true }));
+    const line = el("div", "action-line");
+    const mins = el("input", "action-input") as HTMLInputElement;
+    mins.type = "number";
+    mins.min = "0";
+    mins.value = String(cond.minutes);
+    mins.addEventListener("input", () => {
+      cond.minutes = intIn(mins.value, 0, 0);
+    });
+    line.append(el("span", "unit-hint", "修改时间在"), mins, el("span", "unit-hint", "分钟内为真"));
+    body.append(line);
+  } else if (cond.kind === "frontmost_app" || cond.kind === "not_frontmost_app") {
+    const line = el("div", "action-line");
+    const app = el("input", "action-input") as HTMLInputElement;
+    app.type = "text";
+    app.value = cond.app;
+    app.placeholder = "进程名，如 chrome.exe（含 * / ? 走通配，否则子串匹配）";
+    app.addEventListener("input", () => {
+      cond.app = app.value;
+    });
+    line.append(el("span", "unit-hint", "进程名"), app);
+    body.append(line);
+  } else if (cond.kind === "window_title_contains") {
+    const line = el("div", "action-line");
+    const text = el("input", "action-input") as HTMLInputElement;
+    text.type = "text";
+    text.value = cond.text;
+    text.placeholder = "窗口标题包含的文本（不区分大小写）";
+    text.addEventListener("input", () => {
+      cond.text = text.value;
+    });
+    line.append(el("span", "unit-hint", "包含文本"), text);
+    body.append(line);
+  } else if (cond.kind === "device_is") {
+    const line = el("div", "action-line");
+    const id = el("input", "action-input") as HTMLInputElement;
+    id.type = "text";
+    id.value = cond.id;
+    id.placeholder = "设备名，如 AT Translated Set 2 keyboard（含 * / ? 走通配，否则子串匹配）";
+    id.addEventListener("input", () => {
+      cond.id = id.value;
+    });
+    line.append(el("span", "unit-hint", "设备名"), id);
+    body.append(line);
+    body.append(
+      el(
+        "div",
+        "unit-hint",
+        "按触发键来自哪台键盘区分（仅 Linux 生效；Windows / macOS 取不到设备，恒走「否则」分支）。",
+      ),
+    );
+  } else {
+    const lineVar = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = cond.var;
+    vname.placeholder = "变量名，如 f";
+    vname.addEventListener("input", () => {
+      cond.var = vname.value.trim();
+    });
+    lineVar.append(el("span", "unit-hint", "变量名"), vname);
+    body.append(lineVar);
+
+    const lineField = el("div", "action-line");
+    const fname = el("input", "action-input") as HTMLInputElement;
+    fname.type = "text";
+    fname.value = cond.field;
+    fname.placeholder = "字段（空 = 完整路径），如 ext / size / is_dir";
+    fname.addEventListener("input", () => {
+      cond.field = fname.value.trim();
+    });
+    lineField.append(el("span", "unit-hint", "字段"), fname);
+    body.append(lineField);
+
+    const lineVal = el("div", "action-line");
+    const val = el("input", "action-input") as HTMLInputElement;
+    val.type = "text";
+    val.value = cond.value;
+    val.placeholder = "比较值，如 .txt";
+    val.addEventListener("input", () => {
+      cond.value = val.value;
+    });
+    lineVal.append(el("span", "unit-hint", "等于/不等于"), val);
+    body.append(lineVal);
+  }
+
+  return body;
+}
+
+/** 触发侧 `when` 门控编辑器：一个「无条件 / 条件类型」下拉 + 该条件的字段。
+ * `get` 读当前草稿的 `when`，`set` 写回（`null` = 清除）。就地改写草稿对象。 */
+function renderWhenEditor(
+  host: HTMLElement,
+  get: () => Condition | null | undefined,
+  set: (c: Condition | null) => void,
+  onDirty: () => void,
+) {
+  const draw = () => {
+    host.innerHTML = "";
+    const cur = get() ?? null;
+    const sel = el("select", "when-kind") as HTMLSelectElement;
+    const none = el("option") as HTMLOptionElement;
+    none.value = "";
+    none.textContent = "无条件（始终触发）";
+    sel.append(none);
+    for (const c of WHEN_CONDITION_TYPES) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = c.value;
+      opt.textContent = c.label;
+      sel.append(opt);
+    }
+    sel.value = cur?.kind ?? "";
+    sel.addEventListener("change", () => {
+      const next = sel.value ? newCondition(sel.value as Condition["kind"]) : null;
+      set(next);
+      onDirty();
+      draw();
+    });
+    host.append(sel);
+    if (cur) host.append(conditionFields(cur));
+  };
+  draw();
+}
+
 function actionFields(a: Action, rerender: () => void): HTMLElement {
   const body = el("div", "action-body");
   if (a.type === "text") {
@@ -3160,100 +3322,7 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     body.append(el("div", "unit-hint", "用系统默认浏览器打开该网页。"));
   } else if (a.type === "if") {
     const cond = a.condition;
-
-    if (
-      cond.kind === "exists" ||
-      cond.kind === "not_exists" ||
-      cond.kind === "is_file" ||
-      cond.kind === "is_dir"
-    ) {
-      body.append(pathField(cond.path, (v) => (cond.path = v), { file: true, dir: true }));
-    } else if (cond.kind === "modified_within") {
-      body.append(pathField(cond.path, (v) => (cond.path = v), { file: true, dir: true }));
-      const line = el("div", "action-line");
-      const mins = el("input", "action-input") as HTMLInputElement;
-      mins.type = "number";
-      mins.min = "0";
-      mins.value = String(cond.minutes);
-      mins.addEventListener("input", () => {
-        cond.minutes = intIn(mins.value, 0, 0);
-      });
-      line.append(el("span", "unit-hint", "修改时间在"), mins, el("span", "unit-hint", "分钟内为真"));
-      body.append(line);
-    } else if (cond.kind === "frontmost_app" || cond.kind === "not_frontmost_app") {
-      const line = el("div", "action-line");
-      const app = el("input", "action-input") as HTMLInputElement;
-      app.type = "text";
-      app.value = cond.app;
-      app.placeholder = "进程名，如 chrome.exe（含 * / ? 走通配，否则子串匹配）";
-      app.addEventListener("input", () => {
-        cond.app = app.value;
-      });
-      line.append(el("span", "unit-hint", "进程名"), app);
-      body.append(line);
-    } else if (cond.kind === "window_title_contains") {
-      const line = el("div", "action-line");
-      const text = el("input", "action-input") as HTMLInputElement;
-      text.type = "text";
-      text.value = cond.text;
-      text.placeholder = "窗口标题包含的文本（不区分大小写）";
-      text.addEventListener("input", () => {
-        cond.text = text.value;
-      });
-      line.append(el("span", "unit-hint", "包含文本"), text);
-      body.append(line);
-    } else if (cond.kind === "device_is") {
-      const line = el("div", "action-line");
-      const id = el("input", "action-input") as HTMLInputElement;
-      id.type = "text";
-      id.value = cond.id;
-      id.placeholder = "设备名，如 AT Translated Set 2 keyboard（含 * / ? 走通配，否则子串匹配）";
-      id.addEventListener("input", () => {
-        cond.id = id.value;
-      });
-      line.append(el("span", "unit-hint", "设备名"), id);
-      body.append(line);
-      body.append(
-        el(
-          "div",
-          "unit-hint",
-          "按触发键来自哪台键盘区分（仅 Linux 生效；Windows / macOS 取不到设备，恒走「否则」分支）。",
-        ),
-      );
-    } else {
-      const lineVar = el("div", "action-line");
-      const vname = el("input", "action-input") as HTMLInputElement;
-      vname.type = "text";
-      vname.value = cond.var;
-      vname.placeholder = "变量名，如 f";
-      vname.addEventListener("input", () => {
-        cond.var = vname.value.trim();
-      });
-      lineVar.append(el("span", "unit-hint", "变量名"), vname);
-      body.append(lineVar);
-
-      const lineField = el("div", "action-line");
-      const fname = el("input", "action-input") as HTMLInputElement;
-      fname.type = "text";
-      fname.value = cond.field;
-      fname.placeholder = "字段（空 = 完整路径），如 ext / size / is_dir";
-      fname.addEventListener("input", () => {
-        cond.field = fname.value.trim();
-      });
-      lineField.append(el("span", "unit-hint", "字段"), fname);
-      body.append(lineField);
-
-      const lineVal = el("div", "action-line");
-      const val = el("input", "action-input") as HTMLInputElement;
-      val.type = "text";
-      val.value = cond.value;
-      val.placeholder = "比较值，如 .txt";
-      val.addEventListener("input", () => {
-        cond.value = val.value;
-      });
-      lineVal.append(el("span", "unit-hint", "等于/不等于"), val);
-      body.append(lineVal);
-    }
+    body.append(conditionFields(cond));
 
     body.append(el("div", "branch-label then", "✓ 满足条件时执行"));
     const thenList = el("div", "action-branch branch-then");
