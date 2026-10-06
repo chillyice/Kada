@@ -2281,4 +2281,124 @@ mod tests {
         assert!(engine2.step(&down(Key::J), &cfg, &ctx, &mut inj2, &mut fire2).is_none());
         assert_eq!(fired2.log, vec!["F&J"]);
     }
+
+    // ---- 层内和弦：按住切层键后按成员键凑和弦 ----
+
+    /// 层 `sym` 里放一条和弦 `U&Y`，切层键为 `CapsLock`。
+    fn cfg_layer_chord(layer_field: &str) -> Config {
+        let mut remap = Remap { from: "CapsLock".into(), enabled: true, ..Default::default() };
+        if layer_field == "hold" {
+            remap.hold_layer = Some("sym".into());
+        } else {
+            remap.lock_layer = Some("sym".into());
+        }
+        Config {
+            layers: vec![kada_core::Layer { id: "sym".into(), name: "符号".into() }],
+            shortcuts: vec![kada_core::ShortcutItem {
+                triggers: vec!["U&Y".into()],
+                actions: vec![Action::Text {
+                    text: "x".into(),
+                    mode: TextMode::Input,
+                    description: None,
+                }],
+                enabled: true,
+                layer: Some("sym".into()),
+                ..Default::default()
+            }],
+            remaps: vec![remap],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn chord_in_momentary_layer_triggers() {
+        let cfg = cfg_layer_chord("hold");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // 按住切层键（待定）。
+        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        // 第一个成员键：应 roll 进入 momentary 层并被吞掉。
+        assert!(
+            step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none(),
+            "U 应被当成层内和弦成员吞掉，而不是放行"
+        );
+        assert_eq!(engine.active_layer(), Some("sym"), "按住切层键 + 按别的键应进入层");
+        // 第二个成员键：应凑齐触发。
+        assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["U&Y"], "层内和弦应触发");
+        assert!(inj.log.is_empty(), "命中不回放成员键");
+    }
+
+    #[test]
+    fn chord_in_locked_layer_triggers() {
+        let cfg = cfg_layer_chord("lock");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // 长按切层键（超过 tap 阈值）后松开 → 锁定进入层。
+        let mut cfg_slow = cfg.clone();
+        cfg_slow.remaps[0].tap_timeout_ms = 10; // 确保阈值短
+        assert!(step(&mut engine, &down(Key::CapsLock), &cfg_slow, &mut inj, &mut fired).is_none());
+        std::thread::sleep(Duration::from_millis(20));
+        step(&mut engine, &up(Key::CapsLock), &cfg_slow, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), Some("sym"), "长按锁定后层应生效");
+
+        // 腾出手来按和弦成员。
+        assert!(step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["U&Y"], "锁定层内和弦应触发");
+    }
+
+    /// 用户实配复现：`` ` `` 长按进层（`to` 为空 + `hold_layer`），层内 `U&Y`。
+    #[test]
+    fn user_config_layer_chord() {
+        const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
+        let cfg = Config {
+            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            shortcuts: vec![kada_core::ShortcutItem {
+                name: Some("输入密码".into()),
+                layer: Some(LID.into()),
+                triggers: vec!["Alt+Z".into(), "U&Y".into()],
+                actions: vec![Action::Text {
+                    text: "Y5jYS!uK".into(),
+                    mode: TextMode::Input,
+                    description: None,
+                }],
+                enabled: true,
+                ..Default::default()
+            }],
+            remaps: vec![Remap {
+                from: "`".into(),
+                to: String::new(),
+                hold_layer: Some(LID.into()),
+                tap_timeout_ms: 200,
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(cfg.remaps[0].needs_timing_state(), "hold_layer 必须走 tap-hold 状态机");
+        assert!(step(&mut engine, &down(Key::Backquote), &cfg, &mut inj, &mut fired).is_none());
+        assert!(
+            step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none(),
+            "U 应在层内被吞成和弦成员"
+        );
+        assert_eq!(engine.active_layer(), Some(LID));
+        assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(fired.log, vec!["U&Y"], "层内和弦应触发");
+        assert!(inj.log.is_empty(), "命中不回放成员键（不应漏出 u/y）");
+
+        // 抬起三个键：成员键的 keyup 被吞后不得回放，切层键抬起才退层。
+        step(&mut engine, &up(Key::U), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::Y), &cfg, &mut inj, &mut fired);
+        assert!(inj.log.is_empty(), "触发后抬起成员键不得回放出 u/y");
+        step(&mut engine, &up(Key::Backquote), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), None, "松开切层键退回基础层");
+        assert!(inj.log.is_empty(), "整个过程一个字符都不该漏出");
+        assert_eq!(fired.log, vec!["U&Y"]);
+    }
 }
