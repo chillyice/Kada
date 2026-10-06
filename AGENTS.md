@@ -67,7 +67,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 ## 钩子引擎（动手前必读的约束）
 
-- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)` 同一线程跑消息循环，处理函数直接跑在回调内（**回调里绝不能做耗时操作**，超时会被系统摘掉钩子、全部功能静默失效）。自动重复按「该键已按下且未抬起」判定（`HELD_KEYS`；**不用时间窗**）。`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键，**但所有 keyup（含被吞掉的）仍以观察者身份回调 handler**。注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持「按下-抬起」配对。鼠标钩子只翻译中键/侧键，且**按需安装**——配置引用鼠标键（触发/改键来源）才挂（`set_mouse_enabled` + 壳层 `config_uses_mouse`），新增鼠标键用途要同步该判定。
+- **Windows**（`kada-hook::win`）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)` 同一线程跑消息循环，处理函数直接跑在回调内（**回调里绝不能做耗时操作**，超时会被系统摘掉钩子、全部功能静默失效）。自动重复按「该键已按下且未抬起」判定（`HELD_KEYS`；**不用时间窗**）。`Block`/`Replace` 登记 `SWALLOWED`，后续 keyup 一并吞掉防幽灵按键，**但所有 keyup（含被吞掉的）仍以观察者身份回调 handler**。注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持「按下-抬起」配对；`Replace`/`Keys` 注入走**扫描码**（按前台布局换算，媒体/音量键保留 VK，见 `需求设计说明书.md` §4.1）。鼠标钩子只翻译中键/侧键，且**按需安装**——配置引用鼠标键（触发/改键来源）才挂（`set_mouse_enabled` + 壳层 `config_uses_mouse`），新增鼠标键用途要同步该判定。
 - **macOS**（`kada-hook::macos`，机制见 `架构设计.md` §3.19 / `需求设计说明书.md` §4.3）：`CGEventTap` 挂独立线程的 CFRunLoop，处理函数跑在回调内（**回调里绝不能做耗时操作**，同 Windows）。三条硬约束：① tap 位置必须会话级 `kCGSessionEventTap`（HID 位置普通用户拿 NULL，见 §4.3）；② 「辅助功能」权限是**运行时授权**（`hooks_supported()` = `AXIsProcessTrusted()`），未授权时 `start` 报授权指引 + 弹授权框；③ 注入识别两条判据取或（Private 事件源 ∪ 创建者 pid == 本进程）。自愈 = 系统停用回调当场重启用 + 1s 看门狗。
 - **输入层起不来的处置**：Windows 失败退出（异常）；macOS / Linux（权限没配好）**照常启动**，`start` 的错误串（带可照抄指引）经消息中心推给用户——退出应用用户就连设置页都进不去。
 - **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定（读配置、比时间、状态机）——同步建 WebView 会拖过系统约 300ms 的超时线，钩子被摘掉后全部功能静默失效（机制见 `docs/架构设计.md` §3.6）。判定与副作用分开写：判定用不持有 `AppHandle` 的纯函数。

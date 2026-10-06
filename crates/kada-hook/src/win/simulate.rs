@@ -10,6 +10,7 @@ use std::io;
 use std::time::Duration;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 use kada_core::{Key, MouseButton, MouseOp};
 
@@ -38,9 +39,104 @@ pub fn tap(k: Key) {
 
 fn send_one(k: Key, flags: KEYBD_EVENT_FLAGS) {
     let Some(vk) = key_to_vk(k) else { return };
-    let input = keyboard_input(vk, flags);
+    let input = match scan_for_key(k, vk) {
+        // 有扫描码就走扫描码注入（布局感知，见 [`scan_for_key`]）。
+        Some((scan, extended)) => scan_input(scan, extended, flags),
+        // 媒体键等取不到扫描码，退回虚拟键码注入（与旧行为一致）。
+        None => keyboard_input(vk, flags),
+    };
     unsafe {
         SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
+    }
+}
+
+/// 取按键在**目标（前台）布局**下的扫描码与扩展位，供扫描码注入。
+///
+/// 注入走扫描码而非虚拟键码（`KEYEVENTF_SCANCODE`）是「布局感知」：把 VK 直接交给
+/// `SendInput` 时扫描码由系统按某个线程的布局去猜；显式按**前台布局**换算成扫描码，
+/// 目标程序再按同一布局还原，注入的物理键与触发键一致。同一布局下 VK↔扫描码本是双射，
+/// 故这对单布局用户是等价改写（加固），跨布局的 `Key` 语义迁移另议（7.2-㉚）。
+///
+/// `MAPVK_VK_TO_VSC_EX` 返回值的低字节是扫描码，高字节对**部分**扩展键为 `0xE0`；方向键 /
+/// 编辑键簇它不给 `0xE0`，按 [`is_extended_key`] 补。返回 `0`（该 VK 在当前布局未分配，
+/// 如法语 `VK_OEM_MINUS`）或键属于 [`keeps_vk_injection`] 时，调用方退回虚拟键码注入。
+fn scan_for_key(k: Key, vk: u16) -> Option<(u16, bool)> {
+    // 主键区 Enter 与小键盘 Enter 共用 `VK_RETURN`，只有扫描码能区分（主键区 0x1C /
+    // 小键盘 E0 0x1C）。这是唯一能在注入侧修正这对同码键的地方。
+    if k == Key::NumpadEnter {
+        return Some((0x1C, true));
+    }
+    // 媒体 / 音量键保留虚拟键码注入（见 [`keeps_vk_injection`]）。
+    if keeps_vk_injection(k) {
+        return None;
+    }
+    let packed = unsafe { MapVirtualKeyExW(vk as u32, MAPVK_VK_TO_VSC_EX, Some(target_layout())) };
+    // 低字节 = 扫描码；扩展位 = API 给的高字节 `0xE0`，或对 API 漏标的键（方向/编辑）按
+    // [`is_extended_key`] 补。`packed == 0` = 该 VK 在此布局未分配 → 无扫描码，退回 VK。
+    (packed != 0).then(|| ((packed & 0xFF) as u16, packed & 0xFF00 != 0 || is_extended_key(k)))
+}
+
+/// 媒体 / 音量键：`MapVirtualKeyEx` 也能给出 ACPI 扫描码（如 `E0 22`），但这类键的
+/// **虚拟键码注入**才是已知可用路径，显式保留，不做扫描码换算（`Return None`）。
+fn keeps_vk_injection(k: Key) -> bool {
+    use Key::*;
+    matches!(
+        k,
+        MediaPlayPause | MediaPrev | MediaNext | VolumeMute | VolumeDown | VolumeUp
+    )
+}
+
+/// 扩展键（`E0` 前缀）判定。`MapVirtualKeyEx(MAPVK_VK_TO_VSC_EX)` 只对部分扩展键
+/// （小键盘除号、Win 键等）返回 `0xE0`，方向键 / 编辑键簇它**返回的是不带 `E0` 的基准
+/// 扫描码**——漏掉扩展位会把「方向键」注入成「小键盘数字」（NumLock 开时打出数字）。
+fn is_extended_key(k: Key) -> bool {
+    use Key::*;
+    matches!(
+        k,
+        Insert | Delete | Home | End | PageUp | PageDown
+            | ArrowUp | ArrowDown | ArrowLeft | ArrowRight
+            | NumpadDivide | NumpadEnter | Meta
+    )
+}
+
+/// 前台窗口的键盘布局（注入目标所用的布局）。取不到时退回本线程布局。
+///
+/// 键盘布局是**按线程**的：钩子线程、动作线程各自创建时的布局可能过期，唯独前台窗口
+/// 的线程布局就是用户此刻在用的那个。
+fn target_layout() -> HKL {
+    // 一级：前台窗口所属线程的布局（= 用户此刻在用的那个）。
+    let fg = unsafe { GetForegroundWindow() };
+    if !fg.0.is_null() {
+        let tid = unsafe { GetWindowThreadProcessId(fg, None) };
+        if tid != 0 {
+            let hkl = unsafe { GetKeyboardLayout(tid) };
+            if !hkl.0.is_null() {
+                return hkl;
+            }
+        }
+    }
+    // 二级：本线程布局（无前台窗口 / 查询失败时的兜底）。
+    unsafe { GetKeyboardLayout(0) }
+}
+
+/// 一个扫描码键盘事件（`KEYEVENTF_SCANCODE`）：`wVk=0`、`wScan=扫描码`，扩展键另带
+/// `KEYEVENTF_EXTENDEDKEY`。目标程序按自身（前台）布局把扫描码还原成虚拟键码 / 字符。
+fn scan_input(scan: u16, extended: bool, flags: KEYBD_EVENT_FLAGS) -> INPUT {
+    let mut flags = flags | KEYEVENTF_SCANCODE;
+    if extended {
+        flags |= KEYEVENTF_EXTENDEDKEY;
+    }
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0), // 扫描码通道下 wVk 被忽略，置 0
+                wScan: scan,
+                time: 0,
+                dwExtraInfo: 0,
+                dwFlags: flags,
+            },
+        },
     }
 }
 
@@ -303,6 +399,66 @@ mod tests {
 
         // 空文本不产生事件（type_text_unicode 据此直接成功返回）。
         assert!(unicode_key_events("").is_empty());
+    }
+
+    /// 扫描码注入（7.2-㉚）：`wVk=0`、`wScan=扫描码`、恒带 `KEYEVENTF_SCANCODE`；
+    /// 扩展键另带 `KEYEVENTF_EXTENDEDKEY`，抬起位原样保留。
+    #[test]
+    fn scan_injection_uses_scan_code() {
+        let e = scan_input(0x1C, false, KEYBD_EVENT_FLAGS(0));
+        let (vk, scan, flags) = key_of(&e);
+        assert_eq!((vk, scan), (0, 0x1C));
+        assert_ne!(flags.0 & KEYEVENTF_SCANCODE.0, 0, "走扫描码通道");
+        assert_eq!(flags.0 & KEYEVENTF_EXTENDEDKEY.0, 0, "非扩展键不带扩展位");
+
+        let e = scan_input(0x48, true, KEYEVENTF_KEYUP);
+        let (vk, scan, flags) = key_of(&e);
+        assert_eq!((vk, scan), (0, 0x48));
+        assert_ne!(flags.0 & KEYEVENTF_SCANCODE.0, 0);
+        assert_ne!(flags.0 & KEYEVENTF_EXTENDEDKEY.0, 0, "扩展键带扩展位");
+        assert_ne!(flags.0 & KEYEVENTF_KEYUP.0, 0, "抬起位保留");
+    }
+
+    /// 主键区 / 小键盘 Enter 共用 `VK_RETURN`，只有扫描码能区分——注入侧据此修正。
+    #[test]
+    fn numpad_enter_keeps_extended_scan() {
+        assert_eq!(scan_for_key(Key::NumpadEnter, 0x0D), Some((0x1C, true)));
+    }
+
+    /// 媒体 / 音量键保留虚拟键码注入（`scan_for_key` 直接返回 `None`）。
+    #[test]
+    fn media_keys_keep_vk_injection() {
+        assert_eq!(scan_for_key(Key::MediaPlayPause, 0xB3), None);
+        assert!(keeps_vk_injection(Key::VolumeUp));
+        assert!(!keeps_vk_injection(Key::A));
+    }
+
+    /// 扩展键判定：方向键 / 编辑键簇 / 小键盘除号 / Win 键走扩展位，普通键不走。
+    /// （`MAPVK_VK_TO_VSC_EX` 不给方向键 `E0`，靠这里补，否则注入成小键盘数字。）
+    #[test]
+    fn extended_key_set_matches_scan_quirks() {
+        for k in
+            [Key::ArrowUp, Key::Insert, Key::Home, Key::PageDown, Key::NumpadDivide, Key::Meta]
+        {
+            assert!(is_extended_key(k), "{k:?} 应判为扩展键");
+        }
+        for k in [Key::A, Key::Digit0, Key::Semicolon, Key::Enter, Key::Numpad0, Key::Shift] {
+            assert!(!is_extended_key(k), "{k:?} 不应判为扩展键");
+        }
+    }
+
+    /// 诊断用：打印本机若干键在前台布局下的 VK→扫描码换算（真机验证非 US 布局）。
+    /// 跑法：`cargo test -p kada-hook --lib probe_scan_codes -- --ignored --nocapture`。
+    #[test]
+    #[ignore = "诊断用：需在目标键盘布局下人工跑，观察扫描码换算"]
+    fn probe_scan_codes() {
+        for k in [
+            Key::Semicolon, Key::Slash, Key::Minus, Key::A, Key::Q,
+            Key::NumpadEnter, Key::NumpadDivide, Key::ArrowUp, Key::MediaPlayPause,
+        ] {
+            let scan = key_to_vk(k).and_then(|vk| scan_for_key(k, vk));
+            println!("{k:?} -> vk={:?} scan={scan:?}", key_to_vk(k));
+        }
     }
 
     /// 鼠标事件构造（7.1-㊱）：移动带 `MOUSEEVENTF_MOVE` + 相对位移；滚轮 `mouseData`
