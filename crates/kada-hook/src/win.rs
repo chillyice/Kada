@@ -13,8 +13,9 @@
 //!   **所有** keyup（含被吞掉的）都以观察者身份回调 handler，返回值被忽略——
 //!   状态机（和弦按住集合 / tap-hold 短长按判定）依赖抬起事件，漏掉就会卡死。
 //! - 注入事件带 `LLKHF_INJECTED`，一律放行，杜绝自我回环。
-//! - `Replace` 注入走 `SendInput`，键码为虚拟键码（US 布局语义，差异见
-//!   各键盘布局 OEM 键）；span nil。
+//! - `Replace` / `Keys` 注入走 `SendInput` 的**扫描码**（`KEYEVENTF_SCANCODE`，
+//!   按前台布局把虚拟键码换算成扫描码，见 [`simulate`]），非 US 布局下不错位；
+//!   媒体 / 音量键保留虚拟键码注入。
 //! - 自愈看门狗（[`watchdog_loop`]）：低层钩子会**静默失效**——回调超过
 //!   `LowLevelHooksTimeout`（默认 300ms）被系统摘除、休眠唤醒后、会话解锁后
 //!   都可能再也收不到事件，而托盘看着还活着（用户看到的是「快捷键全不响应」）。
@@ -648,8 +649,10 @@ fn note_key_up(key: Key) {
     HELD_KEYS.lock().unwrap().remove(&key);
 }
 
-/// 虚拟键码 ↔ [`Key`]。映射使用 US 布局语义，OEM 标点键的实际位置因
-/// 键盘布局而异（中文键盘 Shift 后字符不同，但键码相同）。
+/// 虚拟键码 ↔ [`Key`]。映射用 US 布局的 `VK_OEM_*` 槽位语义；非 US 布局下某个 OEM
+/// 槽位可能未分配（如法语 `VK_OEM_MINUS`），故**注入不再直接用这里的 VK**，而是按前台
+/// 布局换算成扫描码（见 `simulate::scan_for_key`）；这里只作触发侧映射、注入回退与
+/// 热键占用试探用。
 /// 鼠标键（中键/侧键）不是虚拟键码，返回 `None`——注入走 `simulate` 的鼠标事件。
 pub fn key_to_vk(k: Key) -> Option<u16> {
     use Key::*;
