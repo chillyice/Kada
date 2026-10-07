@@ -127,7 +127,17 @@ type StatusPayload = {
  * （逻辑像素），拖动时拿它当差量基准——配置里存的那份可能比窗口实际位置旧。
  */
 type HintsState = { visible: boolean; scale: number; opacity: number; x: number; y: number };
-type Conflict = { severity: "error" | "warn"; message: string; name: string };
+// `platform: true` = 平台能力缺失（配置合法、当前平台支持不了，见后端 `Conflict::platform`）。
+type Conflict = { severity: "error" | "warn"; message: string; name: string; platform?: boolean };
+
+/** 冲突三组：硬冲突（需处理）/ 软冲突（遮蔽·重叠）/ 平台能力缺失（仅提示，不阻止保存）。 */
+function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict[]; caps: Conflict[] } {
+  return {
+    errors: list.filter((c) => c.severity === "error"),
+    warns: list.filter((c) => c.severity === "warn" && !c.platform),
+    caps: list.filter((c) => c.platform),
+  };
+}
 type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
 type CommandResult = {
   kind: string;
@@ -739,8 +749,7 @@ async function save(): Promise<boolean> {
     return false;
   }
   await refreshConflicts();
-  const errs = conflicts.filter((c) => c.severity === "error").length;
-  const warns = conflicts.filter((c) => c.severity === "warn").length;
+  const { errors: errs, warns, caps } = splitConflicts(conflicts);
   const notes: string[] = [];
   if (ignored.length) {
     // 只报数量的话，被丢掉的条目（比如「长按进入层」指向的层已不存在，整条改键作废）用户
@@ -752,7 +761,12 @@ async function save(): Promise<boolean> {
         : `已忽略 ${ignored.length} 处无效配置（例：${first}）`,
     );
   }
-  if (errs || warns) notes.push(`${errs} 处冲突${warns ? `、${warns} 处遮蔽提示` : ""}`);
+  if (errs.length || warns.length || caps.length)
+    notes.push(
+      `${errs.length} 处冲突${warns.length ? `、${warns.length} 处遮蔽提示` : ""}${
+        caps.length ? `、${caps.length} 条当前平台用不了` : ""
+      }`,
+    );
   if (notes.length) toast(`已保存：${notes.join("；")}`);
   else toast("已保存");
   render();
@@ -3471,11 +3485,17 @@ function renderConflictBubble() {
   const show = section === "shortcuts" && conflicts.length > 0 && !conflictBubbleDismissed;
   box.classList.toggle("hidden", !show);
   if (!show) return;
-  const errs = conflicts.filter((c) => c.severity === "error").length;
+  const { errors, warns, caps } = splitConflicts(conflicts);
+  const bits: string[] = [];
+  if (errors.length || warns.length)
+    bits.push(
+      `${errors.length + warns.length} 处冲突${errors.length ? `（${errors.length} 处需处理）` : ""}`,
+    );
+  if (caps.length) bits.push(`${caps.length} 条当前平台用不了`);
   const bubble = el("div", "conflict-bubble");
   bubble.addEventListener("click", openConflictView);
   bubble.append(
-    el("span", "conflict-bubble-text", `⚠ ${conflicts.length} 处冲突${errs ? `（${errs} 处需处理）` : ""}`),
+    el("span", "conflict-bubble-text", `⚠ ${bits.join(" · ")}`),
     el("span", "conflict-bubble-hint", "点击查看"),
   );
   const close = el("button", "conflict-bubble-close", "×") as HTMLButtonElement;
@@ -3498,11 +3518,21 @@ function renderConflictList() {
     return;
   }
   box.append(el("div", "conflict-head", `⚠ 冲突提醒（${conflicts.length} 处）`));
-  for (const c of conflicts) {
-    const d = el("div", "conflict " + (c.severity === "error" ? "error" : "warn"));
-    if (c.name) d.append(el("div", "conflict-name", c.name));
-    d.append(el("div", "conflict-msg", c.message));
-    box.append(d);
+  const { errors, warns, caps } = splitConflicts(conflicts);
+  const groups: [string, Conflict[], string][] = [
+    ["需处理", errors, "error"],
+    ["软冲突（遮蔽 / 重叠）", warns, "warn"],
+    ["平台能力缺失（配置合法，当前平台支持不了）", caps, "platform"],
+  ];
+  for (const [title, items, kind] of groups) {
+    if (!items.length) continue;
+    box.append(el("div", "conflict-group", `${title}（${items.length}）`));
+    for (const c of items) {
+      const d = el("div", "conflict " + kind);
+      if (c.name) d.append(el("div", "conflict-name", c.name));
+      d.append(el("div", "conflict-msg", c.message));
+      box.append(d);
+    }
   }
 }
 

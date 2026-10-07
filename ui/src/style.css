@@ -1419,6 +1419,21 @@ button:disabled:hover {
   background: rgba(224, 176, 96, 0.08);
 }
 
+/* 平台能力缺失：配置本身合法、只是当前系统给不了——用蓝与「需处理」红 /「遮蔽」黄分开。 */
+.conflict.platform {
+  color: #6fa8ff;
+  border-color: rgba(111, 168, 255, 0.4);
+  background: rgba(111, 168, 255, 0.08);
+}
+
+/* 分组标题（需处理 / 软冲突 / 平台能力缺失），分组为空时整组不渲染。 */
+.conflict-group {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  margin-top: 4px;
+}
+
 /* 冲突条目里的「是哪个快捷键」标题行（有名称为空则不显示）。 */
 .conflict-name {
   font-weight: 600;

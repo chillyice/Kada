@@ -2610,6 +2610,7 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
                     if sys == sc {
                         out.push(Conflict {
                             severity: Severity::Warn,
+                            platform: false,
                             message: format!("「{t}」与系统快捷键 {combo}（{desc}）冲突"),
                             name: s.name.clone().unwrap_or_default(),
                         });
@@ -2634,6 +2635,7 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
                 if input::hotkey_occupied(&sc) {
                     out.push(Conflict {
                         severity: Severity::Warn,
+                        platform: false,
                         message: format!("「{t}」已被系统或其他应用占用"),
                         name: s.name.clone().unwrap_or_default(),
                     });

@@ -10,7 +10,7 @@
 ## 项目概述
 
 - **咔哒 Kada**：轻快跨平台快捷键 / 改键 / 宏工具，托盘常驻（关窗不退出），配置 JSON 落盘、可跨平台同步。
-- **技术栈**：Rust workspace（`kada-core` 纯逻辑 + `kada-hook` 平台钩子 + `kada-actions` 动作引擎）+ Tauri 2 桌面壳（crate `kada`）+ Vite/TypeScript UI（`kada-ui`）。纯本地，无数据库 / 后端服务。配置落盘在 Tauri `app_data_dir()/config.json`（`%APPDATA%\com.kada\`，不在仓库内）。
+- **技术栈**：Rust workspace（`kada-core` 纯逻辑 + `kada-hook` 平台钩子 + `kada-actions` 动作引擎）+ Tauri 2 桌面壳（crate `kada`）+ Vite/TypeScript UI（`kada-ui`）。配置落盘在 Tauri `app_data_dir()/config.json`（`%APPDATA%\com.kada\`，不在仓库内）。
 
 ## 命名约定（务必遵守）
 
@@ -55,7 +55,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 > 模型逐字段定义见 `docs/需求设计说明书.md` §2（键模型）/ §3（配置模型）/ §4（钩子）/ §5（壳层）；下面只列**动手时必须遵守的约束**。
 
-- **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`。`Key` 覆盖字母/数字/F1-F24/标点/功能键/方向键/媒体键/NumPad/NumLock/鼠标键（中键·侧键）。触发键 `Trigger` = 单组合 `"Ctrl+K"` / 按键序列 `"F9 J K"` / 和弦 `"F&J"`（`&` 分隔，成员可带修饰）。`Action` = Text / Command / Keys / PauseMs / Mouse / Os / App / OpenUrl / If / Parallel / Script。`Condition` = 路径 / 变量 / 时间 / 前台应用·窗口标题 / 设备（`DeviceIs`，设备名子串·通配）。`Remap` = 普通 `to` / tap-hold（`tap`+`hold`）/ 切层键（`hold_layer` 长按进入、`lock_layer` 长按锁定，**互斥、同设保留 lock**）/ 进阶修饰（`oneshot`/`sticky`/`tap2`/`tap3`，形态互斥，优先级 `sticky > oneshot > tap-hold > 普通 to`，单次/粘滞值域任意键）。`ShortcutItem`/`Remap` 均可带触发侧条件门控 `when`——不成立等价于「该条不存在」（落到下一条同触发键条目、不吞键），判重指纹含 `when`（同触发键不同条件不算重复）。
+- **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`；`Key` / `Trigger` / `Action` / `Condition` 的值域与逐字段定义见 `docs/需求设计说明书.md` §2 / §3，这里只留易踩的约束。`Remap` = 普通 `to` / tap-hold（`tap`+`hold`）/ 切层键（`hold_layer` 长按进入、`lock_layer` 长按锁定，**互斥、同设保留 lock**）/ 进阶修饰（`oneshot`/`sticky`/`tap2`/`tap3`，形态互斥，优先级 `sticky > oneshot > tap-hold > 普通 to`，单次/粘滞值域任意键）。`ShortcutItem`/`Remap` 均可带触发侧条件门控 `when`——不成立等价于「该条不存在」（落到下一条同触发键条目、不吞键），判重指纹含 `when`（同触发键不同条件不算重复）。
 - **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。否则配了 `F&J` / `F9 J K` / 只设「长按进入层」的切层键，这些键就彻底变哑。机制见 `docs/架构设计.md` §3.1。
 - **配置落盘铁律**（`src-tauri/src/config_io.rs`）：保存走「唯一临时文件 → `fsync` → `rename` 覆盖」原子替换（留 `config.json.bak` 上次良好副本），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——留档、能从 `.bak` 恢复就恢复并回写主文件，都失败才空配置启动 + 告警。加载只 `migrate()` **不** `sanitize_config()`（清洗只在保存/导入路径）。**导入必须选方式**（`import_config(path, mode)`）：`merge` 只增不删、不制造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档。**删除已保存条目要先确认**（`ui/` `confirmDelete`），未落盘新增项可不问。**外部修改监听**（`config_watch.rs`）：**能解析才采纳、解析不动就别碰磁盘**（自愈只属启动 `load`，监听走只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收 `config-changed` 有未保存草稿必须问用户。**应用内写盘广播 `config-updated`**（`set_config` / 导入 / `save_settings_patch`）与 `config-changed`（外部改动）语义分离，不可混用。
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
@@ -71,19 +71,19 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **macOS**（`kada-hook::macos`，机制见 `架构设计.md` §3.19 / `需求设计说明书.md` §4.3）：`CGEventTap` 挂独立线程的 CFRunLoop，处理函数跑在回调内（**回调里绝不能做耗时操作**，同 Windows）。三条硬约束：① tap 位置必须会话级 `kCGSessionEventTap`（HID 位置普通用户拿 NULL，见 §4.3）；② 「辅助功能」权限是**运行时授权**（`hooks_supported()` = `AXIsProcessTrusted()`），未授权时 `start` 报授权指引 + 弹授权框；③ 注入识别两条判据取或（Private 事件源 ∪ 创建者 pid == 本进程）。自愈 = 系统停用回调当场重启用 + 1s 看门狗。
 - **输入层起不来的处置**：Windows 失败退出（异常）；macOS / Linux（权限没配好）**照常启动**，`start` 的错误串（带可照抄指引）经消息中心推给用户——退出应用用户就连设置页都进不去。
 - **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定（读配置、比时间、状态机）——同步建 WebView 会拖过系统约 300ms 的超时线，钩子被摘掉后全部功能静默失效（机制见 `docs/架构设计.md` §3.6）。判定与副作用分开写：判定用不持有 `AppHandle` 的纯函数。
-- **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**：`focused(false)` 只保证**首次** show 不抢焦点，而这些窗会反复 show；一旦能被激活就成了 `GetForegroundWindow`——前台条件全读错，`ResetWatch` 还会误判「前台切换」→ 复位输入状态、踢掉按住的 momentary 层。**`hints`（快捷键提示框，7.1-㊳）是唯一可交互浮窗——不能 `set_ignore_cursor_events`**（拖动/滚轮/× 靠鼠标事件，`WS_EX_NOACTIVATE` 只挡激活不挡鼠标消息），且 `zoom_hotkeys_enabled(false)` 防 Ctrl+wheel 被当成浏览器缩放；**一律 `shadow(false)`**（投影交 CSS，原因见 `变更归档.md` V0.39 条）。
+- **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**：`focused(false)` 只保证**首次** show 不抢焦点，而这些窗会反复 show；一旦能被激活就成了 `GetForegroundWindow`——前台条件全读错，`ResetWatch` 还会误判「前台切换」→ 复位输入状态、踢掉按住的 momentary 层。**`hints`（快捷键提示框，7.1-㊳）是唯一可交互浮窗——不能 `set_ignore_cursor_events`**（靠鼠标事件，`WS_EX_NOACTIVATE` 只挡激活不挡鼠标消息），且 `zoom_hotkeys_enabled(false)` 防 Ctrl+wheel 被当成浏览器缩放；**一律 `shadow(false)`**（投影交 CSS，原因见 `变更归档.md` V0.39 条）。
 - **Linux**（`kada-hook::linux`，细节见 §4.2）：evdev + uinput，`EVIOCGRAB` 抓键盘与**真鼠标**（触摸板/指点杆**不抓**），`/dev/uinput` 建键鼠合一虚拟设备（X11 / Wayland 通用）；鼠标键 `BTN_*`↔中键/侧键与键盘同走状态机，移动/滚轮原样转发。权限 = `input` 组 + udev 放行 uinput（起不来错误分诊见 §4.2）。**设备拔出就地复位三张表**并递增 `reinstall_count()`（壳层 `ResetWatch` 轮询接通）；热插拔仍无（重启应用）。修饰键按事件流维护（`MODS_DOWN`）、自动重复 `value==2`。**改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`（evdev 纯 Rust，本机可交叉类型检查）。
-- **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V` / macOS 的 ⌘V（中文最稳）；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放——否则仍按住的触发修饰键会把注入污染成 `Ctrl+Alt+V`（Linux 同接口空实现；macOS 投递到 HID 位置不需要 root，与「建 tap」的要求相反）。
-- **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、走 `Inject` trait 假注入可单测，`lib.rs` 只剩接线）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`：序列超时回放、和弦窗超时回放、连击窗提交，事件路径另有懒判定兜底；`tick` 传 `cfg`——**配置读锁必须先于 `Engine` 锁**，同序否则死锁）。热串命中后吞掉后缀键，由**后台线程**回删 + 注入 + 补回后缀。输入状态指示也由这条线程每拍比快照推送。
+- **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V` / macOS 的 ⌘V（中文最稳）；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放——否则仍按住的触发修饰键会把注入污染成 `Ctrl+Alt+V`（Linux 空实现；macOS 投递到 HID 位置不需要 root）。
+- **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、走 `Inject` trait 假注入可单测，`lib.rs` 只剩接线）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick` 落地超时回放，事件路径另有懒判定兜底；`tick` 传 `cfg`——**配置读锁必须先于 `Engine` 锁**，同序否则死锁）。热串命中后吞掉后缀键，由**后台线程**回删 + 注入 + 补回后缀。输入状态指示也由这条线程每拍比快照推送。
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
-- **自愈看门狗**（`win.rs` 与 `macos.rs` 各一套，机制见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**（回调超时被摘除 / 休眠唤醒 / 解锁后收不到事件，托盘看着还活着）。`start` 另起 1s 巡检线程 + 指数退避；Windows 命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 按键被处理两遍），并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`（已注入目标键补 up）；解锁判据 `WTSInfoEx.SessionFlags` **反直觉：0=锁定、1=未锁定**。
+- **自愈看门狗**（`win.rs` 与 `macos.rs` 各一套，机制见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**（回调超时被摘 / 休眠唤醒 / 解锁，见 §3.15）。`start` 另起 1s 巡检线程 + 指数退避；Windows 命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 按键被处理两遍），并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`（已注入目标键补 up）；解锁判据 `WTSInfoEx.SessionFlags` **反直觉：0=锁定、1=未锁定**。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。通道在状态机定时器线程：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置走 `cfg_stale` 旗标。
 - **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 恒 `None`（Wayland），前台条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。带 `when` 的条目判定用 `TriggerContext`——前台**惰性查询**（只在该条真被判定时才查，别让每次按键买单）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
 - **已知天花板（升级路径）**：逐条清单与升级项编号见 `docs/需求设计说明书.md` §4.5 与 §7.2（低层钩子拦不住 UAC 提权进程 / Linux 热插拔 / macOS 安全输入等）；触摸板 / 指点杆的中键·侧键不能作触发键是物理限制（不进 §7.2）。
 
 ## 软件更新（Windows 已落地）
 
-- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**——发版 CLI 必须把版本号写进签名 `trusted comment`（本地 2.11.4 / CI `tauri-action@v0` 都写），否则客户端以 `MissingSignedVersion` 拒装。
+- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**——发版 CLI 必须把版本号写进签名 `trusted comment`，否则客户端以 `MissingSignedVersion` 拒装。
 - **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
 
 ## 构建与验证命令
@@ -98,7 +98,7 @@ cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS �
 ```
 
 - **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。发版要签名（发版走 CI）：`$env:TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key"; npx tauri build --bundles nsis`（缺签名客户端拒装）。
-- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 能真编 `macos.rs`，`-p kada` 必失败（`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
+- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 
 ## 里程碑与规划
 
