@@ -1768,6 +1768,11 @@ pub struct Conflict {
     /// 涉及的主要快捷键名称（无名称为空字符串），供 UI「消息→冲突」页标识是哪个快捷键。
     #[serde(default)]
     pub name: String,
+    /// 「平台能力缺失」类（`detect_conflicts` 第 6 段）：配置本身合法、只是当前平台
+    /// 支持不了，仍是 [`Severity::Warn`] 不阻止保存；UI 据此单独分组展示，不与遮蔽
+    /// 类软冲突混在一起。
+    #[serde(default)]
+    pub platform: bool,
 }
 
 /// 平台输入能力声明（冲突检测据此标注「当前平台用不了」的条目，见规划 7.3-⑲）。
@@ -1891,6 +1896,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     if let Some(first) = seen_combo.get(&k) {
                         out.push(Conflict {
                             severity: Severity::Error,
+                            platform: false,
                             message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
                             name: s.name.clone().unwrap_or_default(),
                         });
@@ -1902,6 +1908,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     if seen_seq.insert((s.layer.clone(), t.clone(), s.when_key()), ()).is_some() {
                         out.push(Conflict {
                             severity: Severity::Error,
+                            platform: false,
                             message: format!("触发序列「{t}」重复，多个快捷键共用同一序列"),
                             name: s.name.clone().unwrap_or_default(),
                         });
@@ -1912,6 +1919,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     if let Some(first) = seen_chord.get(&k) {
                         out.push(Conflict {
                             severity: Severity::Error,
+                            platform: false,
                             message: format!("和弦「{t}」与「{first}」重复，多个快捷键共用同一和弦"),
                             name: s.name.clone().unwrap_or_default(),
                         });
@@ -1962,6 +1970,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                         if csc == leader {
                             out.push(Conflict {
                                 severity: Severity::Error,
+                                platform: false,
                                 message: format!(
                                     "序列「{t}」的 leader「{0}」会吞掉该键，使组合键「{ct}」失效",
                                     format_shortcut(leader)
@@ -1989,6 +1998,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                             if csc.key == m.key {
                                 out.push(Conflict {
                                     severity: Severity::Error,
+                                    platform: false,
                                     message: format!(
                                         "和弦「{t}」的成员「{0}」会吞掉该键，使组合键「{ct}」失效",
                                         key_name(m.key)
@@ -2003,6 +2013,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                             if leader.key == m.key {
                                 out.push(Conflict {
                                     severity: Severity::Error,
+                                    platform: false,
                                     message: format!(
                                         "和弦「{t}」的成员「{0}」会吞掉该键，使序列「{st}」的 leader 失效",
                                         key_name(m.key)
@@ -2031,6 +2042,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 if chord_covers(ai, aj) {
                     out.push(Conflict {
                         severity: Severity::Warn,
+                        platform: false,
                         message: format!(
                             "和弦「{tj}」永远触发不到：「{ti}」的要求更宽（成员更少或修饰要求更宽），凑齐时会先轮到它"
                         ),
@@ -2040,6 +2052,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     // 靠后的那条成员严格更少 → 必然先凑齐，与书写顺序无关。
                     out.push(Conflict {
                         severity: Severity::Warn,
+                        platform: false,
                         message: format!(
                             "和弦「{ti}」永远触发不到：「{tj}」的成员是它的子集，必然先凑齐并触发"
                         ),
@@ -2061,6 +2074,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             if let Some(first) = remap_from.get(&k) {
                 out.push(Conflict {
                     severity: Severity::Error,
+                    platform: false,
                     message: format!("改键来源「{first}」重复，多条改键都从「{first}」改起"),
                     name: String::new(),
                 });
@@ -2086,6 +2100,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     if sc.key == from {
                         out.push(Conflict {
                             severity: Severity::Error,
+                            platform: false,
                             message: format!(
                                 "改键「{} → {desc}」会拦截按键「{}」，使快捷键「{t}」失效",
                                 r.from,
@@ -2124,6 +2139,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             // mi ⊂ mj：更宽松的 ti 会遮蔽更具体的 tj
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: false,
                 message: format!("「{tj}」被「{ti}」遮蔽：按下 {tj} 时会先命中更宽松的「{ti}」"),
                 name: String::new(),
             });
@@ -2150,6 +2166,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if !reachable {
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: false,
                 message: format!(
                     "层「{}」没有切层键：层内的快捷键/改键永远不会生效（在「改键」里设一条「长按进入层」或「长按锁定层」指向它；层内放和弦/序列建议用「长按锁定层」）",
                     l.name
@@ -2203,6 +2220,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             if !bad.is_empty() {
                 out.push(Conflict {
                     severity: Severity::Warn,
+                    platform: true,
                     message: format!(
                         "触发键「{t}」要用到{}，当前平台监听不到这个键，这条触发不会生效",
                         key_list(&bad)
@@ -2241,6 +2259,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if !bad_inject.is_empty() {
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: true,
                 message: format!(
                     "动作要用到{}，当前平台注入不了这个键，执行到这一步会没有输出",
                     key_list(&bad_inject)
@@ -2251,6 +2270,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if bad_frontmost {
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: true,
                 message: "「前台应用 / 窗口标题」条件（动作或触发门控）在当前平台取不到前台窗口，恒不成立".into(),
                 name: name_of(s),
             });
@@ -2258,6 +2278,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if bad_device {
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: true,
                 message: "「设备是」条件（动作或触发门控）在当前平台取不到设备，恒不成立".into(),
                 name: name_of(s),
             });
@@ -2272,6 +2293,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             if caps.listen_unsupported.contains(&k) {
                 out.push(Conflict {
                     severity: Severity::Warn,
+                    platform: true,
                     message: format!(
                         "改键来源「{}」当前平台监听不到，这条改键不会生效",
                         r.from
@@ -2301,6 +2323,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if !bad.is_empty() {
             out.push(Conflict {
                 severity: Severity::Warn,
+                platform: true,
                 message: format!(
                     "改键「{} → {}」的目标键当前平台注入不了，触发后没有输出",
                     r.from,
@@ -2321,6 +2344,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             {
                 out.push(Conflict {
                     severity: Severity::Warn,
+                    platform: true,
                     message: format!("改键「{}」的触发门控用了「前台应用 / 窗口标题」条件，当前平台取不到前台窗口，恒不成立", r.from),
                     name: String::new(),
                 });
@@ -2328,6 +2352,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             if matches!(c, Condition::DeviceIs { .. }) && !caps.device_conditions {
                 out.push(Conflict {
                     severity: Severity::Warn,
+                    platform: true,
                     message: format!("改键「{}」的触发门控用了「设备是」条件，当前平台取不到设备，恒不成立", r.from),
                     name: String::new(),
                 });
@@ -5137,6 +5162,35 @@ mod platform_caps_tests {
             ..Default::default()
         };
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    /// `platform` 分组标记：平台能力缺失为 true、规则类冲突（重复触发键）为 false。
+    #[test]
+    fn platform_flag_separates_caps_gap_from_rule_conflicts() {
+        let cfg = Config {
+            shortcuts: vec![
+                shortcut(
+                    "a",
+                    "Ctrl+K",
+                    vec![Action::If {
+                        condition: Condition::FrontmostApp { app: "x".into() },
+                        then: vec![],
+                        otherwise: vec![],
+                        description: None,
+                    }],
+                ),
+                shortcut("b", "Ctrl+K", vec![]),
+            ],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &linux_caps());
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        let caps: Vec<&Conflict> = hits.iter().filter(|c| c.platform).collect();
+        let rule: Vec<&Conflict> = hits.iter().filter(|c| !c.platform).collect();
+        assert_eq!(caps.len(), 1, "平台能力缺失应恰好 1 条：{hits:?}");
+        assert!(caps[0].message.contains("前台"));
+        assert_eq!(rule.len(), 1, "规则类冲突应恰好 1 条：{hits:?}");
+        assert_eq!(rule[0].severity, Severity::Error, "{rule:?}");
     }
 
     #[test]
