@@ -1478,6 +1478,7 @@ mod tests {
             replace: "我的地址".into(),
             folder: None,
             enabled: true,
+            ..Default::default()
         }]
     }
 

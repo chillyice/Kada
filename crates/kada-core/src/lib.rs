@@ -1292,6 +1292,12 @@ impl ShortcutItem {
 /// - **粘滞键**：`sticky` 非空时，单击 `from` 锁定该键、再次单击解锁。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Remap {
+    /// 条目标题（编辑页标题行编辑；空 = 列表标题退回形态摘要，原键单列一格）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 简短描述（详情页「详情」页签）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub from: String,
     /// 普通改键目标（其余形态字段留空时使用）。
     pub to: String,
@@ -1509,6 +1515,12 @@ impl Remap {
 /// 一条文本扩展（hotstring）：输入触发词 + 后缀（空格/回车/Tab）自动展开为替换文本。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct TextExpansion {
+    /// 条目标题（编辑页标题行编辑；空 = 列表标题退回替换文本，触发词单列一格）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 简短描述（详情页「详情」页签）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// 触发词（如 `:addr`、`;sig`），不含触发后缀。
     pub trigger: String,
     /// 展开文本（支持 `{date}` / `{time}` / `{clipboard}` 动态片段占位符）。
