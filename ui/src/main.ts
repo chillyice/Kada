@@ -66,6 +66,8 @@ type ShortcutItem = {
 type Remap = {
   from: string;
   to: string;
+  /** 所属目录 id（根级留空）：只影响列表分组，不参与触发判定。 */
+  folder?: string | null;
   tap: string | null;
   hold: string | null;
   layer: string | null;
@@ -80,7 +82,7 @@ type Remap = {
   when?: Condition | null;
   enabled: boolean;
 };
-type TextExpansion = { trigger: string; replace: string; enabled: boolean };
+type TextExpansion = { trigger: string; replace: string; folder?: string | null; enabled: boolean };
 type Settings = {
   autostart: boolean;
   paused: boolean;
@@ -1150,7 +1152,7 @@ function isSel(kind: ListKind, idx: number): boolean {
   return section === KIND_SECTION[kind] && selected === idx;
 }
 
-// 合并列表：根级快捷键 → 根级改键/文本扩展 → 目录树（目录内先条目后子目录）。
+// 合并列表：每层先条目（快捷键 → 改键 → 文本扩展）后子目录，根级同样排在目录树之前。
 function renderEntries() {
   const list = document.getElementById("shortcut-list")!;
   list.replaceChildren();
@@ -1159,9 +1161,13 @@ function renderEntries() {
     cfg.shortcuts.forEach((s, i) => {
       if ((s.folder ?? null) === folderId && shortcutVisible(s)) list.append(shortcutRow(s, i, depth));
     });
-    if (folderId !== null) return; // 改键/文本扩展没有目录概念，只挂在根级
-    cfg.remaps.forEach((r, i) => remapVisible(r) && list.append(remapRow(r, i, depth)));
-    cfg.expansions.forEach((e, i) => expansionVisible(e) && list.append(expansionRow(e, i, depth)));
+    // 改键/文本扩展与快捷键同规则归目录：换目录、换位置都靠拖拽（落点见 nearestDropZone）。
+    cfg.remaps.forEach((r, i) => {
+      if ((r.folder ?? null) === folderId && remapVisible(r)) list.append(remapRow(r, i, depth));
+    });
+    cfg.expansions.forEach((e, i) => {
+      if ((e.folder ?? null) === folderId && expansionVisible(e)) list.append(expansionRow(e, i, depth));
+    });
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
@@ -1512,7 +1518,10 @@ function closeMenuUnlessIn(t: HTMLElement) {
 // 目录是否有子内容（子目录或条目），用于决定是否显示展开箭头。
 function folderHasChildren(id: string): boolean {
   return (
-    cfg.folders.some((f) => f.parent === id) || cfg.shortcuts.some((s) => s.folder === id)
+    cfg.folders.some((f) => f.parent === id) ||
+    cfg.shortcuts.some((s) => s.folder === id) ||
+    cfg.remaps.some((r) => r.folder === id) ||
+    cfg.expansions.some((e) => e.folder === id)
   );
 }
 
@@ -1769,7 +1778,8 @@ function clearDropIndicators() {
 }
 
 function setDropIndicator(el: HTMLElement, cls: string) {
-  if (dragOverEl === el) return;
+  // 同一行也要比 class：光标在行内越过中线时落点 before/after 得跟着翻，否则线钉死半行。
+  if (dragOverEl === el && el.classList.contains(cls)) return;
   clearDropIndicators();
   el.classList.add(cls);
   dragOverEl = el;
@@ -1795,14 +1805,121 @@ function dragRowKind(): ListKind {
   return dragPayload.kind === "folder" ? "shortcut" : dragPayload.kind;
 }
 
+// 落点 → 承载它的行元素（指示与成环禁用共用，避免两处各查一遍选择器）。
+function zoneEl(zone: DropZone): HTMLElement | null {
+  if (zone.kind === "root") return null;
+  const list = activeListEl();
+  if (zone.kind === "folder") {
+    return list.querySelector(
+      `.folder-row[data-folder-id="${zone.folderId}"]`,
+    ) as HTMLElement | null;
+  }
+  return list.querySelector(
+    `.row[data-kind="${dragRowKind()}"][data-idx="${zone.idx}"]`,
+  ) as HTMLElement | null;
+}
+
+// 单个候选元素上的落点：目录行按「上 1/4 放前 / 下 1/4 放后 / 中间放进」分三段；
+// 普通行按中线分前后。快捷键/改键/扩展落到目录行上（不管哪一段）= 放进该目录（改键与
+// 文本扩展同样能归目录）。候选可以是源行自己（源行 pointer-events 让位，光标常停在它身上）：
+// 落自己 = 原地不动，由 applyDrop 直接放行，所以这里只给「前/后」不给「放进」，免得被当成做环。
+function zoneOfEl(el: HTMLElement, y: number): DropZone {
+  const r = el.getBoundingClientRect();
+  if (el.classList.contains("folder-row")) {
+    const folderId = el.dataset.folderId!;
+    if (dragPayload?.kind !== "folder") return { kind: "folder", folderId, pos: "into" };
+    const ratio = (y - r.top) / r.height;
+    const isSelf = el === dragState?.sourceEl;
+    return {
+      kind: "folder",
+      folderId,
+      pos: ratio < 0.25 ? "before" : ratio > 0.75 ? "after" : isSelf ? (ratio < 0.5 ? "before" : "after") : "into",
+    };
+  }
+  return {
+    kind: "row",
+    idx: Number(el.dataset.idx),
+    pos: y < r.top + r.height / 2 ? "before" : "after",
+  };
+}
+
+// 光标没落在可直接命中的行上（异类行 / 行间缝隙 / 末尾空白 / 源行让开指针）时，按 y 在候选
+// 里挑最近的元素定落点。缝隙按「接在上一行后面」算：行是平铺渲染的，接在光标上一行之后正好
+// 落进这个缝里——不会一路退回「根」（顶栏那根线闪到列表顶上去，看着像落点自己跳走）。
+// 上一行是目录行（缝在目录行正下方 = 该目录子树顶部）时改看下一行：下一行是条目就落它前面，
+// 下一行是目录或没有就放进上面这个目录；列表顶端的缝落第一行之前。没有候选才回根。
+function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
+  const kind = dragPayload?.kind;
+  // 快捷键/改键/扩展与目录互为落点；own = 拖目录时的成环黑名单（含源目录自己）。
+  const own = kind === "folder" ? collectDescendantIds(dragPayload!.id) : null;
+  const sel = `.folder-row, .row[data-kind="${dragRowKind()}"]`;
+  const els = Array.from(list.querySelectorAll<HTMLElement>(sel)).filter((el) => {
+    // 源目录子树里的条目：落它等于把目录塞回自己（成环），不算候选（源目录行本身算）。
+    if (own && el.dataset.idx != null) {
+      const f = cfg.shortcuts[Number(el.dataset.idx)]?.folder ?? null;
+      if (f && own.has(f)) return false;
+    }
+    return true;
+  });
+  if (els.length === 0) return { kind: "root" };
+  const isFolderRow = (el: HTMLElement) => el.classList.contains("folder-row");
+  const folderZone = (el: HTMLElement, pos: "before" | "into" | "after"): DropZone => ({
+    kind: "folder",
+    folderId: el.dataset.folderId!,
+    pos,
+  });
+  // 放进该目录；候选是源目录自己时只给「前/后」——放进自己放下后原地不动（applyDrop 早退），
+  // 却在源行上亮「放进」的框，看着像真会动。
+  const intoZone = (el: HTMLElement): DropZone =>
+    el === dragState?.sourceEl ? zoneOfEl(el, y) : folderZone(el, "into");
+  const inside = els.find((el) => {
+    const r = el.getBoundingClientRect();
+    return y >= r.top && y <= r.bottom;
+  });
+  if (inside) return zoneOfEl(inside, y);
+  // 条目落到「某目录之前」= 该层级条目区的末尾（同级条目渲染在目录行之前），只有同级里
+  // 排第一的目录才真落在它上面；落到非首个同级目录前会把条目甩回该层级块顶上，离光标
+  // 好几行——那种情况改看别的候选。目录拖目录 = 同级换位，始终落在那儿，不受此限。
+  const beforeFolderZone = (el: HTMLElement): DropZone | null => {
+    const folderId = el.dataset.folderId!;
+    if (dragPayload?.kind === "folder") return { kind: "folder", folderId, pos: "before" };
+    const i = cfg.folders.findIndex((x) => x.id === folderId);
+    if (i < 0) return null;
+    const parent = cfg.folders[i].parent ?? null;
+    const first = !cfg.folders.slice(0, i).some((x) => (x.parent ?? null) === parent);
+    return first ? { kind: "folder", folderId, pos: "before" } : null;
+  };
+  const up = els.filter((el) => el.getBoundingClientRect().bottom < y).pop();
+  const down = els.find((el) => el.getBoundingClientRect().top > y);
+  if (!up || !down) {
+    const only = up ?? down;
+    if (!only) return { kind: "root" };
+    if (!isFolderRow(only)) return zoneOfEl(only, y);
+    return up ? intoZone(up) : (beforeFolderZone(down!) ?? { kind: "root" });
+  }
+  // 缝隙两边都有候选：离光标更近的那边才对得上「落在哪」——候选里夹着别的类型时（改键/
+  // 扩展不在快捷键的候选里），远的那边会把落点拽出好几行。等远就按「接在上一行后面」。
+  const gap = (el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    return y < r.top ? r.top - y : y > r.bottom ? y - r.bottom : 0;
+  };
+  if (gap(down) < gap(up)) {
+    if (!isFolderRow(down)) return zoneOfEl(down, y);
+    const z = beforeFolderZone(down);
+    if (z) return z;
+    return isFolderRow(up) ? intoZone(up) : zoneOfEl(up, y);
+  }
+  if (!isFolderRow(up)) return zoneOfEl(up, y); // 接在上一行后面 = 正好落进这个缝
+  if (!isFolderRow(down)) return zoneOfEl(down, y); // 缝在目录行正下方 = 该目录子树顶部
+  return intoZone(up); // 两边都是目录行：放进上面这个目录
+}
+
 function computeDropZoneAt(x: number, y: number): DropZone | null {
   const list = activeListEl();
   const hit = document.elementFromPoint(x, y) as HTMLElement | null;
   if (!hit || !list.contains(hit)) return null; // 列表外视为无效落点
   const folderEl = hit.closest(".folder-row") as HTMLElement | null;
   if (folderEl) {
-    // 改键/文本扩展没有目录概念，落到目录上不给落点。
-    if (dragPayload && dragPayload.kind !== "shortcut" && dragPayload.kind !== "folder") return null;
     const folderId = folderEl.dataset.folderId!;
     if (dragPayload?.kind === "folder") {
       const r = folderEl.getBoundingClientRect();
@@ -1811,61 +1928,41 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
       if (ratio > 0.75) return { kind: "folder", folderId, pos: "after" };
       return { kind: "folder", folderId, pos: "into" };
     }
+    // 快捷键 / 改键 / 文本扩展落到目录行上 = 放进该目录。
     return { kind: "folder", folderId, pos: "into" };
   }
   const rowEl = hit.closest(".row") as HTMLElement | null;
-  if (rowEl) {
-    if (rowEl.dataset.kind !== dragRowKind()) return null; // 异类行：不当换位目标
-    const idx = Number(rowEl.dataset.idx);
+  if (rowEl && rowEl.dataset.kind === dragRowKind()) {
     const r = rowEl.getBoundingClientRect();
-    const pos = y - r.top < r.height / 2 ? "before" : "after";
-    return { kind: "row", idx, pos };
+    return {
+      kind: "row",
+      idx: Number(rowEl.dataset.idx),
+      pos: y - r.top < r.height / 2 ? "before" : "after",
+    };
   }
-  // 行间缝隙/末尾空白：只在同类行里按 y 找最近行插到它前/后（异类行的下标借不得）；
-  // 快捷键还能落「根」（移出目录），改键/扩展没有「根」可言。
-  if (dragPayload && (dragPayload.kind === "remap" || dragPayload.kind === "expansion")) {
-    const rows = Array.from(
-      list.querySelectorAll<HTMLElement>(`.row[data-kind="${dragPayload.kind}"]`),
-    );
-    for (const r of rows) {
-      const rect = r.getBoundingClientRect();
-      if (y < rect.bottom) {
-        return {
-          kind: "row",
-          idx: Number(r.dataset.idx),
-          pos: y < rect.top + rect.height / 2 ? "before" : "after",
-        };
-      }
-    }
-    const last = rows[rows.length - 1];
-    if (last) return { kind: "row", idx: Number(last.dataset.idx), pos: "after" };
-    return null;
-  }
-  return { kind: "root" };
+  return nearestDropZone(list, y);
 }
 
 function showDropIndicator(zone: DropZone) {
-  const list = activeListEl();
   if (zone.kind === "root") {
     clearDropIndicators();
-    list.classList.add("drop-root");
-    dragOverEl = list;
-  } else if (zone.kind === "folder") {
-    const el = list.querySelector(
-      `.folder-row[data-folder-id="${zone.folderId}"]`,
-    ) as HTMLElement | null;
-    if (!el) return;
-    setDropIndicator(
-      el,
-      zone.pos === "into" ? "drop-into" : zone.pos === "before" ? "drop-before" : "drop-after",
-    );
-  } else {
-    const el = list.querySelector(
-      `.row[data-kind="${dragRowKind()}"][data-idx="${zone.idx}"]`,
-    ) as HTMLElement | null;
-    if (!el) return;
-    setDropIndicator(el, zone.pos === "before" ? "drop-before" : "drop-after");
+    activeListEl().classList.add("drop-root");
+    dragOverEl = activeListEl();
+    return;
   }
+  const el = zoneEl(zone);
+  if (!el) return;
+  const cls =
+    zone.kind === "folder"
+      ? zone.pos === "into"
+        ? "drop-into"
+        : zone.pos === "before"
+          ? "drop-before"
+          : "drop-after"
+      : zone.pos === "before"
+        ? "drop-before"
+        : "drop-after";
+  setDropIndicator(el, cls);
 }
 
 // 平铺列表内换位：摘出再插回（越过源位时目标下标 -1）。快捷键/改键/文本扩展共用一套算术。
@@ -1906,19 +2003,48 @@ function moveFolder(
   cfg.folders.splice(at, 0, src);
 }
 
+// 目录行的「上/下沿」= 该目录所在层级的条目区（同级条目渲染在目录行之前，根级就是根）。
+function folderParentOf(folderId: string): string | null {
+  return cfg.folders.find((f) => f.id === folderId)?.parent ?? null;
+}
+
 function applyDrop(zone: DropZone) {
   if (!dragPayload) return;
+  // 落回源行自己 = 原地不动（源行 pointer-events 让位，光标常就停在它身上）：不落盘、
+  // 不重绘，免得「拿起又放下」白弹一次保存提示。
+  if (zoneEl(zone) === dragState?.sourceEl) return;
 
-  // 改键/文本扩展：平铺换位，不涉及目录。
+  // 改键/文本扩展：平铺换位 + 归目录（目录行上算「放进」，缝隙按 nearestDropZone 落位）。
   if (dragPayload.kind === "remap" || dragPayload.kind === "expansion") {
     const arr: (Remap | TextExpansion)[] =
       dragPayload.kind === "remap" ? cfg.remaps : cfg.expansions;
+    const srcIdx = dragPayload.idx;
+    const moved = arr[srcIdx];
+    if (!moved) return;
+    const targetFolder =
+      zone.kind === "row"
+        ? (arr[zone.idx]?.folder ?? null)
+        : zone.kind === "folder"
+          ? zone.pos === "into"
+            ? zone.folderId
+            : folderParentOf(zone.folderId)
+          : null;
+    // 原地放下（没换目录、位置也没动）：不落盘不重绘，免得白弹一次保存提示。
+    if (zone.kind === "row") {
+      const at = zone.pos === "before" ? zone.idx : zone.idx + 1;
+      if ((moved.folder ?? null) === targetFolder && (at > srcIdx ? at - 1 : at) === srcIdx) return;
+    } else if (
+      (moved.folder ?? null) === targetFolder &&
+      arr.slice(srcIdx + 1).every((o) => (o.folder ?? null) !== targetFolder)
+    ) {
+      return; // 已是该层级最后一条 = 没动
+    }
     // selected 是三类共用的下标变量：只有编辑页开着的就是这一类时才有意义去修。
     const secMatch = section === KIND_SECTION[dragPayload.kind];
     const selObj = secMatch && selected !== null ? arr[selected] : null;
-    if (zone.kind === "row") {
-      moveWithin(arr, dragPayload.idx, zone.pos === "before" ? zone.idx : zone.idx + 1);
-    }
+    moved.folder = targetFolder;
+    // 换目录时插到条目末尾（同目录内顺序只看数组相对次序，插末尾即该目录最后一条）。
+    moveWithin(arr, srcIdx, zone.kind === "row" ? (zone.pos === "before" ? zone.idx : zone.idx + 1) : arr.length);
     if (secMatch) selected = selObj ? arr.indexOf(selObj) : null;
     void save();
     return;
@@ -1932,8 +2058,9 @@ function applyDrop(zone: DropZone) {
     if (!cfg.shortcuts[srcIdx]) return;
     if (zone.kind === "root") {
       moveShortcut(srcIdx, null);
-    } else if (zone.kind === "folder" && zone.pos === "into") {
-      moveShortcut(srcIdx, zone.folderId);
+    } else if (zone.kind === "folder") {
+      // 放进 = 归该目录；上/下沿 = 该目录所在层级的条目区（根级目录的上/下沿就是根）。
+      moveShortcut(srcIdx, zone.pos === "into" ? zone.folderId : folderParentOf(zone.folderId));
     } else if (zone.kind === "row") {
       const targetFolder = cfg.shortcuts[zone.idx]?.folder ?? null;
       moveShortcut(srcIdx, targetFolder, zone.pos === "before" ? zone.idx : zone.idx + 1);
@@ -1984,8 +2111,7 @@ function updateDropTarget(x: number, y: number) {
   }
   if (wouldCycle(zone)) {
     clearDropIndicators();
-    const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-    const target = hit?.closest(".folder-row, .row") as HTMLElement | null;
+    const target = zoneEl(zone);
     if (target) setDropIndicator(target, "drop-forbidden");
     return;
   }

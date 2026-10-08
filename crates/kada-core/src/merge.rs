@@ -147,7 +147,7 @@ mod tests {
             folders: vec![Folder { id: "f-local".into(), name: "本机目录".into(), parent: None }],
             shortcuts: vec![shortcut("本机快捷键", "Ctrl+Alt+K")],
             remaps: vec![remap("CapsLock", "Ctrl")],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "本机地址".into(), enabled: true }],
+            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "本机地址".into(), enabled: true, ..Default::default() }],
             settings: Settings {
                 autostart: true,
                 paused: true,
@@ -219,7 +219,7 @@ mod tests {
                 shortcut("真正的新条目", "F9 L"),
             ],
             remaps: vec![remap("CapsLock", "Escape")],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "对方地址".into(), enabled: true }],
+            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "对方地址".into(), enabled: true, ..Default::default() }],
             ..Default::default()
         };
         let (out, report) = merge_configs(&cur, &incoming);
