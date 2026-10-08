@@ -26,6 +26,38 @@ body {
   display: flex;
 }
 
+/* 滚动条：细、圆角、半透明（轨道透明，只留一根浮动的条），跟页面同色系——
+   默认那根粗灰条在深色底上太扎眼。background-clip 要写在 background 之后（它是 background 简写的一部分）。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.14);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.3);
+  background-clip: content-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .hidden {
   display: none !important;
 }
@@ -246,9 +278,7 @@ body {
 }
 
 .row.off .row-name,
-.row.off .row-trigger,
-.row.off .triggers,
-.row.off .arrow {
+.row.off .row-trigger {
   opacity: 0.55;
 }
 
@@ -306,16 +336,6 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.triggers {
-  font-weight: 600;
-  font-family: Consolas, monospace;
-  font-size: 13px;
-}
-
-.arrow {
-  color: var(--muted);
 }
 
 .toggle {
@@ -495,6 +515,12 @@ body {
   font-size: 15px;
   font-weight: 600;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
+  /* 名称是用户起的，可能很长：占满剩余宽度、超了就截断，别把右侧按钮挤出标题行。 */
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .detail-title.title-editable {
@@ -546,23 +572,322 @@ body {
   gap: 16px;
 }
 
-/* 编辑器内容限宽居中：超宽窗口下输入行不拉满整屏，可读性优先。 */
+/* 编辑器内容限宽居中：超宽窗口下输入行不拉满整屏，可读性优先。
+   flex-shrink: 0 是必须的——内容超出时 flex 会按基准长度等比压缩子项，
+   于是「切到改键、打开操作页签」这种内容变高的动作会把上面那条按键框压矮。 */
 .detail-editor > * {
   width: 100%;
   max-width: 880px;
+  flex-shrink: 0;
 }
 
-/* 描述 + 所属层并排，省一行的纵向空间。 */
-.editor-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 200px;
-  gap: 16px;
+/* 第一行 = 一个框：左边是模式下拉（Postman 的「GET ▾」那种），右边是按键区，
+   中间只有一条分隔线，没有缝隙；框内一律单行、不换行，超了横向滚。 */
+
+.key-box {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+  height: 40px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
 }
 
-@media (max-width: 720px) {
-  .editor-grid {
-    grid-template-columns: 1fr;
-  }
+.key-box:focus-within {
+  border-color: var(--accent);
+}
+
+/* 模式下拉：自身没有边框，只靠右侧一条分隔线和按键区分开，视觉上同属一个框。 */
+.mode-group {
+  position: relative;
+  display: flex;
+  flex-shrink: 0;
+  border-right: 1px solid var(--line);
+}
+
+.mode-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  border-radius: 8px 0 0 8px;
+  color: var(--text);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.mode-trigger:hover {
+  background: var(--accent-dim);
+}
+
+/* 当前模式用强调色，和 Postman 里那个绿色 GET 一样：一眼看出选的是哪种。
+   min-width 按最长的「文本扩展」定宽——三种模式切换时左边这段宽度不再跳。 */
+#mode-label {
+  display: inline-block;
+  min-width: 4em;
+  text-align: center;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.mi-chev {
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+/* 模式菜单：从框底浮出，图标 + 中文名，鼠标悬停另有整句说明（title）。
+   定宽：三项（快捷键 / 改键 / 文本扩展）排下来宽窄一致。 */
+.mode-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -1px;
+  z-index: 40;
+  width: 176px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+}
+
+.mode-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.mode-item:hover {
+  background: var(--accent-dim);
+  color: #fff;
+}
+
+.mode-item.active {
+  color: var(--accent);
+}
+
+.mode-item.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.mode-item.disabled:hover {
+  background: none;
+  color: inherit;
+}
+
+.mi-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+}
+
+.mi-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.key-view {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap;
+  padding-left: 12px;
+}
+
+/* 触发键胶囊：一行排不下就横向滚，不换行（框体高度是定死的一行）。 */
+.key-view .chips {
+  flex: 1;
+  min-width: 0;
+  flex-wrap: nowrap;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.key-view .chips::-webkit-scrollbar {
+  height: 0;
+}
+
+.key-view input[type="text"] {
+  flex: 1;
+  min-width: 120px;
+  height: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  white-space: nowrap;
+}
+
+.key-view input[type="text"]:focus {
+  border: none;
+}
+
+/* 录键时的实时提示（「正在录：F9 J」），空时整条隐藏。 */
+.capture-status {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--accent);
+}
+
+/* 录入图标：自身无边框、无底色，和框体融为一体；左边界那条分隔线把它们和按键区分隔。
+   align-self: stretch —— key-view 是 align-items: center，不拉满的话分隔线只有按钮那么高。 */
+.key-tools {
+  display: flex;
+  align-self: stretch;
+  align-items: stretch;
+  flex-shrink: 0;
+  flex-wrap: nowrap;
+  margin-left: auto;
+  border-left: 1px solid var(--line);
+}
+
+.key-tool {
+  width: 40px;
+  height: 100%;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.key-tool svg {
+  width: 17px;
+  height: 17px;
+}
+
+.key-tool:hover {
+  background: var(--accent-dim);
+  color: #fff;
+}
+
+.key-tool:disabled {
+  background: none;
+  color: var(--accent);
+  cursor: default;
+}
+
+/* 改键「原键」的可过滤列表：从输入框下方浮出，输得越多筛得越准。 */
+.key-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: -1px;
+  right: -1px;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+  z-index: 40;
+}
+
+.key-item {
+  padding: 5px 8px;
+  border-radius: 5px;
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.key-item:hover {
+  background: var(--accent-dim);
+  color: #fff;
+}
+
+/* 标题行右侧的图标按钮：撤销 / 取消 / 保存 / 删除（+ 未保存标记）。 */
+.icon-btn {
+  min-width: 32px;
+  height: 32px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.icon-btn:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* 保存是主操作：实底强调，和旁边三个描边按钮拉开主次。 */
+.icon-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.icon-btn.primary:hover {
+  color: #fff;
+  filter: brightness(1.1);
+}
+
+.icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+/* 页签：详情 / 动作·操作·展开文本 / 层 / 条件（与消息页的视图标签同一套视觉）。 */
+.entry-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+
+.entry-tab {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: var(--muted);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+}
+
+.entry-tab:hover {
+  color: var(--text);
+}
+
+.entry-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+
+.entry-pane,
+.work-view {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
 }
 
 .detail-body {
@@ -692,13 +1017,6 @@ body {
   width: 100%;
 }
 
-.chips-wrap {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
 .chips {
   display: flex;
   flex-wrap: wrap;
@@ -724,10 +1042,6 @@ body {
   color: rgba(255, 255, 255, 0.7);
   font-size: 14px;
   line-height: 1;
-}
-
-.capture {
-  align-self: flex-start;
 }
 
 /* ---------- 动作流程编排 ---------- */
@@ -1383,15 +1697,8 @@ button:disabled:hover {
   border-color: var(--line);
 }
 
-.detail-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding-top: 4px;
-}
-
-/* 未保存标记：草稿与基线（打开时 / 上次保存的内容）不一致时常驻在动作行。
-   放动作行而不是标题里——标题就是行内可编辑的名称输入框，改它的文案会让光标跳。 */
+/* 未保存标记：草稿与基线（打开时 / 上次保存的内容）不一致时常驻在标题行右侧。
+   放标题行右侧而不是标题文字里——标题就是行内可编辑的名称输入框，改它的文案会让光标跳。 */
 .dirty-flag {
   display: inline-flex;
   align-items: center;
@@ -1793,22 +2100,11 @@ body:has(.hints-panel) {
 
 /* 条目多时列表自身可滚（Shift+滚轮或拖滚动条）。上限由 bootstrapHints 按**屏幕**高度
    算好写进 style.maxHeight——不能用 100vh：窗口高度正是要按内容量出来的东西，用 vh 做上限
-   会变成自增长循环。 */
+   会变成自增长循环。滚动条用全局那套细圆角半透明样式。 */
 .hints-body {
   padding: 0.4em 0;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--line) transparent;
-}
-
-.hints-body::-webkit-scrollbar {
-  width: 8px;
-}
-
-.hints-body::-webkit-scrollbar-thumb {
-  background: var(--line);
-  border-radius: 4px;
 }
 
 .hints-group + .hints-group {
@@ -1969,7 +2265,12 @@ body:has(.hints-panel) {
   display: flex;
   gap: 6px;
   overflow-x: auto;
-  scrollbar-width: thin;
+  /* 标签条是横向自滚的，露出滚动条只会把它变丑：滚轮 / 触控板直接滚。 */
+  scrollbar-width: none;
+}
+
+.msg-tablist::-webkit-scrollbar {
+  height: 0;
 }
 
 .msg-tab {

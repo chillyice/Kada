@@ -64,6 +64,10 @@ type ShortcutItem = {
   enabled: boolean;
 };
 type Remap = {
+  /** 标题行里编辑的名称（三类条目统一：标题行 = name）。 */
+  name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
   from: string;
   to: string;
   /** 所属目录 id（根级留空）：只影响列表分组，不参与触发判定。 */
@@ -82,7 +86,16 @@ type Remap = {
   when?: Condition | null;
   enabled: boolean;
 };
-type TextExpansion = { trigger: string; replace: string; folder?: string | null; enabled: boolean };
+type TextExpansion = {
+  /** 标题行里编辑的名称（三类条目统一：标题行 = name）。 */
+  name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
+  trigger: string;
+  replace: string;
+  folder?: string | null;
+  enabled: boolean;
+};
 type Settings = {
   autostart: boolean;
   paused: boolean;
@@ -147,6 +160,18 @@ const KIND_SECTION: Record<ListKind, Section> = { shortcut: "shortcuts", remap: 
 function isListSection(s: Section): boolean {
   return s === "shortcuts" || s === "remaps" || s === "expansions";
 }
+// 当前编辑页的条目类型 / 草稿（仅列表分区有效，别在设置/消息页调）。
+function currentKind(): ListKind {
+  return section === "remaps" ? "remap" : section === "expansions" ? "expansion" : "shortcut";
+}
+function currentDraft(): ShortcutItem | Remap | TextExpansion | null {
+  if (section === "shortcuts") return draft;
+  if (section === "remaps") return remapDraft;
+  if (section === "expansions") return expansionDraft;
+  return null;
+}
+// 编辑页的四个页签：详情 / 动作·操作·展开文本（work）/ 层 / 条件。
+type EntryTab = "detail" | "work" | "layer" | "when";
 type CommandResult = {
   kind: string;
   label: string;
@@ -655,6 +680,8 @@ let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
 // 见「未保存改动守卫」一节。
 let draftBaseline: string | null = null;
+// 当前停留的页签（三类条目共用一份：切类型/切条目沿用，类型没有该页签时回落「详情」）。
+let entryTab: EntryTab = "detail";
 let recording = false;
 let conflicts: Conflict[] = [];
 let search = "";
@@ -878,10 +905,18 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) stopCapture();
 });
 
+// 录入按钮现在是纯图标，进行中的实时提示（「请按组合键…」「和弦：F&J」）写到按键框里的状态条上。
+function captureHint(text: string | null) {
+  const status = document.getElementById("capture-status");
+  if (!status) return;
+  status.textContent = text ?? "";
+  status.classList.toggle("hidden", !text);
+}
+
 function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement) {
   stopCapture();
   btn.disabled = true;
-  btn.textContent = "请按组合键…（Esc 取消）";
+  captureHint("请按组合键…（Esc 取消）");
   void invoke("set_paused", { paused: true });
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -898,7 +933,7 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
     window.removeEventListener("keydown", handler, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
-    btn.textContent = "录入组合键";
+    captureHint(null);
   };
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
@@ -912,7 +947,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
   const update = () => {
-    btn.textContent = steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键序列…（Enter 提交，Esc 取消）";
+    captureHint(steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键序列…（Enter 提交，Esc 取消）");
   };
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -933,7 +968,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
     window.removeEventListener("keydown", handler, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
-    btn.textContent = "录入序列";
+    captureHint(null);
   };
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
@@ -956,9 +991,9 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
     return members.sort().join("&");
   };
   const update = () => {
-    btn.textContent = held.length
+    captureHint(held.length
       ? `和弦：${chordText()}（松开提交，Esc 取消）`
-      : "请同时按住多个键…（松开提交，Esc 取消）";
+      : "请同时按住多个键…（松开提交，Esc 取消）");
   };
   const EXCLUDED = new Set([
     "ControlLeft", "ControlRight", "AltLeft", "AltRight",
@@ -991,7 +1026,7 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
     window.removeEventListener("keyup", onKey, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
-    btn.textContent = "录入和弦";
+    captureHint(null);
   };
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", onKey, true);
@@ -1107,7 +1142,7 @@ function shortcutVisible(s: ShortcutItem): boolean {
 function remapVisible(r: Remap): boolean {
   const q = search.trim().toLowerCase();
   if (q) {
-    const hay = `${r.from} ${remapSummary(r)} ${layerName(r.hold_layer)} ${layerName(r.lock_layer)}`.toLowerCase();
+    const hay = `${r.from} ${remapSummary(r)} ${r.name ?? ""} ${r.description ?? ""} ${layerName(r.hold_layer)} ${layerName(r.lock_layer)}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !r.enabled) return false;
@@ -1118,7 +1153,7 @@ function remapVisible(r: Remap): boolean {
 
 function expansionVisible(e: TextExpansion): boolean {
   const q = search.trim().toLowerCase();
-  if (q && !`${e.trigger} ${e.replace}`.toLowerCase().includes(q)) return false;
+  if (q && !`${e.name ?? ""} ${e.description ?? ""} ${e.trigger} ${e.replace}`.toLowerCase().includes(q)) return false;
   if (listFilter.enabled && !e.enabled) return false;
   // 文本扩展不参与冲突检测：「有冲突」筛选开着时它必然不命中（与另两类保持同一口径）。
   if (listFilter.conflicted) return false;
@@ -1300,12 +1335,12 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
   if (!r.enabled) li.title = "已停用（右键可启用）";
   attachDragStart(li, { kind: "remap", idx });
   listRow(li, r, "remap", idx);
-  const isTiming = !!(r.tap || r.hold || r.hold_layer || r.lock_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
+  // 与快捷键行同一套观感：原键占「组合键」那一格，后面直接跟标题——
+  // 没起名的用形态摘要（如「长按「层1」」）当标题，不再单独画箭头。
   li.append(
     kindIcon("remap"),
-    el("span", "triggers", r.from),
-    el("span", "arrow", isTiming ? "⇥" : "→"),
-    el("span", "triggers", remapSummary(r)),
+    el("span", "row-trigger", r.from),
+    el("span", "row-name", r.name?.trim() || remapSummary(r)),
     moreButton((btn) => openRowMenu(btn, li, r)),
   );
   return li;
@@ -1323,11 +1358,12 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
   if (!e.enabled) li.title = "已停用（右键可启用）";
   attachDragStart(li, { kind: "expansion", idx });
   listRow(li, e, "expansion", idx);
+  // 与快捷键行同一套观感：触发词占「组合键」那一格，最多展示 10 个字符（超了截断加省略号）。
+  const trig = [...e.trigger];
   li.append(
     kindIcon("expansion"),
-    el("span", "triggers", e.trigger),
-    el("span", "arrow", "→"),
-    el("span", "row-name", e.replace || "（删除触发词）"),
+    el("span", "row-trigger", trig.length > 10 ? `${trig.slice(0, 10).join("")}…` : e.trigger),
+    el("span", "row-name", e.name?.trim() || e.replace || "（删除触发词）"),
     moreButton((btn) => openRowMenu(btn, li, e)),
   );
   return li;
@@ -1634,15 +1670,18 @@ function kindLabel(kind: ListKind | null): string {
   return kind === "shortcut" ? "快捷键" : kind === "remap" ? "改键" : kind === "expansion" ? "文本扩展" : "条目";
 }
 
-// 条目的展示名（确认框要与列表行对得上号）。
+// 条目的展示名（确认框要与列表行对得上号）：有标题用标题，否则退回各自的兜底。
 function labelOf(o: object): string {
   const kind = kindOf(o);
   if (kind === "shortcut") return shortcutLabel(o as ShortcutItem);
   if (kind === "remap") {
     const r = o as Remap;
-    return `${r.from} → ${remapSummary(r)}`;
+    return r.name?.trim() || `${r.from} → ${remapSummary(r)}`;
   }
-  if (kind === "expansion") return (o as TextExpansion).trigger || "未命名";
+  if (kind === "expansion") {
+    const e = o as TextExpansion;
+    return e.name?.trim() || e.trigger || "未命名";
+  }
   return "条目";
 }
 
@@ -2195,45 +2234,40 @@ async function setPickedEnabled(v: boolean) {
 }
 
 function renderDetail() {
-  document.getElementById("detail-shortcuts")!.classList.toggle("hidden", section !== "shortcuts");
-  document.getElementById("detail-remaps")!.classList.toggle("hidden", section !== "remaps");
-  document.getElementById("detail-expansions")!.classList.toggle("hidden", section !== "expansions");
+  const entry = isListSection(section);
+  document.getElementById("detail-entry")!.classList.toggle("hidden", !entry);
   document.getElementById("detail-settings")!.classList.toggle("hidden", section !== "settings");
   document.getElementById("detail-messages")!.classList.toggle("hidden", section !== "messages");
   document.getElementById("detail-help")!.classList.toggle("hidden", section !== "help");
 
-  if (section === "shortcuts") {
-    const has = draft !== null;
+  if (entry) {
+    const has = currentDraft() !== null;
     document.getElementById("detail-empty")!.classList.toggle("hidden", has);
     document.getElementById("detail-editor")!.classList.toggle("hidden", !has);
-    if (!has) setShortcutTitle();
-  } else if (section === "remaps") {
-    const has = remapDraft !== null;
-    document.getElementById("remap-empty")!.classList.toggle("hidden", has);
-    document.getElementById("remap-editor")!.classList.toggle("hidden", !has);
-    if (!has) document.getElementById("remap-title")!.textContent = "改键";
-  } else if (section === "expansions") {
-    const has = expansionDraft !== null;
-    document.getElementById("expansion-empty")!.classList.toggle("hidden", has);
-    document.getElementById("expansion-editor")!.classList.toggle("hidden", !has);
-    if (!has) document.getElementById("expansion-title")!.textContent = "文本扩展";
+    // 标题行右侧那组按钮（保存/撤销/取消/删除）只在真有草稿时才有意义。
+    document.getElementById("head-tools")!.classList.toggle("hidden", !has);
+    if (has) syncEntry();
+    else setEntryTitle();
   }
   refreshDirty();
 }
 
-// 快捷键详情标题：显示名称（空则「（未命名）」），点击标题行内编辑名称。
-function setShortcutTitle() {
+// 标题行：显示名称（空则「（未命名）」），点击行内编辑——三类条目共用一个 name 字段。
+// 没有草稿时只放当前类型的静态标签，不可编辑。
+function setEntryTitle() {
   const title = document.getElementById("detail-title")!;
-  if (!draft) {
-    title.textContent = "快捷键";
+  const item = currentDraft();
+  if (!item) {
+    title.textContent = kindLabel(currentKind());
     title.contentEditable = "false";
     title.classList.remove("title-editable");
     title.removeAttribute("title");
     title.onkeydown = null;
     title.onblur = null;
+    title.oninput = null;
     return;
   }
-  title.textContent = draft.name || "（未命名）";
+  title.textContent = item.name || "（未命名）";
   title.contentEditable = "true";
   title.classList.add("title-editable");
   title.title = "点击编辑名称";
@@ -2244,21 +2278,23 @@ function setShortcutTitle() {
     }
   };
   title.onblur = () => {
-    if (!draft) return;
+    const cur = currentDraft();
+    if (!cur) return;
     const v = (title.textContent ?? "").replace(/\s+/g, " ").trim();
-    draft.name = v || null;
-    title.textContent = draft.name || "（未命名）";
+    cur.name = v || null;
+    title.textContent = cur.name || "（未命名）";
   };
   // 名称是行内编辑的，没有对应 input 元素可监听：边打边同步进草稿，脏标记才跟得上。
   title.oninput = () => {
-    if (!draft) return;
-    const v = (title.textContent ?? "").replace(/\s+/g, " ").trim();
-    draft.name = v || null;
+    const cur = currentDraft();
+    if (!cur) return;
+    cur.name = (title.textContent ?? "").replace(/\s+/g, " ").trim() || null;
     refreshDirty();
   };
 }
 
 // 把草稿渲染进编辑页（openDetail 与「撤销改动」共用，避免两条路各写一份填充逻辑）。
+// 三类条目共用同一套 DOM：描述 / 层 / 条件 / 按键框只有一份，按类型显隐由 syncEntry() 管。
 function fillShortcutEditor() {
   if (!draft) return;
   (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
@@ -2273,12 +2309,14 @@ function fillShortcutEditor() {
     refreshDirty,
   );
   renderActions(draft);
-  setShortcutTitle();
+  setEntryTitle();
 }
 
 function fillRemapEditor() {
   if (!remapDraft) return;
-  (document.getElementById("remap-from") as HTMLSelectElement).value = remapDraft.from;
+  (document.getElementById("edit-desc") as HTMLInputElement).value = remapDraft.description ?? "";
+  (document.getElementById("remap-from") as HTMLInputElement).value = remapDraft.from;
+  closeKeyMenu();
   (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
   (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
   (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
@@ -2293,7 +2331,7 @@ function fillRemapEditor() {
     remapDraft.tap_timeout_ms || 200,
   );
   renderWhenEditor(
-    document.getElementById("remap-when")!,
+    document.getElementById("edit-when")!,
     () => remapDraft?.when,
     (c) => {
       if (remapDraft) remapDraft.when = c;
@@ -2301,25 +2339,156 @@ function fillRemapEditor() {
     refreshDirty,
   );
   syncRemapEditor();
-  document.getElementById("remap-title")!.textContent = draftNew
-    ? "新增改键"
-    : `${remapDraft.from} → ${remapSummary(remapDraft)}`;
+  setEntryTitle();
 }
 
 function fillExpansionEditor() {
   if (!expansionDraft) return;
+  (document.getElementById("edit-desc") as HTMLInputElement).value = expansionDraft.description ?? "";
   (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
     expansionDraft.trigger;
   (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
     expansionDraft.replace;
-  document.getElementById("expansion-title")!.textContent = draftNew
-    ? "新增文本扩展"
-    : expansionDraft.trigger || "（未命名）";
+  setEntryTitle();
+}
+
+// ---- 统一编辑页的模式 / 页签同步 ----
+// 模式按钮（快捷键 / 改键 / 文本扩展）、按键框里显示哪一套、四个页签的可用性与当前页，
+// 都在这里对齐当前类型。openDetail → renderDetail 每次都会走一遍。
+function syncEntry() {
+  const kind = currentKind();
+  const label = document.getElementById("mode-label");
+  if (label) label.textContent = kindLabel(kind);
+  for (const k of ["shortcut", "remap", "expansion"] as ListKind[]) {
+    const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
+    if (item) {
+      item.classList.toggle("active", k === kind);
+      // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
+      // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
+      item.classList.toggle("disabled", k !== kind && !draftNew);
+      item.title =
+        k === kind
+          ? `${kindLabel(k)}（当前模式）`
+          : draftNew
+            ? `切到${kindLabel(k)}`
+            : `${kindLabel(k)}（已保存的条目不能改类型）`;
+    }
+    document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
+    document.getElementById(`work-${k}`)?.classList.toggle("hidden", k !== kind);
+    document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
+  }
+  closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
+  // 文本扩展没有「层」与「条件」字段（按输入内容匹配，无触发侧门控），这两个页签不出现。
+  const hasLayer = kind !== "expansion";
+  const hasWhen = kind !== "expansion";
+  document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
+  document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
+  document.getElementById("tab-work")!.textContent =
+    kind === "shortcut" ? "动作" : kind === "remap" ? "操作" : "展开文本";
+  if ((entryTab === "layer" && !hasLayer) || (entryTab === "when" && !hasWhen)) entryTab = "detail";
+  applyEntryTab();
+}
+
+function applyEntryTab() {
+  document.querySelectorAll<HTMLElement>("#entry-tabs .entry-tab").forEach((b) =>
+    b.classList.toggle("active", b.dataset.tab === entryTab),
+  );
+  document.querySelectorAll<HTMLElement>("#detail-editor .entry-pane").forEach((p) =>
+    p.classList.toggle("hidden", p.dataset.pane !== entryTab),
+  );
+}
+
+// 新增态切换模式：换分区重开一份新草稿，把已填的名称 / 描述带过去，其余字段按新类型初始化。
+// 已保存的条目切不动（syncEntry 里按钮是 disabled 的，这里再兜一道）。
+function switchDraftKind(kind: ListKind) {
+  if (kind === currentKind()) return;
+  if (!draftNew) {
+    toast("已保存的条目不能改类型");
+    return;
+  }
+  stopCapture();
+  void stopRecIfAny(); // 录制中切模式得先停，不然后台录的音轨挂在已丢弃的草稿上
+  const prev = currentDraft();
+  const seed = prev ? { name: prev.name ?? null, description: prev.description ?? null } : undefined;
+  const folderId = (prev as { folder?: string | null } | null)?.folder ?? null;
+  discardDraft();
+  selected = null;
+  section = KIND_SECTION[kind];
+  syncRailTab(section);
+  openDetail(-1, true, folderId, seed);
+  void refreshConflicts().then(renderConflictBubble);
+}
+
+// 标题行的删除按钮：三类条目共用一条路径（与列表里的删除确认同一套）。
+function deleteCurrentEntry() {
+  const kind = currentKind();
+  if (kind === "shortcut") {
+    if (!draft) return;
+    if (draftNew) return discardNewDraft();
+    const d = draft;
+    void deleteDetailEntry("快捷键", shortcutLabel(d), () => {
+      if (selected !== null) cfg.shortcuts.splice(selected, 1);
+    });
+  } else if (kind === "remap") {
+    if (!remapDraft) return;
+    if (draftNew) return discardNewDraft();
+    const r = remapDraft;
+    void deleteDetailEntry("改键", r.name?.trim() || `${r.from} → ${remapSummary(r)}`, () => {
+      if (selected !== null) cfg.remaps.splice(selected, 1);
+    });
+  } else {
+    if (!expansionDraft) return;
+    if (draftNew) return discardNewDraft();
+    const e = expansionDraft;
+    void deleteDetailEntry("文本扩展", e.name?.trim() || e.trigger || "未命名", () => {
+      if (selected !== null) cfg.expansions.splice(selected, 1);
+    });
+  }
+}
+
+// 改键「原键」的可过滤下拉：点击 / 输入都重画列表，点选项落值，blur / Esc 收起。
+function renderKeyMenu(filter: string) {
+  const menu = document.getElementById("key-menu")!;
+  const q = filter.trim().toLowerCase();
+  const keys = KEY_OPTIONS.filter((k) => !q || k.toLowerCase().includes(q));
+  menu.replaceChildren();
+  for (const k of keys) {
+    const item = el("li", "key-item", k);
+    // 用 mousedown 而不是 click：先 preventDefault，输入框不丢焦点（也就不会触发 blur 收起）。
+    item.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      pickRemapKey(k);
+    });
+    menu.append(item);
+  }
+  menu.classList.toggle("hidden", keys.length === 0);
+}
+
+function pickRemapKey(k: string) {
+  const input = document.getElementById("remap-from") as HTMLInputElement;
+  input.value = k;
+  if (remapDraft) remapDraft.from = k;
+  closeKeyMenu();
+  refreshDirty();
+}
+
+function closeKeyMenu() {
+  document.getElementById("key-menu")?.classList.add("hidden");
+}
+
+function closeModeMenu() {
+  document.getElementById("mode-menu")?.classList.add("hidden");
 }
 
 // 打开编辑页。新增快捷键可带 folderId（目录行的「＋」= 在该目录里直接新增）。
+// seed = 新增态从别的模式切过来时带过来的名称/描述（见 switchDraftKind）。
 // 三类草稿互斥：换类型打开前先把上一份清掉，免得两份草稿同时挂着。
-function openDetail(i: number, isNew = false, folderId: string | null = null) {
+function openDetail(
+  i: number,
+  isNew = false,
+  folderId: string | null = null,
+  seed?: { name?: string | null; description?: string | null },
+) {
   draft = null;
   remapDraft = null;
   expansionDraft = null;
@@ -2332,16 +2501,28 @@ function openDetail(i: number, isNew = false, folderId: string | null = null) {
       : deepClone(cfg.shortcuts[i]);
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
     if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
+    if (isNew && seed) {
+      draft.name = seed.name ?? "";
+      draft.description = seed.description ?? "";
+    }
     fillShortcutEditor();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
+      ? { name: null, description: null, folder: folderId, from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
+    if (isNew && seed) {
+      remapDraft.name = seed.name ?? null;
+      remapDraft.description = seed.description ?? null;
+    }
     fillRemapEditor();
   } else if (section === "expansions") {
     expansionDraft = isNew
-      ? { trigger: "", replace: "", enabled: true }
+      ? { name: null, description: null, folder: folderId, trigger: "", replace: "", enabled: true }
       : deepClone(cfg.expansions[i]);
+    if (isNew && seed) {
+      expansionDraft.name = seed.name ?? null;
+      expansionDraft.description = seed.description ?? null;
+    }
     fillExpansionEditor();
   }
   markDraftBaseline();
@@ -2400,6 +2581,7 @@ async function saveShortcutDetail(): Promise<boolean> {
 
 async function saveRemapDetail(): Promise<boolean> {
   if (section !== "remaps" || !remapDraft) return false;
+  remapDraft.description = domValue("edit-desc") || null;
   remapDraft.from = domValue("remap-from");
   remapDraft.tap = domValue("remap-tap") || null;
   remapDraft.hold = domValue("remap-hold") || null;
@@ -2464,6 +2646,7 @@ async function saveRemapDetail(): Promise<boolean> {
 
 async function saveExpansionDetail(): Promise<boolean> {
   if (section !== "expansions" || !expansionDraft) return false;
+  expansionDraft.description = domValue("edit-desc") || null;
   const trigger = domValue("edit-exp-trigger").trim();
   // 触发词非法必须拦在保存前：save() 会把空触发词整条剔除——用户以为存了，其实条目没了。
   const err = expansionTriggerError(trigger);
@@ -2528,6 +2711,7 @@ function draftSignature(): string | null {
     if (!remapDraft) return null;
     return JSON.stringify({
       ...remapDraft,
+      description: domValue("edit-desc") || null,
       from: domValue("remap-from"),
       to: domValue("remap-to"),
       layer: domValue("remap-layer") || null,
@@ -2538,6 +2722,7 @@ function draftSignature(): string | null {
     if (!expansionDraft) return null;
     return JSON.stringify({
       ...expansionDraft,
+      description: domValue("edit-desc") || null,
       trigger: domValue("edit-exp-trigger").trim(),
       replace: domValue("edit-exp-replace"),
     });
@@ -2556,15 +2741,12 @@ function isDraftDirty(): boolean {
   return draftBaseline !== null && draftSignature() !== draftBaseline;
 }
 
-// 脏标记与「撤销改动」的可用态。（标记放动作行，不放标题：标题就是行内编辑的名称输入框。）
+// 脏标记与「撤销改动」的可用态。（标记放标题行右侧：标题本身就是名称输入框，动作行腾给了页签。）
 function refreshDirty() {
   const dirty = isDraftDirty();
-  for (const s of ["shortcuts", "remaps", "expansions"] as Section[]) {
-    const onChange = dirty && s === section;
-    document.getElementById(`dirty-${s}`)?.classList.toggle("hidden", !onChange);
-    const undo = document.getElementById(`undo-${s}`) as HTMLButtonElement | null;
-    if (undo) undo.disabled = !onChange;
-  }
+  document.getElementById("dirty-flag")?.classList.toggle("hidden", !dirty);
+  const undo = document.getElementById("entry-undo") as HTMLButtonElement | null;
+  if (undo) undo.disabled = !dirty;
 }
 
 // 撤销改动：把草稿还原成基线内容（打开时 / 上次保存的），编辑页留在原地。
@@ -2594,9 +2776,11 @@ let unsavedPending: ((c: UnsavedChoice) => void) | null = null;
 function draftLabel(): string {
   if (section === "shortcuts") return `快捷键「${draft?.name || "未命名"}」`;
   if (section === "remaps" && remapDraft) {
-    return `改键「${remapDraft.from} → ${remapSummary(remapDraft)}」`;
+    return `改键「${remapDraft.name?.trim() || `${remapDraft.from} → ${remapSummary(remapDraft)}`}」`;
   }
-  if (section === "expansions") return `文本扩展「${expansionDraft?.trigger || "未命名"}」`;
+  if (section === "expansions") {
+    return `文本扩展「${expansionDraft?.name?.trim() || expansionDraft?.trigger || "未命名"}」`;
+  }
   return "当前编辑";
 }
 
@@ -4184,13 +4368,12 @@ function bind() {
     b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
   });
 
-  // 「＋ 新增」下拉：四类条目都能从这里开（快捷键可带当前目录，见目录行的 ＋）。
+  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键与文本扩展不从这里进——统一编辑页里
+  // 新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
       { label: "新增快捷键", run: () => void requestNew("shortcut") },
       { label: "新增目录", run: () => addFolder(null) },
-      { label: "新增改键", run: () => void requestNew("remap") },
-      { label: "新增文本扩展", run: () => void requestNew("expansion") },
     ];
     if (clipboard) items.push({ label: "粘贴到根级", run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
@@ -4198,8 +4381,8 @@ function bind() {
 
   // 脏标记：编辑页里任何一次输入/选择/点按都可能改动草稿，用事件委托统一重算，
   // 好过给每个字段（含动态生成的动作字段）逐个插桩。
-  for (const id of ["detail-editor", "remap-editor", "expansion-editor"]) {
-    const pane = document.getElementById(id)!;
+  {
+    const pane = document.getElementById("detail-editor")!;
     pane.addEventListener("input", refreshDirty);
     pane.addEventListener("change", refreshDirty);
     pane.addEventListener("click", refreshDirty);
@@ -4340,66 +4523,66 @@ function bind() {
     }
   });
 
-  document.getElementById("save-shortcut")!.addEventListener("click", () => {
-    void saveShortcutDetail();
+  // 标题行右侧的四个图标按钮（三类条目共用一套 id）。
+  document.getElementById("entry-save")!.addEventListener("click", () => {
+    void saveCurrentDraft();
+  });
+  document.getElementById("entry-cancel")!.addEventListener("click", () => {
+    void requestCloseDetail();
+  });
+  document.getElementById("entry-undo")!.addEventListener("click", revertDraft);
+  document.getElementById("entry-delete")!.addEventListener("click", deleteCurrentEntry);
+
+  // 模式选择（Postman 式下拉）：图标进菜单项（常量 SVG），点项切模式（新增态才切得动，见 syncEntry）。
+  document.querySelectorAll("#mode-menu .mode-item").forEach((item) => {
+    const kind = (item as HTMLElement).dataset.kind as ListKind;
+    const icon = item.querySelector<HTMLElement>(".mi-icon");
+    if (icon) icon.innerHTML = KIND_ICON[kind]; // 常量 SVG，非用户输入
+  });
+  document.getElementById("mode-trigger")!.addEventListener("click", (e) => {
+    e.stopPropagation(); // 先别让 document 那条关闭监听把它立刻收掉
+    document.getElementById("mode-menu")!.classList.toggle("hidden");
+  });
+  document.getElementById("mode-menu")!.addEventListener("click", (e) => {
+    const item = (e.target as HTMLElement).closest<HTMLElement>(".mode-item");
+    if (!item?.dataset.kind || item.classList.contains("disabled")) return;
+    closeModeMenu();
+    switchDraftKind(item.dataset.kind as ListKind);
+  });
+  document.addEventListener("click", closeModeMenu); // 点别处收起
+
+  // 页签切换（详情 / 动作·操作·展开文本 / 层 / 条件）。
+  document.getElementById("entry-tabs")!.addEventListener("click", (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLElement>(".entry-tab");
+    if (!btn?.dataset.tab) return;
+    entryTab = btn.dataset.tab as EntryTab;
+    applyEntryTab();
   });
 
-  document.getElementById("cancel-shortcut")!.addEventListener("click", () => {
-    void requestCloseDetail();
+  // 改键「原键」输入框 = 可过滤的按键下拉。
+  const fromInput = document.getElementById("remap-from") as HTMLInputElement;
+  fromInput.addEventListener("focus", () => renderKeyMenu(fromInput.value));
+  fromInput.addEventListener("click", () => renderKeyMenu(fromInput.value));
+  fromInput.addEventListener("input", () => {
+    if (remapDraft) remapDraft.from = fromInput.value;
+    renderKeyMenu(fromInput.value);
+    refreshDirty();
   });
-  document.getElementById("detail-close")!.addEventListener("click", () => {
-    void requestCloseDetail();
-  });
-  document.getElementById("undo-shortcuts")!.addEventListener("click", revertDraft);
-  document.getElementById("delete-shortcut")!.addEventListener("click", () => {
-    if (section !== "shortcuts" || !draft) return;
-    const d = draft;
-    if (draftNew) return discardNewDraft();
-    void deleteDetailEntry("快捷键", shortcutLabel(d), () => {
-      if (selected !== null) cfg.shortcuts.splice(selected, 1);
-    });
-  });
-
-  document.getElementById("save-remap")!.addEventListener("click", () => {
-    void saveRemapDetail();
-  });
-  document.getElementById("cancel-remap")!.addEventListener("click", () => {
-    void requestCloseDetail();
-  });
-  document.getElementById("remap-close")!.addEventListener("click", () => {
-    void requestCloseDetail();
-  });
-  document.getElementById("undo-remaps")!.addEventListener("click", revertDraft);
-  document.getElementById("delete-remap")!.addEventListener("click", () => {
-    if (section !== "remaps" || !remapDraft) return;
-    const r = remapDraft;
-    if (draftNew) return discardNewDraft();
-    void deleteDetailEntry("改键", `${r.from} → ${remapSummary(r)}`, () => {
-      if (selected !== null) cfg.remaps.splice(selected, 1);
-    });
+  fromInput.addEventListener("blur", closeKeyMenu);
+  fromInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation(); // 只收下拉，别顺手把弹窗/菜单也关了
+      closeKeyMenu();
+    } else if (e.key === "Enter") {
+      // 回车 = 取列表第一项（输入过滤后剩下的那个），不用非得点鼠标。
+      const first = document.querySelector<HTMLElement>("#key-menu .key-item");
+      if (first) {
+        e.preventDefault();
+        pickRemapKey(first.textContent ?? fromInput.value);
+      }
+    }
   });
 
-  document.getElementById("save-expansion")!.addEventListener("click", () => {
-    void saveExpansionDetail();
-  });
-
-  document.getElementById("cancel-expansion")!.addEventListener("click", () => {
-    void requestCloseDetail();
-  });
-  document.getElementById("expansion-close")!.addEventListener("click", () => {
-    void requestCloseDetail();
-  });
-  document.getElementById("undo-expansions")!.addEventListener("click", revertDraft);
-  document.getElementById("delete-expansion")!.addEventListener("click", () => {
-    if (section !== "expansions" || !expansionDraft) return;
-    const exp = expansionDraft;
-    if (draftNew) return discardNewDraft();
-    void deleteDetailEntry("文本扩展", exp.trigger || "未命名", () => {
-      if (selected !== null) cfg.expansions.splice(selected, 1);
-    });
-  });
-
-  fillKeySelect(document.getElementById("remap-from") as HTMLSelectElement, "CapsLock");
   fillKeySelect(document.getElementById("remap-to") as HTMLSelectElement, "Ctrl");
   fillKeySelect(document.getElementById("remap-tap") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-hold") as HTMLSelectElement, "", true);
@@ -4504,12 +4687,10 @@ function bind() {
     if (document.querySelector(".modal:not(.hidden)")) return;
     const mod = e.ctrlKey || e.metaKey;
 
-    // Ctrl+S：保存当前编辑页，等价点「保存」按钮（含校验与提示）。
+    // Ctrl+S：保存当前编辑页，等价点标题行的 ✓（含校验与提示）。
     if (mod && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
-      if (section === "shortcuts" && draft) void saveShortcutDetail();
-      else if (section === "remaps" && remapDraft) void saveRemapDetail();
-      else if (section === "expansions" && expansionDraft) void saveExpansionDetail();
+      if (isListSection(section) && currentDraft()) void saveCurrentDraft();
       return;
     }
 
@@ -4529,20 +4710,10 @@ function bind() {
       return;
     }
 
-    // Delete：删当前详情页这条（与「删除」按钮同一条路径，含确认框）；焦点在表单控件里时不动。
-    if (e.key === "Delete" && !isFormTarget(e.target)) {
-      const delId =
-        section === "shortcuts" && draft
-          ? "delete-shortcut"
-          : section === "remaps" && remapDraft
-            ? "delete-remap"
-            : section === "expansions" && expansionDraft
-              ? "delete-expansion"
-              : null;
-      if (delId) {
-        e.preventDefault();
-        document.getElementById(delId)!.click();
-      }
+    // Delete：删当前详情页这条（与标题行的删除图标同一条路径，含确认框）；焦点在表单控件里时不动。
+    if (e.key === "Delete" && !isFormTarget(e.target) && isListSection(section) && currentDraft()) {
+      e.preventDefault();
+      deleteCurrentEntry();
     }
   });
 

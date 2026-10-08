@@ -50,162 +50,174 @@
 
       <!-- 右侧：详情区 -->
       <main class="detail-pane">
-        <!-- 快捷键详情 -->
-        <section id="detail-shortcuts" class="detail">
+        <!-- 条目详情：快捷键 / 改键 / 文本扩展 共用一个编辑页。
+             标题行（名称 + 保存/撤销/取消/删除）→ 模式 + 按键设置 → 四个 tab。 -->
+        <section id="detail-entry" class="detail hidden">
           <header class="detail-head">
             <span id="detail-title" class="detail-title">快捷键</span>
-            <button id="detail-close" class="detail-close" title="关闭">×</button>
+            <span id="head-tools" class="head-actions hidden">
+              <span id="dirty-flag" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
+              <button id="entry-delete" class="icon-btn" title="删除这条条目">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+              </button>
+              <button id="entry-undo" class="icon-btn" title="撤销改动（丢弃本次改动，还原成打开时或上次保存的内容）">↶</button>
+              <button id="entry-cancel" class="icon-btn" title="取消（关闭编辑页，不保存）">✕</button>
+              <button id="entry-save" class="icon-btn primary" title="保存（Ctrl+S）">✓</button>
+            </span>
           </header>
           <div id="detail-empty" class="detail-empty">
-            从左侧选择一个快捷键，或点右上「＋ 新增」
+            从左侧选择一条条目，或点右上「＋ 新增」
           </div>
           <div id="detail-editor" class="detail-editor hidden">
-            <div class="editor-grid">
+            <!-- 第一行：模式选择（左，Postman 那种「当前模式 ▾」下拉）+ 按键框（右）——两者是同一个框体 -->
+            <div class="key-box">
+              <div class="mode-group" id="mode-group">
+                <button id="mode-trigger" class="mode-trigger" type="button" title="选择模式">
+                  <span id="mode-label">快捷键</span>
+                  <svg class="mi-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+                </button>
+                <ul id="mode-menu" class="mode-menu hidden">
+                  <li class="mode-item" data-kind="shortcut" title="快捷键：按下组合键 / 序列 / 和弦触发一串动作"><span class="mi-icon"></span><span class="mi-label">快捷键</span></li>
+                  <li class="mode-item" data-kind="remap" title="改键：把一个键改成另一个键（含长按、切层、单次、粘滞等形态）"><span class="mi-icon"></span><span class="mi-label">改键</span></li>
+                  <li class="mode-item" data-kind="expansion" title="文本扩展：输入触发词自动展开成一段文本"><span class="mi-icon"></span><span class="mi-label">文本扩展</span></li>
+                </ul>
+              </div>
+              <!-- 快捷键：触发键胶囊（左，超了就横向滚，不换行） + 录入状态 + 三个录入图标（右，与框体一体） -->
+              <div class="key-view" id="key-shortcut">
+                <div class="chips" id="edit-triggers"></div>
+                <span id="capture-status" class="capture-status hidden"></span>
+                <div class="key-tools">
+                  <button id="edit-capture" class="key-tool" title="录入组合键：录一个组合键，如 Ctrl+Alt+K" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8"/></svg>
+                  </button>
+                  <button id="edit-sequence" class="key-tool" title="录入序列：逐个按下，如 F9 J K" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/></svg>
+                  </button>
+                  <button id="edit-chord" class="key-tool" title="录入和弦：多个键同时按住才触发，如 F&J" type="button">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>
+                  </button>
+                </div>
+              </div>
+              <!-- 改键：原键（点开列出按键，或直接输入过滤），下方浮出可点选的列表 -->
+              <div class="key-view hidden" id="key-remap">
+                <input id="remap-from" type="text" autocomplete="off" spellcheck="false" placeholder="原键（点击列出按键，或输入过滤）" />
+                <ul id="key-menu" class="key-menu hidden"></ul>
+              </div>
+              <!-- 文本扩展：触发词就是单纯一个输入框 -->
+              <div class="key-view hidden" id="key-expansion">
+                <input id="edit-exp-trigger" type="text" autocomplete="off" spellcheck="false" placeholder="触发词（如 :addr、;sig，不含空格/回车/Tab）" />
+              </div>
+            </div>
+
+            <!-- 第二行：tab —— 详情 / 动作·操作·展开文本 / 层 / 条件 -->
+            <div class="entry-tabs" id="entry-tabs">
+              <button class="entry-tab active" data-tab="detail">详情</button>
+              <button class="entry-tab" data-tab="work" id="tab-work">动作</button>
+              <button class="entry-tab" data-tab="layer" id="tab-layer">层</button>
+              <button class="entry-tab" data-tab="when" id="tab-when">条件</button>
+            </div>
+
+            <!-- 详情 -->
+            <div class="entry-pane" data-pane="detail">
               <div class="editor-row">
                 <label>描述</label>
-                <input id="edit-desc" type="text" placeholder="（可选）一句话说明这个快捷键做什么" />
+                <input id="edit-desc" type="text" placeholder="（可选）一句话说明这条条目做什么" />
               </div>
+            </div>
+
+            <!-- 动作（快捷键）/ 操作（改键）/ 展开文本（文本扩展） -->
+            <div class="entry-pane hidden" data-pane="work">
+              <div class="work-view" id="work-shortcut">
+                <div id="action-list" class="action-list"></div>
+                <div class="action-foot">
+                  <button id="add-action" class="add-action">+ 添加动作</button>
+                  <button id="action-record" class="record">● 开始录制</button>
+                </div>
+              </div>
+              <div class="work-view hidden" id="work-remap">
+                <div class="editor-row" id="remap-oneshot-row">
+                  <label>单次键（可选）</label>
+                  <select id="remap-oneshot"></select>
+                </div>
+                <div class="editor-row" id="remap-sticky-row">
+                  <label>粘滞键（可选）</label>
+                  <select id="remap-sticky"></select>
+                </div>
+                <div class="editor-row" id="remap-tap-row">
+                  <label>短按（可选）</label>
+                  <select id="remap-tap"></select>
+                </div>
+                <div class="editor-row" id="remap-tap2-row">
+                  <label>双击（可选）</label>
+                  <select id="remap-tap2"></select>
+                </div>
+                <div class="editor-row" id="remap-tap3-row">
+                  <label>三击（可选）</label>
+                  <select id="remap-tap3"></select>
+                </div>
+                <div class="editor-row" id="remap-hold-row">
+                  <label>长按（可选）</label>
+                  <select id="remap-hold"></select>
+                </div>
+                <div class="editor-row" id="remap-timeout-row">
+                  <label>长按阈值</label>
+                  <div class="action-line">
+                    <input id="remap-timeout" class="action-input action-input-num" type="number" min="50" max="2000" step="10" />
+                    <span class="unit-hint">毫秒（按住超过此值 = 长按）</span>
+                  </div>
+                </div>
+                <div class="editor-row" id="remap-to-row">
+                  <label>改为（普通改键）</label>
+                  <select id="remap-to"></select>
+                </div>
+                <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。
+                  <br />切层键（长按进入层 / 长按锁定层）在「层」页签里设。</p>
+              </div>
+              <div class="work-view hidden" id="work-expansion">
+                <div class="editor-row">
+                  <label>展开为</label>
+                  <textarea id="edit-exp-replace" class="action-textarea" placeholder="要替换成的文本，支持 {date} / {time} / {clipboard} 动态片段……"></textarea>
+                </div>
+                <p class="hint">输入触发词后按 空格 / 回车 / Tab 自动回删并展开；留空替换文本 = 删除该触发词。</p>
+              </div>
+            </div>
+
+            <!-- 层 -->
+            <div class="entry-pane hidden" data-pane="layer">
+              <div class="work-view" id="layer-shortcut">
+                <div class="editor-row">
+                  <label>所属层</label>
+                  <select id="edit-layer"></select>
+                </div>
+                <p class="hint">条目只在归属层被切层键打开时生效；「基础层」= 始终生效。切层键在改键里设「长按进入层 / 长按锁定层」。</p>
+              </div>
+              <div class="work-view hidden" id="layer-remap">
+                <div class="editor-row">
+                  <label>所属层</label>
+                  <select id="remap-layer"></select>
+                </div>
+                <div class="editor-row" id="remap-hold-layer-row">
+                  <label>长按进入层（切层键，可选）</label>
+                  <select id="remap-hold-layer"></select>
+                </div>
+                <div class="editor-row" id="remap-lock-layer-row">
+                  <label>长按锁定层（切换式切层，可选）</label>
+                  <select id="remap-lock-layer"></select>
+                </div>
+                <p class="hint">「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
+              </div>
+              <div class="work-view hidden" id="layer-expansion">
+                <p class="hint">文本扩展不参与键位层：它按输入内容匹配，与当前哪一层无关。</p>
+              </div>
+            </div>
+
+            <!-- 条件 -->
+            <div class="entry-pane hidden" data-pane="when">
               <div class="editor-row">
-                <label>所属层</label>
-                <select id="edit-layer"></select>
+                <label>触发条件（可选）</label>
+                <div id="edit-when" class="when-editor"></div>
               </div>
-            </div>
-            <div class="editor-row">
-              <label>触发组合键</label>
-              <div class="chips-wrap">
-                <div id="edit-triggers" class="chips"></div>
-                <button id="edit-capture" class="capture">录入组合键</button>
-                <button id="edit-sequence" class="capture">录入序列</button>
-                <button id="edit-chord" class="capture">录入和弦</button>
-              </div>
-            </div>
-            <div class="editor-row">
-              <label>触发条件（可选）</label>
-              <div id="edit-when" class="when-editor"></div>
-            </div>
-            <div class="editor-row">
-              <label>动作</label>
-              <div id="action-list" class="action-list"></div>
-              <div class="action-foot">
-                <button id="add-action" class="add-action">+ 添加动作</button>
-                <button id="action-record" class="record">● 开始录制</button>
-              </div>
-            </div>
-            <div class="detail-actions">
-              <button id="delete-shortcut" class="danger">删除</button>
-              <span id="dirty-shortcuts" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
-              <span class="flex-spacer"></span>
-              <button id="undo-shortcuts" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
-              <button id="cancel-shortcut">取消</button>
-              <button id="save-shortcut" class="primary">保存</button>
-            </div>
-          </div>
-        </section>
-
-        <!-- 改键详情 -->
-        <section id="detail-remaps" class="detail hidden">
-          <header class="detail-head">
-            <span id="remap-title" class="detail-title">改键</span>
-            <button id="remap-close" class="detail-close" title="关闭">×</button>
-          </header>
-          <div id="remap-empty" class="detail-empty">
-            从左侧选择一个改键，或点右上「＋ 新增」
-          </div>
-          <div id="remap-editor" class="detail-editor hidden">
-            <div class="editor-row">
-              <label>原键</label>
-              <select id="remap-from"></select>
-            </div>
-            <div class="editor-row">
-              <label>所属层</label>
-              <select id="remap-layer"></select>
-            </div>
-            <div class="editor-row">
-              <label>触发条件（可选）</label>
-              <div id="remap-when" class="when-editor"></div>
-            </div>
-            <div class="editor-row" id="remap-oneshot-row">
-              <label>单次键（可选）</label>
-              <select id="remap-oneshot"></select>
-            </div>
-            <div class="editor-row" id="remap-sticky-row">
-              <label>粘滞键（可选）</label>
-              <select id="remap-sticky"></select>
-            </div>
-            <div class="editor-row" id="remap-tap-row">
-              <label>短按（可选）</label>
-              <select id="remap-tap"></select>
-            </div>
-            <div class="editor-row" id="remap-tap2-row">
-              <label>双击（可选）</label>
-              <select id="remap-tap2"></select>
-            </div>
-            <div class="editor-row" id="remap-tap3-row">
-              <label>三击（可选）</label>
-              <select id="remap-tap3"></select>
-            </div>
-            <div class="editor-row" id="remap-hold-row">
-              <label>长按（可选）</label>
-              <select id="remap-hold"></select>
-            </div>
-            <div class="editor-row" id="remap-hold-layer-row">
-              <label>长按进入层（切层键，可选）</label>
-              <select id="remap-hold-layer"></select>
-            </div>
-            <div class="editor-row" id="remap-lock-layer-row">
-              <label>长按锁定层（切换式切层，可选）</label>
-              <select id="remap-lock-layer"></select>
-            </div>
-            <div class="editor-row" id="remap-timeout-row">
-              <label>长按阈值</label>
-              <div class="action-line">
-                <input id="remap-timeout" class="action-input action-input-num" type="number" min="50" max="2000" step="10" />
-                <span class="unit-hint">毫秒（按住超过此值 = 长按）</span>
-              </div>
-            </div>
-            <div class="editor-row" id="remap-to-row">
-              <label>改为（普通改键）</label>
-              <select id="remap-to"></select>
-            </div>
-            <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。
-              <br />「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
-            <div class="detail-actions">
-              <button id="delete-remap" class="danger">删除</button>
-              <span id="dirty-remaps" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
-              <span class="flex-spacer"></span>
-              <button id="undo-remaps" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
-              <button id="cancel-remap">取消</button>
-              <button id="save-remap" class="primary">保存</button>
-            </div>
-          </div>
-        </section>
-
-        <!-- 文本扩展详情 -->
-        <section id="detail-expansions" class="detail hidden">
-          <header class="detail-head">
-            <span id="expansion-title" class="detail-title">文本扩展</span>
-            <button id="expansion-close" class="detail-close" title="关闭">×</button>
-          </header>
-          <div id="expansion-empty" class="detail-empty">
-            从左侧选择一个文本扩展，或点右上「＋ 新增」
-          </div>
-          <div id="expansion-editor" class="detail-editor hidden">
-            <div class="editor-row">
-              <label>触发词</label>
-              <input id="edit-exp-trigger" type="text" placeholder="如 :addr、;sig（不含空格/回车/Tab）" />
-            </div>
-            <div class="editor-row">
-              <label>展开为</label>
-              <textarea id="edit-exp-replace" class="action-textarea" placeholder="要替换成的文本，支持 {date} / {time} / {clipboard} 动态片段……"></textarea>
-            </div>
-            <p class="hint">输入触发词后按 空格 / 回车 / Tab 自动回删并展开；留空替换文本 = 删除该触发词。</p>
-            <div class="detail-actions">
-              <button id="delete-expansion" class="danger">删除</button>
-              <span id="dirty-expansions" class="dirty-flag hidden" title="改动还没落盘：保存后才写入配置（点「撤销改动」可还原）">未保存</span>
-              <span class="flex-spacer"></span>
-              <button id="undo-expansions" title="丢弃本次改动，还原成打开时（或上次保存）的内容">撤销改动</button>
-              <button id="cancel-expansion">取消</button>
-              <button id="save-expansion" class="primary">保存</button>
+              <p class="hint">条件不成立时等价于「这条不存在」：落到下一条同触发键的条目，没有就放行原键。</p>
             </div>
           </div>
         </section>
