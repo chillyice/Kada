@@ -16,14 +16,6 @@
             <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor"/></svg>
             <span>快捷键</span>
           </button>
-          <button class="rail-item" data-tab="remaps" title="改键">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
-            <span>改键</span>
-          </button>
-          <button class="rail-item" data-tab="expansions" title="文本扩展">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>
-            <span>文本扩展</span>
-          </button>
           <button class="rail-item" data-tab="messages" title="消息">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span>消息</span>
@@ -40,31 +32,20 @@
         </nav>
       </aside>
 
-      <!-- 中间：列表栏 -->
+      <!-- 中间：列表栏（快捷键 / 改键 / 文本扩展合并成一份，行首图标区分类型） -->
       <aside class="list-pane" id="list-pane">
-        <div class="list-head">
-          <h2 id="list-title">快捷键</h2>
-          <button id="add-folder-btn" class="ghost">＋ 目录</button>
-          <button id="paste-btn" class="ghost hidden" title="粘贴复制/剪切的快捷键到根部">粘贴</button>
-          <button id="add-btn" class="primary">+ 新增</button>
-        </div>
-        <input id="list-search" class="search" type="text" placeholder="搜索…" />
-        <div id="filter-bar">
-          <button id="filter-enabled" class="ghost" aria-pressed="false">已启用</button>
-          <button id="filter-conflicted" class="ghost" aria-pressed="false">有冲突</button>
-        </div>
-        <div id="batch-bar" title="Ctrl+点行可加选/减选；先用筛选收窄再「全选」可批量处理">
-          <span>已选 <b id="batch-count">0</b> 项</span>
-          <span class="flex-spacer"></span>
-          <button id="batch-all" class="ghost">全选</button>
-          <button id="batch-enable" class="ghost" disabled>启用</button>
-          <button id="batch-disable" class="ghost" disabled>停用</button>
-          <button id="batch-clear" class="ghost" disabled>清空</button>
+        <div class="list-toolbar">
+          <input id="list-search" class="search" type="text" placeholder="搜索…" />
+          <button id="filter-btn" class="tool-btn" title="快捷筛选" aria-haspopup="menu">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>
+            <span>筛选</span>
+          </button>
+          <button id="add-btn" class="tool-btn primary" title="新增" aria-haspopup="menu">
+            <span>＋ 新增</span><span class="caret">▾</span>
+          </button>
         </div>
         <div id="conflict-list" class="conflicts"></div>
-        <ul id="shortcut-list" class="list" role="listbox" aria-labelledby="list-title"></ul>
-        <ul id="remap-list" class="list hidden" role="listbox" aria-labelledby="list-title"></ul>
-        <ul id="expansion-list" class="list hidden" role="listbox" aria-labelledby="list-title"></ul>
+        <ul id="shortcut-list" class="list" role="listbox" aria-label="快捷键列表"></ul>
       </aside>
 
       <!-- 右侧：详情区 -->
@@ -76,7 +57,7 @@
             <button id="detail-close" class="detail-close" title="关闭">×</button>
           </header>
           <div id="detail-empty" class="detail-empty">
-            从左侧选择一个快捷键，或点「+ 新增」
+            从左侧选择一个快捷键，或点右上「＋ 新增」
           </div>
           <div id="detail-editor" class="detail-editor hidden">
             <div class="editor-grid">
@@ -128,7 +109,7 @@
             <button id="remap-close" class="detail-close" title="关闭">×</button>
           </header>
           <div id="remap-empty" class="detail-empty">
-            从左侧选择一个改键，或点「+ 新增」
+            从左侧选择一个改键，或点右上「＋ 新增」
           </div>
           <div id="remap-editor" class="detail-editor hidden">
             <div class="editor-row">
@@ -206,7 +187,7 @@
             <button id="expansion-close" class="detail-close" title="关闭">×</button>
           </header>
           <div id="expansion-empty" class="detail-empty">
-            从左侧选择一个文本扩展，或点「+ 新增」
+            从左侧选择一个文本扩展，或点右上「＋ 新增」
           </div>
           <div id="expansion-editor" class="detail-editor hidden">
             <div class="editor-row">

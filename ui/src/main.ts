@@ -139,6 +139,12 @@ function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict
   };
 }
 type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
+// 合并列表里的三类条目：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
+type ListKind = "shortcut" | "remap" | "expansion";
+const KIND_SECTION: Record<ListKind, Section> = { shortcut: "shortcuts", remap: "remaps", expansion: "expansions" };
+function isListSection(s: Section): boolean {
+  return s === "shortcuts" || s === "remaps" || s === "expansions";
+}
 type CommandResult = {
   kind: string;
   label: string;
@@ -655,11 +661,16 @@ let msgIndex = 0; // 当前选中的结果 tab
 let unread = false; // 未读红点
 let conflictBubbleDismissed = false; // 快捷键列表里的冲突气泡是否已被用户消除
 let msgView: "results" | "conflicts" = "results"; // 消息页标签：命令结果 / 冲突
-let clipboard: { kind: "shortcut"; srcIndex: number; cut: boolean } | null = null; // 剪切/复制板
-// 列表筛选（7.3-⑳）：与 search 叠加生效，「有冲突」在文本扩展分区不出现（扩展不参与冲突检测）。
+// 复制/剪切板：存对象引用而非下标（增删/重排后仍指对那条），多选整批进同一份。
+// ponytail: 条目在编辑页「保存」时整条换新对象，这里的旧引用会失效（剪切粘贴到的是旧内容）——
+// 需要跨编辑保真时改成 kind + 下标并按内容重定位。
+let clipboard: { items: { kind: ListKind; obj: ShortcutItem | Remap | TextExpansion }[]; cut: boolean } | null = null;
+// 列表筛选（7.3-⑳）：与 search 叠加生效，从搜索栏右侧「筛选」菜单开关。
 let listFilter = { enabled: false, conflicted: false };
-// 批量启停的选择集：存对象引用而非下标（增删/重排后引用仍指对那条）；切分区清空。
+// 多选集（Ctrl / Shift 点行，右键菜单作用于它）：存对象引用而非下标；切分区清空。
 let picked = new Set<object>();
+let pickAnchor: object | null = null; // Shift 范围选的锚点（上次单击 / Ctrl 点的那条）
+let menuAnchor: HTMLElement | null = null; // 当前打开的下拉菜单锚点（再点同一按钮 = 收起）
 let editingFolderId: string | null = null; // 正在行内改名的目录 id
 let editingLayerId: string | null = null; // 正在行内改名的层 id
 
@@ -1031,70 +1042,34 @@ function render() {
 }
 
 function renderListPane() {
+  // 重绘会整棵重建列表行：锚点被拆掉的菜单没地方可依附，先收掉。
+  if (menuAnchor && !menuAnchor.isConnected) hideRowMenu();
   // 重绘会整棵重建列表行，焦点所在行先记下来、画完还回去——否则键盘用户
-  // 一按开关 / 回车，焦点就掉回 body，Tab 又得从头数（行内的开关/按钮失焦后
-  // 统一还给行本身，够用且不用记行内哪个子元素）。
+  // 一按回车，焦点就掉回 body，Tab 又得从头数（行内按钮失焦后统一还给行本身，
+  // 够用且不用记行内哪个子元素）。合并列表里同一下标可能分属三类条目，选择器带上 kind。
   const act = document.activeElement as HTMLElement | null;
   const actRow = act?.closest(".row, .folder-row") as HTMLElement | null;
   const actSel =
-    actRow?.dataset.idx != null
-      ? `[data-idx="${actRow.dataset.idx}"]`
-      : actRow?.dataset.folderId != null
-        ? `[data-folder-id="${actRow.dataset.folderId}"]`
+    actRow?.dataset.folderId != null
+      ? `.folder-row[data-folder-id="${actRow.dataset.folderId}"]`
+      : actRow?.dataset.idx != null && actRow.dataset.kind
+        ? `.row[data-kind="${actRow.dataset.kind}"][data-idx="${actRow.dataset.idx}"]`
         : null;
   document.getElementById("list-pane")!.classList.toggle(
     "hidden",
     section === "settings" || section === "messages" || section === "help",
   );
-  document.getElementById("add-folder-btn")!.classList.toggle("hidden", section !== "shortcuts");
-  // 筛选/批量条状态（设置/消息页整个列表栏都藏了，不必分节处理）。
-  // 选择集按当前分区数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
-  const sectionItems: object[] =
-    section === "remaps" ? cfg.remaps : section === "expansions" ? cfg.expansions : cfg.shortcuts;
-  for (const o of [...picked]) if (!sectionItems.includes(o)) picked.delete(o);
-  document.getElementById("filter-conflicted")!.classList.toggle("hidden", section === "expansions");
-  for (const [id, on] of [
-    ["filter-enabled", listFilter.enabled],
-    ["filter-conflicted", listFilter.conflicted],
-  ] as const) {
-    const b = document.getElementById(id)!;
-    b.classList.toggle("on", on);
-    b.setAttribute("aria-pressed", String(on));
-  }
-  document.getElementById("batch-count")!.textContent = String(picked.size);
-  for (const id of ["batch-enable", "batch-disable", "batch-clear"]) {
-    document.getElementById(id)!.toggleAttribute("disabled", picked.size === 0);
-  }
+  // 多选集按三份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
+  const all: object[] = [...cfg.shortcuts, ...cfg.remaps, ...cfg.expansions];
+  for (const o of [...picked]) if (!all.includes(o)) picked.delete(o);
+  if (pickAnchor && !all.includes(pickAnchor)) pickAnchor = null;
+  // 筛选按钮亮起来 = 有筛选在生效。
   document
-    .getElementById("paste-btn")!
-    .classList.toggle("hidden", !clipboard || section !== "shortcuts");
-  const title = document.getElementById("list-title")!;
-  const shortcutList = document.getElementById("shortcut-list")!;
-  const remapList = document.getElementById("remap-list")!;
-  const expansionList = document.getElementById("expansion-list")!;
-  if (section === "shortcuts") {
-    title.textContent = "快捷键";
-    shortcutList.classList.remove("hidden");
-    remapList.classList.add("hidden");
-    expansionList.classList.add("hidden");
-    renderShortcuts();
-  } else if (section === "remaps") {
-    title.textContent = "改键";
-    shortcutList.classList.add("hidden");
-    remapList.classList.remove("hidden");
-    expansionList.classList.add("hidden");
-    renderRemaps();
-  } else if (section === "expansions") {
-    title.textContent = "文本扩展";
-    shortcutList.classList.add("hidden");
-    remapList.classList.add("hidden");
-    expansionList.classList.remove("hidden");
-    renderExpansions();
-  }
+    .getElementById("filter-btn")!
+    .classList.toggle("on", listFilter.enabled || listFilter.conflicted);
+  renderEntries();
   if (actRow && actSel) {
-    document
-      .querySelector<HTMLElement>(`#list-pane .row${actSel}, #list-pane .folder-row${actSel}`)
-      ?.focus();
+    document.querySelector<HTMLElement>(`#list-pane ${actSel}`)?.focus();
   }
 }
 
@@ -1143,19 +1118,50 @@ function expansionVisible(e: TextExpansion): boolean {
   const q = search.trim().toLowerCase();
   if (q && !`${e.trigger} ${e.replace}`.toLowerCase().includes(q)) return false;
   if (listFilter.enabled && !e.enabled) return false;
+  // 文本扩展不参与冲突检测：「有冲突」筛选开着时它必然不命中（与另两类保持同一口径）。
+  if (listFilter.conflicted) return false;
   return true;
 }
 
-function renderShortcuts() {
+// 树形缩进：目录行 = 层级 × 16px；条目行再右移 15px（= 目录行的箭头列宽 + 行内左边距，
+// 让同级条目的框体左缘正好落在目录图标的左缘上），子层各自再缩 16px。
+// 缩进用 margin 而非 padding：整行盒子随层级右移，层级关系和边框范围都对齐。
+const TREE_STEP = 16;
+const ITEM_OFF = TREE_STEP - 1;
+
+// 行首类型徽标（Postman 用 GET/POST/DEL 一眼分清请求类型，这里同理分清三类条目）。
+const KIND_ICON: Record<ListKind, string> = {
+  shortcut:
+    '<svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor"/></svg>',
+  remap:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
+  expansion:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
+};
+
+function kindIcon(kind: ListKind): HTMLElement {
+  const s = el("span", `row-kind kind-${kind}`);
+  s.innerHTML = KIND_ICON[kind]; // 常量 SVG，非用户输入
+  return s;
+}
+
+// 「正在编辑页里打开的那条」——合并列表后三类共用一个下标变量，得连类型一起比。
+function isSel(kind: ListKind, idx: number): boolean {
+  return section === KIND_SECTION[kind] && selected === idx;
+}
+
+// 合并列表：根级快捷键 → 根级改键/文本扩展 → 目录树（目录内先条目后子目录）。
+function renderEntries() {
   const list = document.getElementById("shortcut-list")!;
   list.replaceChildren();
 
-  const renderShortcutsIn = (folderId: string | null, depth: number) => {
+  const renderIn = (folderId: string | null, depth: number) => {
     cfg.shortcuts.forEach((s, i) => {
-      if ((s.folder ?? null) === folderId && shortcutVisible(s)) {
-        list.append(shortcutRow(s, i, depth));
-      }
+      if ((s.folder ?? null) === folderId && shortcutVisible(s)) list.append(shortcutRow(s, i, depth));
     });
+    if (folderId !== null) return; // 改键/文本扩展没有目录概念，只挂在根级
+    cfg.remaps.forEach((r, i) => remapVisible(r) && list.append(remapRow(r, i, depth)));
+    cfg.expansions.forEach((e, i) => expansionVisible(e) && list.append(expansionRow(e, i, depth)));
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
@@ -1165,13 +1171,12 @@ function renderShortcuts() {
       const collapsed = !searching && collapsedFolders.has(f.id);
       list.append(folderRow(f, depth, collapsed));
       if (collapsed) continue;
-      renderShortcutsIn(f.id, depth + 1);
+      renderIn(f.id, depth + 1);
       renderFolders(f.id, depth + 1);
     }
   };
 
-  // 根级未分组快捷键在前，随后是根级目录（递归展开）。
-  renderShortcutsIn(null, 0);
+  renderIn(null, 0);
   renderFolders(null, 0);
 }
 
@@ -1195,46 +1200,137 @@ function makeRow(
   });
 }
 
-function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
-  const li = el("li", "row" + (selected === idx ? " selected" : "") + (picked.has(s) ? " picked" : ""));
+// 行交互（三类条目共用）：单击开编辑页；Ctrl 加/减选；Shift 按可见顺序范围选；
+// 右键在选中项上出菜单（点的行不在选中集里 → 先只选它）。
+function listRow(li: HTMLElement, obj: object, kind: ListKind, idx: number) {
+  li.dataset.kind = kind;
   li.dataset.idx = String(idx);
-  makeRow(li, () => void requestOpenDetail(idx), { selected: selected === idx });
-  // 缩进用 margin 而非 padding：整行盒子随层级右移，层级关系和边框范围都对齐。
-  li.style.marginLeft = `${depth * 20}px`;
-  attachDragStart(li, { kind: "shortcut", idx });
-  const on = el("input", "toggle") as HTMLInputElement;
-  on.type = "checkbox";
-  on.checked = s.enabled;
-  on.title = "启用 / 停用此快捷键";
-  on.addEventListener("change", (e) => {
-    e.stopPropagation();
-    s.enabled = on.checked;
-    void save();
+  makeRow(li, () => void requestOpenDetail(idx, false, kind), { selected: isSel(kind, idx) });
+  li.addEventListener("click", (e) => {
+    if (suppressClick) return;
+    if ((e.target as HTMLElement).closest("input, button")) return; // 菜单/按钮不打开详情
+    if (e.shiftKey) {
+      pickRange(obj);
+      return;
+    }
+    if (e.ctrlKey || e.metaKey) {
+      pickAnchor = obj;
+      togglePicked(obj);
+      return;
+    }
+    void requestOpenDetail(idx, false, kind);
   });
+  li.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (!picked.has(obj)) selectOnly(obj, li);
+    showMenu(li, selectionMenuItems(), { x: e.clientX, y: e.clientY });
+  });
+}
+
+// Shift 范围选：按当前可见行的顺序，把锚点到目标之间整段收进选择集。
+function pickRange(target: object) {
+  const objs = [...document.querySelectorAll<HTMLElement>("#shortcut-list .row")]
+    .map(rowObject)
+    .filter((o): o is object => o !== null);
+  const a = pickAnchor ? objs.indexOf(pickAnchor) : -1;
+  const b = objs.indexOf(target);
+  if (a < 0 || b < 0) picked.add(target);
+  else for (const o of objs.slice(Math.min(a, b), Math.max(a, b) + 1)) picked.add(o);
+  renderListPane();
+}
+
+// 行元素 → 条目对象（合并列表里同一下标可能分属三类，必须连 kind 一起读）。
+function rowObject(li: HTMLElement): object | null {
+  const idx = Number(li.dataset.idx);
+  const kind = li.dataset.kind as ListKind;
+  return kind === "shortcut"
+    ? (cfg.shortcuts[idx] ?? null)
+    : kind === "remap"
+      ? (cfg.remaps[idx] ?? null)
+      : kind === "expansion"
+        ? (cfg.expansions[idx] ?? null)
+        : null;
+}
+
+// 只选中这一行（右键/⋯菜单用）：不整棵重绘，菜单锚点还挂在按钮上，重绘会把它拆掉。
+function selectOnly(obj: object, li: HTMLElement) {
+  picked = new Set([obj]);
+  document.querySelectorAll("#shortcut-list .picked").forEach((n) => n.classList.remove("picked"));
+  li.classList.add("picked");
+}
+
+function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("shortcut", idx) ? " selected" : "") +
+      (picked.has(s) ? " picked" : "") +
+      (s.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!s.enabled) li.title = "已停用（右键可启用）";
+  attachDragStart(li, { kind: "shortcut", idx });
+  listRow(li, s, "shortcut", idx);
 
   // 列表行只呈现「组合键 + 名称」；描述与动作摘要移入详情页。
   const trig = el("span", "row-trigger", s.triggers.join(" ") || "未设触发键");
   if (s.triggers.length === 0) trig.classList.add("row-trigger-empty");
   const name = el("span", "row-name", s.name || "（未命名）");
 
-  const more = moreButton((btn) => showRowMenu(btn, { kind: "shortcut", idx }));
-  li.append(on, trig, name, more);
-  li.addEventListener("click", (e) => {
-    if ((e.target as HTMLElement).closest("input, button")) return; // 开关/菜单不打开详情
-    if (suppressClick) return;
-    if (e.ctrlKey || e.metaKey) {
-      togglePicked(s);
-      return;
-    }
-    void requestOpenDetail(idx);
-  });
+  const more = moreButton((btn) => openRowMenu(btn, li, s));
+  li.append(kindIcon("shortcut"), trig, name, more);
+  return li;
+}
+
+function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("remap", idx) ? " selected" : "") +
+      (picked.has(r) ? " picked" : "") +
+      (r.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!r.enabled) li.title = "已停用（右键可启用）";
+  attachDragStart(li, { kind: "remap", idx });
+  listRow(li, r, "remap", idx);
+  const isTiming = !!(r.tap || r.hold || r.hold_layer || r.lock_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
+  li.append(
+    kindIcon("remap"),
+    el("span", "triggers", r.from),
+    el("span", "arrow", isTiming ? "⇥" : "→"),
+    el("span", "triggers", remapSummary(r)),
+    moreButton((btn) => openRowMenu(btn, li, r)),
+  );
+  return li;
+}
+
+function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("expansion", idx) ? " selected" : "") +
+      (picked.has(e) ? " picked" : "") +
+      (e.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!e.enabled) li.title = "已停用（右键可启用）";
+  attachDragStart(li, { kind: "expansion", idx });
+  listRow(li, e, "expansion", idx);
+  li.append(
+    kindIcon("expansion"),
+    el("span", "triggers", e.trigger),
+    el("span", "arrow", "→"),
+    el("span", "row-name", e.replace || "（删除触发词）"),
+    moreButton((btn) => openRowMenu(btn, li, e)),
+  );
   return li;
 }
 
 function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   const li = el("li", "folder-row");
   li.dataset.folderId = f.id;
-  li.style.marginLeft = `${depth * 20}px`;
+  li.style.marginLeft = `${depth * TREE_STEP}px`;
   makeRow(
     li,
     () => {
@@ -1284,8 +1380,19 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   } else {
     li.append(el("span", "folder-name", f.name));
   }
-  const more = moreButton((btn) => showRowMenu(btn, { kind: "folder", id: f.id }));
-  li.append(more);
+  // Postman 式 hover 操作：目录行右侧「＋ 直接新增快捷键」「⋯ 更多」。
+  const add = el("button", "row-add", "＋") as HTMLButtonElement;
+  add.title = "在此目录新增快捷键";
+  add.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void requestNew("shortcut", f.id);
+  });
+  const more = moreButton((btn) => showMenu(btn, folderMenuItems(f)));
+  li.append(add, more);
+  li.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    showMenu(li, folderMenuItems(f), { x: e.clientX, y: e.clientY });
+  });
 
   // 点击目录行切换展开/收缩（重命名态与三点菜单/输入框除外）。
   if (hasChildren && editingFolderId !== f.id) {
@@ -1299,6 +1406,20 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
   return li;
 }
 
+// 目录的菜单（⋯ / 右键共用）：新增在前，其后是目录自身的维护项。
+function folderMenuItems(f: Folder): MenuItem[] {
+  const items: MenuItem[] = [
+    { label: "新增快捷键到此目录", run: () => void requestNew("shortcut", f.id) },
+    { label: "新增子目录", run: () => addFolder(f.id) },
+    { label: "重命名", run: () => renameFolder(f.id) },
+  ];
+  // 目录只装快捷键：剪贴板里没有快捷键时，粘到目录里没有意义。
+  if (clipboard?.items.some((i) => i.kind === "shortcut"))
+    items.push({ label: "粘贴到该目录", run: () => pasteIntoFolder(f.id) });
+  items.push({ label: "删除", run: () => void deleteFolder(f.id) });
+  return items;
+}
+
 function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
   const b = el("button", "row-more", "⋯") as HTMLButtonElement;
   b.title = "更多";
@@ -1309,45 +1430,38 @@ function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElemen
   return b;
 }
 
-function showRowMenu(
-  anchor: HTMLElement,
-  target:
-    | { kind: "shortcut"; idx: number }
-    | { kind: "folder"; id: string }
-    | { kind: "remap"; idx: number }
-    | { kind: "expansion"; idx: number },
-) {
-  hideRowMenu();
+type MenuItem = { label: string; run: () => void; on?: boolean };
+
+// 选中集上的操作（行内 ⋯ 与右键菜单同一套，作用对象都是 picked）。
+function selectionMenuItems(): MenuItem[] {
+  const n = picked.size;
+  return [
+    { label: n > 1 ? `各复制一份（${n} 项）` : "复制一份", run: duplicateSelection },
+    { label: "复制", run: () => copySelection(false) },
+    { label: "剪切", run: () => copySelection(true) },
+    { label: n > 1 ? `删除（${n} 项）` : "删除", run: () => void deleteSelection() },
+    { label: "启用", run: () => void setPickedEnabled(true) },
+    { label: "禁用", run: () => void setPickedEnabled(false) },
+  ];
+}
+
+// 行内 ⋯：这行不在选中集里就先只选它，然后出选中集菜单（与右键一致）。
+function openRowMenu(anchor: HTMLElement, li: HTMLElement, obj: object) {
+  if (!picked.has(obj)) selectOnly(obj, li);
+  showMenu(anchor, selectionMenuItems());
+}
+
+// 通用下拉菜单：行 ⋯ / 行右键 / 目录右键 / 搜索栏的「筛选」「新增」共用同一个元素。
+// 同一个锚点再点一次 = 收起（不重复弹出）。
+function showMenu(anchor: HTMLElement, items: MenuItem[], at?: { x: number; y: number }) {
   const menu = document.getElementById("row-menu")!;
-  menu.replaceChildren();
-  const items: { label: string; run: () => void }[] = [];
-  if (target.kind === "shortcut") {
-    items.push(
-      { label: "复制一份", run: () => duplicateShortcut(target.idx) },
-      { label: "剪切", run: () => cutShortcut(target.idx) },
-      { label: "复制", run: () => copyShortcut(target.idx) },
-      { label: "删除", run: () => void deleteShortcutAt(target.idx) },
-    );
-  } else if (target.kind === "remap") {
-    items.push(
-      { label: "复制一份", run: () => duplicateRemap(target.idx) },
-      { label: "删除", run: () => void deleteRemapAt(target.idx) },
-    );
-  } else if (target.kind === "expansion") {
-    items.push(
-      { label: "复制一份", run: () => duplicateExpansion(target.idx) },
-      { label: "删除", run: () => void deleteExpansionAt(target.idx) },
-    );
-  } else {
-    items.push(
-      { label: "新建子目录", run: () => addFolder(target.id) },
-      { label: "重命名", run: () => renameFolder(target.id) },
-      { label: "粘贴到该目录", run: () => pasteIntoFolder(target.id) },
-      { label: "删除", run: () => void deleteFolder(target.id) },
-    );
+  if (menuAnchor === anchor && !menu.classList.contains("hidden")) {
+    hideRowMenu();
+    return;
   }
+  menu.replaceChildren();
   for (const it of items) {
-    const b = el("button", "menu-item", it.label) as HTMLButtonElement;
+    const b = el("button", "menu-item" + (it.on ? " on" : ""), (it.on ? "✓ " : "") + it.label) as HTMLButtonElement;
     b.setAttribute("role", "menuitem");
     b.addEventListener("click", () => {
       hideRowMenu();
@@ -1355,21 +1469,19 @@ function showRowMenu(
     });
     menu.append(b);
   }
-  // 菜单紧贴三点按钮：先显示再测宽，右缘对齐按钮右缘（贴近按钮、避免右溢出）；
-  // 底部放不下则向上翻转，避免列表末尾的行菜单被裁到页面底下看不到。
+  // 先显示再测宽：右缘对齐锚点右缘（贴近按钮、避免右溢出）；右键则贴着光标。
+  // 底部放不下则向上翻转，避免列表末尾的菜单被裁到页面底下看不到。
   menu.classList.remove("hidden");
   const rect = anchor.getBoundingClientRect();
   const w = menu.offsetWidth;
   const h = menu.offsetHeight;
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  menu.style.left = `${Math.min(Math.max(8, rect.right - w), Math.max(8, vw - w - 8))}px`;
-  let top = rect.bottom + 4;
-  if (top + h > vh - 4) {
-    top = Math.max(4, rect.top - h - 4);
-  }
+  menu.style.left = `${Math.min(Math.max(8, at ? at.x : rect.right - w), Math.max(8, vw - w - 8))}px`;
+  let top = (at ? at.y : rect.bottom) + 4;
+  if (top + h > vh - 4) top = Math.max(4, (at ? at.y : rect.top) - h - 4);
   menu.style.top = `${top}px`;
-  // 键盘：打开即聚焦第一项；Esc 关菜单并把焦点还给三点按钮，Tab 走人就收摊
+  // 键盘：打开即聚焦第一项；Esc 关菜单并把焦点还给锚点，Tab 走人就收摊
   // （onkeydown 赋值而非 addEventListener：菜单是同一个元素反复复用，防监听器叠罗汉）。
   menu.querySelector<HTMLElement>(".menu-item")?.focus();
   menu.onkeydown = (ev) => {
@@ -1382,11 +1494,19 @@ function showRowMenu(
       hideRowMenu();
     }
   };
-  setTimeout(() => document.addEventListener("click", hideRowMenu, { once: true }), 0);
+  menuAnchor = anchor;
 }
 
 function hideRowMenu() {
   document.getElementById("row-menu")!.classList.add("hidden");
+  menuAnchor = null;
+}
+
+// 点到菜单/它的锚点外面 = 关菜单（锚点自己的 click 先跑，这里要能分辨）。
+function closeMenuUnlessIn(t: HTMLElement) {
+  if (!menuAnchor) return;
+  if (menuAnchor.contains(t) || t.closest("#row-menu")) return;
+  hideRowMenu();
 }
 
 // 目录是否有子内容（子目录或条目），用于决定是否显示展开箭头。
@@ -1487,104 +1607,129 @@ function collectDescendantIds(id: string): Set<string> {
   return ids;
 }
 
-function copyShortcut(idx: number) {
-  clipboard = { kind: "shortcut", srcIndex: idx, cut: false };
-  renderListPane(); // 粘贴按钮随剪贴板出现
-  toast("已复制，可用「粘贴」插入");
+// 选中集操作（合并列表里三类条目共存，靠内容定位而不是下标）。
+type AnyEntry = ShortcutItem | Remap | TextExpansion;
+
+function kindOf(o: object): ListKind | null {
+  if ((cfg.shortcuts as object[]).includes(o)) return "shortcut";
+  if ((cfg.remaps as object[]).includes(o)) return "remap";
+  if ((cfg.expansions as object[]).includes(o)) return "expansion";
+  return null;
 }
 
-function cutShortcut(idx: number) {
-  clipboard = { kind: "shortcut", srcIndex: idx, cut: true };
+function arrOf(kind: ListKind): AnyEntry[] {
+  return kind === "shortcut" ? cfg.shortcuts : kind === "remap" ? cfg.remaps : cfg.expansions;
+}
+
+function kindLabel(kind: ListKind | null): string {
+  return kind === "shortcut" ? "快捷键" : kind === "remap" ? "改键" : kind === "expansion" ? "文本扩展" : "条目";
+}
+
+// 条目的展示名（确认框要与列表行对得上号）。
+function labelOf(o: object): string {
+  const kind = kindOf(o);
+  if (kind === "shortcut") return shortcutLabel(o as ShortcutItem);
+  if (kind === "remap") {
+    const r = o as Remap;
+    return `${r.from} → ${remapSummary(r)}`;
+  }
+  if (kind === "expansion") return (o as TextExpansion).trigger || "未命名";
+  return "条目";
+}
+
+// 当前编辑页打开的那条（没有打开 / 不在列表分区时为 null）。
+function selectedObject(): AnyEntry | null {
+  if (selected === null) return null;
+  if (section === "shortcuts") return cfg.shortcuts[selected] ?? null;
+  if (section === "remaps") return cfg.remaps[selected] ?? null;
+  if (section === "expansions") return cfg.expansions[selected] ?? null;
+  return null;
+}
+
+// 复制 / 剪切选中集：整批进剪贴板，粘贴时逐条落位（剪切的粘贴完才摘掉原条目）。
+function copySelection(cut: boolean) {
+  const items: NonNullable<typeof clipboard>["items"] = [];
+  for (const o of picked) {
+    const kind = kindOf(o);
+    if (kind) items.push({ kind, obj: o as AnyEntry });
+  }
+  if (!items.length) return;
+  clipboard = { items, cut };
+  picked.clear();
+  pickAnchor = null;
   renderListPane();
-  toast("已剪切，可用「粘贴」移动");
+  const n = items.length;
+  toast(cut ? `已剪切 ${n} 项，「＋ 新增 → 粘贴」移动过去` : `已复制 ${n} 项，「＋ 新增 → 粘贴」插进去`);
 }
 
 // 原位复制一份（不走剪贴板，省去「先复制再找地方粘」两步）：插在源条目后一条。
-function duplicateShortcut(idx: number) {
-  const src = cfg.shortcuts[idx];
-  if (!src) return;
-  cfg.shortcuts.splice(idx + 1, 0, deepClone(src));
+function duplicateSelection() {
+  for (const o of picked) {
+    const kind = kindOf(o);
+    if (!kind) continue;
+    const arr = arrOf(kind);
+    const i = arr.indexOf(o as AnyEntry);
+    if (i >= 0) arr.splice(i + 1, 0, deepClone(o as AnyEntry));
+  }
   void save();
 }
 
-function duplicateRemap(idx: number) {
-  const src = cfg.remaps[idx];
-  if (!src) return;
-  cfg.remaps.splice(idx + 1, 0, deepClone(src));
-  void save();
-}
-
-function duplicateExpansion(idx: number) {
-  const src = cfg.expansions[idx];
-  if (!src) return;
-  cfg.expansions.splice(idx + 1, 0, deepClone(src));
-  void save();
-}
-
-// 删除确认 + 选中下标修正（与 deleteShortcutAt 同一套口径；两个分区各一份是因为条目类型不同）。
-async function deleteRemapAt(idx: number) {
-  const target = cfg.remaps[idx];
-  if (!target) return;
+// 删除选中集（一次确认）。正在编辑的那条也在其中 → 连草稿一起丢。
+async function deleteSelection() {
+  const objs = [...picked];
+  if (!objs.length) return;
+  const n = objs.length;
+  const editing = selectedObject();
+  const hitEdit = editing !== null && objs.includes(editing);
+  const what =
+    n === 1 ? `${kindLabel(kindOf(objs[0]))}「${labelOf(objs[0])}」` : `选中的 ${n} 项`;
+  const dirty = hitEdit && isDraftDirty() ? "正在编辑的那条还有未保存的改动，会一并丢弃。" : "";
   if (
-    !(await confirmDelete("改键", `${target.from} → ${remapSummary(target)}`, selected === idx && isDraftDirty()))
+    !(await confirmAsk(`删除${what}？${dirty}删除后应用内无法撤销。`, {
+      kind: "warning",
+      title: "删除",
+    }))
   ) {
     return;
   }
-  cfg.remaps.splice(idx, 1);
-  if (selected === idx) {
-    discardDraft();
-    draftNew = false;
-    selected = null;
-  } else if (selected !== null && selected > idx) {
-    selected -= 1;
-  }
-  void save();
-}
-
-async function deleteExpansionAt(idx: number) {
-  const target = cfg.expansions[idx];
-  if (!target) return;
-  if (!(await confirmDelete("文本扩展", target.trigger, selected === idx && isDraftDirty()))) return;
-  cfg.expansions.splice(idx, 1);
-  if (selected === idx) {
-    discardDraft();
-    draftNew = false;
-    selected = null;
-  } else if (selected !== null && selected > idx) {
-    selected -= 1;
+  const set = new Set(objs);
+  cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
+  cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
+  cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
+  picked.clear();
+  pickAnchor = null;
+  if (editing) {
+    if (hitEdit) {
+      discardDraft();
+      draftNew = false;
+      selected = null;
+    } else {
+      selected = arrOf(kindOf(editing)!).indexOf(editing);
+    }
   }
   void save();
 }
 
 function pasteIntoFolder(folderId: string | null) {
   if (!clipboard) return toast("剪贴板为空");
-  const src = cfg.shortcuts[clipboard.srcIndex];
-  if (!src) return;
-  const copy = deepClone(src);
-  copy.folder = folderId;
-  cfg.shortcuts.push(copy);
-  if (clipboard.cut) {
-    const at = cfg.shortcuts.indexOf(src);
-    if (at >= 0) cfg.shortcuts.splice(at, 1);
+  const { items, cut } = clipboard;
+  for (const it of items) {
+    const copy = deepClone(it.obj);
+    if (it.kind === "shortcut") {
+      (copy as ShortcutItem).folder = folderId;
+      cfg.shortcuts.push(copy as ShortcutItem);
+    } else if (it.kind === "remap") {
+      cfg.remaps.push(copy as Remap);
+    } else {
+      cfg.expansions.push(copy as TextExpansion);
+    }
+  }
+  if (cut) {
+    const set = new Set(items.map((i) => i.obj));
+    cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
+    cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
+    cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
     clipboard = null;
-  }
-  void save();
-}
-
-async function deleteShortcutAt(idx: number) {
-  const target = cfg.shortcuts[idx];
-  if (!target) return;
-  // 正在编辑这条且草稿有改动 → 删除会连改动一起丢，要说清楚。
-  if (!(await confirmDelete("快捷键", shortcutLabel(target), selected === idx && isDraftDirty()))) {
-    return;
-  }
-  cfg.shortcuts.splice(idx, 1);
-  if (selected === idx) {
-    discardDraft();
-    draftNew = false;
-    selected = null;
-  } else if (selected !== null && selected > idx) {
-    selected -= 1;
   }
   void save();
 }
@@ -1608,11 +1753,9 @@ function discardNewDraft() {
 }
 
 // ---- 拖拽排序/移动 ----
-// 当前分区的列表元素：落点计算/指示在三个列表间共用同一套几何（行结构一致）。
+// 合并列表只有一份：落点计算/指示都在它上面（三类行结构一致）。
 function activeListEl(): HTMLElement {
-  return document.getElementById(
-    section === "remaps" ? "remap-list" : section === "expansions" ? "expansion-list" : "shortcut-list",
-  )!;
+  return document.getElementById("shortcut-list")!;
 }
 
 function clearDropIndicators() {
@@ -1646,12 +1789,20 @@ function wouldCycle(zone: DropZone): boolean {
   return newParent !== null && collectDescendantIds(selfId).has(newParent);
 }
 
+// 合并列表里三类行同处一个 <ul>：落点必须先认 kind（下标分属不同数组，串了就是搬错条目）。
+function dragRowKind(): ListKind {
+  if (!dragPayload) return "shortcut";
+  return dragPayload.kind === "folder" ? "shortcut" : dragPayload.kind;
+}
+
 function computeDropZoneAt(x: number, y: number): DropZone | null {
   const list = activeListEl();
   const hit = document.elementFromPoint(x, y) as HTMLElement | null;
   if (!hit || !list.contains(hit)) return null; // 列表外视为无效落点
   const folderEl = hit.closest(".folder-row") as HTMLElement | null;
   if (folderEl) {
+    // 改键/文本扩展没有目录概念，落到目录上不给落点。
+    if (dragPayload && dragPayload.kind !== "shortcut" && dragPayload.kind !== "folder") return null;
     const folderId = folderEl.dataset.folderId!;
     if (dragPayload?.kind === "folder") {
       const r = folderEl.getBoundingClientRect();
@@ -1664,15 +1815,18 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
   }
   const rowEl = hit.closest(".row") as HTMLElement | null;
   if (rowEl) {
+    if (rowEl.dataset.kind !== dragRowKind()) return null; // 异类行：不当换位目标
     const idx = Number(rowEl.dataset.idx);
     const r = rowEl.getBoundingClientRect();
     const pos = y - r.top < r.height / 2 ? "before" : "after";
     return { kind: "row", idx, pos };
   }
-  // 平铺列表（改键/扩展）没有目录也没有「根」：行间缝隙/末尾空白按 y 找最近行插到它前/后，
-  // 不能一律算成「根」（那是快捷键专属的落区语义）。
+  // 行间缝隙/末尾空白：只在同类行里按 y 找最近行插到它前/后（异类行的下标借不得）；
+  // 快捷键还能落「根」（移出目录），改键/扩展没有「根」可言。
   if (dragPayload && (dragPayload.kind === "remap" || dragPayload.kind === "expansion")) {
-    const rows = Array.from(list.querySelectorAll<HTMLElement>(".row"));
+    const rows = Array.from(
+      list.querySelectorAll<HTMLElement>(`.row[data-kind="${dragPayload.kind}"]`),
+    );
     for (const r of rows) {
       const rect = r.getBoundingClientRect();
       if (y < rect.bottom) {
@@ -1685,6 +1839,7 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
     }
     const last = rows[rows.length - 1];
     if (last) return { kind: "row", idx: Number(last.dataset.idx), pos: "after" };
+    return null;
   }
   return { kind: "root" };
 }
@@ -1705,7 +1860,9 @@ function showDropIndicator(zone: DropZone) {
       zone.pos === "into" ? "drop-into" : zone.pos === "before" ? "drop-before" : "drop-after",
     );
   } else {
-    const el = list.querySelector(`.row[data-idx="${zone.idx}"]`) as HTMLElement | null;
+    const el = list.querySelector(
+      `.row[data-kind="${dragRowKind()}"][data-idx="${zone.idx}"]`,
+    ) as HTMLElement | null;
     if (!el) return;
     setDropIndicator(el, zone.pos === "before" ? "drop-before" : "drop-after");
   }
@@ -1756,16 +1913,19 @@ function applyDrop(zone: DropZone) {
   if (dragPayload.kind === "remap" || dragPayload.kind === "expansion") {
     const arr: (Remap | TextExpansion)[] =
       dragPayload.kind === "remap" ? cfg.remaps : cfg.expansions;
-    const selObj = selected !== null ? arr[selected] : null;
+    // selected 是三类共用的下标变量：只有编辑页开着的就是这一类时才有意义去修。
+    const secMatch = section === KIND_SECTION[dragPayload.kind];
+    const selObj = secMatch && selected !== null ? arr[selected] : null;
     if (zone.kind === "row") {
       moveWithin(arr, dragPayload.idx, zone.pos === "before" ? zone.idx : zone.idx + 1);
     }
-    selected = selObj ? arr.indexOf(selObj) : null;
+    if (secMatch) selected = selObj ? arr.indexOf(selObj) : null;
     void save();
     return;
   }
 
-  const selObj = selected !== null ? cfg.shortcuts[selected] : null;
+  const secMatch = section === "shortcuts";
+  const selObj = secMatch && selected !== null ? cfg.shortcuts[selected] : null;
 
   if (dragPayload.kind === "shortcut") {
     const srcIdx = dragPayload.idx;
@@ -1795,7 +1955,7 @@ function applyDrop(zone: DropZone) {
     }
   }
 
-  selected = selObj ? cfg.shortcuts.indexOf(selObj) : null;
+  if (secMatch) selected = selObj ? cfg.shortcuts.indexOf(selObj) : null;
   void save();
 }
 
@@ -1889,95 +2049,10 @@ function onPointerUp(e: PointerEvent) {
   setTimeout(() => (suppressClick = false), 0);
 }
 
-function renderRemaps() {
-  const list = document.getElementById("remap-list")!;
-  list.replaceChildren();
-  cfg.remaps.forEach((r, i) => {
-    if (!remapVisible(r)) return;
-
-    const li = el("li", "row" + (selected === i ? " selected" : "") + (picked.has(r) ? " picked" : ""));
-    li.dataset.idx = String(i);
-    makeRow(li, () => void requestOpenDetail(i), { selected: selected === i });
-    attachDragStart(li, { kind: "remap", idx: i });
-    const on = el("input", "toggle") as HTMLInputElement;
-    on.type = "checkbox";
-    on.checked = r.enabled;
-    on.addEventListener("change", (e) => {
-      e.stopPropagation();
-      r.enabled = on.checked;
-      void save();
-    });
-
-    const isTiming = !!(r.tap || r.hold || r.hold_layer || r.lock_layer || r.oneshot || r.sticky || r.tap2 || r.tap3);
-    li.append(
-      on,
-      el("span", "triggers", r.from),
-      el("span", "arrow", isTiming ? "⇥" : "→"),
-      el("span", "triggers", remapSummary(r)),
-      moreButton((btn) => showRowMenu(btn, { kind: "remap", idx: i })),
-    );
-    li.addEventListener("click", (e) => {
-      if ((e.target as HTMLElement).closest("input, button")) return;
-      if (e.ctrlKey || e.metaKey) {
-        togglePicked(r);
-        return;
-      }
-      void requestOpenDetail(i);
-    });
-    list.append(li);
-  });
-}
-
-function renderExpansions() {
-  const list = document.getElementById("expansion-list")!;
-  list.replaceChildren();
-  cfg.expansions.forEach((e, i) => {
-    if (!expansionVisible(e)) return;
-
-    const li = el("li", "row" + (selected === i ? " selected" : "") + (picked.has(e) ? " picked" : ""));
-    li.dataset.idx = String(i);
-    makeRow(li, () => void requestOpenDetail(i), { selected: selected === i });
-    attachDragStart(li, { kind: "expansion", idx: i });
-    const on = el("input", "toggle") as HTMLInputElement;
-    on.type = "checkbox";
-    on.checked = e.enabled;
-    on.addEventListener("change", (ev) => {
-      ev.stopPropagation();
-      e.enabled = on.checked;
-      void save();
-    });
-
-    li.append(
-      on,
-      el("span", "triggers", e.trigger),
-      el("span", "arrow", "→"),
-      el("span", "row-name", e.replace || "（删除触发词）"),
-      moreButton((btn) => showRowMenu(btn, { kind: "expansion", idx: i })),
-    );
-    li.addEventListener("click", (ev) => {
-      if ((ev.target as HTMLElement).closest("input, button")) return;
-      if (ev.ctrlKey || ev.metaKey) {
-        togglePicked(e);
-        return;
-      }
-      void requestOpenDetail(i);
-    });
-    list.append(li);
-  });
-}
-
-// ---- 批量启停 / 全选（7.3-⑳） ----
+// ---- 多选（Ctrl 加减 / Shift 范围）与批量启停 ----
 function togglePicked(o: object) {
   if (picked.has(o)) picked.delete(o);
   else picked.add(o);
-  renderListPane();
-}
-
-// 全选 = 当前「可见」的全部条目（搜索 + 筛选之后），与渲染同一套判定。
-function selectAllVisible() {
-  if (section === "remaps") cfg.remaps.forEach((r) => remapVisible(r) && picked.add(r));
-  else if (section === "expansions") cfg.expansions.forEach((e) => expansionVisible(e) && picked.add(e));
-  else cfg.shortcuts.forEach((s) => shortcutVisible(s) && picked.add(s));
   renderListPane();
 }
 
@@ -1988,6 +2063,7 @@ async function setPickedEnabled(v: boolean) {
   for (const r of cfg.remaps) if (picked.has(r)) { r.enabled = v; n++; }
   for (const e of cfg.expansions) if (picked.has(e)) { e.enabled = v; n++; }
   picked.clear();
+  pickAnchor = null;
   const ok = await save(); // save 自带「已保存」提示；成功后盖上条数，失败保留错误提示
   if (ok) toast(`已${v ? "启用" : "停用"} ${n} 项`);
 }
@@ -2115,13 +2191,18 @@ function fillExpansionEditor() {
     : expansionDraft.trigger || "（未命名）";
 }
 
-function openDetail(i: number, isNew = false) {
+// 打开编辑页。新增快捷键可带 folderId（目录行的「＋」= 在该目录里直接新增）。
+// 三类草稿互斥：换类型打开前先把上一份清掉，免得两份草稿同时挂着。
+function openDetail(i: number, isNew = false, folderId: string | null = null) {
+  draft = null;
+  remapDraft = null;
+  expansionDraft = null;
   selected = i;
   draftNew = isNew;
   draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
   if (section === "shortcuts") {
     draft = isNew
-      ? { name: "", description: "", folder: null, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
+      ? { name: "", description: "", folder: folderId, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
       : deepClone(cfg.shortcuts[i]);
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
     if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
@@ -2187,7 +2268,7 @@ async function saveShortcutDetail(): Promise<boolean> {
   if (ok) draftBaseline = draftSignature();
   else if (!draft) draftBaseline = null;
   render();
-  if (ok) flashRow(selected ?? -1, "shortcut-list");
+  if (ok) flashRow(selected ?? -1, "shortcut");
   return ok;
 }
 
@@ -2251,7 +2332,7 @@ async function saveRemapDetail(): Promise<boolean> {
   selected = null;
   draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow(cfg.remaps.indexOf(item), "remap-list");
+  if (ok) flashRow(cfg.remaps.indexOf(item), "remap");
   return ok;
 }
 
@@ -2281,7 +2362,7 @@ async function saveExpansionDetail(): Promise<boolean> {
   selected = null;
   draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow(cfg.expansions.indexOf(item), "expansion-list");
+  if (ok) flashRow(cfg.expansions.indexOf(item), "expansion");
   return ok;
 }
 
@@ -2430,10 +2511,21 @@ async function saveCurrentDraft(): Promise<boolean> {
   return false;
 }
 
-// 列表行点开 / 「+ 新增」：草稿有未保存改动时先问一句，别默默覆盖掉草稿。
-async function requestOpenDetail(i: number, isNew = false) {
+// 列表行点开（合并列表：点哪一类的行就切到哪个编辑分区）/ 「＋ 新增」：
+// 草稿有未保存改动时先问一句，别默默覆盖掉草稿。
+async function requestOpenDetail(i: number, isNew = false, kind: ListKind = "shortcut") {
   if (!(await confirmLeaveDraft())) return;
+  const tab = KIND_SECTION[kind];
+  if (section !== tab) switchSectionNow(tab, { keepList: true });
   openDetail(i, isNew);
+}
+
+// 「＋ 新增」下拉 / 目录行的「＋」：开新草稿（可指定快捷键要落进的目录）。
+async function requestNew(kind: ListKind, folderId: string | null = null) {
+  if (!(await confirmLeaveDraft())) return;
+  const tab = KIND_SECTION[kind];
+  if (section !== tab) switchSectionNow(tab, { keepList: true });
+  openDetail(-1, true, folderId);
 }
 
 // 取消 / ×  关闭编辑页：同样是「离开」，走同一道守卫。
@@ -2479,9 +2571,10 @@ async function applyExternalConfig(next: Config) {
   toast("配置文件已被外部修改，已重新加载");
 }
 
-function flashRow(i: number, listId: string) {
+// 合并列表里三类行同在一个 <ul>，靠 data-kind 认行（下标是各自数组的下标）。
+function flashRow(i: number, kind: ListKind) {
   if (i < 0) return;
-  const row = document.querySelector<HTMLElement>(`#${listId} .row[data-idx="${i}"]`);
+  const row = document.querySelector<HTMLElement>(`#shortcut-list .row[data-kind="${kind}"][data-idx="${i}"]`);
   if (!row) return;
   row.classList.remove("flash");
   void row.offsetWidth; // 强制重排以重启动画
@@ -3478,11 +3571,11 @@ async function pickDir(input: HTMLInputElement) {
 }
 
 // ---- 冲突提示 ----
-// 快捷键列表里只显示一个可点击、可消除的气泡（冲突清单不常驻列表）；冲突详情常驻「消息 → 冲突」标签。
+// 合并列表里只显示一个可点击、可消除的气泡（冲突清单不常驻列表）；冲突详情常驻「消息 → 冲突」标签。
 function renderConflictBubble() {
   const box = document.getElementById("conflict-list")!;
   box.replaceChildren();
-  const show = section === "shortcuts" && conflicts.length > 0 && !conflictBubbleDismissed;
+  const show = isListSection(section) && conflicts.length > 0 && !conflictBubbleDismissed;
   box.classList.toggle("hidden", !show);
   if (!show) return;
   const { errors, warns, caps } = splitConflicts(conflicts);
@@ -3965,10 +4058,16 @@ function bind() {
     b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
   });
 
-  document.getElementById("add-btn")!.addEventListener("click", () => {
-    if (section === "shortcuts" || section === "remaps" || section === "expansions") {
-      void requestOpenDetail(-1, true);
-    }
+  // 「＋ 新增」下拉：四类条目都能从这里开（快捷键可带当前目录，见目录行的 ＋）。
+  document.getElementById("add-btn")!.addEventListener("click", (e) => {
+    const items: MenuItem[] = [
+      { label: "新增快捷键", run: () => void requestNew("shortcut") },
+      { label: "新增目录", run: () => addFolder(null) },
+      { label: "新增改键", run: () => void requestNew("remap") },
+      { label: "新增文本扩展", run: () => void requestNew("expansion") },
+    ];
+    if (clipboard) items.push({ label: "粘贴到根级", run: () => pasteIntoFolder(null) });
+    showMenu(e.currentTarget as HTMLElement, items);
   });
 
   // 脏标记：编辑页里任何一次输入/选择/点按都可能改动草稿，用事件委托统一重算，
@@ -4018,10 +4117,6 @@ function bind() {
   document.getElementById("import-result-modal")!.querySelector(".modal-mask")!
     .addEventListener("click", hideImportResult);
 
-  document.getElementById("add-folder-btn")!.addEventListener("click", () => {
-    if (section === "shortcuts") addFolder(null);
-  });
-
   document.getElementById("add-layer-btn")!.addEventListener("click", addLayer);
 
   document.getElementById("list-search")!.addEventListener("input", (e) => {
@@ -4029,27 +4124,26 @@ function bind() {
     renderListPane();
   });
 
-  // 筛选条（7.3-⑳）：与搜索叠加；改完只重画列表栏（与搜索同路径）。
-  document.getElementById("filter-enabled")!.addEventListener("click", () => {
-    listFilter.enabled = !listFilter.enabled;
-    renderListPane();
-  });
-  document.getElementById("filter-conflicted")!.addEventListener("click", () => {
-    listFilter.conflicted = !listFilter.conflicted;
-    renderListPane();
-  });
-
-  // 批量条：全选按「当前可见」取，启停对选中集一次性写入并落盘。
-  document.getElementById("batch-all")!.addEventListener("click", selectAllVisible);
-  document.getElementById("batch-enable")!.addEventListener("click", () => void setPickedEnabled(true));
-  document.getElementById("batch-disable")!.addEventListener("click", () => void setPickedEnabled(false));
-  document.getElementById("batch-clear")!.addEventListener("click", () => {
-    picked.clear();
-    renderListPane();
+  // 筛选下拉（与搜索叠加；改完只重画列表栏，同搜索路径）。勾上 = 生效。
+  document.getElementById("filter-btn")!.addEventListener("click", (e) => {
+    const flip = (k: "enabled" | "conflicted") => () => {
+      listFilter[k] = !listFilter[k];
+      renderListPane();
+    };
+    showMenu(e.currentTarget as HTMLElement, [
+      { label: "已启用", on: listFilter.enabled, run: flip("enabled") },
+      { label: "有冲突", on: listFilter.conflicted, run: flip("conflicted") },
+    ]);
   });
 
-  // 粘贴到根级（此前只能粘进目录，根级没入口）。
-  document.getElementById("paste-btn")!.addEventListener("click", () => pasteIntoFolder(null));
+  // 菜单外部点击 / 别处右键 → 收起。常驻监听（菜单是同一个元素反复开关，不能用 once）。
+  document.addEventListener("click", (e) => closeMenuUnlessIn(e.target as HTMLElement));
+  document.addEventListener("contextmenu", (e) =>
+    closeMenuUnlessIn(e.target as HTMLElement),
+  );
+
+  // 列表/详情滚动时菜单留在原地会盖错地方，直接收掉（scroll 不冒泡，用捕获阶段一次管全部滚动容器）。
+  document.addEventListener("scroll", hideRowMenu, true);
 
   // 触发词内联校验（空/含空白即标红；保存处另有硬拦截）。
   document.getElementById("edit-exp-trigger")!.addEventListener("input", (e) => {
@@ -4335,20 +4429,33 @@ async function switchSection(tab: Section) {
   switchSectionNow(tab);
 }
 
-function switchSectionNow(tab: Section) {
+// rail 只有 4 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
+// （合并列表），所以落到「快捷键」上高亮，不另造页签。
+function syncRailTab(tab: Section) {
+  const rail = tab === "remaps" || tab === "expansions" ? "shortcuts" : tab;
+  document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
+    b.classList.toggle("active", b.dataset.tab === rail);
+  });
+}
+
+// keepList：列表分区之间跳转（点行开别的类别的编辑页）时保住搜索/筛选/多选，
+// 别把用户刚敲的关键词抹掉；切到消息/设置这类另起一页时仍整套复位。
+function switchSectionNow(tab: Section, opts?: { keepList?: boolean }) {
   void stopRecIfAny();
   discardDraft();
   draftNew = false;
   selected = null;
   section = tab;
-  search = "";
-  listFilter = { enabled: false, conflicted: false };
-  picked.clear();
+  if (!opts?.keepList) {
+    search = "";
+    listFilter = { enabled: false, conflicted: false };
+    picked.clear();
+    pickAnchor = null;
+    (document.getElementById("list-search") as HTMLInputElement).value = "";
+  }
+  hideRowMenu();
   if (tab === "messages") markRead();
-  (document.getElementById("list-search") as HTMLInputElement).value = "";
-  document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
-    b.classList.toggle("active", b.dataset.tab === tab);
-  });
+  syncRailTab(tab);
   render();
 }
 
