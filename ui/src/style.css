@@ -113,16 +113,56 @@ body {
   min-height: 0;
 }
 
-.list-head {
+/* 工具栏：搜索 + 筛选 + 新增（Postman 顶栏同款排布）。 */
+.list-toolbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 14px 14px 8px;
+  gap: 6px;
+  padding: 12px 10px 8px;
 }
 
-.list-head h2 {
-  font-size: 15px;
+.list-toolbar .search {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+}
+
+.list-toolbar .tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 6px 8px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.list-toolbar .tool-btn svg {
+  width: 13px;
+  height: 13px;
+}
+
+.list-toolbar .tool-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
   font-weight: 600;
+}
+
+/* 筛选生效中：按钮亮一下（列表栏里唯一的「有筛选」信号）。 */
+.list-toolbar .tool-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+
+.list-toolbar .caret {
+  font-size: 10px;
+  opacity: 0.85;
 }
 
 .search {
@@ -166,12 +206,50 @@ body {
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  gap: 6px;
+  padding: 4px 6px;
   border: 1px solid transparent;
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
+}
+
+/* 行首类型徽标：三类条目同处一列，靠它一眼分辨（Postman 的 GET/POST/DEL 同理）。 */
+.row-kind {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  color: var(--muted);
+}
+
+.row-kind svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.row-kind.kind-shortcut {
+  color: var(--accent);
+}
+
+.row-kind.kind-remap {
+  color: #4f9cf9;
+}
+
+.row-kind.kind-expansion {
+  color: #4ec97a;
+}
+
+/* 停用态：整行压暗，hover 出 title（右键可启用）。 */
+.row.off .row-kind {
+  color: var(--muted);
+}
+
+.row.off .row-name,
+.row.off .row-trigger,
+.row.off .triggers,
+.row.off .arrow {
+  opacity: 0.55;
 }
 
 .row:hover {
@@ -248,8 +326,9 @@ body {
   flex-shrink: 0;
 }
 
-/* 列表行「更多」按钮：hover 才显示 */
-.row-more {
+/* 行内操作按钮（⋯ / 目录的 ＋）：hover 才显示 */
+.row-more,
+.row-add {
   flex-shrink: 0;
   width: 22px;
   height: 22px;
@@ -264,11 +343,20 @@ body {
   cursor: pointer;
 }
 
+.row-add {
+  font-size: 14px;
+}
+
 .row:hover .row-more,
 .folder-row:hover .row-more,
 .row:focus-within .row-more,
 .folder-row:focus-within .row-more,
-.row-more:focus {
+.row-more:focus,
+.row:hover .row-add,
+.folder-row:hover .row-add,
+.row:focus-within .row-add,
+.folder-row:focus-within .row-add,
+.row-add:focus {
   opacity: 1;
 }
 
@@ -279,17 +367,19 @@ body {
   outline-offset: -2px;
 }
 
-.row-more:hover {
+.row-more:hover,
+.row-add:hover {
   color: var(--text);
   background: var(--line);
 }
 
-/* 目录行 */
+/* 目录行：padding-left 归零、gap 4、箭头列 11px —— 三者之和 15px = ITEM_OFF，
+   条目行（margin = 层级×16 + 15）的框体左缘正好压在 📁 图标左缘上。 */
 .folder-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 8px;
+  gap: 4px;
+  padding: 4px 8px 4px 0;
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
@@ -302,7 +392,7 @@ body {
 
 .folder-arrow {
   flex-shrink: 0;
-  width: 14px;
+  width: 11px;
   text-align: center;
   color: var(--muted);
   font-size: 11px;
@@ -367,6 +457,12 @@ body {
 .menu-item:hover {
   background: var(--bg);
   color: var(--accent);
+}
+
+/* 勾选项（筛选下拉）：生效中的那条亮着 */
+.menu-item.on {
+  color: var(--accent);
+  font-weight: 600;
 }
 
 /* ---------- 右侧：详情区 ---------- */
@@ -2078,58 +2174,8 @@ pre.msg-v {
   gap: 8px;
 }
 
-/* ---- 7.3-⑳ 列表筛选 / 批量启停 / 内联校验 ---- */
-#filter-bar {
-  display: flex;
-  gap: 6px;
-  padding: 0 8px 8px;
-}
-
-#filter-bar button {
-  flex: 1;
-  padding: 4px 8px;
-  font-size: 12px;
-}
-
-#filter-bar button.on {
-  color: var(--accent);
-  border-color: var(--accent);
-  background: var(--accent-dim);
-}
-
-#batch-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px 8px;
-  font-size: 12px;
-  color: var(--muted);
-}
-
-#batch-bar .flex-spacer {
-  flex: 1;
-}
-
-#batch-bar button {
-  padding: 3px 8px;
-  font-size: 12px;
-}
-
-#batch-bar button:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-#batch-bar button:disabled:hover {
-  color: var(--muted);
-  border-color: var(--line);
-}
-
-#batch-bar b {
-  color: var(--text);
-}
-
-/* Ctrl+点选中（待批量操作）的行：虚线框，与「正在编辑」的实底选中区分 */
+/* ---- 多选（Ctrl/Shift 点行、行 ⋯/右键操作） ---- */
+/* 选中的行：虚线框，与「正在编辑」的实底选中区分 */
 .row.picked {
   border-color: var(--accent);
   border-style: dashed;
