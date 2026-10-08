@@ -1476,6 +1476,7 @@ mod tests {
         vec![TextExpansion {
             trigger: "addr".into(),
             replace: "我的地址".into(),
+            folder: None,
             enabled: true,
         }]
     }

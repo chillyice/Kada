@@ -1295,6 +1295,9 @@ pub struct Remap {
     pub from: String,
     /// 普通改键目标（其余形态字段留空时使用）。
     pub to: String,
+    /// 所属目录 id（`None` = 根级）。只用于列表分组展示，不参与触发判定。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
     /// 短按输出键（tap-hold；空 = 无短按行为）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tap: Option<String>,
@@ -1510,6 +1513,9 @@ pub struct TextExpansion {
     pub trigger: String,
     /// 展开文本（支持 `{date}` / `{time}` / `{clipboard}` 动态片段占位符）。
     pub replace: String,
+    /// 所属目录 id（`None` = 根级）。只用于列表分组展示，不参与匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -2797,7 +2803,13 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         let mut item = r.clone();
 
-        // 归属层 / 长按切层引用校验（断引用清空）。
+        // 归属目录 / 归属层 / 长按切层引用校验（断引用清空）。
+        if let Some(fid) = &item.folder {
+            if !valid_folder_ids.contains(fid) {
+                ignored.push(format!("改键「{}」所属目录已忽略：目录不存在", r.from));
+                item.folder = None;
+            }
+        }
         if let Some(lid) = &item.layer {
             if !valid_layer_ids.contains(lid) {
                 ignored.push(format!("改键「{}」所属层已忽略：层不存在", r.from));
@@ -2903,7 +2915,16 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
 
     for e in &cfg.expansions {
         match e.validate() {
-            Ok(()) => out.expansions.push(e.clone()),
+            Ok(()) => {
+                let mut item = e.clone();
+                if let Some(fid) = &item.folder {
+                    if !valid_folder_ids.contains(fid) {
+                        ignored.push(format!("文本扩展「{}」所属目录已忽略：目录不存在", e.trigger));
+                        item.folder = None;
+                    }
+                }
+                out.expansions.push(item);
+            }
             Err(err) => ignored.push(format!("文本扩展「{}」已忽略：{err}", e.trigger)),
         }
     }
@@ -3908,7 +3929,7 @@ mod os_and_sanitize_tests {
                 },
                 Remap { from: "F1".into(), to: "Home".into(), enabled: true, ..Default::default() },
             ],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true }],
+            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true, ..Default::default() }],
             settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
         };
 
@@ -4062,6 +4083,30 @@ mod new_action_and_folder_tests {
                     ..Default::default()
                 },
             ],
+            // 改键/文本扩展与快捷键同规则：目录引用也参与校验（断引用清空）。
+            remaps: vec![
+                Remap {
+                    from: "CapsLock".into(),
+                    to: "Ctrl".into(),
+                    folder: Some("a".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+                Remap {
+                    from: "F1".into(),
+                    to: "F2".into(),
+                    folder: Some("missing".into()),
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            expansions: vec![TextExpansion {
+                trigger: ";a".into(),
+                replace: "x".into(),
+                folder: Some("missing".into()),
+                enabled: true,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let (clean, ignored) = sanitize_config(&cfg);
@@ -4074,6 +4119,9 @@ mod new_action_and_folder_tests {
         // 无效目录引用被清空
         assert_eq!(clean.shortcuts[0].folder.as_deref(), Some("a"));
         assert!(clean.shortcuts[1].folder.is_none());
+        assert_eq!(clean.remaps[0].folder.as_deref(), Some("a"));
+        assert!(clean.remaps[1].folder.is_none());
+        assert!(clean.expansions[0].folder.is_none());
     }
 }
 
@@ -4113,10 +4161,10 @@ mod hotstring_tests {
     #[test]
     fn match_expansion_longest_wins() {
         let exps = vec![
-            TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true },
-            TextExpansion { trigger: "email".into(), replace: "邮箱".into(), enabled: true },
-            TextExpansion { trigger: "work-email".into(), replace: "工作邮箱".into(), enabled: true },
-            TextExpansion { trigger: "off".into(), replace: "关".into(), enabled: false }, // 停用
+            TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true, ..Default::default() },
+            TextExpansion { trigger: "email".into(), replace: "邮箱".into(), enabled: true, ..Default::default() },
+            TextExpansion { trigger: "work-email".into(), replace: "工作邮箱".into(), enabled: true, ..Default::default() },
+            TextExpansion { trigger: "off".into(), replace: "关".into(), enabled: false, ..Default::default() }, // 停用
         ];
         assert_eq!(match_expansion(":addr", &exps).unwrap().replace, "地址");
         // 最长匹配优先（work-email 而非 email）
@@ -4126,25 +4174,25 @@ mod hotstring_tests {
         // 无命中
         assert_eq!(match_expansion("xyz", &exps), None);
         // 空触发词不参与匹配
-        let exps2 = vec![TextExpansion { trigger: "".into(), replace: "x".into(), enabled: true }];
+        let exps2 = vec![TextExpansion { trigger: "".into(), replace: "x".into(), enabled: true, ..Default::default() }];
         assert_eq!(match_expansion("", &exps2), None);
     }
 
     #[test]
     fn expansion_json_roundtrip_and_validate() {
         let exps = vec![
-            TextExpansion { trigger: ":addr".into(), replace: "上海市…".into(), enabled: true },
-            TextExpansion { trigger: ";sig".into(), replace: "{date}".into(), enabled: false },
+            TextExpansion { trigger: ":addr".into(), replace: "上海市…".into(), enabled: true, ..Default::default() },
+            TextExpansion { trigger: ";sig".into(), replace: "{date}".into(), enabled: false, ..Default::default() },
         ];
         let json = serde_json::to_string(&exps).unwrap();
         let back: Vec<TextExpansion> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, exps);
 
         // 空触发词必被拒绝；空替换允许（等价删除触发词）
-        assert!(TextExpansion { trigger: "  ".into(), replace: "x".into(), enabled: true }
+        assert!(TextExpansion { trigger: "  ".into(), replace: "x".into(), enabled: true, ..Default::default() }
             .validate()
             .is_err());
-        assert!(TextExpansion { trigger: "ok".into(), replace: "".into(), enabled: true }
+        assert!(TextExpansion { trigger: "ok".into(), replace: "".into(), enabled: true, ..Default::default() }
             .validate()
             .is_ok());
     }
@@ -4153,8 +4201,8 @@ mod hotstring_tests {
     fn sanitize_drops_invalid_expansions() {
         let cfg = Config {
             expansions: vec![
-                TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true },
-                TextExpansion { trigger: "  ".into(), replace: "坏".into(), enabled: true },
+                TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true, ..Default::default() },
+                TextExpansion { trigger: "  ".into(), replace: "坏".into(), enabled: true, ..Default::default() },
             ],
             ..Default::default()
         };

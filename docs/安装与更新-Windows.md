@@ -77,7 +77,16 @@ npm run tauri build
 - CI 用两个 GitHub Secrets（Settings → Secrets and variables → Actions）：
   - `TAURI_SIGNING_PRIVATE_KEY` = `kada.key` 的**文件全文**（本机这份是单行 348 字符、无换行）
   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` = 私钥密码；本项目生成时未设密码，该 secret 留空字符串即可
-- 本地发版（不走 CI）也要签：设 `TAURI_SIGNING_PRIVATE_KEY_PATH` 指向私钥文件即可（实测 `TAURI_SIGNING_PRIVATE_KEY_PATH="C:\Users\chill\.tauri\kada.key" tauri build --bundles nsis` 能出 `.sig`）。
+- 本地发版（不走 CI）也要签，**2026-10-08 实测的可用配方**（CLI 2.11.4）：
+  - `build` 只认 `TAURI_SIGNING_PRIVATE_KEY`（= `kada.key` **文件全文**）；只设 `TAURI_SIGNING_PRIVATE_KEY_PATH` 会报 `A public key has been found, but no private key`（`..._PATH` 只有 `tauri signer sign -f` 认）。
+  - 密码是**空串**，但 PowerShell `$env:X=""` 等于**删除**该变量 → 会卡在 `expect a prompt for password`（交互提示在管道下永远等不到）。用 Python 传「存在但为空」的环境变量即可无人值守：
+    ```py
+    env = dict(os.environ)
+    env["TAURI_SIGNING_PRIVATE_KEY"] = Path(r"C:\Users\chill\.tauri\kada.key").read_text()
+    env["TAURI_SIGNING_PRIVATE_KEY_PASSWORD"] = ""
+    subprocess.run("npx tauri build --bundles nsis", shell=True, env=env)  # cwd = 仓库根
+    ```
+  - 产物：仓库根 `target/release/bundle/nsis/Kada_x.y.z_x64-setup.exe` + 同名 `.sig`；打包前先退出运行中的 Kada。
 - 客户端只认内嵌公钥校验签名，**私钥泄露才需轮换公钥并随新版客户端下发**。
 - ⚠ **私钥丢失 = 现有用户再也收不到更新**（只能轮换公钥 + 让用户手动装一次新版）。请把 `kada.key` 备份进密码管理器。
 - **已开启加固**：`plugins.updater.requireSignedVersion = true` 要求签名里带版本号，挡「拿旧版有效签名冒充新版」的降级攻击（端点响应不走签名，`version` 字段可被篡改；校验签名里的版本号与端点声明是否一致）。**发版必须用会把版本号写进签名 `trusted comment` 的 Tauri CLI**（`version:X.Y.Z` 字段）：本地 CLI 2.11.4、CI 的 `tauri-action@v0` 都会写；不写版本号的老签名包会被客户端以 `MissingSignedVersion` 直接拒装。本项目此前从未发过版，无历史签名包袱，故可直接开启。
