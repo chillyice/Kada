@@ -97,9 +97,8 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npx tauri build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串，见 `docs/安装与更新-Windows.md` §2.3）。
-- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（`start` / `KeyEvent` / `Action` / `simulate` / `foreground_window` / `reinstall_count`），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
-
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npx tauri build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串，见 `docs/安装与更新-Windows.md` §2.3）。**两条渠道发的不是同一个文件**：GitHub Releases 发 **NSIS 包**（自动更新用），ihomy 发布页 `https://ihomy.top/kada` 发**裸 `kada.exe`**——流程见 `安装与更新-Windows.md` §1.2。
+- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（清单见 `需求设计说明书.md` §4），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 ## 里程碑与规划
 
 M0–M5 已完成（详见 §7）。
