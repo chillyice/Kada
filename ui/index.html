@@ -12,20 +12,20 @@
       <aside class="rail">
         <div class="rail-brand" title="咔哒 Kada">K</div>
         <nav class="rail-nav">
-          <button class="rail-item active" data-tab="shortcuts" title="快捷键">
+          <button class="rail-item active" data-tab="shortcuts">
             <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor"/></svg>
             <span>快捷键</span>
           </button>
-          <button class="rail-item" data-tab="messages" title="消息">
+          <button class="rail-item" data-tab="messages">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span>消息</span>
             <span id="msg-badge" class="badge hidden"></span>
           </button>
-          <button class="rail-item" data-tab="settings" title="设置">
+          <button class="rail-item" data-tab="settings">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
             <span>设置</span>
           </button>
-          <button class="rail-item" data-tab="help" title="帮助">
+          <button class="rail-item" data-tab="help">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
             <span>帮助</span>
           </button>
@@ -173,8 +173,11 @@
                   <label>改为（普通改键）</label>
                   <select id="remap-to"></select>
                 </div>
-                <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。
-                  <br />切层键（长按进入层 / 长按锁定层）在「层」页签里设。</p>
+                <details class="hint-fold">
+                  <summary>这些形态分别是什么意思</summary>
+                  <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。</p>
+                  <p class="hint">切层键（长按进入层 / 长按锁定层）在「层」页签里设。</p>
+                </details>
               </div>
               <div class="work-view hidden" id="work-expansion">
                 <div class="editor-row">
@@ -207,7 +210,10 @@
                   <label>长按锁定层（切换式切层，可选）</label>
                   <select id="remap-lock-layer"></select>
                 </div>
-                <p class="hint">「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
+                <details class="hint-fold">
+                  <summary>两种切层键的区别</summary>
+                  <p class="hint">「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
+                </details>
               </div>
               <div class="work-view hidden" id="layer-expansion">
                 <p class="hint">文本扩展不参与键位层：它按输入内容匹配，与当前哪一层无关。</p>
@@ -232,6 +238,14 @@
           </header>
           <div class="detail-body">
             <div class="settings-list">
+              <label class="setting-row">
+                <span>界面主题</span>
+                <select id="set-theme">
+                  <option value="auto">跟随系统</option>
+                  <option value="dark">深色</option>
+                  <option value="light">浅色</option>
+                </select>
+              </label>
               <label class="setting-row">
                 <input type="checkbox" id="set-autostart" class="toggle" />
                 <span>开机自启（跟随系统启动）</span>
@@ -282,18 +296,27 @@
                 <span>显示快捷键提示框</span>
               </label>
             </div>
-            <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
-            <p class="hint">「文本注入」= 文本扩展 / 文本动作把文字送进目标程序的方式。默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
-            <p class="hint">「输入状态悬浮指示」= 有层或改键修饰键生效时，屏幕底部浮一条小条，显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
-            <p class="hint">「快捷键提示框」= 一块常显的速查小窗，把所有<strong>已启用</strong>的快捷键按层列出来（基础层在最上），随时能瞄一眼「我配过哪些键」。拖动标题栏移动；<strong>滚轮调大小</strong>、<strong>Ctrl+滚轮调透明度</strong>（缩小字号能一屏塞下更多条目）；列表太长时 <strong>Shift+滚轮</strong> 或拖滚动条滚动。位置、大小、透明度都随配置保存，下次启动还在原地。点窗口上的 × 关掉后，回到本页重新勾选、或点托盘图标的「快捷键提示」都能再打开。</p>
-            <p class="hint">「序列等待」= 键序列（如 <code>F9 J K</code>）按下第一步后，等下一步的最长时间；「和弦等待」= 按下部分和弦成员（如 <code>F&amp;J</code> 的 F）后，等其余成员的最长时间。两者超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
+            <!-- 设置说明收进折叠块：这五段加起来比上面的设置项本身还长，摊在页面上就是一堵字墙
+                 （问题跟动作面板的「存为变量」一样，只是这里文字太长、塞不进 280px 的问号气泡）。
+                 原生 <details>，零 JS：默认收起，需要时整段可读、可选中复制。 -->
+            <details class="hint-fold">
+              <summary>这些设置具体怎么生效</summary>
+              <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
+              <p class="hint">「文本注入」= 文本扩展 / 文本动作把文字送进目标程序的方式。默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
+              <p class="hint">「输入状态悬浮指示」= 有层或改键修饰键生效时，屏幕底部浮一条小条，显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
+              <p class="hint">「快捷键提示框」= 一块常显的速查小窗，把所有<strong>已启用</strong>的快捷键按层列出来（基础层在最上），随时能瞄一眼「我配过哪些键」。拖动标题栏移动；<strong>滚轮调大小</strong>、<strong>Ctrl+滚轮调透明度</strong>（缩小字号能一屏塞下更多条目）；列表太长时 <strong>Shift+滚轮</strong> 或拖滚动条滚动。位置、大小、透明度都随配置保存，下次启动还在原地。点窗口上的 × 关掉后，回到本页重新勾选、或点托盘图标的「快捷键提示」都能再打开。</p>
+              <p class="hint">「序列等待」= 键序列（如 <code>F9 J K</code>）按下第一步后，等下一步的最长时间；「和弦等待」= 按下部分和弦成员（如 <code>F&amp;J</code> 的 F）后，等其余成员的最长时间。两者超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
+            </details>
             <div class="settings-section">
               <div class="settings-section-head">
                 <span>键位层</span>
                 <button id="add-layer-btn" class="ghost">＋ 新建层</button>
               </div>
               <div id="layer-list" class="layer-list"></div>
-              <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键/改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦/序列用这种）。</p>
+              <details class="hint-fold">
+                <summary>层是怎么生效的</summary>
+                <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键/改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦/序列用这种）。</p>
+              </details>
             </div>
             <div class="settings-section">
               <div class="settings-section-head">
@@ -311,6 +334,7 @@
               <button id="import-config">导入配置</button>
             </div>
             <p class="hint">改动即时保存并生效；导入可选「合并」（只新增）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
+
           </div>
         </section>
 
@@ -349,6 +373,7 @@
           <div class="help-body">
             <h2>变量：提取与引用</h2>
             <p>一条快捷键可挂多个动作，<strong>按顺序执行</strong>。有的动作会把结果「存成变量」，后面的动作用 <code>{变量名}</code> 或 <code>{变量名.字段}</code> 引用。变量只在本次触发内有效，触发结束即清空，不落盘、不跨触发。</p>
+            <p class="hint">本节讲通用语法；某个动作具体产出什么、字段怎么命名，鼠标悬在那个动作「存为变量」右侧的 <strong>?</strong> 上就能看到。</p>
 
             <h3>三种提取方式</h3>
             <table>

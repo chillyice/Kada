@@ -59,7 +59,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。否则配了 `F&J` / `F9 J K` / 只设「长按进入层」的切层键，这些键就彻底变哑。机制见 `docs/架构设计.md` §3.1。
 - **配置落盘铁律**（`src-tauri/src/config_io.rs`）：保存走「唯一临时文件 → `fsync` → `rename` 覆盖」原子替换（留 `config.json.bak` 上次良好副本），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——留档、能从 `.bak` 恢复就恢复并回写主文件，都失败才空配置启动 + 告警。加载只 `migrate()` **不** `sanitize_config()`（清洗只在保存/导入路径）。**导入必须选方式**（`import_config(path, mode)`）：`merge` 只增不删、不制造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档。**删除已保存条目要先确认**（`ui/` `confirmDelete`），未落盘新增项可不问。**外部修改监听**（`config_watch.rs`）：**能解析才采纳、解析不动就别碰磁盘**（自愈只属启动 `load`，监听走只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收 `config-changed` 有未保存草稿必须问用户。**应用内写盘广播 `config-updated`**（`set_config` / 导入 / `save_settings_patch`）与 `config-changed`（外部改动）语义分离，不可混用。
 - **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
-- **冲突检测**（`detect_conflicts`）：硬冲突（重复触发键 / 序列 leader 遮蔽同层单组合）/ 软冲突（超集，含和弦间超集/子集）/ 系统快捷键清单命中 / **层可达性**（层有条目却无切层键指向 → 警告）/ **平台能力缺失**（`PlatformCaps`，见钩子引擎段）。
+- **平台能力缺失**（`PlatformCaps`，见钩子引擎段）与**层可达性**（层有条目却无切层键指向 → 警告）同属软冲突。
 - **消息中心**（内存态，重启清空）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
 - **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`；Linux / macOS 自成进程组后 `kill(-pgid)`）；中止 = **代数计数器** `abort::request()`。**并行动作** `Parallel`（7.1-㉞）= 成员各起一线程、全部结束才进下一步，用**链内注入锁**维持「注入串行」（`Text`/`Keys`/`Mouse` 持锁，只并发非注入步骤），成员 `vars` 私有快照、按下标顺序合并与提交。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
@@ -110,3 +110,5 @@ M0–M5 已完成（详见 §7）。
 
 - `README.md`（简介）；`docs/README.md`（索引 + 阅读顺序 + 全清单）。
 - **落点分工**：规则/约定/命名 → 本文件；功能需求与规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`。代码事实以源码为准，先 `grep` 再动手。本机已装 Rust toolchain、Node、Tauri CLI；前端依赖 `npm --prefix ui ci`。
+- **`需求设计说明书.md` 按功能模块组织，不按版本**：顶部是「文档导航（按功能模块）」的 16 模块索引表（不是版本时间线）；**版本号只写进 `变更归档.md`**，说明书正文提到某功能时引**模块小节号**（`§5.7 动作执行边界`）而不是版本号。§N 是跨文档引用的稳定 ID（约 420 处），**只增不改**——重编号要连带重写六份文档。新功能写进所属模块小节，不新开「XX 版本改动」章节。
+

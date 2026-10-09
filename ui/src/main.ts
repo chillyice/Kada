@@ -716,7 +716,20 @@ type DropZone =
   | { kind: "row"; idx: number; pos: "before" | "after" };
 let dragPayload: DragPayload | null = null; // 拖拽源
 let dragOverEl: HTMLElement | null = null; // 当前高亮目标（用于清 class）
-let collapsedFolders = new Set<string>(); // 折叠的目录 id（内存态，重启恢复全展开）
+const COLLAPSED_KEY = "kada.collapsedFolders";
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function saveCollapsed() {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsedFolders]));
+  } catch {}
+}
+let collapsedFolders = loadCollapsed(); // 折叠的目录 id（localStorage 持久化，重启保持）
 let collapsedActions = new WeakSet<Action>(); // 收起态的动作（按对象引用，重绘/重排后仍保持）
 
 // pointer events 拖拽状态（不依赖 WebView2 的 HTML5 DnD，避免其兼容性抖动）。
@@ -1058,17 +1071,31 @@ function deepClone<T>(x: T): T {
   return structuredClone(x);
 }
 
+// 主题：纯 UI 偏好，不进 config.json（那份是跨机同步的，主题跟机器走而不是跟配置走），
+// 跟折叠目录一样存 localStorage。四个窗口加载的是同一个 index.html，所以在 <html> 上打
+// data-theme 就都跟着变（含气泡 / HUD / 提示框）。
+// "auto" 交给 matchMedia 在这里解析成 light/dark，而不是写成 CSS 的 media query——
+// 那样系统切主题时 CSS 会自动跟随，但设置页下拉框显示的还是 "auto"、UI 内部读不到
+// 当前实际值；在这里解析能让「当前是深色」只有一个事实来源。
+const THEME_KEY = "kada.theme";
+const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
+function resolveTheme(t: string): string {
+  return t === "auto" ? (prefersLight.matches ? "light" : "dark") : t;
+}
+function applyTheme(t: string) {
+  document.documentElement.dataset.theme = resolveTheme(t);
+}
+// 系统切浅/深时若处于「跟随系统」，四个窗口一起跟着翻（各自监听，同源广播不必另做）。
+prefersLight.addEventListener("change", () => {
+  if ((localStorage.getItem(THEME_KEY) ?? "auto") === "auto") applyTheme("auto");
+});
+
 // 圆圈问号：hover / 键盘聚焦显示说明（用于解释「会写入变量」的动作，如取文件属性/查询应用状态）。
 function helpIcon(tip: string): HTMLElement {
   const s = el("span", "help", "?");
   s.setAttribute("data-tip", tip);
   s.tabIndex = 0;
   return s;
-}
-
-// 内联可见的变量引用说明：把「有哪些字段、怎么引用」直接列在输入框旁，替代 hover 才显示的问号。
-function varUsage(tip: string): HTMLElement {
-  return el("div", "var-usage", tip);
 }
 
 function render() {
@@ -1562,10 +1589,11 @@ function folderHasChildren(id: string): boolean {
   );
 }
 
-// 切换目录展开/收缩（仅 UI 状态，不落盘）。
+// 切换目录展开/收缩（仅 UI 状态，不进配置文件，存 localStorage）。
 function toggleFolder(id: string) {
   if (collapsedFolders.has(id)) collapsedFolders.delete(id);
   else collapsedFolders.add(id);
+  saveCollapsed();
   renderListPane();
 }
 
@@ -1632,6 +1660,7 @@ async function deleteFolder(id: string) {
   cfg.folders = cfg.folders.filter((f) => !ids.has(f.id));
   cfg.shortcuts = cfg.shortcuts.filter((s) => !(s.folder && ids.has(s.folder)));
   for (const fid of ids) collapsedFolders.delete(fid);
+  saveCollapsed();
   discardDraft();
   draftNew = false;
   selected = null;
@@ -3489,13 +3518,14 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     vname.addEventListener("input", () => {
       a.var = vname.value.trim();
     });
-    vline.append(el("span", "unit-hint", "存为变量"), vname);
-    body.append(vline);
-    body.append(
-      varUsage(
-        "填写后把命令标准输出存入该变量：{变量名} 得到输出全文、{变量名.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。",
+    vline.append(
+      el("span", "unit-hint", "存为变量"),
+      vname,
+      helpIcon(
+        "填写后把命令标准输出存进该变量：{drive} 得到输出全文、{drive.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。",
       ),
     );
+    body.append(vline);
   } else if (a.type === "script") {
     body.append(pathField(a.path, (v) => (a.path = v), { file: true, label: "脚本路径" }));
 
@@ -3529,13 +3559,14 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
     vname.addEventListener("input", () => {
       a.var = vname.value.trim();
     });
-    vline.append(el("span", "unit-hint", "存为变量"), vname);
-    body.append(vline);
-    body.append(
-      varUsage(
-        "脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存入该变量：{变量名} 得输出全文、{变量名.exit_code} 得退出码。",
+    vline.append(
+      el("span", "unit-hint", "存为变量"),
+      vname,
+      helpIcon(
+        "脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存进该变量（{out} 得输出全文、{out.exit_code} 得退出码）。",
       ),
     );
+    body.append(vline);
   } else if (a.type === "keys") {
     const line = el("div", "action-line");
     const keys = el("input", "action-input") as HTMLInputElement;
@@ -3659,13 +3690,14 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
-      line.append(el("span", "unit-hint", "变量名"), vname);
-      body.append(line);
-      body.append(
-        varUsage(
-          "写入文件属性变量。引用：{变量名} 得完整路径；可用 {变量名.name} 文件名 / {变量名.dir} 所在目录 / {变量名.stem} 主名 / {变量名.ext} 扩展名 / {变量名.size} 大小(字节) / {变量名.modified} 修改时间 / {变量名.is_dir} 是否目录。",
+      line.append(
+        el("span", "unit-hint", "变量名"),
+        vname,
+        helpIcon(
+          "把这个文件的属性写进该变量：{file} 得完整路径，还能取 .name / .dir / .ext / .size 等字段（字段清单见「帮助」页）。",
         ),
       );
+      body.append(line);
     }
   } else if (a.type === "app") {
     const op = a.operation;
@@ -3722,13 +3754,14 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
-      vline.append(el("span", "unit-hint", "变量名"), vname);
-      body.append(vline);
-      body.append(
-        varUsage(
+      vline.append(
+        el("span", "unit-hint", "变量名"),
+        vname,
+        helpIcon(
           "写入布尔变量：程序在运行则为 true，否则 false。引用 {变量名} 得到 true/false，可配合「条件判断」动作使用。",
         ),
       );
+      body.append(vline);
 
       const rline = el("div", "action-line");
       const retries = el("input", "action-input action-input-num") as HTMLInputElement;
@@ -4004,6 +4037,13 @@ function syncSettings() {
 }
 
 function bindSettings() {
+  // 主题不进配置（见 THEME_KEY 处注释），所以自己读写 localStorage + 直接打 data-theme。
+  const theme = document.getElementById("set-theme") as HTMLSelectElement;
+  theme.value = localStorage.getItem(THEME_KEY) ?? "auto";
+  theme.addEventListener("change", () => {
+    localStorage.setItem(THEME_KEY, theme.value);
+    applyTheme(theme.value);
+  });
   const autostart = document.getElementById("set-autostart") as HTMLInputElement;
   const paused = document.getElementById("set-paused") as HTMLInputElement;
   const wakeKey = document.getElementById("set-wake-key") as HTMLSelectElement;
@@ -5251,6 +5291,9 @@ async function bootstrapHints() {
   await listen<Config>("config-updated", (e) => render(e.payload));
   await listen<Config>("config-changed", (e) => render(e.payload));
 }
+
+// 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。四个窗口共用这段。
+applyTheme(localStorage.getItem(THEME_KEY) ?? "auto");
 
 if (location.hash === "#toast") {
   void bootstrapToast();

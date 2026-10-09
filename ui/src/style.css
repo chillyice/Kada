@@ -9,6 +9,49 @@
   /* 单行控件（按钮 / 输入框 / 下拉 / 页签）的统一高度：以列表顶栏按钮为基准，
      全站一个值——原先 26~34px 参差，一行里高低不齐。改这里即可整体调。 */
   --ctl-h: 26px;
+  /* 字号阶梯：原先散着 10~20px 九个值，改一处要翻全文件。11/12/13/14 是真正在用的
+     四档（提示文字 / 次要说明 / 正文控件 / 正文），往上只给标题留 16 和 20 两档。
+     改这里即可整体调。 */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-md: 13px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 20px;
+  /* 半透明叠层：悬停底色 / 浮窗（气泡·HUD·提示框）背景 / 分隔虚线 / 滚动条。
+     这些原先写死 rgba(255,255,255,·) 和 rgba(22,26,34,.96)——只在深色底上成立，
+     浅色主题必须跟着换。 */
+  --hover-bg: rgba(255, 255, 255, 0.08);
+  --float-bg: rgba(22, 26, 34, 0.96);
+  --line-soft: rgba(255, 255, 255, 0.07);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  --scroll-thumb-hi: rgba(255, 255, 255, 0.3);
+  /* 浮窗内文字（键帽 / 条目名）与深色键帽底 */
+  --float-dim: #cfd5e1;
+  --float-blue: #cfe1ff;
+  --key-bg: #262b35;
+  --key-line: #3a4150;
+}
+
+/* 浅色主题：只覆盖主界面那几个变量。浮窗（气泡 / HUD / 提示框）**不跟着变**——
+   它们盖在任意应用上，浅底配 #ffd9cf 这类浅色强调文字会看不清，两套主题都保持深色。 */
+[data-theme="light"] {
+  --bg: #f2f3f5;
+  --panel: #ffffff;
+  --line: #d9dce2;
+  --text: #1c1f26;
+  --muted: #626b7a;
+  --accent: #d1553a;
+  --accent-dim: #f6ddd6;
+  --hover-bg: rgba(0, 0, 0, 0.05);
+  --line-soft: rgba(0, 0, 0, 0.08);
+  --scroll-thumb: rgba(0, 0, 0, 0.16);
+  --scroll-thumb-hi: rgba(0, 0, 0, 0.3);
+}
+
+/* 浅色底上「动作类型色当文字用」对比度不够，往正文色混 30%（边框和淡底不受影响）。 */
+[data-theme="light"] .flow-step {
+  color: color-mix(in srgb, var(--type-color, var(--muted)) 70%, var(--text));
 }
 
 * {
@@ -25,7 +68,7 @@ body {
 body {
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
+  font: var(--fs-lg)/1.6 "Microsoft YaHei UI", "Segoe UI", system-ui, sans-serif;
   display: flex;
 }
 
@@ -33,7 +76,7 @@ body {
    默认那根粗灰条在深色底上太扎眼。background-clip 要写在 background 之后（它是 background 简写的一部分）。 */
 * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.16) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
 }
 
 ::-webkit-scrollbar {
@@ -46,14 +89,14 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scroll-thumb);
   background-clip: content-box;
   border: 3px solid transparent;
   border-radius: 999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.3);
+  background: var(--scroll-thumb-hi);
   background-clip: content-box;
 }
 
@@ -91,7 +134,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 20px;
+  font-size: var(--fs-2xl);
   font-weight: 700;
   color: var(--accent);
   border: 1px solid var(--line);
@@ -121,7 +164,7 @@ body {
   border-radius: 8px;
   color: var(--muted);
   cursor: pointer;
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .rail-item svg {
@@ -177,7 +220,7 @@ body {
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
 }
 
@@ -213,7 +256,7 @@ body {
   height: var(--ctl-h);
   padding: 0 10px;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .search:focus {
@@ -323,7 +366,7 @@ body {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--accent);
   background: var(--bg);
   border: 1px solid var(--line);
@@ -341,7 +384,7 @@ body {
 .row-name {
   flex: 1;
   min-width: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -365,7 +408,7 @@ body {
   border: none;
   background: none;
   color: var(--muted);
-  font-size: 16px;
+  font-size: var(--fs-xl);
   line-height: 1;
   border-radius: 4px;
   opacity: 0;
@@ -373,7 +416,7 @@ body {
 }
 
 .row-add {
-  font-size: 14px;
+  font-size: var(--fs-lg);
 }
 
 .row:hover .row-more,
@@ -411,7 +454,7 @@ body {
   padding: 4px 8px 4px 0;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   user-select: none;
 }
 
@@ -424,12 +467,12 @@ body {
   width: 11px;
   text-align: center;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .folder-ico {
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .folder-name {
@@ -451,7 +494,7 @@ body {
   border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 0 6px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
 }
 
@@ -482,7 +525,7 @@ body {
   padding: 0 10px;
   line-height: 1;
   border-radius: 5px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--text);
   cursor: pointer;
 }
@@ -525,7 +568,7 @@ body {
 }
 
 .detail-title {
-  font-size: 15px;
+  font-size: var(--fs-xl);
   font-weight: 600;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   /* 名称是用户起的，可能很长：占满剩余宽度、超了就截断，别把右侧按钮挤出标题行。 */
@@ -554,7 +597,7 @@ body {
   background: none;
   border: none;
   color: var(--muted);
-  font-size: 20px;
+  font-size: var(--fs-2xl);
   line-height: 1;
   padding: 0 4px;
   cursor: pointer;
@@ -570,7 +613,7 @@ body {
   align-items: center;
   justify-content: center;
   color: var(--muted);
-  font-size: 14px;
+  font-size: var(--fs-lg);
   text-align: center;
   padding: 24px;
 }
@@ -629,7 +672,7 @@ body {
   border: none;
   border-radius: 8px 0 0 8px;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-md);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -677,7 +720,7 @@ body {
   gap: 8px;
   padding: 7px 10px;
   border-radius: 6px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 
@@ -758,7 +801,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--accent);
 }
 
@@ -826,7 +869,7 @@ body {
   padding: 5px 8px;
   border-radius: 5px;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 
@@ -845,7 +888,7 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: var(--fs-md);
   line-height: 1;
 }
 
@@ -882,7 +925,7 @@ body {
   height: var(--ctl-h);
   padding: 0 12px;
   line-height: 1;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
   background: none;
   border: none;
@@ -921,12 +964,12 @@ body {
   overflow-y: auto;
   padding: 20px 24px;
   line-height: 1.7;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   color: var(--text);
 }
 
 .help-body h2 {
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 600;
   margin: 24px 0 10px;
   padding-bottom: 6px;
@@ -938,7 +981,7 @@ body {
 }
 
 .help-body h3 {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
   margin: 16px 0 6px;
 }
@@ -953,7 +996,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 1px 5px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .help-body pre {
@@ -986,7 +1029,7 @@ body {
   border-collapse: collapse;
   margin: 10px 0;
   width: 100%;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .help-body th,
@@ -1020,7 +1063,7 @@ body {
 
 .editor-row label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* 触发侧 when 门控编辑器：类型下拉 + 该条件的字段，纵向排列。 */
@@ -1049,7 +1092,7 @@ body {
   border-radius: 6px;
   padding: 3px 10px;
   font-family: Consolas, monospace;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 .chip-x {
@@ -1057,8 +1100,8 @@ body {
   border: none;
   height: auto;
   padding: 0;
-  color: rgba(255, 255, 255, 0.7);
-  font-size: 14px;
+  color: color-mix(in srgb, var(--text) 70%, transparent);
+  font-size: var(--fs-lg);
   line-height: 1;
 }
 
@@ -1151,7 +1194,7 @@ body {
   border: 2px solid var(--type-color, var(--line));
   color: var(--type-color, var(--muted));
   font-family: Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 700;
   cursor: grab;
   user-select: none;
@@ -1192,7 +1235,7 @@ body {
   flex-wrap: wrap;
   gap: 6px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   min-width: 0;
 }
 
@@ -1208,7 +1251,7 @@ body {
   border-radius: 6px;
   padding: 8px 10px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .action-row {
@@ -1232,7 +1275,7 @@ body {
 .action-grip {
   flex-shrink: 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1;
   letter-spacing: -2px;
   cursor: grab;
@@ -1250,7 +1293,7 @@ body {
 
 .action-ico {
   flex-shrink: 0;
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: grab;
   user-select: none;
   padding: 2px 5px;
@@ -1261,7 +1304,7 @@ body {
 .action-type-name {
   flex-shrink: 0;
   color: var(--type-color, var(--muted));
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -1277,7 +1320,7 @@ body {
 
 .var-tag {
   font-family: Consolas, monospace;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.7;
   padding: 0 6px;
   border-radius: 4px;
@@ -1303,7 +1346,7 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-md);
   cursor: pointer;
 }
 
@@ -1395,7 +1438,7 @@ body {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
 }
 
@@ -1413,15 +1456,8 @@ body {
 
 .unit-hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
-}
-
-.var-usage {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.6;
-  word-break: break-all;
 }
 
 .help {
@@ -1433,7 +1469,7 @@ body {
   border-radius: 50%;
   border: 1px solid var(--line);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1;
   cursor: help;
   flex: none;
@@ -1458,12 +1494,13 @@ body {
   bottom: calc(100% + 8px);
   right: 0;
   width: max-content;
-  max-width: 280px;
+  /* 贴着图标右缘向左长，窗口窄时最多占 70vw，不至于整块溢出视口 */
+  max-width: min(280px, 70vw);
   padding: 8px 10px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.5;
   color: var(--text);
   white-space: normal;
@@ -1503,7 +1540,7 @@ body {
 /* ---------- 条件判断（嵌套分支） ---------- */
 .branch-label {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
 }
 
@@ -1605,7 +1642,7 @@ body {
   border-style: dashed;
   color: var(--muted);
   background: none;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 0 10px;
 }
 
@@ -1622,7 +1659,7 @@ input[type="text"] {
   border-radius: 6px;
   height: var(--ctl-h);
   padding: 0 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
 }
 
@@ -1632,7 +1669,7 @@ textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 6px 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-family: inherit;
 }
 
@@ -1654,7 +1691,7 @@ select {
   border-radius: 6px;
   height: var(--ctl-h);
   padding: 0 8px;
-  font-size: 13px;
+  font-size: var(--fs-md);
 }
 
 button {
@@ -1667,7 +1704,7 @@ button {
   height: var(--ctl-h);
   padding: 0 12px;
   line-height: 1;
-  font-size: 13px;
+  font-size: var(--fs-md);
   white-space: nowrap;
   cursor: pointer;
 }
@@ -1744,7 +1781,7 @@ button:disabled:hover {
   padding: 0 8px;
   line-height: 1;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: #e8b339;
   background: rgba(232, 179, 57, 0.12);
   border: 1px solid rgba(232, 179, 57, 0.4);
@@ -1830,12 +1867,40 @@ button:disabled:hover {
 /* ---------- 提示 / 冲突 / 通用 ---------- */
 .hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   margin-top: 12px;
 }
 
+/* 长说明收进折叠块（原生 <details>，零 JS）：摊在页面上就是一堵字墙，比上面的设置项本身还长；
+   收起时只留一行标题，需要时整段可读、可选中。问号气泡留给字段级短说明（.help）。 */
+.hint-fold > summary {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  list-style: none;
+  padding: 2px 0;
+  user-select: none;
+}
+
+.hint-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.hint-fold > summary::before {
+  content: "▸ ";
+  color: var(--accent);
+}
+
+.hint-fold[open] > summary::before {
+  content: "▾ ";
+}
+
+.hint-fold > summary:hover {
+  color: var(--text);
+}
+
 .conflict-head {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 600;
   color: var(--text);
   opacity: 0.8;
@@ -1843,7 +1908,7 @@ button:disabled:hover {
 }
 
 .conflict {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   padding: 6px 10px;
   border-radius: 6px;
   border: 1px solid;
@@ -1870,7 +1935,7 @@ button:disabled:hover {
 
 /* 分组标题（需处理 / 软冲突 / 平台能力缺失），分组为空时整组不渲染。 */
 .conflict-group {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-weight: 600;
   color: var(--muted);
   margin-top: 4px;
@@ -1900,7 +1965,7 @@ button:disabled:hover {
   border-radius: 6px;
   background: rgba(255, 90, 90, 0.1);
   color: #ff6b6b;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
@@ -1922,7 +1987,7 @@ button:disabled:hover {
 .conflict-bubble-hint {
   margin-left: auto;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--fs-xs);
 }
 
 .conflict-bubble-close {
@@ -1933,7 +1998,7 @@ button:disabled:hover {
   border: none;
   background: none;
   color: #ff6b6b;
-  font-size: 14px;
+  font-size: var(--fs-lg);
   line-height: 1;
   border-radius: 4px;
   cursor: pointer;
@@ -1973,7 +2038,7 @@ body:has(.toast-bubble) {
   justify-content: center;
   gap: 3px;
   padding: 0 14px;
-  background: rgba(22, 26, 34, 0.96);
+  background: var(--float-bg);
   border: 1px solid var(--line);
   border-radius: 10px;
   /* 投影必须落在窗口那一圈透明边（下面 `inset: 12px` 让出来的那圈）之内：透明窗贴边裁切，
@@ -1984,7 +2049,7 @@ body:has(.toast-bubble) {
 }
 
 .toast-title {
-  font-size: 13px;
+  font-size: var(--fs-md);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -1992,7 +2057,7 @@ body:has(.toast-bubble) {
 }
 
 .toast-sub {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   font-family: Consolas, monospace;
   color: var(--accent);
   white-space: nowrap;
@@ -2025,7 +2090,7 @@ body:has(.hud-box) {
   align-items: center;
   gap: 8px;
   padding: 7px 14px;
-  background: rgba(22, 26, 34, 0.96);
+  background: var(--float-bg);
   border: 1px solid var(--line);
   border-radius: 999px;
   /* 同 `.toast-bubble`：窗口只比内容大 7px（`bootstrapHud` 量完 + 7 各边），投影不能伸出去。 */
@@ -2034,7 +2099,7 @@ body:has(.hud-box) {
 }
 
 .hud-chip {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.2;
   padding: 2px 9px;
   border-radius: 999px;
@@ -2055,7 +2120,7 @@ body:has(.hud-box) {
 }
 
 .hud-hold {
-  color: #cfe1ff;
+  color: var(--float-blue);
   background: rgba(64, 108, 176, 0.35);
   border-color: rgba(96, 148, 224, 0.55);
 }
@@ -2090,9 +2155,9 @@ body:has(.hints-panel) {
   display: flex;
   flex-direction: column;
   width: 21em;
-  font-size: calc(13px * var(--hints-scale, 1));
+  font-size: calc(var(--fs-md) * var(--hints-scale, 1));
   color: var(--text);
-  background: rgba(22, 26, 34, 0.96);
+  background: var(--float-bg);
   border: 1px solid var(--line);
   border-radius: 0.85em;
   /* 同 `.toast-bubble`：窗口比面板大一圈（`bootstrapHints` 的 PANEL_MARGIN，10px），投影
@@ -2142,7 +2207,7 @@ body:has(.hints-panel) {
 
 .hints-close:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--hover-bg);
 }
 
 /* 条目多时列表自身可滚（Shift+滚轮或拖滚动条）。上限由 bootstrapHints 按**屏幕**高度
@@ -2157,7 +2222,7 @@ body:has(.hints-panel) {
 .hints-group + .hints-group {
   margin-top: 0.35em;
   padding-top: 0.35em;
-  border-top: 1px dashed rgba(255, 255, 255, 0.07);
+  border-top: 1px dashed var(--line-soft);
 }
 
 .hints-group-title {
@@ -2187,9 +2252,9 @@ body:has(.hints-panel) {
   font-size: 0.88em;
   line-height: 1.35;
   padding: 0.05em 0.4em;
-  color: #e8eaf0;
-  background: #262b35;
-  border: 1px solid #3a4150;
+  color: var(--text);
+  background: var(--key-bg);
+  border: 1px solid var(--key-line);
   border-bottom-width: 2px;
   border-radius: 0.35em;
 }
@@ -2202,7 +2267,7 @@ body:has(.hints-panel) {
 .hints-label {
   flex: 1;
   min-width: 0;
-  color: #cfd5e1;
+  color: var(--float-dim);
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -2251,7 +2316,7 @@ body:has(.hints-panel) {
   height: var(--ctl-h);
   padding: 0 12px;
   line-height: 1;
-  font-size: 13px;
+  font-size: var(--fs-md);
   color: var(--muted);
   border: none;
   background: none;
@@ -2275,7 +2340,7 @@ body:has(.hints-panel) {
   border-radius: 8px;
   background: #ff5a5a;
   color: #fff;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 16px;
 }
 
@@ -2303,7 +2368,7 @@ body:has(.hints-panel) {
 
 .msg-arrow {
   flex-shrink: 0;
-  font-size: 16px;
+  font-size: var(--fs-xl);
   line-height: 1;
   padding: 0 8px;
 }
@@ -2327,7 +2392,7 @@ body:has(.hints-panel) {
   height: var(--ctl-h);
   padding: 0 10px;
   line-height: 1;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   white-space: nowrap;
   color: var(--muted);
@@ -2364,12 +2429,12 @@ body:has(.hints-panel) {
 
 .msg-k {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .msg-v {
   color: var(--text);
-  font-size: 13px;
+  font-size: var(--fs-md);
   white-space: pre-wrap;
   word-break: break-all;
 }
@@ -2389,7 +2454,7 @@ pre.msg-v {
   align-items: center;
   gap: 8px;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
 }
 
@@ -2430,7 +2495,7 @@ pre.msg-v {
 }
 
 .modal-title {
-  font-size: 14px;
+  font-size: var(--fs-lg);
   font-weight: 600;
 }
 
@@ -2450,7 +2515,7 @@ pre.msg-v {
 
 .confirm-hint {
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 /* 导入方式说明是成段的多行文案，行距放大一点才读得下去。 */
@@ -2466,7 +2531,7 @@ pre.msg-v {
   max-height: 240px;
   overflow-y: auto;
   color: var(--muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   line-height: 1.7;
 }
 
@@ -2539,6 +2604,6 @@ textarea.invalid {
 .field-error {
   flex-basis: 100%;
   color: #e5484d;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   line-height: 1.4;
 }
