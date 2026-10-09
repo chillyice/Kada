@@ -1536,6 +1536,9 @@ fn show_main_window(app: &tauri::AppHandle) {
     )
     .title("咔哒 Kada")
     .inner_size(860.0, 560.0)
+    // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
+    // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
+    .min_inner_size(900.0, 480.0)
     .resizable(true)
     .center()
     .build()
