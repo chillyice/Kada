@@ -240,6 +240,9 @@ export function installBrowserMock() {
         // 停止执行：演示模式没有真的在跑的动作，如实返回 0（前端提示「当前没有正在执行的动作」）。
         case "abort_actions":
           return 0;
+        // 编辑页「执行」：演示模式跑不了真动作，只确认前端点了按钮（后端 fire 不在浏览器里）。
+        case "run_entry":
+          return null;
         // 导入：演示模式的文件对话框恒返回「取消」，走不到这里；留着是为了让 IPC 契约完整
         // （后端 ImportOutcome 的形状）并在将来放开文件选择时不至于崩在「不支持命令」。
         case "import_config":

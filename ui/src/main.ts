@@ -680,8 +680,9 @@ let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
 // 见「未保存改动守卫」一节。
 let draftBaseline: string | null = null;
-// 当前停留的页签（三类条目共用一份：切类型/切条目沿用，类型没有该页签时回落「详情」）。
-let entryTab: EntryTab = "detail";
+// 当前停留的页签（三类条目共用一份：打开条目时回到「动作/操作/展开文本」，打开后手动切换沿用；
+// 类型没有该页签时回落「详情」）。
+let entryTab: EntryTab = "work";
 let recording = false;
 let conflicts: Conflict[] = [];
 let search = "";
@@ -2244,7 +2245,7 @@ function renderDetail() {
     const has = currentDraft() !== null;
     document.getElementById("detail-empty")!.classList.toggle("hidden", has);
     document.getElementById("detail-editor")!.classList.toggle("hidden", !has);
-    // 标题行右侧那组按钮（保存/撤销/取消/删除）只在真有草稿时才有意义。
+    // 标题行右侧那组按钮（执行/删除/撤销/保存/关闭）只在真有草稿时才有意义。
     document.getElementById("head-tools")!.classList.toggle("hidden", !has);
     if (has) syncEntry();
     else setEntryTitle();
@@ -2357,6 +2358,8 @@ function fillExpansionEditor() {
 // 都在这里对齐当前类型。openDetail → renderDetail 每次都会走一遍。
 function syncEntry() {
   const kind = currentKind();
+  // 执行按钮只对「快捷键」有意义：改键 / 文本扩展没有动作串可跑。
+  document.getElementById("entry-run")!.classList.toggle("hidden", kind !== "shortcut");
   const label = document.getElementById("mode-label");
   if (label) label.textContent = kindLabel(kind);
   for (const k of ["shortcut", "remap", "expansion"] as ListKind[]) {
@@ -2417,6 +2420,24 @@ function switchDraftKind(kind: ListKind) {
   syncRailTab(section);
   openDetail(-1, true, folderId, seed);
   void refreshConflicts().then(renderConflictBubble);
+}
+
+// 标题行的执行按钮（只有快捷键会出现）：把当前草稿的动作串当一次触发跑掉（跑草稿 =
+// 保存前就能验证）。改键 / 文本扩展没有动作串，按钮本身不出现（syncEntry 里隐藏）。
+async function runCurrentEntry() {
+  if (!draft || !draft.actions.length) {
+    toast("还没有动作：先在「动作」页签添加");
+    return;
+  }
+  try {
+    await invoke("run_entry", {
+      actions: draft.actions,
+      name: draft.name?.trim() || shortcutLabel(draft),
+    });
+    toast("已开始执行（结果见「消息」页）");
+  } catch (err) {
+    toast(`执行失败: ${err}`);
+  }
 }
 
 // 标题行的删除按钮：三类条目共用一条路径（与列表里的删除确认同一套）。
@@ -2495,6 +2516,7 @@ function openDetail(
   selected = i;
   draftNew = isNew;
   draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
+  entryTab = "work"; // 打开条目默认停在「动作 / 操作 / 展开文本」页签
   if (section === "shortcuts") {
     draft = isNew
       ? { name: "", description: "", folder: folderId, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
@@ -4523,7 +4545,8 @@ function bind() {
     }
   });
 
-  // 标题行右侧的四个图标按钮（三类条目共用一套 id）。
+  // 标题行右侧的五个图标按钮（三类条目共用一套 id；执行只对快捷键出现，见 syncEntry）。
+  document.getElementById("entry-run")!.addEventListener("click", () => void runCurrentEntry());
   document.getElementById("entry-save")!.addEventListener("click", () => {
     void saveCurrentDraft();
   });
