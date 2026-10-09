@@ -30,7 +30,44 @@ npm run tauri build
 > 1. **先退出正在运行的 Kada**。exe 被占用时构建会在最后一步报「拒绝访问」，而且 bundler 给二进制写入「安装包类型」标记这一步会失败并警告 `Updater plugin may not be able to update this package`——这个标记决定已安装的客户端认不认 NSIS 更新包，**打包时它写不进去就可能导致更新装不上**。（`scripts/kada-package.ps1` 已自动先杀再构建。）
 > 2. **首次打包要联网下载 NSIS 工具链**（`github.com/tauri-apps/binary-releases` 上的 `nsis-3.11.zip`）。本机实测该 GitHub Release 资源拉不通（`timeout: global`），本地产不出安装包；CI runner（GitHub 托管机器）网络正常，发版走流水线即可。
 
-### 1.2 用户安装步骤
+### 1.2 分发渠道：两条路发的**不是同一个文件**
+
+| 渠道 | 发的产物 | 面向 | 更新方式 |
+|------|---------|------|---------|
+| **GitHub Releases** | `Kada_<版本>_x64-setup.exe`（NSIS 安装包）+ `.sig` + `latest.json` | 已装客户端的**自动更新**、CI 发版 | 客户端 updater 插件按 §2 走 |
+| **ihomy 发布页** `https://ihomy.top/kada` | **裸 `kada.exe`**（`target/release/kada.exe`，不是 NSIS 包） | 公开下载、首次安装 | 每次手动 scp，见下 |
+
+两条渠道各发各的，**不要把 NSIS 包传到 ihomy 页**（页面上写的是「绿色免安装、暂未做代码签名」，给的就是裸 exe）。
+
+#### ihomy 发布页的上传流程
+
+页面源码在**另一个仓库** `Projects/ihomy`（`frontend/src/views/Kada.vue`），安装包托管在 ihomy 生产服务器的 nginx `/files/` 静态目录下。
+
+```powershell
+# 1) 先退出运行中的 Kada（否则 exe 被占用）
+Get-Process -Name kada -ErrorAction SilentlyContinue | Stop-Process -Force
+
+# 2) 备份线上旧包（覆盖前先留一份，便于回退）
+ssh -p 19068 root@ihomy.top "cp -a /opt/ihomy/uploads/kada/kada.exe /opt/ihomy/uploads/kada/kada.exe.bak-<日期>"
+
+# 3) 上传裸 exe（SSH 端口 19068，不是 22）
+scp -P 19068 target\release\kada.exe root@ihomy.top:/opt/ihomy/uploads/kada/kada.exe
+ssh -p 19068 root@ihomy.top "chown ihomy:ihomy /opt/ihomy/uploads/kada/kada.exe"
+
+# 4) 校对：两端 md5 必须一致
+(Get-FileHash target\release\kada.exe -Algorithm MD5).Hash.ToLower()
+ssh -p 19068 root@ihomy.top "md5sum /opt/ihomy/uploads/kada/kada.exe"
+
+# 5) 验证线上确实换成了新包（匿名可下就是对的）
+(Invoke-WebRequest "https://ihomy.top/api/files/kada/kada.exe" -Method Head).Headers["Content-Length"]
+```
+
+- **这个目录不在 `deploy.ps1` 的同步范围内**，每次换版本都要**手动 scp**，跑 `deploy.ps1` 不会带上安装包。
+- 换版本后还要改 `Projects/ihomy/frontend/src/views/Kada.vue` 顶部三个常量（`filename` / `version` / `fileSize`，版本与体积是**硬编码**的，不改页面就一直显示旧值），再走 `ihomy/scripts/deploy.ps1 -FrontendOnly` 才能生效。
+- **`/files/kada/**` 在 ihomy 后端是免登录放行**（安装包要能匿名下载），且 nginx 的 `location /files/` 必须**反代**到后端而不是 alias 直出——直出会绕过整套访问判定。改 nginx 前先看 ihomy 仓的 `docs/踩坑速查.md` §7.8。
+- ihomy 生产凭证与部署细节归 ihomy 仓管，**不写进本仓**。
+
+### 1.3 用户安装步骤
 
 1. 下载 `Kada_<版本>_x64-setup.exe` 安装包。
 2. 双击运行，按向导完成安装。
@@ -41,13 +78,13 @@ npm run tauri build
 >
 > 安装目录与提权：Tauri v2 的 NSIS 默认 `installMode = currentUser`（装到免管理员权限的目录，卸载信息写 `HKCU`），所以**默认安装过程不弹 UAC**。要让程序装进 `Program Files`、开机自启对所有用户生效，得在 `tauri.conf.json` 配 `bundle.windows.nsis.installMode = "perMachine"`（那样安装与更新都需要管理员）。本项目保持默认。
 
-### 1.3 首次运行与数据位置
+### 1.4 首次运行与数据位置
 
 - 配置（快捷键/改键/宏）以 JSON 落盘在 Tauri `app_data_dir()` 下的 `config.json`，Windows 上约 `%APPDATA%\com.kada\config.json`。
 - 配置是纯 JSON 文本，可直接跨平台同步/备份（键模型与配置结构见 `docs/需求设计说明书.md` §2/§3）。
 - **更新不影响配置**：升级只替换程序文件，`%APPDATA%\com.kada\` 不动。
 
-### 1.4 卸载
+### 1.5 卸载
 
 - 图形界面：Windows 设置 → 应用 → 已安装的应用 → 咔哒 Kada → 卸载。
 - 或运行安装目录下的卸载程序（NSIS 生成的 `uninstall.exe`）。
