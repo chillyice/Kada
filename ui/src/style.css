@@ -6,6 +6,9 @@
   --muted: #8b93a3;
   --accent: #e06040;
   --accent-dim: #7a3a2a;
+  /* 单行控件（按钮 / 输入框 / 下拉 / 页签）的统一高度：以列表顶栏按钮为基准，
+     全站一个值——原先 26~34px 参差，一行里高低不齐。改这里即可整体调。 */
+  --ctl-h: 26px;
 }
 
 * {
@@ -106,6 +109,8 @@ body {
 .rail-item {
   position: relative;
   width: 52px;
+  /* 全局 button 定了统一高度，导航项是「图标 + 文字」两行，不吃那条：高度自适应。 */
+  height: auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -145,12 +150,13 @@ body {
   min-height: 0;
 }
 
-/* 工具栏：搜索 + 筛选 + 新增（Postman 顶栏同款排布）。 */
+/* 工具栏：搜索 + 筛选 + 新增（Postman 顶栏同款排布）。
+   左右 8px 与下面的列表行对齐（行是 4px 8px），搜索框不另留外边距。 */
 .list-toolbar {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 12px 10px 8px;
+  padding: 10px 8px 8px;
 }
 
 .list-toolbar .search {
@@ -164,7 +170,9 @@ body {
   align-items: center;
   gap: 4px;
   flex-shrink: 0;
-  padding: 6px 8px;
+  height: var(--ctl-h);
+  padding: 0 8px;
+  line-height: 1;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
@@ -202,7 +210,8 @@ body {
   background: var(--bg);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 7px 10px;
+  height: var(--ctl-h);
+  padding: 0 10px;
   color: var(--text);
   font-size: 13px;
 }
@@ -435,11 +444,13 @@ body {
 .folder-input {
   flex: 1;
   min-width: 0;
+  /* 行内重命名框：比单行控件再矮一档，别把目录行撑得比平时高。 */
+  height: 20px;
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--accent);
   border-radius: 4px;
-  padding: 3px 6px;
+  padding: 0 6px;
   font-size: 13px;
   font-family: inherit;
 }
@@ -467,7 +478,9 @@ body {
   text-align: left;
   background: none;
   border: none;
-  padding: 7px 10px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  line-height: 1;
   border-radius: 5px;
   font-size: 13px;
   color: var(--text);
@@ -506,7 +519,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 20px;
+  padding: 10px 20px;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
@@ -569,7 +582,7 @@ body {
   padding: 20px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
 /* 编辑器内容限宽居中：超宽窗口下输入行不拉满整屏，可读性优先。
@@ -588,7 +601,7 @@ body {
   position: relative;
   display: flex;
   align-items: stretch;
-  height: 40px;
+  height: 36px;
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -822,15 +835,17 @@ body {
   color: #fff;
 }
 
-/* 标题行右侧的图标按钮：撤销 / 取消 / 保存 / 删除（+ 未保存标记）。 */
+/* 标题行右侧的图标按钮：执行 / 删除 / 撤销 / 保存 / 关闭（+ 未保存标记）。
+   尺寸与列表顶栏按钮一致（--ctl-h），正方形 26px。 */
 .icon-btn {
-  min-width: 32px;
-  height: 32px;
-  padding: 0 8px;
+  min-width: var(--ctl-h);
+  height: var(--ctl-h);
+  /* 左右 5px + 14px 图标 + 1px 边 = 26px，与图标按钮/文字按钮同宽。 */
+  padding: 0 5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 16px;
+  font-size: 13px;
   line-height: 1;
 }
 
@@ -852,8 +867,8 @@ body {
 }
 
 .icon-btn svg {
-  width: 15px;
-  height: 15px;
+  width: 14px;
+  height: 14px;
 }
 
 /* 页签：详情 / 动作·操作·展开文本 / 层 / 条件（与消息页的视图标签同一套视觉）。 */
@@ -864,7 +879,9 @@ body {
 }
 
 .entry-tab {
-  padding: 6px 14px;
+  height: var(--ctl-h);
+  padding: 0 12px;
+  line-height: 1;
   font-size: 13px;
   color: var(--muted);
   background: none;
@@ -887,7 +904,7 @@ body {
 .work-view {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
 }
 
 .detail-body {
@@ -1038,6 +1055,7 @@ body {
 .chip-x {
   background: none;
   border: none;
+  height: auto;
   padding: 0;
   color: rgba(255, 255, 255, 0.7);
   font-size: 14px;
@@ -1300,9 +1318,9 @@ body {
 
 .action-del {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  padding: 4px;
+  width: var(--ctl-h);
+  height: var(--ctl-h);
+  padding: 5px;
   border: none;
   background: none;
   color: var(--muted);
@@ -1376,13 +1394,16 @@ body {
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 8px;
+  padding: 6px 8px;
   font-size: 13px;
   font-family: inherit;
 }
 
 .action-input {
   flex: 1;
+  height: var(--ctl-h);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .action-input-num {
@@ -1585,7 +1606,7 @@ body {
   color: var(--muted);
   background: none;
   font-size: 12px;
-  padding: 4px 10px;
+  padding: 0 10px;
 }
 
 .add-inline:hover {
@@ -1594,13 +1615,23 @@ body {
 }
 
 /* ---------- 表单控件 ---------- */
-input[type="text"],
+input[type="text"] {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  height: var(--ctl-h);
+  padding: 0 8px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
 textarea {
   background: var(--bg);
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 8px;
+  padding: 6px 8px;
   font-size: 13px;
   font-family: inherit;
 }
@@ -1621,7 +1652,8 @@ select {
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 5px 8px;
+  height: var(--ctl-h);
+  padding: 0 8px;
   font-size: 13px;
 }
 
@@ -1630,8 +1662,13 @@ button {
   color: var(--text);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 6px 12px;
+  /* 统一高度（与列表顶栏按钮同尺寸）。自带 height 的类（rail-item / flow-dot /
+     action-del / key-tool …）按选择器优先级照旧覆盖，只有吃这条的按钮被拉齐。 */
+  height: var(--ctl-h);
+  padding: 0 12px;
+  line-height: 1;
   font-size: 13px;
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -1652,7 +1689,7 @@ button.primary:hover {
 button.ghost {
   background: none;
   color: var(--muted);
-  padding: 6px 10px;
+  padding: 0 10px;
 }
 
 button.ghost:hover {
@@ -1703,7 +1740,9 @@ button:disabled:hover {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 2px 8px;
+  height: var(--ctl-h);
+  padding: 0 8px;
+  line-height: 1;
   border-radius: 999px;
   font-size: 12px;
   color: #e8b339;
@@ -1739,13 +1778,13 @@ button:disabled:hover {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 8px 12px;
   cursor: pointer;
 }
 
 .settings-actions {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   margin-bottom: 12px;
 }
 
@@ -1854,12 +1893,15 @@ button:disabled:hover {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  line-height: 1;
   border: 1px solid rgba(255, 90, 90, 0.45);
   border-radius: 6px;
   background: rgba(255, 90, 90, 0.1);
   color: #ff6b6b;
   font-size: 12px;
+  white-space: nowrap;
   cursor: pointer;
   user-select: none;
 }
@@ -1868,7 +1910,12 @@ button:disabled:hover {
   background: rgba(255, 90, 90, 0.16);
 }
 
+/* 冲突摘要一行放不下就省略（气泡高度与搜索框等控件对齐，不换行撑高）。 */
 .conflict-bubble-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   font-weight: 600;
 }
 
@@ -2189,19 +2236,21 @@ body:has(.hints-panel) {
   border: 2px solid var(--panel);
 }
 
-/* 消息页顶层标签：命令结果 / 冲突。 */
+/* 消息页顶层标签：命令结果 / 冲突。左右 20px 与下方内容区对齐。 */
 .msg-view-tabs {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 14px 0;
+  padding: 8px 20px 0;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
 
 .msg-view-tab {
   position: relative;
-  padding: 6px 14px;
+  height: var(--ctl-h);
+  padding: 0 12px;
+  line-height: 1;
   font-size: 13px;
   color: var(--muted);
   border: none;
@@ -2247,16 +2296,16 @@ body:has(.hints-panel) {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 10px 14px;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--line);
   flex-shrink: 0;
 }
 
 .msg-arrow {
   flex-shrink: 0;
-  font-size: 18px;
+  font-size: 16px;
   line-height: 1;
-  padding: 4px 10px;
+  padding: 0 8px;
 }
 
 .msg-tablist {
@@ -2275,7 +2324,9 @@ body:has(.hints-panel) {
 
 .msg-tab {
   flex-shrink: 0;
-  padding: 5px 12px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  line-height: 1;
   font-size: 12px;
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   white-space: nowrap;
@@ -2374,7 +2425,7 @@ pre.msg-v {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -2427,7 +2478,7 @@ pre.msg-v {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 10px 16px;
   border-top: 1px solid var(--line);
 }
 
@@ -2465,11 +2516,11 @@ pre.msg-v {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
-/* 详情页头部的一组按钮（如「消息」页的「停止执行 / 清空」）。 */
+/* 详情页头部的一组按钮（编辑页的「执行/删除/撤销/保存/关闭」、消息页的「停止执行 / 清空」）。 */
 .head-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 /* ---- 多选（Ctrl/Shift 点行、行 ⋯/右键操作） ---- */

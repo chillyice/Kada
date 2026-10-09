@@ -2762,6 +2762,32 @@ fn abort_actions() -> usize {
     running
 }
 
+/// 编辑页「执行」按钮：把当前草稿的动作串当一次触发跑掉（不落盘、不看 `when` 与启停），
+/// 走的与快捷键命中同一条 [`fire`] 路径——气泡、消息中心、`show_output` 弹窗一并复用。
+#[tauri::command]
+fn run_entry(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    actions: Vec<Action>,
+    name: String,
+) {
+    // 超时与注入模式在锁内取一次（`fire` 不再二次读配置，避免与保存写锁多一层纠缠）。
+    let (timeout_ms, text_mode) = {
+        let g = state.config.read().unwrap();
+        (g.settings.action_timeout_ms, g.settings.text_inject_mode)
+    };
+    fire(
+        app,
+        state.results.clone(),
+        state.unread.clone(),
+        actions,
+        "手动执行".into(),
+        name,
+        timeout_ms,
+        text_mode,
+    );
+}
+
 /// 录制不可用时给用户的解释（[`input::hooks_supported`] 为 false 时用）。
 ///
 /// false 不表示「平台没实现」，而是「输入层没起来」——macOS 是还没拿到辅助功能权限，
@@ -2853,6 +2879,7 @@ pub fn run() {
             import_config,
             set_paused,
             abort_actions,
+            run_entry,
             start_record,
             stop_record,
             get_command_results,
