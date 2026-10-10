@@ -250,6 +250,9 @@ export function installBrowserMock() {
         // 导出：对话框现在返回路径（不是取消），导出必须成功收场，否则演示成「导出坏了」。
         case "export_config":
           return null;
+        // 导出片段：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
+        case "export_fragment":
+          return (args?.picks as unknown[] | undefined)?.length ?? 0;
         case "start_record":
           return null;
         case "stop_record":

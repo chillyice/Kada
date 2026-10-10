@@ -1486,8 +1486,72 @@ function folderMenuItems(f: Folder): MenuItem[] {
   // 目录只装快捷键：剪贴板里没有快捷键时，粘到目录里没有意义。
   if (clipboard?.items.some((i) => i.kind === "shortcut"))
     items.push({ label: "粘贴到该目录", run: () => pasteIntoFolder(f.id) });
+  const inFolder = picksInFolder(f.id);
+  if (inFolder.length)
+    items.push({
+      label: `导出该目录为片段（${inFolder.length} 项）`,
+      run: () => void exportFragment(inFolder),
+    });
   items.push({ label: "删除", run: () => void deleteFolder(f.id) });
   return items;
+}
+
+// ---- 配置片段（规划 7.2-㉕）：把若干条目导出成一个可分享的 JSON 文件 ----
+
+// 片段点名表（后端 `export_fragment` 按「类别 + 下标」取条目）。
+type SnippetPick = { kind: ListKind; idx: number };
+
+// 当前选中集的点名表（对象引用 → 各自数组里的下标；不在任何数组里的略过）。
+function picksOfSelection(): SnippetPick[] {
+  const picks: SnippetPick[] = [];
+  for (const o of picked) {
+    const kind = kindOf(o);
+    if (!kind) continue;
+    const idx = arrOf(kind).indexOf(o as AnyEntry);
+    if (idx >= 0) picks.push({ kind, idx });
+  }
+  return picks;
+}
+
+// 某个目录（含全部子目录）里所有条目的点名表——「导出该目录为片段」用。
+function picksInFolder(rootId: string): SnippetPick[] {
+  const ids = new Set<string>([rootId]);
+  // 目录树可嵌套，扫到不再新增为止（目录数量级很小，一趟轮询足够）。
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const f of cfg.folders) {
+      if (f.parent && ids.has(f.parent) && !ids.has(f.id)) {
+        ids.add(f.id);
+        grew = true;
+      }
+    }
+  }
+  const picks: SnippetPick[] = [];
+  const scan = (arr: AnyEntry[], kind: ListKind) =>
+    arr.forEach((e, idx) => {
+      if (e.folder && ids.has(e.folder)) picks.push({ kind, idx });
+    });
+  scan(cfg.shortcuts, "shortcut");
+  scan(cfg.remaps, "remap");
+  scan(cfg.expansions, "expansion");
+  return picks;
+}
+
+// 导出片段：选路径 → 后端摘出这些条目写成 JSON。
+// 片段是「只含这几条的子集配置」，对方用「导入配置 → 合并」原样吃下，不会碰本机设置。
+async function exportFragment(picks: SnippetPick[]) {
+  if (!picks.length) return toast("没有可导出的条目");
+  const path = await saveFile({
+    defaultPath: "kada-片段.json",
+    filters: [{ name: "JSON", extensions: ["json"] }],
+  });
+  if (!path) return;
+  try {
+    const n = await invoke<number>("export_fragment", { path, picks });
+    toast(`已导出 ${n} 项到 ${path}（对方用「导入配置 → 合并」即可）`);
+  } catch (e) {
+    toast(`导出失败: ${e}`);
+  }
 }
 
 function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
@@ -1509,6 +1573,7 @@ function selectionMenuItems(): MenuItem[] {
     { label: n > 1 ? `各复制一份（${n} 项）` : "复制一份", run: duplicateSelection },
     { label: "复制", run: () => copySelection(false) },
     { label: "剪切", run: () => copySelection(true) },
+    { label: n > 1 ? `导出为片段（${n} 项）` : "导出为片段", run: () => void exportFragment(picksOfSelection()) },
     { label: n > 1 ? `删除（${n} 项）` : "删除", run: () => void deleteSelection() },
     { label: "启用", run: () => void setPickedEnabled(true) },
     { label: "禁用", run: () => void setPickedEnabled(false) },

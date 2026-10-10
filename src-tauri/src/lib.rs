@@ -21,8 +21,9 @@ use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_core::{
-    detect_conflicts, matches, sanitize_config, Action, Config, Conflict, Key, Modifier, RawEvent,
-    Settings, Shortcut, Severity, TextInjectMode, Trigger, TriggerContext, Vars, SYSTEM_SHORTCUTS,
+    detect_conflicts, matches, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
+    Key, Modifier, RawEvent, Settings, Shortcut, Severity, SnippetPick, TextInjectMode, Trigger,
+    TriggerContext, Vars, SYSTEM_SHORTCUTS,
 };
 use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
@@ -2748,6 +2749,43 @@ fn import_config(
     })
 }
 
+/// 导出配置片段（规划 7.2-㉕，配置分享 / 片段市场）：把点名的那几条（单条、多选、或某个
+/// 目录下的全部）写成一个可分享的 JSON 文件。
+///
+/// 片段就是一份**子集 `Config`** + 一个顶层 `kada_snippet` 元信息键，所以接收方走现有的
+/// 「导入配置 → 合并」原样就能吃下，导入侧无需改动、也不会碰本机设置。目录引用在摘取时剥掉
+/// （id 是本机 UUID，带过去只会指向不存在的目录）。
+///
+/// 写入失败只报错，不碰磁盘上的配置（它压根不读配置路径）。
+#[tauri::command]
+fn export_fragment(
+    state: tauri::State<'_, KadaState>,
+    path: String,
+    picks: Vec<SnippetPick>,
+) -> Result<usize, String> {
+    let part = snippet(&state.config.read().unwrap(), &picks);
+    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len();
+    if n == 0 {
+        return Err("没有可导出的条目".into());
+    }
+    let title = snippet_title(&part);
+
+    let mut val = serde_json::to_value(&part).map_err(|e| e.to_string())?;
+    if let Some(obj) = val.as_object_mut() {
+        // 设置不带（合并导入压根不碰设置，带着走只会让分享出来的文件看着像整份配置）。
+        obj.remove("settings");
+        // 元信息键：`Config` 反序列化忽略未知字段，故片段与整份配置同一套解析。
+        // `version` 给将来的在线索引/格式演进留位置。
+        obj.insert(
+            "kada_snippet".into(),
+            serde_json::json!({ "version": 1, "name": title }),
+        );
+    }
+    let json = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+    std::fs::write(&path, json).map_err(|e| format!("写入失败：{e}"))?;
+    Ok(n)
+}
+
 /// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
 /// 暂停是限时租约（[`PAUSE_LEASE_MS`]），前端若被中断来不及解除也不会永久卡死。
 #[tauri::command]
@@ -2879,6 +2917,7 @@ pub fn run() {
             set_config,
             get_conflicts,
             export_config,
+            export_fragment,
             import_config,
             set_paused,
             abort_actions,

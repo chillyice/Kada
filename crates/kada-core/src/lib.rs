@@ -145,6 +145,10 @@ impl std::error::Error for ParseError {}
 mod merge;
 pub use merge::{merge_configs, MergeReport};
 
+/// 配置片段（分享用）：摘出被点名的条目组成可分享的子集配置（见规划 7.2-㉕）。
+mod snippet;
+pub use snippet::{snippet, snippet_title, PickKind, SnippetPick};
+
 mod parse {
     use super::*;
 

@@ -27,8 +27,10 @@
 ## 代码结构
 
 ```
-crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测
+crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、片段摘取
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
+  src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
+  src/snippet.rs            # 配置片段（分享用）：按「类别+下标」摘出条目 + 被引用的层，见下方铁律
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本
@@ -62,6 +64,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **平台能力缺失**（`PlatformCaps`，见钩子引擎段）与**层可达性**（层有条目却无切层键指向 → 警告）同属软冲突。
 - **消息中心**（内存态，重启清空）：命令/脚本结果、**中止/超时**（`kind="abort"`）、**动作失败**（`kind="error"`）、**配置事件**（`kind="config"`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
 - **动作执行有界**（`kada-actions/`，机制见 `架构设计.md` §3.17 / `需求设计说明书.md` §5.7）：命令/脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（Windows `taskkill /T /F`；Linux / macOS 自成进程组后 `kill(-pgid)`）；中止 = **代数计数器** `abort::request()`。**并行动作** `Parallel`（7.1-㉞）= 成员各起一线程、全部结束才进下一步，用**链内注入锁**维持「注入串行」（`Text`/`Keys`/`Mouse` 持锁，只并发非注入步骤），成员 `vars` 私有快照、按下标顺序合并与提交。
+- **配置片段（分享）铁律**（`crates/kada-core/src/snippet.rs` + `export_fragment`）：片段**必须仍是合法的 `Config` JSON**（顶层可多一个被忽略的 `kada_snippet` 元信息键）——对方靠现成的「导入 → 合并」吃下，**不要为片段另立一套导入格式 / 解析器**。摘取时**剥掉 `folder`**（本机 UUID，带过去只会指向不存在的目录）、**带上被引用的层**（否则导入时层引用被清成基础层 = 静默改行为）、**不带 `settings`**（合并本就不碰它）。
 - **feature 门控**（`automation`，三个 crate 均 `default` 开启）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / App / OpenUrl / If / Script / Condition / Vars。手工编辑的配置允许缺字段、带未知字段（`#[serde(default)]`）。
 - **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 比对，Rust 新增键而前端漏改即红）。
 
