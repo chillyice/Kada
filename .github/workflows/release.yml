@@ -1,6 +1,6 @@
 name: Release
 
-# 发版：打一个 v* tag（或手动触发）→ 构建 Windows 安装包 → 用私钥签名 →
+# 发版：打一个 v* tag（或手动触发）→ 构建各平台安装包 → 用私钥签名 →
 # 生成 latest.json → 建 Release。客户端「检查更新」读的就是这个 Release 上的
 # latest.json（见 src-tauri/tauri.conf.json 的 plugins.updater.endpoints）。
 #
@@ -9,9 +9,17 @@ name: Release
 #      TAURI_SIGNING_PRIVATE_KEY          = ~/.tauri/kada.key 的文件内容
 #      TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 私钥密码（本项目生成时未设密码，留空字符串即可）
 #   2. 发版前先同步版本号：src-tauri/tauri.conf.json 的 version（Cargo.toml / package.json 同值）。
+#   3.（可选）Windows 代码签名证书，见下面「导入代码签名证书」——没配就自动跳过。
 #
 # 为什么默认发 draft：更新端点用的是 `releases/latest/download/latest.json`，
 # 它只解析**已发布**的最新 Release——draft 不会被客户端看到，发不发由人决定。
+#
+# ⚠ 根目录 `npm ci` 不能省：tauri-action 看到 package.json 里有 @tauri-apps/cli 就走
+# `npm run tauri`，而它用的是**根目录 node_modules 里那个 CLI**，没装 = 直接构建失败。
+# CLI 版本也不能太老：requireSignedVersion = true 要求签名里带版本号，tauri-cli < 2.12.1
+# 的打包签名不带（客户端会以 MissingSignedVersion 拒装每一次更新）。package.json 的
+# `@tauri-apps/cli` 依赖写的是下限 ^2.12.1，package-lock.json 锁住具体版本。
+# 最后一步的 verify 步骤就是盯着这条不变量，红了别 Publish。
 
 on:
   push:
@@ -21,10 +29,25 @@ on:
 
 jobs:
   release:
-    name: release (windows)
-    runs-on: windows-latest
+    name: release (${{ matrix.platform }})
+    runs-on: ${{ matrix.platform }}
     permissions:
       contents: write
+    strategy:
+      fail-fast: false
+      # 串行：latest.json 是「各平台条目并进去」的同一份文件，两个 job 同时写会互相覆盖
+      # （第一次发版时谁都读不到对方的条目，最后谁后写谁赢）。
+      max-parallel: 1
+      matrix:
+        include:
+          # Windows 只出 NSIS：自动更新实际下载的就是它（WiX MSI / MSIX 不参与更新，
+          # 省得白花构建时间；真要 Store 旁加载再加回 tauri.conf.json 的 bundle.targets）。
+          - platform: windows-latest
+            args: --target x86_64-pc-windows-msvc --bundles nsis
+          # Linux 出 deb + AppImage。**不出 rpm**：rpm 要另配 GPG 签名密钥
+          # （TAURI_SIGNING_RPM_KEY），现在没人用 rpm，加进来只是多一个失败点。
+          - platform: ubuntu-22.04
+            args: --bundles deb,appimage
     steps:
       - uses: actions/checkout@v4
 
@@ -41,8 +64,47 @@ jobs:
         with:
           node-version: 24
 
+      # 与 ci.yml 同一份 Tauri 前置依赖（AppImage 打包还会联网拉 linuxdeploy）。
+      - name: Install Linux deps (Tauri prerequisites)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl wget file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Tauri CLI install (root)
+        run: npm ci
+
       - name: Frontend install
         run: npm --prefix ui ci
+
+      # Windows 代码签名（可选）：证书**没配就整段跳过**，不影响发版。
+      # 配了的话：Secrets 里放 WINDOWS_CERTIFICATE（.pfx 的 base64）与
+      # WINDOWS_CERTIFICATE_PASSWORD，再把证书指纹写进 src-tauri/tauri.windows.conf.json
+      # （Tauri 会自动把它合并进 tauri.conf.json，见 docs/安装与更新-Windows.md §2.3）。
+      - name: Import code-signing certificate (optional)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          if (-not $env:WINDOWS_CERTIFICATE) {
+            Write-Host '未配置 WINDOWS_CERTIFICATE，跳过代码签名'
+            exit 0
+          }
+          $pfx = Join-Path $env:RUNNER_TEMP 'cert.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE))
+          $secure = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath $pfx -CertStoreLocation Cert:\CurrentUser\My -Password $secure | Out-Null
+          Remove-Item -LiteralPath $pfx
+          Write-Host '代码签名证书已导入'
 
       # tauri-action 会：跑 beforeBuildCommand 构建前端 → cargo build --release
       # （含 bundle.createUpdaterArtifacts 产出的安装包与 .sig）→ 上传 Release →
@@ -56,7 +118,33 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "咔哒 Kada v__VERSION__"
-          releaseBody: "Windows 安装包见下方 Assets（`Kada___VERSION___x64-setup.exe`）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级。"
+          releaseBody: "Windows 安装包见下方 Assets（`Kada___VERSION___x64-setup.exe`；便携版是 `Kada___VERSION___x64-portable.zip`，解压即用）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级。"
           releaseDraft: true
           prerelease: false
-          args: --target x86_64-pc-windows-msvc
+          args: ${{ matrix.args }}
+
+      # 便携版：裸 exe 打个 zip（不含安装器、不写注册表）。前提是系统有 WebView2 Runtime
+      # （Win10 21H2 / Win11 自带）。给「不想装东西」的人用，不参与自动更新。
+      - name: Portable zip
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = (Get-Content src-tauri\tauri.conf.json -Raw | ConvertFrom-Json).version
+          $zip = "Kada_${version}_x64-portable.zip"
+          Compress-Archive -Path target\release\kada.exe -DestinationPath $zip
+          gh release upload "v$version" $zip --clobber
+
+      # 最后一道闸：版本号三处一致、每个安装包有签名、签名 key id 与内嵌公钥对得上、
+      # 签名里带版本号、清单与产物一一对应——对不上就别 Publish 这个 draft 了。
+      # 本地也能跑（node scripts/verify-release.mjs），口径见 docs/安装与更新-Windows.md §2.8。
+      - name: Verify release artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          gh release download "v$version" --pattern latest.json --dir "$RUNNER_TEMP"
+          node scripts/verify-release.mjs --dir target/release/bundle --latest "$RUNNER_TEMP/latest.json"

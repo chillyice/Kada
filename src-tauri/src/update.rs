@@ -265,9 +265,13 @@ pub fn spawn_install(app: tauri::AppHandle) {
             .await;
 
         match result {
-            // Windows 上走到这里之前进程通常已随安装退出；能返回说明安装器尚未接管
-            // （其它平台由调用方自行重启），状态留着给用户看。
-            Ok(()) => set_phase(&app, UpdatePhase::Installing { version }),
+            // Windows 上走到这里之前进程已被安装器接管（插件内部 `std::process::exit(0)`），
+            // 能返回说明安装器还没退出应用；其它平台（Linux 的 deb / AppImage）装完**不会**
+            // 拉起新版本，不自己重启就一直跑着旧二进制——等于「更新了但没生效」。
+            Ok(()) => {
+                set_phase(&app, UpdatePhase::Installing { version });
+                app.restart();
+            }
             Err(e) => fail(&app, Mode::Manual, format!("下载或安装失败：{e}")),
         }
     });

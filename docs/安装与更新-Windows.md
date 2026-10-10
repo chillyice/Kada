@@ -24,20 +24,36 @@ npm run tauri build
 | MSIX | `msix/Kada_<版本>_x64.msix` | Microsoft Store / 旁加载 |
 | 更新签名 | 各安装包同目录的 `.sig` | 自动更新校验用（`bundle.createUpdaterArtifacts = true` 产出），随 Release 一起上传 |
 
-当前 `tauri.conf.json` 的 `bundle.targets = "all"`，用 Tauri 默认打包参数（未做自定义安装配置）。
+当前 `tauri.conf.json` 的 `bundle.targets = "all"`，用 Tauri 默认打包参数（未做自定义安装配置）；**发版流水线另有取舍**（Windows 只出 NSIS、Linux 只出 deb + AppImage、另打一个便携版 zip，见 §1.2 与 §2.6）。
 
-> **打包前必读两条**（都踩过）：
+> **打包前必读三条**（前两条都踩过）：
 > 1. **先退出正在运行的 Kada**。exe 被占用时构建会在最后一步报「拒绝访问」，而且 bundler 给二进制写入「安装包类型」标记这一步会失败并警告 `Updater plugin may not be able to update this package`——这个标记决定已安装的客户端认不认 NSIS 更新包，**打包时它写不进去就可能导致更新装不上**。（`scripts/kada-package.ps1` 已自动先杀再构建。）
-> 2. **首次打包要联网下载 NSIS 工具链**（`github.com/tauri-apps/binary-releases` 上的 `nsis-3.11.zip`）。本机实测该 GitHub Release 资源拉不通（`timeout: global`），本地产不出安装包；CI runner（GitHub 托管机器）网络正常，发版走流水线即可。
+> 2. **首次打包要联网下载 NSIS 工具链**（`github.com/tauri-apps/binary-releases` 上的 `nsis-3.11.zip`）。本机曾因网络拉不通（`timeout: global`）打不出安装包；CI runner（GitHub 托管机器）网络正常，发版走流水线即可。
+> 3. **Tauri CLI 版本不能太老**（2026-10-10 实测，见 §2.3 的「版本号写不进签名」那条）：`requireSignedVersion = true` 要求安装包签名里带版本号，`tauri-cli < 2.12.1` 的打包签名**不带**，出来的包客户端一律拒装。根目录 `npm ci` 装的就是 `package.json` 里那个 CLI，别在老 node_modules 上打包；打完用 §2.8 的脚本核一遍。
 
-### 1.2 分发渠道：两条路发的**不是同一个文件**
+### 1.2 分发渠道：三条路发的**不是同一个文件**
 
 | 渠道 | 发的产物 | 面向 | 更新方式 |
 |------|---------|------|---------|
-| **GitHub Releases** | `Kada_<版本>_x64-setup.exe`（NSIS 安装包）+ `.sig` + `latest.json` | 已装客户端的**自动更新**、CI 发版 | 客户端 updater 插件按 §2 走 |
+| **GitHub Releases** | Windows：`Kada_<版本>_x64-setup.exe`（NSIS）+ `Kada_<版本>_x64-portable.zip`（便携版）+ `.sig` + `latest.json`；Linux：`kada_0.1.0_amd64.deb` / `kada_<版本>_amd64.AppImage` + `.sig` | 已装客户端的**自动更新**、CI 发版 | 客户端 updater 插件按 §2 走 |
 | **ihomy 发布页** `https://ihomy.top/kada` | **裸 `kada.exe`**（`target/release/kada.exe`，不是 NSIS 包） | 公开下载、首次安装 | 每次手动 scp，见下 |
+| **GitHub Releases（Linux 包）** | 同上那一行里的 deb / AppImage | Linux 发行版与桌面用户 | 走同一份 `latest.json`（`linux-x86_64` 条目） |
 
-两条渠道各发各的，**不要把 NSIS 包传到 ihomy 页**（页面上写的是「绿色免安装、暂未做代码签名」，给的就是裸 exe）。
+三条渠道各发各的，**不要把 NSIS 包传到 ihomy 页**（页面上写的是「绿色免安装、暂未做代码签名」，给的就是裸 exe）。
+
+#### 便携版 zip（新增，2026-10-10）
+
+- 流水线在 Windows job 里把**裸 `kada.exe`** 压成 `Kada_<版本>_x64-portable.zip` 上传到 Release。解压即用：没有安装器、不写注册表、不建开始菜单项，配置照样在 `%APPDATA%\com.kada\`。
+- **前提是系统里有 WebView2 Runtime**（Win10 21H2 / Win11 自带；更老的 Win10 需先去微软官网装）。
+- **不参与自动更新**：updater 只认 NSIS/MSI 这类安装器包，zip 就是给人手动替换 exe 用的。删了旧 exe、换成新 exe、重启即可（替换前先退出程序）。
+- 与 ihomy 页的裸 exe 是同一种东西，区别只是 zip 省一次「下载完记得放哪」的麻烦；两条渠道都发。
+
+#### Linux 包（新增，2026-10-10）
+
+- 流水线新增 `ubuntu-22.04` job，出 **deb** 与 **AppImage**，产物同样签名并进 `latest.json`（`linux-x86_64`），所以 **Linux 用户也能在应用内点「检查更新」**。
+- **deb 安装 / 更新会弹管理员密码**（Tauri 的 Linux updater 走 `pkexec`；AppImage 是原地替换自身）。AppImage 首次运行可能需要给它 FUSE 权限（`chmod +x` 后直接跑，或用 AppImageLauncher）。
+- **输入层权限与打包无关、也不因装包自动解决**：evdev/uinput 那套要 `input` 组 + udev 规则，见 `docs/需求设计说明书.md` §4.2 与 `docs/人工验证清单.md` §19。本项目至今没有一台 Linux 真机，Linux 的安装与更新链路同样**未经真机验证**。
+- macOS **不在发版矩阵里**：macOS 分发要代码签名 + 公证 + 分发证书，且输入层整条链路还没有真机跑过（§4.3 / 清单 §15），现在发 dmg 只会得到一个 Gatekeeper 直接拦下的包。等真机验过再加进矩阵。
 
 #### ihomy 发布页的上传流程
 
@@ -95,7 +111,7 @@ ssh -p 19068 root@ihomy.top "md5sum /opt/ihomy/uploads/kada/kada.exe"
 > 选型：**Tauri 官方 `tauri-plugin-updater` + GitHub Releases 作更新源 + Ed25519 签名**。
 > 代码在 `src-tauri/src/update.rs`（状态机与流程）、`plugins.updater`（`src-tauri/tauri.conf.json`）、
 > 发布流水线在 `.github/workflows/release.yml`。
-> ⚠ 端到端升级需要**先配好仓库 Secrets 并发一次 Release**才能真跑通（见 §2.7）；本机只能验到「打包出签名」这一步。
+> ⚠ 端到端升级需要**先配好仓库 Secrets 并发一次 Release**才能真跑通（见 §2.7）。在此之前能自动验的只有「产物与清单自洽」（§2.8），客户端侧的真机验收见 `docs/人工验证清单.md` 附录。
 
 ### 2.1 更新源
 
@@ -126,8 +142,13 @@ ssh -p 19068 root@ihomy.top "md5sum /opt/ihomy/uploads/kada/kada.exe"
   - 产物：仓库根 `target/release/bundle/nsis/Kada_x.y.z_x64-setup.exe` + 同名 `.sig`；打包前先退出运行中的 Kada。
 - 客户端只认内嵌公钥校验签名，**私钥泄露才需轮换公钥并随新版客户端下发**。
 - ⚠ **私钥丢失 = 现有用户再也收不到更新**（只能轮换公钥 + 让用户手动装一次新版）。请把 `kada.key` 备份进密码管理器。
-- **已开启加固**：`plugins.updater.requireSignedVersion = true` 要求签名里带版本号，挡「拿旧版有效签名冒充新版」的降级攻击（端点响应不走签名，`version` 字段可被篡改；校验签名里的版本号与端点声明是否一致）。**发版必须用会把版本号写进签名 `trusted comment` 的 Tauri CLI**（`version:X.Y.Z` 字段）：本地 CLI 2.11.4、CI 的 `tauri-action@v0` 都会写；不写版本号的老签名包会被客户端以 `MissingSignedVersion` 直接拒装。本项目此前从未发过版，无历史签名包袱，故可直接开启。
-- （可选，与更新机制正交）对安装包做 **Windows 代码签名证书**签名，可降低 SmartScreen 拦截；正式对外分发时建议补。
+- **已开启加固**：`plugins.updater.requireSignedVersion = true` 要求签名里带版本号，挡「拿旧版有效签名冒充新版」的降级攻击（端点响应不走签名，`version` 字段可被篡改；校验签名里的版本号与端点声明是否一致）。
+- ⚠⚠ **版本号写不进签名 = 客户端一次更新都装不上（2026-10-10 实测并修复）**：`requireSignedVersion` 读的是签名 trusted comment 里的 `version:` 字段。实测 **tauri-cli 2.11.4 的 `tauri build`（`createUpdaterArtifacts`）签出来的 trusted comment 只有 `timestamp:…\tfile:…`，没有 version**——客户端会以 `MissingSignedVersion` 直接拒装，且**流水线一路绿灯**（签名步骤自己成功，产物也上传了），只有真用户点更新才炸。`2.12.1` 起 `tauri build` 才自动写上（`tauri signer sign` 则要手写 `--app-version` 才写）。根因是根目录 `package.json` 写的 `@tauri-apps/cli: "^2"` 曾把 lock 锁在 2.11.4。现已把依赖下限提到 `^2.12.1`、流水线补了根目录 `npm ci`，并加了 §2.8 的产物自检盯着这条不变量。**升级/降级 Tauri CLI 后一定要重跑 §2.8。**
+- **（可选）Windows 代码签名证书**（对安装包做 Authenticode 签名，降低 SmartScreen「未知发布者」拦截）：流水线已备好导入证书的步骤——Secrets 里放 `WINDOWS_CERTIFICATE`（`.pfx` 的 base64）与 `WINDOWS_CERTIFICATE_PASSWORD`，再把证书指纹写进 `src-tauri/tauri.windows.conf.json`（Tauri 会自动把这个平台专属配置合并进 `tauri.conf.json`）：
+  ```json
+  { "bundle": { "windows": { "certificateThumbprint": "<指纹>", "digestAlgorithm": "sha256", "timestampUrl": "http://timestamp.digicert.com" } } }
+  ```
+  证书没配时那一步直接跳过，不影响发版。**与更新机制正交**：updater 验的是 Ed25519 安装包签名（`plugins.updater.pubkey`），Authenticode 解决的是 Windows 认不认这个发布者，两套各管各的。
 
 ### 2.4 客户端更新流程（已实现）
 
@@ -144,6 +165,7 @@ ssh -p 19068 root@ihomy.top "md5sum /opt/ihomy/uploads/kada/kada.exe"
 - 下载**带进度**：按「整数百分比变化」才推 `update-status` 事件（分片回调极密集，每片都 emit 会把 IPC 和前端渲染刷爆），设置页状态行实时显示 `正在下载 v0.2.0… 42%`。
 - **Windows 上「安装」这一步会退出应用**（Windows 安装器的限制，Tauri updater 明确如此）：NSIS 以 `passive` 模式带 `/R` 参数跑（小进度窗 + 装完自动重启）。**这正是「启动检查只提示、不自动安装」的原因**——自动安装等于替用户决定「现在关掉你正在用的应用」。
 - 装完由安装器拉起新版本，不依赖旧进程做收尾（旧进程此时已经不在了）。
+- **其它平台装完由应用自己重启**（`app.restart()`，2026-10-10 补）：Windows 的安装器会带走进程，Linux（deb 走 `pkexec`、AppImage 原地替换）不会——不主动重启就一直跑着旧二进制，等于「更新了但没生效」。
 - 失败回退：网络或校验失败**保留当前版本**，弹窗报错并在设置页状态行留错误信息（启动检查的失败则完全静默）。
 
 状态源在后端：更新阶段（`idle` / `checking` / `up-to-date` / `available` / `downloading` / `installing` / `error`）由 Rust 持有并经 `update-status` 事件推送，设置页另用 `get_update_status` 兜底拉一次（窗口晚于检查打开时才不会错过）。
@@ -162,16 +184,35 @@ ssh -p 19068 root@ihomy.top "md5sum /opt/ihomy/uploads/kada/kada.exe"
 | 3 | 壳内注册插件 + 托盘「检查更新」+ 启动静默检查 + 3 个命令 | ✅ `src-tauri/src/lib.rs`、`src-tauri/src/update.rs` |
 | 4 | 加能力 `updater:default` | ⛔ **不需要**：更新走 Rust 侧，前端不开 updater 权限（见 §2.5） |
 | 5 | 生成签名密钥对，公钥入库、私钥进 CI Secret | ✅ 密钥已生成（公钥入库）；⚠ **私钥仍需你手动加进 GitHub Secrets** |
-| 6 | 发布流水线（构建→签名→latest.json→Release） | ✅ `.github/workflows/release.yml` |
-| 7 | （可选）Windows 代码签名证书 | 🔧 未做 |
+| 6 | 发布流水线（构建→签名→latest.json→Release） | ✅ `.github/workflows/release.yml`（2026-10-10：补了根目录 `npm ci`，此前缺这步 `npm run tauri` 找不到 CLI、流水线必失败） |
+| 7 | （可选）Windows 代码签名证书 | 🔧 未做，**但流水线已备好导入步骤 + 配置位置**（配好 Secrets 与 `tauri.windows.conf.json` 即生效，见 §2.3） |
+| 8 | 便携版 zip / Linux 包（deb + AppImage） | ✅ 2026-10-10 流水线新增（见 §1.2） |
+| 9 | 发布产物自检（版本 / 签名 / 清单一致性） | ✅ `scripts/verify-release.mjs`，流水线最后一步必跑（见 §2.8） |
 
 ### 2.7 发版步骤
 
 1. 改版本号（三处同值）：`src-tauri/tauri.conf.json` 的 `version`、`src-tauri/Cargo.toml`、`ui/package.json`。
 2. 归档本次变更（`/archive`）并提交。
 3. 打 tag 推上去：`git tag v0.2.0 && git push origin v0.2.0`（或在 Actions 里手动跑 Release workflow）。
-4. 等 `release (windows)` job 完成 → Releases 里出现一个 **draft**，Assets 含 `Kada_0.2.0_x64-setup.exe` 与 `latest.json`。
-5. 下载 draft 里的安装包在本机验一次安装（首次发版建议再验一次「旧版点检查更新能否升上来」），确认无误后 **Publish**。
-6. 之后：已装旧版的机器启动 8 秒后气泡提示，或托盘右键「检查更新」即可升级。
+4. 等两个 job（`release (windows-latest)` → `release (ubuntu-22.04)`，串行）都完成 → Releases 里出现一个 **draft**，Assets 含 `Kada_0.2.0_x64-setup.exe`、`Kada_0.2.0_x64-portable.zip`、Linux 的 `.deb` / `.AppImage`、各自的 `.sig` 与 `latest.json`。
+5. **看两个 job 的最后一步（Verify release artifacts）都是绿的**——它红了就说明产物与清单对不上，**别 Publish**（§2.8）。
+6. 下载 draft 里的安装包在本机验一次安装（首次发版建议再验一次「旧版点检查更新能否升上来」），确认无误后 **Publish**。
+7. 之后：已装旧版的机器启动 8 秒后气泡提示，或托盘右键「检查更新」即可升级。
 
 > 首次发版前必须先做 §2.3 的 Secrets 配置，否则流水线会因缺少签名私钥而失败——**未签名的更新包客户端一律拒绝**，这是设计使然，不是 bug。
+
+### 2.8 发布产物自检（`scripts/verify-release.mjs`）
+
+发版流水线最后一步会跑它，本地也能跑（打完包就能查，不必等流水线）：
+
+```bash
+node scripts/verify-release.mjs                                  # 查 target/release/bundle
+node scripts/verify-release.mjs --dir <产物目录> --latest <latest.json>   # 连更新清单一起查（流水线口径）
+node scripts/verify-release.mjs --selftest                       # 解析器自检，不需要真产物
+```
+
+查的是**流水线自洽性**，六条：① 版本号三处同值；② 每个安装包有同名 `.sig`；③ 签名 key id 与 `tauri.conf.json` 内嵌公钥一致（对不上 = 私钥与公钥不是同一对，客户端一律拒装）；④ 签名 trusted comment 里有 `version:` 且等于配置版本（`requireSignedVersion` 的硬要求）；⑤ 文件名里的版本号与配置一致；⑥ `--latest` 时清单版本一致、清单条目指向的包与签名都在，且 `signature` 字段与 `.sig` 文件内容逐字相同。**任一条不过 `exit 1`，流水线红。**
+
+**不查密码学**：minisign 是「预哈希 + 全局签名」两段，自校验要引入原生库；抗伪造的真校验在客户端 updater 插件里（`tauri-plugin-updater` 的 `verify_signature`，验不过直接拒装）。这里防的是「打包/发版时自己把事情搞错了」。
+
+> 这套校验不是摆设：2026-10-10 第一次跑就抓出了 §2.3 那条——本机用老 CLI（2.11.4）打出来的包签名里没有版本号，客户端会以 `MissingSignedVersion` 拒装，而当时流水线对这种情况**毫无察觉**。

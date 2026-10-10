@@ -84,10 +84,10 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 恒 `None`（Wayland），前台条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。带 `when` 的条目判定用 `TriggerContext`——前台**惰性查询**（只在该条真被判定时才查，别让每次按键买单）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
 - **已知天花板（升级路径）**：逐条清单与升级项编号见 `docs/需求设计说明书.md` §4.5 与 §7.2（低层钩子拦不住 UAC 提权进程 / Linux 热插拔 / macOS 安全输入等）；触摸板 / 指点杆的中键·侧键不能作触发键是物理限制（不进 §7.2）。
 
-## 软件更新（Windows 已落地）
+## 软件更新（Windows + Linux 已落地）
 
-- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**——发版 CLI 必须把版本号写进签名 `trusted comment`，否则客户端以 `MissingSignedVersion` 拒装。
-- **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
+- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `C:\Users\chill\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**（版本红线见下）。
+- **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装；**其它平台装完由 `app.restart()` 自己重启**（否则一直跑旧二进制）。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `docs/安装与更新-Windows.md` §2。
 
 ## 构建与验证命令
 
@@ -100,8 +100,9 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npx tauri build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串，见 `docs/安装与更新-Windows.md` §2.3）。**两条渠道发的不是同一个文件**：GitHub Releases 发 **NSIS 包**（自动更新用），ihomy 发布页 `https://ihomy.top/kada` 发**裸 `kada.exe`**——流程见 `安装与更新-Windows.md` §1.2。
-- **CI**：`.github/workflows/ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（清单见 `需求设计说明书.md` §4），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串，见 `安装与更新-Windows.md` §2.3）。**三条渠道发的不是同一个文件**：GitHub Releases 发 **NSIS 包 + 便携版 zip + Linux deb/AppImage**（自动更新用），ihomy 发布页 `https://ihomy.top/kada` 发**裸 `kada.exe`**——流程见 §1.2。
+- **发布链路版本红线**：`requireSignedVersion = true` 要求安装包签名里带版本号，**tauri-cli < 2.12.1 的 `tauri build` 不写**（客户端会以 `MissingSignedVersion` 全部拒装，流水线还不报错）。根 `@tauri-apps/cli` 下限锁 `^2.12.1`，**动 CLI 版本/版本号/打包 targets 后必跑 `node scripts/verify-release.mjs`**（流水线最后一步也跑，见 §2.8）。
+- **CI**：`ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + Linux deb/AppImage，`max-parallel: 1` 串行，**根目录 `npm ci` 不能省**——tauri-action 走 `npm run tauri`，没装 CLI 直接构建失败）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（清单见 `需求设计说明书.md` §4），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 ## 里程碑与规划
 
 M0–M5 已完成（详见 §7）。
