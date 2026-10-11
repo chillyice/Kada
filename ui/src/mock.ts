@@ -247,6 +247,9 @@ export function installBrowserMock() {
         // （后端 ImportOutcome 的形状）并在将来放开文件选择时不至于崩在「不支持命令」。
         case "import_config":
           return { mode: args?.mode ?? "replace", added: 0, notes: [], backup: null };
+        // 载入示例配置：演示模式不真改配置，回一个「已合并」的形状让结果弹窗能演出来。
+        case "load_sample_config":
+          return { mode: "merge", added: 0, notes: [], backup: null };
         // 导出：对话框现在返回路径（不是取消），导出必须成功收场，否则演示成「导出坏了」。
         case "export_config":
           return null;

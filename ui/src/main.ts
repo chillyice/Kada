@@ -2392,7 +2392,7 @@ function setEntryTitle() {
 // 三类条目共用同一套 DOM：描述 / 层 / 条件 / 按键框只有一份，按类型显隐由 syncEntry() 管。
 function fillShortcutEditor() {
   if (!draft) return;
-  (document.getElementById("edit-desc") as HTMLInputElement).value = draft.description ?? "";
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = draft.description ?? "";
   fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
   renderTriggers(draft);
   renderWhenEditor(
@@ -2409,7 +2409,7 @@ function fillShortcutEditor() {
 
 function fillRemapEditor() {
   if (!remapDraft) return;
-  (document.getElementById("edit-desc") as HTMLInputElement).value = remapDraft.description ?? "";
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = remapDraft.description ?? "";
   (document.getElementById("remap-from") as HTMLInputElement).value = remapDraft.from;
   closeKeyMenu();
   (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
@@ -2439,7 +2439,7 @@ function fillRemapEditor() {
 
 function fillExpansionEditor() {
   if (!expansionDraft) return;
-  (document.getElementById("edit-desc") as HTMLInputElement).value = expansionDraft.description ?? "";
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = expansionDraft.description ?? "";
   (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
     expansionDraft.trigger;
   (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
@@ -2863,6 +2863,9 @@ function refreshDirty() {
   document.getElementById("dirty-flag")?.classList.toggle("hidden", !dirty);
   const undo = document.getElementById("entry-undo") as HTMLButtonElement | null;
   if (undo) undo.disabled = !dirty;
+  // 保存同理：没有改动就没有东西可落盘，按钮置灰（Ctrl+S 那条路径也按这个判定放行）。
+  const save = document.getElementById("entry-save") as HTMLButtonElement | null;
+  if (save) save.disabled = !dirty;
 }
 
 // 撤销改动：把草稿还原成基线内容（打开时 / 上次保存的），编辑页留在原地。
@@ -4166,6 +4169,7 @@ function bindSettings() {
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
+  document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
   document.getElementById("check-update")!.addEventListener("click", () => {
     void invoke("check_update");
   });
@@ -4229,6 +4233,17 @@ async function importConfig() {
     showImportResult(r);
   } catch (e) {
     toast(`导入失败: ${e}`);
+  }
+}
+
+// 载入内置示例配置：后端走合并语义（只增不删、不碰设置），结果复用导入结果弹窗展示。
+async function loadSampleConfig() {
+  try {
+    const r = await invoke<ImportOutcome>("load_sample_config");
+    await load();
+    showImportResult(r);
+  } catch (e) {
+    toast(`载入示例失败: ${e}`);
   }
 }
 
@@ -4815,10 +4830,10 @@ function bind() {
     if (document.querySelector(".modal:not(.hidden)")) return;
     const mod = e.ctrlKey || e.metaKey;
 
-    // Ctrl+S：保存当前编辑页，等价点标题行的 ✓（含校验与提示）。
+    // Ctrl+S：保存当前编辑页，等价点标题行的保存图标（含校验与提示）。没改动就与置灰的按钮同一口径，不落盘。
     if (mod && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
-      if (isListSection(section) && currentDraft()) void saveCurrentDraft();
+      if (isListSection(section) && currentDraft() && isDraftDirty()) void saveCurrentDraft();
       return;
     }
 

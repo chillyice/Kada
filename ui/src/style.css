@@ -26,15 +26,15 @@
   --line-soft: rgba(255, 255, 255, 0.07);
   --scroll-thumb: rgba(255, 255, 255, 0.14);
   --scroll-thumb-hi: rgba(255, 255, 255, 0.3);
-  /* 浮窗内文字（键帽 / 条目名）与深色键帽底 */
-  --float-dim: #cfd5e1;
-  --float-blue: #cfe1ff;
+  /* 浮窗里的键帽底（提示框那几颗）。浮窗既然跟界面一起翻主题，键帽底也得跟着翻：
+     写死深色就成「浅底 + 浅键帽 + 深字」，键帽里的字糊在键帽上。 */
   --key-bg: #262b35;
   --key-line: #3a4150;
 }
 
-/* 浅色主题：只覆盖主界面那几个变量。浮窗（气泡 / HUD / 提示框）**不跟着变**——
-   它们盖在任意应用上，浅底配 #ffd9cf 这类浅色强调文字会看不清，两套主题都保持深色。 */
+/* 浅色主题：浮窗（气泡 / HUD / 提示框）也一起翻。它们的主色本来就走的 --text / --line /
+   --muted / --accent，只有底色写死成深色——不跟着换就成了「深底 + 深字」，整块浮窗看着像没东西。
+   （层名 / 标题这类强调色因此必须用 --accent，不能再用 #ffd9cf 那种写死的浅色值。）*/
 [data-theme="light"] {
   --bg: #f2f3f5;
   --panel: #ffffff;
@@ -44,9 +44,12 @@
   --accent: #d1553a;
   --accent-dim: #f6ddd6;
   --hover-bg: rgba(0, 0, 0, 0.05);
+  --float-bg: rgba(255, 255, 255, 0.97);
   --line-soft: rgba(0, 0, 0, 0.08);
   --scroll-thumb: rgba(0, 0, 0, 0.16);
   --scroll-thumb-hi: rgba(0, 0, 0, 0.3);
+  --key-bg: #e6e9ee;
+  --key-line: #c3c9d3;
 }
 
 /* 浅色底上「动作类型色当文字用」对比度不够，往正文色混 30%（边框和淡底不受影响）。 */
@@ -907,6 +910,14 @@ body {
 .icon-btn.primary:hover {
   color: #fff;
   filter: brightness(1.1);
+}
+
+/* 无改动时保存置灰：退掉实底强调，只剩一个描边灰图标，点不动。 */
+.icon-btn.primary:disabled {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  filter: none;
 }
 
 .icon-btn svg {
@@ -2051,6 +2062,10 @@ body:has(.toast-bubble) {
 .toast-title {
   font-size: var(--fs-md);
   font-weight: 600;
+  /* 行高必须压住：窗口是定高的 60px（`ensure_toast`），气泡 `inset: 12px` 只剩 36px 高。
+     沿用 body 的 1.6 的话两行 + gap 是 41px，`justify-content: center` 会把上下两头各顶出
+     一截，再被 `overflow: hidden` 切掉——看着就是「文字没上下居中」。 */
+  line-height: 1.25;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2058,6 +2073,7 @@ body:has(.toast-bubble) {
 
 .toast-sub {
   font-size: var(--fs-xs);
+  line-height: 1.25;
   font-family: Consolas, monospace;
   color: var(--accent);
   white-space: nowrap;
@@ -2107,10 +2123,12 @@ body:has(.hud-box) {
 }
 
 /* 层是「当前模式」，给最醒目的位置与配色；三种修饰键按释放时机区分：
-   按住（跟着切层键松）、粘滞（再击解锁）、单次（下一个键后释放）。 */
+   按住（跟着切层键松）、粘滞（再击解锁）、单次（下一个键后释放）。
+   强调靠「淡橙底 + 橙边框」，字走 --text：写死的浅色字（#ffd9cf）在浅色主题的
+   --accent-dim 底上就糊了，而 --accent 配 --accent-dim 两套主题下对比度都只有 2~3:1。 */
 .hud-layer {
   font-weight: 600;
-  color: #ffd9cf;
+  color: var(--text);
   background: var(--accent-dim);
   border-color: var(--accent);
   /* 层名可以很长：给它一个上限并省略，别把窗口撑过后端 900px 的钳制宽度而被裁掉。 */
@@ -2120,7 +2138,7 @@ body:has(.hud-box) {
 }
 
 .hud-hold {
-  color: var(--float-blue);
+  color: #cfe1ff;
   background: rgba(64, 108, 176, 0.35);
   border-color: rgba(96, 148, 224, 0.55);
 }
@@ -2186,7 +2204,7 @@ body:has(.hints-panel) {
   min-width: 0;
   font-weight: 600;
   letter-spacing: 0.02em;
-  color: #ffd9cf;
+  color: var(--accent);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2232,9 +2250,11 @@ body:has(.hints-panel) {
   letter-spacing: 0.06em;
 }
 
+/* 键帽与条目名都在同一行里上下居中：键帽自带 2px 下边框，baseline 对齐会让旁边那行
+   字看着偏上（贴着键帽的字面、离键帽下沿还有一截）。 */
 .hints-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 0.6em;
   padding: 0.22em 0.9em;
   white-space: nowrap;
@@ -2264,10 +2284,10 @@ body:has(.hints-panel) {
   font-size: 0.9em;
 }
 
+/* 条目名沿用面板的 --text（深浅两套主题都对得上），不再单开一个浮窗专用色。 */
 .hints-label {
   flex: 1;
   min-width: 0;
-  color: var(--float-dim);
   overflow: hidden;
   text-overflow: ellipsis;
 }

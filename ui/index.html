@@ -64,7 +64,9 @@
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
               </button>
               <button id="entry-undo" class="icon-btn" title="撤销">↶</button>
-              <button id="entry-save" class="icon-btn primary" title="保存">✓</button>
+              <button id="entry-save" class="icon-btn primary" title="保存" disabled>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              </button>
               <button id="entry-cancel" class="icon-btn" title="关闭">✕</button>
             </span>
           </header>
@@ -124,7 +126,7 @@
             <div class="entry-pane" data-pane="detail">
               <div class="editor-row">
                 <label>描述</label>
-                <input id="edit-desc" type="text" placeholder="（可选）一句话说明这条条目做什么" />
+                <textarea id="edit-desc" rows="4" placeholder="（可选）说明这条条目做什么，可换行"></textarea>
               </div>
             </div>
 
@@ -332,8 +334,9 @@
             <div class="settings-actions">
               <button id="export-config">导出配置</button>
               <button id="import-config">导入配置</button>
+              <button id="load-sample" title="把内置示例（快捷键 / 切层 / 各种改键形态 / 文本扩展等）合并进当前配置，只增不删、不碰本机设置；示例都放在「示例」目录下，删掉目录即可整体清除">载入示例配置</button>
             </div>
-            <p class="hint">改动即时保存并生效；导入可选「合并」（只新增）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
+            <p class="hint">改动即时保存并生效；导入可选「合并」（只新增）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。不知道从哪下手就先「载入示例配置」看看各种玩法。</p>
             <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为片段</strong>），或目录行 ⋯ → <strong>导出该目录为片段</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。片段不含设置、也不含目录分组（目录是本机的）。</p>
 
           </div>

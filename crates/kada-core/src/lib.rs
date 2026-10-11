@@ -149,6 +149,9 @@ pub use merge::{merge_configs, MergeReport};
 mod snippet;
 pub use snippet::{snippet, snippet_title, PickKind, SnippetPick};
 
+/// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
+pub mod sample;
+
 mod parse {
     use super::*;
 

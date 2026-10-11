@@ -2749,6 +2749,40 @@ fn import_config(
     })
 }
 
+/// 载入内置示例配置（设置页「载入示例配置」）：并入当前配置，走合并语义——只增不删、
+/// 不碰本机设置（与 `import_config(mode = "merge")` 同一口径，只是内容内置在二进制里）。
+#[tauri::command]
+fn load_sample_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+) -> Result<ImportOutcome, String> {
+    let incoming = kada_core::sample::sample_config();
+    let (incoming, mut notes) = sanitize_config(&incoming);
+    let current = state.config.read().unwrap().clone();
+    let (merged, report) = kada_core::merge_configs(&current, &incoming);
+    let added = report.added();
+    notes.extend(report.skipped);
+    let autostart = current.settings.autostart;
+
+    // 与 set_config 同一套落盘口径：写盘 + 改内存 + 给监听销账同持一把锁。
+    let mut watch = state.cfg_watch.lock().unwrap();
+    config_io::save(&state.file, &merged)?;
+    *state.config.write().unwrap() = merged;
+    watch.adopt_own_write(&state.file);
+    drop(watch);
+    sync_autostart(&app, autostart);
+    // 合并不碰 settings，提示框可见性不会变——不需要 apply_hints_visible 那条对齐路径。
+    if let Ok(snapshot) = state.config.read() {
+        let _ = app.emit("config-updated", &*snapshot);
+    }
+    Ok(ImportOutcome {
+        mode: "merge".into(),
+        added,
+        notes,
+        backup: None,
+    })
+}
+
 /// 导出配置片段（规划 7.2-㉕，配置分享 / 片段市场）：把点名的那几条（单条、多选、或某个
 /// 目录下的全部）写成一个可分享的 JSON 文件。
 ///
@@ -2919,6 +2953,7 @@ pub fn run() {
             export_config,
             export_fragment,
             import_config,
+            load_sample_config,
             set_paused,
             abort_actions,
             run_entry,
