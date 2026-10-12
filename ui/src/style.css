@@ -2184,6 +2184,9 @@ body:has(.hints-panel) {
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
   overflow: hidden;
   user-select: none;
+  /* 悬停让位 / 恢复时的透明度切换（`applyLook` 改 inline opacity）走一下过渡，
+     别让「点不着了」这件事硬闪一下。 */
+  transition: opacity 0.18s ease;
 }
 
 .hints-head {
@@ -2192,10 +2195,15 @@ body:has(.hints-panel) {
   gap: 0.5em;
   padding: 0.55em 0.7em 0.5em 0.9em;
   border-bottom: 1px solid var(--line);
+}
+
+/* 整块面板都能拖着挪（`bootstrapHints` 的 pointerdown 挂在 panel 上），光标也就整块都给
+   `grab`；拖动中变 `grabbing`。`.hints-close` 在后面把光标抢回 `pointer`。 */
+.hints-panel {
   cursor: grab;
 }
 
-.hints-panel.dragging .hints-head {
+.hints-panel.dragging {
   cursor: grabbing;
 }
 

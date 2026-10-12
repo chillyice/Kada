@@ -1462,6 +1462,101 @@ fn apply_hints_visible(app: &tauri::AppHandle, visible: bool) {
     let _ = app.emit("hints-state", hints_state_of(app));
 }
 
+/// 提示框「悬停让位」的巡检线程：光标一进框就穿透让位（不挡住后面的页面），停留够久再恢复
+/// 可交互；挪出边界后下次再进来照样让位。
+///
+/// 为什么只能轮询、不能用鼠标事件：让位本身就是靠「这个窗不收鼠标消息」实现的，一让位
+/// 就再也没有 `mouseenter` / `mouseleave` 可言了。要在穿透状态下还知道光标在不在框里，
+/// 只能自己盯全局光标位置（同 [`spawn_config_watcher`] 的取舍：轮询，不引依赖与平台分支，
+/// 代价只是慢一拍）。判定与副作用分开写：相位推演是纯函数 [`HintsHover`]，这条线程只负责
+/// 取光标 / 窗口矩形、落地 `set_ignore_cursor_events` 与通知界面变淡。
+fn spawn_hints_hover_watch(app: tauri::AppHandle) {
+    std::thread::spawn(move || {
+        let mut phase = HintsHover::Out;
+        // 「光标进框」的那一刻：让位与恢复都按它算停留时长。
+        let mut since = Instant::now();
+        loop {
+            std::thread::sleep(Duration::from_millis(HINTS_HOVER_POLL_MS));
+            // 还没建（懒创建）：没有窗口可管，等它出来。
+            let Some(w) = app.get_webview_window("hints") else { continue };
+            if !w.is_visible().unwrap_or(false) {
+                // 被关掉 / 还没显示：相位复位，下次显示重新从「进框即让位」开始。
+                // 这里必须真的撤掉穿透标记，不能只改相位——否则关掉时正让着位，下次显示出来
+                // 就是一块点不着的透明板。
+                if phase != HintsHover::Out {
+                    phase = HintsHover::Out;
+                    let _ = w.set_ignore_cursor_events(false);
+                    let _ = app.emit("hints-peek", false);
+                }
+                continue;
+            }
+            let inside = hints_cursor_over(&w);
+            let next = hints_hover_step(phase, inside, since.elapsed().as_millis() as u64);
+            if next != phase {
+                if next == HintsHover::Passing {
+                    since = Instant::now();
+                }
+                // 让位 = 穿透 + 变淡，恢复同理。穿透是系统层的事，用户看不见：同时通知界面
+                // 变淡（`hints-peek`），否则「鼠标放上去它就不理我了」会像失灵。
+                let pass_through = next == HintsHover::Passing;
+                let _ = w.set_ignore_cursor_events(pass_through);
+                let _ = app.emit("hints-peek", pass_through);
+                phase = next;
+            }
+        }
+    });
+}
+
+/// 光标停在提示框上超过这么久，提示框才恢复可交互：让位是为了点后面的页面，真想用这个框
+/// （拖动 / 滚轮 / × 关闭）就得先「表明意图」停一会儿。
+const HINTS_HOVER_DWELL_MS: u64 = 2000;
+/// 悬停巡检的节拍：让位判定最迟晚这么一拍，代价是每秒十来次极廉价的取位查询。
+const HINTS_HOVER_POLL_MS: u64 = 120;
+
+/// 悬停让位的相位（[`hints_hover_step`] 的输入输出，纯判定、可单测）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HintsHover {
+    /// 光标不在框内：可交互（默认状态）。
+    Out,
+    /// 刚进框：已穿透让位，等光标停留满 [`HINTS_HOVER_DWELL_MS`]。
+    Passing,
+    /// 停留够久：恢复可交互，一直保持到光标挪出边界——期间挪进挪出都不会再让位。
+    Settled,
+}
+
+/// 推演下一拍该是什么相位。`dwell_ms` 是本拍距「光标进框」过了多久。
+///
+/// 相位只在 `Out ↔ Passing ↔ Settled` 之间走一格一格：出框无条件回 `Out`（下次再进来照样
+/// 让位），`Passing` 攒够停留时长才升 `Settled`。
+fn hints_hover_step(cur: HintsHover, inside: bool, dwell_ms: u64) -> HintsHover {
+    match (cur, inside) {
+        (_, false) => HintsHover::Out,
+        (HintsHover::Settled, true) => HintsHover::Settled,
+        (HintsHover::Passing, true) if dwell_ms >= HINTS_HOVER_DWELL_MS => HintsHover::Settled,
+        _ => HintsHover::Passing,
+    }
+}
+
+/// 光标是否落在提示框的窗口矩形内。
+///
+/// 拿不到光标位置（Wayland 没有全局光标等）就当「不在框内」：退化成让位前的行为，提示框
+/// 一直可交互，不至于反过来把框弄成点不着的透明板。
+fn hints_cursor_over(w: &tauri::WebviewWindow) -> bool {
+    let (Ok(pos), Ok(size), Ok(cur)) = (w.outer_position(), w.outer_size(), w.cursor_position())
+    else {
+        return false;
+    };
+    point_in_rect((cur.x, cur.y), (pos.x, pos.y, size.width, size.height))
+}
+
+/// 光标（物理坐标）是否在窗口矩形内。独立成纯函数是为了能单测边界那一圈。
+fn point_in_rect(cursor: (f64, f64), rect: (i32, i32, u32, u32)) -> bool {
+    let (cx, cy) = cursor;
+    let (x, y) = (rect.0 as f64, rect.1 as f64);
+    let (w, h) = (rect.2 as f64, rect.3 as f64);
+    cx >= x && cy >= y && cx < x + w && cy < y + h
+}
+
 /// 保存配置的一小处改动（提示框的位置 / 外观 / 可见性）：与 [`set_config`] 同一套口径——
 /// 「写盘 + 改内存 + 给监听销账」同持 `cfg_watch` 锁。
 ///
@@ -2468,6 +2563,38 @@ mod tests {
         assert_eq!(p.summary, "");
         assert!(!serde_json::to_string(&p).unwrap().contains("layer"));
     }
+
+    // ---- 提示框悬停让位（见 `spawn_hints_hover_watch`） ----
+
+    /// 进框即让位、停留够久才恢复、出框后下次照旧让位（`Out ↔ Passing → Settled`）。
+    #[test]
+    fn hints_hover_yields_then_settles_and_rearms() {
+        let rect = (100, 200, 300, 400);
+        // 光标还没进框：可交互。
+        assert!(!point_in_rect((90.0, 200.0), rect));
+        assert!(!point_in_rect((400.0, 200.0), rect), "右边界算外面");
+        assert!(!point_in_rect((100.0, 600.0), rect), "下边界算外面");
+        assert!(point_in_rect((100.0, 200.0), rect), "左上角算里面");
+        assert!(point_in_rect((399.9, 599.9), rect));
+
+        // 进框：让位（穿透）。
+        let cur = hints_hover_step(HintsHover::Out, true, 0);
+        assert_eq!(cur, HintsHover::Passing);
+        // 让位期间挪出去：回可交互。
+        assert_eq!(hints_hover_step(cur, false, 500), HintsHover::Out);
+        // 让位期间还没停够：不恢复。
+        assert_eq!(
+            hints_hover_step(HintsHover::Passing, true, HINTS_HOVER_DWELL_MS - 1),
+            HintsHover::Passing
+        );
+        // 停够了：恢复可交互，且一直保持到挪出边界。
+        let settled = hints_hover_step(HintsHover::Passing, true, HINTS_HOVER_DWELL_MS);
+        assert_eq!(settled, HintsHover::Settled);
+        assert_eq!(hints_hover_step(settled, true, HINTS_HOVER_DWELL_MS + 60_000), HintsHover::Settled);
+        // 挪出去之后再进来：又让位（否则「一直悬着」就再也点不到框了）。
+        assert_eq!(hints_hover_step(settled, false, 0), HintsHover::Out);
+        assert_eq!(hints_hover_step(HintsHover::Out, true, 0), HintsHover::Passing);
+    }
 }
 
 /// 读取当前配置。
@@ -3277,6 +3404,9 @@ pub fn run() {
                     let _ = ensure_hints(&app);
                 });
             }
+            // 悬停让位巡检（光标进框即穿透让位，停留 [`HINTS_HOVER_DWELL_MS`] 再恢复）：
+            // 与建不建框无关——框是懒创建的，巡检自己等它出现。
+            spawn_hints_hover_watch(app.handle().clone());
 
             // 启动期的告警推给消息中心：配置损坏 / 自愈（`load_warnings`），以及输入层起不来
             // （macOS 缺「辅助功能」权限——这条必须让用户看见，否则「按键全不响」无从下手）。

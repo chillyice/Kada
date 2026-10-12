@@ -5156,7 +5156,7 @@ async function bootstrapHud() {
 
 // 快捷键提示框（独立窗口，加载 index.html#hints，见规划 7.3-㊳）：
 // 常显的快捷键速查表——内容来自配置（按层分组），位置 / 字号 / 透明度由后端持久化。
-// 交互：拖标题栏移动、滚轮调大小、Ctrl+滚轮调透明度、Shift+滚轮滚动长列表、× 关闭。
+// 交互：拖整块面板移动、滚轮调大小、Ctrl+滚轮调透明度、Shift+滚轮滚动长列表、× 关闭。
 const HINTS_SCALE_RANGE: [number, number] = [60, 220];
 const HINTS_OPACITY_RANGE: [number, number] = [20, 100];
 
@@ -5180,8 +5180,8 @@ async function bootstrapHints() {
     "div",
     "hints-foot",
     // 两行是量着排的，别合回一行：21em 面板的内容宽只有 ~250px，这串提示单行要 288px，
-    // 挤成一行末尾的「拖标题移动」就会被省略号吃掉（`style.css` 里 `.hints-foot` 配合）。
-    "滚轮：大小 · Ctrl+滚轮：透明度\nShift+滚轮：滚动 · 拖标题移动",
+    // 挤成一行末尾的「拖面板移动」就会被省略号吃掉（`style.css` 里 `.hints-foot` 配合）。
+    "滚轮：大小 · Ctrl+滚轮：透明度\n拖面板：移动 · Shift+滚轮：滚动",
   );
   panel.append(head, body, foot);
   document.body.append(panel);
@@ -5195,11 +5195,15 @@ async function bootstrapHints() {
   let scale = 100;
   let opacity = 92;
   let winPos = { x: 0, y: 0 };
+  // 让位状态：后端已把窗口设成鼠标穿透（光标进框即让位，停留 2 秒才恢复，见
+  // `spawn_hints_hover_watch`）。穿透之后界面就再也收不到鼠标事件，只能由它通知——
+  // 变淡是给用户的信号：它已经不接鼠标了，想拖 / 想滚轮就先停一会儿。
+  let peeking = false;
 
   const applyLook = () => {
     // 整块面板按比例缩放：字号是基准，间距 / 圆角 / 宽度都用 em，于是「调大小」是一个量。
     document.documentElement.style.setProperty("--hints-scale", String(scale / 100));
-    panel.style.opacity = String(opacity / 100);
+    panel.style.opacity = String((peeking ? opacity * 0.3 : opacity) / 100);
   };
 
   /** 量出面板尺寸回报后端（窗口大小由内容决定；内容随快捷键条数与字号变）。 */
@@ -5320,17 +5324,21 @@ async function bootstrapHints() {
 
   // 拖动：用指针事件自己搬窗口，不走系统拖动（`startDragging` 对 `WS_EX_NOACTIVATE` 的窗
   // 不保证好用，而且拖完还得自己读回位置落盘）。差量基于 `screenX/screenY`，用指针捕获
-  // 保证光标滑出窗口也继续跟手。
+  // 保证光标滑出窗口也继续跟手。**整块面板都是拖动区**（不只标题）——面板不小，能抓着
+  // 哪儿挪就挪哪儿；两处例外是 × 按钮和列表自己的滚动条（见下）。
   let drag: { sx: number; sy: number; wx: number; wy: number; nx: number; ny: number } | null = null;
-  head.addEventListener("pointerdown", (e) => {
+  panel.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     if ((e.target as HTMLElement).closest(".hints-close")) return;
+    // 滚动条不是拖动区：点在滚动条上要能拖列表，而不是把整个框搬走。
+    // `offsetX > clientWidth` 即落在滚动条那一窄条上（滚动条不占 layout 盒，故拿 clientWidth 比）。
+    if (e.target === body && e.offsetX > body.clientWidth) return;
     e.preventDefault();
     drag = { sx: e.screenX, sy: e.screenY, wx: winPos.x, wy: winPos.y, nx: winPos.x, ny: winPos.y };
-    head.setPointerCapture(e.pointerId);
+    panel.setPointerCapture(e.pointerId);
     panel.classList.add("dragging");
   });
-  head.addEventListener("pointermove", (e) => {
+  panel.addEventListener("pointermove", (e) => {
     if (!drag) return;
     drag.nx = Math.round(drag.wx + (e.screenX - drag.sx));
     drag.ny = Math.round(drag.wy + (e.screenY - drag.sy));
@@ -5342,15 +5350,15 @@ async function bootstrapHints() {
     drag = null;
     panel.classList.remove("dragging");
     try {
-      head.releasePointerCapture(e.pointerId);
+      panel.releasePointerCapture(e.pointerId);
     } catch {
       /* 指针已经没了，忽略 */
     }
     // 松手才落盘一次（拖动中每帧写盘既慢又浪费）。
     void invoke("hints_commit").catch(() => {});
   };
-  head.addEventListener("pointerup", endDrag);
-  head.addEventListener("pointercancel", endDrag);
+  panel.addEventListener("pointerup", endDrag);
+  panel.addEventListener("pointercancel", endDrag);
 
   const st = await invoke<HintsState | null>("get_hints_state").catch(() => null);
   if (st) {
@@ -5366,6 +5374,11 @@ async function bootstrapHints() {
     opacity = e.payload.opacity;
     applyLook();
     measure();
+  });
+  // 悬停让位 / 恢复：只改透明度，不动位置与尺寸。
+  await listen<boolean>("hints-peek", (e) => {
+    peeking = e.payload;
+    applyLook();
   });
   // 快捷键改了就重画：应用内保存走 `config-updated`，手改 JSON 走 `config-changed`。
   await listen<Config>("config-updated", (e) => render(e.payload));
