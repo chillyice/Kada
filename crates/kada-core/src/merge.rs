@@ -173,7 +173,7 @@ mod tests {
         let cur = local();
         let incoming = Config {
             folders: vec![Folder { id: "f-local".into(), name: "对方目录名".into(), parent: None }],
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into() }],
+            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
             shortcuts: vec![shortcut("对方快捷键", "Ctrl+Alt+J")],
             ..Default::default()
         };
@@ -257,7 +257,7 @@ mod tests {
         // 导入的改键「长按进入」的层随导入一起进来，引用不能断（断了该改键会整条作废）。
         let cur = local();
         let incoming = Config {
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into() }],
+            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
             remaps: vec![Remap {
                 from: "Space".into(),
                 hold_layer: Some("l-nav".into()),

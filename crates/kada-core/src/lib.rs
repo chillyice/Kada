@@ -1225,6 +1225,10 @@ pub struct Layer {
     pub id: String,
     /// 层显示名。
     pub name: String,
+    /// 层标记（纯展示，后端匹配不用）：一个调色板色值（如 `#4f9cf9`）或一个 emoji 字符。
+    /// 二者取一（前端保证互斥），用于列表条目左下角与层列表的视觉区分。缺省 = 无标记。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
 }
 
 /// 一条快捷键规则：一个或多个触发组合 → 一串动作（按顺序执行）。
@@ -2732,7 +2736,8 @@ fn clean_layers(layers: &[Layer]) -> (Vec<Layer>, Vec<String>) {
             ignored.push(format!("层「{name}」已忽略：id 重复"));
             continue;
         }
-        out.push(Layer { id, name });
+        let mark = l.mark.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(|m| m.to_lowercase());
+        out.push(Layer { id, name, mark });
     }
 
     (out, ignored)
@@ -3921,7 +3926,7 @@ mod os_and_sanitize_tests {
     fn sanitize_valid_config_is_unchanged_roundtrip_and_idempotent() {
         let cfg = Config {
             folders: vec![Folder { id: "f1".into(), name: "工作".into(), parent: None }],
-            layers: vec![Layer { id: "l1".into(), name: "导航".into() }],
+            layers: vec![Layer { id: "l1".into(), name: "导航".into(), ..Default::default() }],
             shortcuts: vec![ShortcutItem {
                 name: Some("测试".into()),
                 description: Some("说明".into()),
@@ -4375,12 +4380,35 @@ mod layer_tests {
     #[test]
     fn layer_json_roundtrip() {
         let layers = vec![
-            Layer { id: "base".into(), name: "基础".into() },
-            Layer { id: "symbols".into(), name: "符号".into() },
+            Layer { id: "base".into(), name: "基础".into(), ..Default::default() },
+            Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() },
         ];
         let json = serde_json::to_string(&layers).unwrap();
         let back: Vec<Layer> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, layers);
+    }
+
+    #[test]
+    fn layer_mark_survives_sanitize_and_json_roundtrip() {
+        let cfg = Config {
+            layers: vec![
+                Layer { id: "c".into(), name: "颜色".into(), mark: Some("  #4F9CF9 ".into()) },
+                Layer { id: "e".into(), name: "图标".into(), mark: Some("🎮".into()) },
+                Layer { id: "n".into(), name: "空".into(), mark: Some("   ".into()) },
+            ],
+            ..Default::default()
+        };
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert!(ignored.is_empty(), "{ignored:?}");
+        assert_eq!(clean.layers[0].mark.as_deref(), Some("#4f9cf9")); // 颜色归一为小写
+        assert_eq!(clean.layers[1].mark.as_deref(), Some("🎮")); // emoji 原样保留
+        assert_eq!(clean.layers[2].mark, None); // 空白 → 无标记
+
+        // 无标记时字段省略（老配置没有 mark，保存不该凭空多写一个字段）。
+        assert!(!serde_json::to_string(&clean.layers[2]).unwrap().contains("mark"));
+
+        let back: Config = serde_json::from_str(&serde_json::to_string(&clean).unwrap()).unwrap();
+        assert_eq!(back, clean);
     }
 
     #[test]
@@ -4395,7 +4423,7 @@ mod layer_tests {
             ..Default::default()
         };
         let base = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
             shortcuts: vec![layered],
             ..Default::default()
         };
@@ -4437,7 +4465,7 @@ mod layer_tests {
 
         // 层里没有启用的条目时不报（空层不算问题）。
         let empty = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
             ..Default::default()
         };
         assert!(!detect_conflicts(&empty, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")));
@@ -4469,7 +4497,7 @@ mod layer_tests {
     #[test]
     fn sanitize_keeps_lock_layer_and_drops_blank_refs() {
         let cfg = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into() }],
+            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
             remaps: vec![
                 Remap {
                     from: "Tab".into(),
@@ -4508,9 +4536,9 @@ mod layer_tests {
     fn sanitize_cleans_layers_and_dangling_refs() {
         let cfg = Config {
             layers: vec![
-                Layer { id: "symbols".into(), name: "符号".into() },
-                Layer { id: "symbols".into(), name: "重复".into() }, // 重复 id → 忽略
-                Layer { id: "".into(), name: "坏".into() }, // 空 id → 忽略
+                Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() },
+                Layer { id: "symbols".into(), name: "重复".into(), ..Default::default() }, // 重复 id → 忽略
+                Layer { id: "".into(), name: "坏".into(), ..Default::default() }, // 空 id → 忽略
             ],
             shortcuts: vec![ShortcutItem {
                 layer: Some("symbols".into()),

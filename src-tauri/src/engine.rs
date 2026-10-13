@@ -1848,7 +1848,7 @@ mod tests {
     /// 阈值压到 20ms，免得测试真等 200ms。
     fn cfg_with_locked_layer(trigger: &str) -> Config {
         let mut cfg = cfg_with(&[trigger]);
-        cfg.layers = vec![kada_core::Layer { id: "L1".into(), name: "层1".into() }];
+        cfg.layers = vec![kada_core::Layer { id: "L1".into(), name: "层1".into(), ..Default::default() }];
         cfg.shortcuts[0].layer = Some("L1".into());
         cfg.remaps = vec![Remap {
             from: "Tab".into(),
@@ -1962,8 +1962,8 @@ mod tests {
         // 松开后退回 L1（而不是掉回基础层）。
         let cfg = Config {
             layers: vec![
-                kada_core::Layer { id: "L1".into(), name: "层1".into() },
-                kada_core::Layer { id: "L2".into(), name: "层2".into() },
+                kada_core::Layer { id: "L1".into(), name: "层1".into(), ..Default::default() },
+                kada_core::Layer { id: "L2".into(), name: "层2".into(), ..Default::default() },
             ],
             remaps: vec![
                 Remap {
@@ -2098,7 +2098,7 @@ mod tests {
 
         // 锁定层之上按住 CapsLock 临时进 L2（momentary 接管）→ 复位后回到锁定层。
         let mut cfg2 = cfg.clone();
-        cfg2.layers.push(kada_core::Layer { id: "L2".into(), name: "层2".into() });
+        cfg2.layers.push(kada_core::Layer { id: "L2".into(), name: "层2".into(), ..Default::default() });
         cfg2.remaps.push(Remap {
             from: "CapsLock".into(),
             to: String::new(),
@@ -2295,7 +2295,7 @@ mod tests {
             remap.lock_layer = Some("sym".into());
         }
         Config {
-            layers: vec![kada_core::Layer { id: "sym".into(), name: "符号".into() }],
+            layers: vec![kada_core::Layer { id: "sym".into(), name: "符号".into(), ..Default::default() }],
             shortcuts: vec![kada_core::ShortcutItem {
                 triggers: vec!["U&Y".into()],
                 actions: vec![Action::Text {
@@ -2357,7 +2357,7 @@ mod tests {
     fn user_config_layer_chord() {
         const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into(), ..Default::default() }],
             shortcuts: vec![kada_core::ShortcutItem {
                 name: Some("输入密码".into()),
                 layer: Some(LID.into()),

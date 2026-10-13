@@ -2,7 +2,7 @@
 #
 # 给 Kada 自己的一条「执行命令」动作用（动作的 shell 选 PowerShell），命令填：
 #
-#   Start-Process powershell -WindowStyle Minimized -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File C:\Users\chill\OneDrive\WorkStation\Projects\Kada\scripts\kada-package.ps1'
+#   Start-Process powershell -WindowStyle Minimized -ArgumentList '-NoProfile -ExecutionPolicy Bypass -File <仓库根>\scripts\kada-package.ps1'
 #
 # 为什么拆成脚本 + 这么一行：Kada 执行 PowerShell 命令走的是
 # `powershell -NoProfile -Command "<命令原文>"`，而 Rust 起进程时会给命令里的双引号加反斜杠转义，
@@ -21,7 +21,7 @@
 [CmdletBinding()]
 param(
     # 项目根目录（含 tauri.conf.json 与 package.json）。
-    [string]$ProjectDir = 'C:\Users\chill\OneDrive\WorkStation\Projects\Kada',
+    [string]$ProjectDir = (Split-Path -Parent $PSScriptRoot),
     # 出安装包（MSI/NSIS）。默认只出裸 exe，快得多。
     [switch]$Bundle,
     # 只打印将要做的步骤：不杀进程、不构建、不重启（改命令或排错时先跑这个）。

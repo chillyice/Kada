@@ -96,7 +96,7 @@ mod tests {
     fn base() -> Config {
         Config {
             folders: vec![Folder { id: "f1".into(), name: "本机目录".into(), parent: None }],
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into() }],
+            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
             shortcuts: vec![ShortcutItem {
                 name: Some("备份".into()),
                 triggers: vec!["Ctrl+Alt+B".into()],
@@ -128,7 +128,7 @@ mod tests {
         let mut cfg = base();
         cfg.shortcuts[0].layer = Some("l-nav".into());
         cfg.remaps[0].lock_layer = Some("l-nav".into());
-        cfg.layers.push(Layer { id: "l-unused".into(), name: "没人引用的层".into() });
+        cfg.layers.push(Layer { id: "l-unused".into(), name: "没人引用的层".into(), ..Default::default() });
 
         let part = snippet(
             &cfg,

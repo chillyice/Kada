@@ -25,6 +25,7 @@ pub fn sample_config() -> Config {
         layers: vec![Layer {
             id: LAYER.into(),
             name: "示例层".into(),
+            ..Default::default()
         }],
         ..Config::default()
     };

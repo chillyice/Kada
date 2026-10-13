@@ -5,7 +5,7 @@ name: Release
 # latest.json（见 src-tauri/tauri.conf.json 的 plugins.updater.endpoints）。
 #
 # 前置条件（一次性）：
-#   1. 仓库 Secrets 里配好签名私钥（见 docs/安装与更新-Windows.md §2.3）：
+#   1. 仓库 Secrets 里配好签名私钥：
 #      TAURI_SIGNING_PRIVATE_KEY          = ~/.tauri/kada.key 的文件内容
 #      TAURI_SIGNING_PRIVATE_KEY_PASSWORD = 私钥密码（本项目生成时未设密码，留空字符串即可）
 #   2. 发版前先同步版本号：src-tauri/tauri.conf.json 的 version（Cargo.toml / package.json 同值）。
@@ -87,7 +87,7 @@ jobs:
       # Windows 代码签名（可选）：证书**没配就整段跳过**，不影响发版。
       # 配了的话：Secrets 里放 WINDOWS_CERTIFICATE（.pfx 的 base64）与
       # WINDOWS_CERTIFICATE_PASSWORD，再把证书指纹写进 src-tauri/tauri.windows.conf.json
-      # （Tauri 会自动把它合并进 tauri.conf.json，见 docs/安装与更新-Windows.md §2.3）。
+      # （Tauri 会自动把它合并进 tauri.conf.json）。
       - name: Import code-signing certificate (optional)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -138,7 +138,7 @@ jobs:
 
       # 最后一道闸：版本号三处一致、每个安装包有签名、签名 key id 与内嵌公钥对得上、
       # 签名里带版本号、清单与产物一一对应——对不上就别 Publish 这个 draft 了。
-      # 本地也能跑（node scripts/verify-release.mjs），口径见 docs/安装与更新-Windows.md §2.8。
+      # 本地也能跑（node scripts/verify-release.mjs），口径见该脚本与 docs/人工验证清单.md 附.1。
       - name: Verify release artifacts
         shell: bash
         env:
