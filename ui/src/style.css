@@ -363,6 +363,7 @@ body {
 
 /* 组合键 chip：列表行最左，紧跟名称 */
 .row-trigger {
+  position: relative; /* 层标记贴在 chip 的左下角，absolute 定位的参照物 */
   flex-shrink: 0;
   max-width: 48%;
   display: flex;
@@ -400,22 +401,41 @@ body {
   text-overflow: ellipsis;
 }
 
-/* 条目所属层的标记：排在组合键 chip 内的组合键字符之前（颜色画三角、emoji 摆字符，不挡鼠标）。 */
+/* 条目所属层的标记：贴在这个 chip 的左下角（装配见 main.ts 的 appendLayerMark）。标记绝对定位、
+   不占组合键的字符位也不挡鼠标，所以 chip 得把左边的空位让出来（见下面的 mark-shape-* 规则）。 */
 .row-layer-mark {
-  flex-shrink: 0;
+  position: absolute;
+  left: 0;
+  bottom: 0;
   pointer-events: none;
 }
 
+/* 颜色：chip 内部左下角的一小块角标，圆角（3px = chip 的 4px 圆角减掉 1px 边框）与 chip 对齐，
+   看着就是 chip 左下角自己染了色，与 chip 融为一体。 */
 .row-layer-mark.mark-color {
-  width: 8px;
-  height: 8px;
+  width: 9px;
+  height: 9px;
   background: var(--mark);
-  clip-path: polygon(0 100%, 100% 100%, 0 0);
+  border-bottom-left-radius: 3px;
 }
 
+/* emoji：骑跨在 chip 左下角上的「贴纸」——中心压在角上，一半在 chip 内侧、一半探到外侧。
+   带一圈底色描边，压在 chip 边框线上仍像一张贴上去的贴纸（不描边就糊进边框里了）。 */
 .row-layer-mark.mark-emoji {
-  font-size: 10px;
+  font-size: 11px;
   line-height: 1;
+  transform: translate(-50%, 50%);
+  filter: drop-shadow(0 0 1px var(--float-bg)) drop-shadow(0 0 1px var(--float-bg));
+}
+
+/* 标记绝对定位后不再占字符位，组合键字符得自己让开一截：颜色小块贴着 chip 内左边缘（整块让），
+   emoji 贴纸只有右半边压进 chip 内部（让开半张即可），所以颜色反而要让得更多。 */
+.row-trigger.mark-shape-emoji {
+  padding-left: 11px;
+}
+
+.row-trigger.mark-shape-color {
+  padding-left: 13px;
 }
 
 /* 开关：全站布尔项统一用它（设置页整行右端 / 命令动作的「弹窗显示结果」）。原先是一个 16px

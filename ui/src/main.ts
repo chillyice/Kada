@@ -1379,8 +1379,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   // 列表行只呈现「组合键 + 名称」；描述与动作摘要移入详情页。
   const trig = el("span", "row-trigger");
   if (s.triggers.length === 0) trig.classList.add("row-trigger-empty");
-  const mark = layerMarkNode(layerById(s.layer)?.mark);
-  if (mark) trig.append(mark);
+  appendLayerMark(trig, s.layer);
   trig.append(el("span", "row-trigger-text", s.triggers.join(" ") || "未设触发键"));
   const name = el("span", "row-name", s.name || "（未命名）");
 
@@ -1404,8 +1403,7 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
   // 与快捷键行同一套观感：原键占「组合键」那一格，后面直接跟标题——
   // 没起名的用形态摘要（如「长按「层1」」）当标题，不再单独画箭头。
   const trig = el("span", "row-trigger");
-  const mark = layerMarkNode(layerById(r.layer)?.mark);
-  if (mark) trig.append(mark);
+  appendLayerMark(trig, r.layer);
   trig.append(el("span", "row-trigger-text", r.from));
   li.append(
     kindIcon("remap"),
@@ -4532,14 +4530,18 @@ function layerById(id: string | null | undefined): Layer | undefined {
   return id ? cfg.layers.find((l) => l.id === id) : undefined;
 }
 
-// 组合键 chip 内的层标记：颜色 → 实心三角（CSS 画），emoji → 原字符。无标记 → null。
-function layerMarkNode(mark: string | null | undefined): HTMLElement | null {
-  if (!mark) return null;
+// 层标记贴在组合键 chip 的左下角（绝对定位，不占组合键的字符位）：颜色是与 chip 融为一体的角标——
+// 摆在 chip 内部左下角、圆角跟 chip 一致，看着像 chip 自己染了色；emoji 像贴纸贴在左下角上——骑跨
+// 在角上，既不完全在外也不完全在内。两者都 pointer-events:none，不挡点击。
+function appendLayerMark(trig: HTMLElement, layerId: string | null | undefined) {
+  const mark = layerById(layerId)?.mark;
+  if (!mark) return;
   const color = isLayerColor(mark);
+  trig.classList.add(color ? "mark-shape-color" : "mark-shape-emoji");
   const s = el("span", `row-layer-mark ${color ? "mark-color" : "mark-emoji"}`);
   if (color) s.style.setProperty("--mark", mark);
   else s.textContent = mark;
-  return s;
+  trig.append(s);
 }
 
 // 改键形态的人类可读摘要（列表行 + 详情标题共用），与 kada-core 的 Remap::describe 对齐。
