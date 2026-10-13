@@ -233,109 +233,189 @@
           </div>
         </section>
 
-        <!-- 设置详情 -->
+        <!-- 设置详情：按用途分卡片（外观与提示 / 通用行为 / 输入与响应 / 键位层 / 配置与数据 /
+             软件更新），卡片里一律「左标签 + 右控件」、行间一条细分隔线，每项配一行小字说明。
+             原先十项平铺成一列各带边框的小方块、宽度还只有下面整宽区块的一半（空着大半个窗口），
+             五段长说明又整块杵在最上面挡路。长说明按主题收进各自卡片的折叠块。 -->
         <section id="detail-settings" class="detail hidden">
           <div class="detail-body">
-            <div class="settings-list">
-              <label class="setting-row">
-                <span>界面主题</span>
-                <select id="set-theme">
-                  <option value="auto">跟随系统</option>
-                  <option value="dark">深色</option>
-                  <option value="light">浅色</option>
-                </select>
-              </label>
-              <label class="setting-row">
-                <input type="checkbox" id="set-autostart" class="toggle" />
-                <span>开机自启（跟随系统启动）</span>
-              </label>
-              <label class="setting-row">
-                <input type="checkbox" id="set-paused" class="toggle" />
-                <span>暂停所有快捷键</span>
-              </label>
-              <label class="setting-row">
-                <span>快速唤醒</span>
-                <select id="set-wake-key">
-                  <option value="">关闭</option>
-                  <option value="Alt">双击 Alt</option>
-                  <option value="Ctrl">双击 Ctrl</option>
-                  <option value="Shift">双击 Shift</option>
-                  <option value="Meta">双击 Meta（Win / ⌘）</option>
-                  <option value="CapsLock">双击 CapsLock</option>
-                </select>
-              </label>
-              <label class="setting-row">
-                <span>动作超时</span>
-                <input type="number" id="set-action-timeout" class="action-input action-input-num" min="0" step="1" />
-                <span class="unit-hint">秒（0 = 不限）</span>
-              </label>
-              <label class="setting-row">
-                <span>序列等待</span>
-                <input type="number" id="set-sequence-timeout" class="action-input action-input-num" min="0" step="50" />
-                <span class="unit-hint">毫秒（0 = 不限）</span>
-              </label>
-              <label class="setting-row">
-                <span>和弦等待</span>
-                <input type="number" id="set-chord-timeout" class="action-input action-input-num" min="0" step="50" />
-                <span class="unit-hint">毫秒（0 = 不限）</span>
-              </label>
-              <label class="setting-row">
-                <span>文本注入</span>
-                <select id="set-text-inject">
-                  <option value="clipboard">剪贴板粘贴</option>
-                  <option value="unicode">逐字直发（Unicode）</option>
-                </select>
-              </label>
-              <label class="setting-row">
-                <input type="checkbox" id="set-status-hud" class="toggle" />
-                <span>显示输入状态悬浮指示</span>
-              </label>
-              <label class="setting-row">
-                <input type="checkbox" id="set-hints" class="toggle" />
-                <span>显示快捷键提示框</span>
-              </label>
-            </div>
-            <!-- 设置说明收进折叠块：这五段加起来比上面的设置项本身还长，摊在页面上就是一堵字墙
-                 （问题跟动作面板的「存为变量」一样，只是这里文字太长、塞不进 280px 的问号气泡）。
-                 原生 <details>，零 JS：默认收起，需要时整段可读、可选中复制。 -->
-            <details class="hint-fold">
-              <summary>这些设置具体怎么生效</summary>
-              <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
-              <p class="hint">「文本注入」= 文本扩展 / 文本动作把文字送进目标程序的方式。默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
-              <p class="hint">「输入状态悬浮指示」= 有层或改键修饰键生效时，屏幕底部浮一条小条，显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
-              <p class="hint">「快捷键提示框」= 一块常显的速查小窗，把所有<strong>已启用</strong>的快捷键按层列出来（基础层在最上），随时能瞄一眼「我配过哪些键」。<strong>鼠标放上去会让位</strong>（穿透 + 变淡，不挡住你正点的页面），停在上面 2 秒才恢复可交互；<strong>拖面板任意位置</strong>移动；<strong>滚轮调大小</strong>、<strong>Ctrl+滚轮调透明度</strong>（缩小字号能一屏塞下更多条目）；列表太长时 <strong>Shift+滚轮</strong> 或拖滚动条滚动。位置、大小、透明度都随配置保存，下次启动还在原地。点窗口上的 × 关掉后，回到本页重新勾选、或点托盘图标的「快捷键提示」都能再打开。</p>
-              <p class="hint">「序列等待」= 键序列（如 <code>F9 J K</code>）按下第一步后，等下一步的最长时间；「和弦等待」= 按下部分和弦成员（如 <code>F&amp;J</code> 的 F）后，等其余成员的最长时间。两者超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
-            </details>
-            <div class="settings-section">
-              <div class="settings-section-head">
-                <span>键位层</span>
-                <button id="add-layer-btn" class="ghost">＋ 新建层</button>
-              </div>
-              <div id="layer-list" class="layer-list"></div>
-              <details class="hint-fold">
-                <summary>层是怎么生效的</summary>
-                <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键/改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦/序列用这种）。</p>
-              </details>
-            </div>
-            <div class="settings-section">
-              <div class="settings-section-head">
-                <span>软件更新</span>
-                <button id="check-update" class="ghost">检查更新</button>
-              </div>
-              <p id="update-status" class="hint">正在读取版本…</p>
-              <div id="update-actions" class="settings-actions hidden">
-                <button id="install-update">下载并安装</button>
-              </div>
-              <p class="hint">更新包从 GitHub Releases 获取，装上之前会校验 Ed25519 签名；安装时应用会退出，装完自动打开新版本。</p>
-            </div>
-            <div class="settings-actions">
-              <button id="export-config">导出配置</button>
-              <button id="import-config">导入配置</button>
-              <button id="load-sample" title="把内置示例（快捷键 / 切层 / 各种改键形态 / 文本扩展等）合并进当前配置，只增不删、不碰本机设置；示例都放在「示例」目录下，删掉目录即可整体清除">载入示例配置</button>
-            </div>
-            <p class="hint">改动即时保存并生效；导入可选「合并」（只新增）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。不知道从哪下手就先「载入示例配置」看看各种玩法。</p>
-            <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为片段</strong>），或目录行 ⋯ → <strong>导出该目录为片段</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。片段不含设置、也不含目录分组（目录是本机的）。</p>
+            <div class="set-grid">
+              <!-- 外观与提示 -->
+              <section class="set-card">
+                <div class="set-card-head"><span>外观与提示</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">界面主题</span>
+                    </span>
+                    <select id="set-theme">
+                      <option value="auto">跟随系统</option>
+                      <option value="dark">深色</option>
+                      <option value="light">浅色</option>
+                    </select>
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">显示输入状态悬浮指示</span>
+                      <span class="set-sub">有层 / 改键修饰键生效时，屏幕底边浮一条状态小条</span>
+                    </span>
+                    <input type="checkbox" id="set-status-hud" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">显示快捷键提示框</span>
+                      <span class="set-sub">常显的速查小窗：滚轮缩放、Ctrl+滚轮调透明度、鼠标放上去让位</span>
+                    </span>
+                    <input type="checkbox" id="set-hints" class="toggle" />
+                  </label>
+                </div>
+                <details class="hint-fold">
+                  <summary>这两个浮窗的细节</summary>
+                  <p class="hint">「输入状态悬浮指示」显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
+                  <p class="hint">「快捷键提示框」把所有<strong>已启用</strong>的快捷键按层列出来（基础层在最上）。<strong>鼠标放上去会让位</strong>（穿透 + 变淡，不挡住你正点的页面），停在上面 2 秒才恢复可交互；<strong>拖面板任意位置</strong>移动；<strong>滚轮调大小</strong>、<strong>Ctrl+滚轮调透明度</strong>（缩小字号能一屏塞下更多条目）；列表太长时 <strong>Shift+滚轮</strong> 或拖滚动条滚动。位置、大小、透明度都随配置保存，下次启动还在原地。点窗口上的 × 关掉后，回到本页重新勾选、或点托盘图标的「快捷键提示」都能再打开。</p>
+                </details>
+              </section>
 
+              <!-- 通用行为 -->
+              <section class="set-card">
+                <div class="set-card-head"><span>通用行为</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">开机自启</span>
+                      <span class="set-sub">跟随系统启动，登录后在托盘里跑起来</span>
+                    </span>
+                    <input type="checkbox" id="set-autostart" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">暂停所有快捷键</span>
+                      <span class="set-sub">临时全部停用（含文本扩展）；与托盘菜单同一开关</span>
+                    </span>
+                    <input type="checkbox" id="set-paused" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">快速唤醒</span>
+                      <span class="set-sub">连按两下该键唤出主窗口</span>
+                    </span>
+                    <select id="set-wake-key">
+                      <option value="">关闭</option>
+                      <option value="Alt">双击 Alt</option>
+                      <option value="Ctrl">双击 Ctrl</option>
+                      <option value="Shift">双击 Shift</option>
+                      <option value="Meta">双击 Meta（Win / ⌘）</option>
+                      <option value="CapsLock">双击 CapsLock</option>
+                    </select>
+                  </label>
+                </div>
+              </section>
+
+              <!-- 输入与响应 -->
+              <section class="set-card">
+                <div class="set-card-head"><span>输入与响应</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">序列等待</span>
+                      <span class="set-sub">键序列（如 <code>F9 J K</code>）等下一键的最长时间；毫秒，0 = 不限</span>
+                    </span>
+                    <input type="number" id="set-sequence-timeout" class="action-input action-input-num" min="0" step="50" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">和弦等待</span>
+                      <span class="set-sub">和弦成员（如 <code>F&amp;J</code> 的 F）等其余成员的最长时间；毫秒，0 = 不限</span>
+                    </span>
+                    <input type="number" id="set-chord-timeout" class="action-input action-input-num" min="0" step="50" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">动作超时</span>
+                      <span class="set-sub">命令 / 脚本超过这个时长就被强制终止；秒，0 = 不限</span>
+                    </span>
+                    <input type="number" id="set-action-timeout" class="action-input action-input-num" min="0" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">文本注入</span>
+                      <span class="set-sub">文本扩展 / 文本动作把文字送进目标程序的方式</span>
+                    </span>
+                    <select id="set-text-inject">
+                      <option value="clipboard">剪贴板粘贴</option>
+                      <option value="unicode">逐字直发（Unicode）</option>
+                    </select>
+                  </label>
+                </div>
+                <details class="hint-fold">
+                  <summary>超时与注入的细节</summary>
+                  <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
+                  <p class="hint">「序列等待」/「和弦等待」超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
+                  <p class="hint">「文本注入」默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
+                </details>
+              </section>
+
+              <!-- 键位层 -->
+              <section class="set-card">
+                <div class="set-card-head">
+                  <span>键位层</span>
+                  <button id="add-layer-btn" class="ghost">＋ 新建层</button>
+                </div>
+                <div id="layer-list" class="layer-list"></div>
+                <details class="hint-fold">
+                  <summary>层是怎么生效的</summary>
+                  <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键 / 改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦 / 序列用这种）。</p>
+                </details>
+              </section>
+
+              <!-- 配置与数据 -->
+              <section class="set-card">
+                <div class="set-card-head"><span>配置与数据</span></div>
+                <div class="set-rows">
+                  <div class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">导出配置</span>
+                      <span class="set-sub">把整份配置存成 JSON，用于备份或换机器</span>
+                    </span>
+                    <button id="export-config">导出…</button>
+                  </div>
+                  <div class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">导入配置</span>
+                      <span class="set-sub">从 JSON 文件合并或替换（替换前自动留档一份）</span>
+                    </span>
+                    <button id="import-config">导入…</button>
+                  </div>
+                  <div class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">载入示例配置</span>
+                      <span class="set-sub">把内置示例合并进来（只增不删、不碰本机设置）</span>
+                    </span>
+                    <button id="load-sample" title="示例都放在「示例」目录下，删掉该目录即可整体清除">载入示例</button>
+                  </div>
+                </div>
+                <details class="hint-fold">
+                  <summary>导入与分享的规则</summary>
+                  <p class="hint">改动即时保存并生效。导入可选「合并」（只新增，触发键撞车的条目跳过、本机设置不动）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
+                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为片段</strong>），或目录行 ⋯ → <strong>导出该目录为片段</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。片段不含设置、也不含目录分组（目录是本机的）。</p>
+                </details>
+              </section>
+
+              <!-- 软件更新 -->
+              <section class="set-card">
+                <div class="set-card-head">
+                  <span>软件更新</span>
+                  <button id="check-update" class="ghost">检查更新</button>
+                </div>
+                <div class="set-body">
+                  <p id="update-status" class="set-status">正在读取版本…</p>
+                  <div id="update-actions" class="set-actions hidden">
+                    <button id="install-update" class="primary">下载并安装</button>
+                  </div>
+                  <p class="set-note">更新包从 GitHub Releases 获取，装上之前会校验 Ed25519 签名；安装时应用会退出，装完自动打开新版本。</p>
+                </div>
+              </section>
+            </div>
           </div>
         </section>
 

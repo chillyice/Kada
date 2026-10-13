@@ -1377,14 +1377,15 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   listRow(li, s, "shortcut", idx);
 
   // 列表行只呈现「组合键 + 名称」；描述与动作摘要移入详情页。
-  const trig = el("span", "row-trigger", s.triggers.join(" ") || "未设触发键");
+  const trig = el("span", "row-trigger");
   if (s.triggers.length === 0) trig.classList.add("row-trigger-empty");
+  const mark = layerMarkNode(layerById(s.layer)?.mark);
+  if (mark) trig.append(mark);
+  trig.append(el("span", "row-trigger-text", s.triggers.join(" ") || "未设触发键"));
   const name = el("span", "row-name", s.name || "（未命名）");
 
   const more = moreButton((btn) => openRowMenu(btn, li, s));
   li.append(kindIcon("shortcut"), trig, name, more);
-  const mark = layerMarkNode(layerById(s.layer)?.mark);
-  if (mark) li.append(mark);
   return li;
 }
 
@@ -1402,14 +1403,16 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
   listRow(li, r, "remap", idx);
   // 与快捷键行同一套观感：原键占「组合键」那一格，后面直接跟标题——
   // 没起名的用形态摘要（如「长按「层1」」）当标题，不再单独画箭头。
+  const trig = el("span", "row-trigger");
+  const mark = layerMarkNode(layerById(r.layer)?.mark);
+  if (mark) trig.append(mark);
+  trig.append(el("span", "row-trigger-text", r.from));
   li.append(
     kindIcon("remap"),
-    el("span", "row-trigger", r.from),
+    trig,
     el("span", "row-name", r.name?.trim() || remapSummary(r)),
     moreButton((btn) => openRowMenu(btn, li, r)),
   );
-  const mark = layerMarkNode(layerById(r.layer)?.mark);
-  if (mark) li.append(mark);
   return li;
 }
 
@@ -4102,6 +4105,34 @@ function renderConflictBubble() {
   box.append(bubble);
 }
 
+// 冲突归属的条目（「是哪个快捷键」标题 + 点击跳转编辑页用）。
+// 后端 `Conflict` 只带名字：先按名字命中快捷键；没名字时按消息里 `「…」` 引用的触发键 /
+// 改键来源兜底定位（与 `entryConflicted` 同一套「靠文案认条目」的口径，UI 与后端同包发布）。
+function conflictOwner(c: Conflict): { kind: ListKind; index: number } | null {
+  if (c.name) {
+    const i = cfg.shortcuts.findIndex((s) => (s.name ?? "") === c.name);
+    if (i >= 0) return { kind: "shortcut", index: i };
+  }
+  const remapMsg = c.message.startsWith("改键");
+  for (const q of [...c.message.matchAll(/「([^」]+)」/g)].map((m) => m[1])) {
+    if (!remapMsg) {
+      const si = cfg.shortcuts.findIndex((s) => s.triggers.includes(q));
+      if (si >= 0) return { kind: "shortcut", index: si };
+    }
+    const ri = cfg.remaps.findIndex((r) => r.from === q.split(" →")[0].trim());
+    if (ri >= 0) return { kind: "remap", index: ri };
+  }
+  return null;
+}
+
+function entryLabel(ref: { kind: ListKind; index: number }): string {
+  if (ref.kind === "shortcut" && cfg.shortcuts[ref.index])
+    return cfg.shortcuts[ref.index].name?.trim() || "未命名快捷键";
+  if (ref.kind === "remap" && cfg.remaps[ref.index])
+    return cfg.remaps[ref.index].name?.trim() || "未命名改键";
+  return "";
+}
+
 // 冲突详情（常驻「消息 → 冲突」标签）：显示是哪个快捷键 + 冲突说明。
 function renderConflictList() {
   const box = document.getElementById("msg-conflict-list")!;
@@ -4122,7 +4153,18 @@ function renderConflictList() {
     box.append(el("div", "conflict-group", `${title}（${items.length}）`));
     for (const c of items) {
       const d = el("div", "conflict " + kind);
-      if (c.name) d.append(el("div", "conflict-name", c.name));
+      const owner = conflictOwner(c);
+      const label = owner ? entryLabel(owner) : c.name;
+      if (label) {
+        const head = el("div", "conflict-name", label);
+        if (owner) {
+          // 自己创建的快捷键/改键：点标题跳到它的编辑页。
+          head.classList.add("conflict-link");
+          head.title = "点击跳到编辑页";
+          head.addEventListener("click", () => void requestOpenDetail(owner.index, false, owner.kind));
+        }
+        d.append(head);
+      }
       d.append(el("div", "conflict-msg", c.message));
       box.append(d);
     }
@@ -4490,7 +4532,7 @@ function layerById(id: string | null | undefined): Layer | undefined {
   return id ? cfg.layers.find((l) => l.id === id) : undefined;
 }
 
-// 列表条目左下角的层标记：颜色 → 实心三角（CSS 画），emoji → 原字符。无标记 → null。
+// 组合键 chip 内的层标记：颜色 → 实心三角（CSS 画），emoji → 原字符。无标记 → null。
 function layerMarkNode(mark: string | null | undefined): HTMLElement | null {
   if (!mark) return null;
   const color = isLayerColor(mark);
@@ -4518,6 +4560,17 @@ function remapSummary(r: Remap): string {
 function renderLayers() {
   const list = document.getElementById("layer-list")!;
   list.replaceChildren();
+  // 一个层都没有时给一句说明：卡片里只剩「＋ 新建层」和一个折叠块，用户不知道层是干什么的。
+  if (cfg.layers.length === 0) {
+    list.append(
+      el(
+        "div",
+        "set-empty",
+        "还没有层。层让同一按键在不同状态下干不同事：在改键里配好「长按进入层 / 长按锁定层」后，层内的快捷键与改键才生效。",
+      ),
+    );
+    return;
+  }
   // 颜色唯一：已被别的层占用的颜色在本层下拉里禁用（emoji 不受限）。
   const usedColors = new Set(
     cfg.layers.map((l) => l.mark).filter((m): m is string => isLayerColor(m)),
@@ -4525,7 +4578,7 @@ function renderLayers() {
   cfg.layers.forEach((l) => {
     const row = el("div", "layer-row");
 
-    // 预览色块 / emoji（与列表条目左下角的标记同义）。
+    // 预览色块 / emoji（与列表条目组合键 chip 内的标记同义）。
     const swatch = el(
       "span",
       "layer-swatch" + (isLayerColor(l.mark) ? " mark-color" : l.mark ? " mark-emoji" : ""),

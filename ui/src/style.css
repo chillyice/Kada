@@ -299,7 +299,6 @@ body {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
-  position: relative; /* 层标记（左下角三角 / emoji）的定位锚点 */
 }
 
 /* 行首类型徽标：三类条目同处一列，靠它一眼分辨（Postman 的 GET/POST/DEL 同理）。 */
@@ -366,9 +365,9 @@ body {
 .row-trigger {
   flex-shrink: 0;
   max-width: 48%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-family: Consolas, monospace;
   font-size: var(--fs-xs);
   color: var(--accent);
@@ -376,6 +375,13 @@ body {
   border: 1px solid var(--line);
   border-radius: 4px;
   padding: 2px 6px;
+}
+
+.row-trigger-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .row-trigger-empty {
@@ -394,11 +400,9 @@ body {
   text-overflow: ellipsis;
 }
 
-/* 条目所属层的标记：贴在行框左下角，颜色画三角、emoji 直接摆字符（不挡鼠标）。 */
+/* 条目所属层的标记：排在组合键 chip 内的组合键字符之前（颜色画三角、emoji 摆字符，不挡鼠标）。 */
 .row-layer-mark {
-  position: absolute;
-  left: 1px;
-  bottom: 0;
+  flex-shrink: 0;
   pointer-events: none;
 }
 
@@ -412,15 +416,51 @@ body {
 .row-layer-mark.mark-emoji {
   font-size: 10px;
   line-height: 1;
-  left: 0;
 }
 
+/* 开关：全站布尔项统一用它（设置页整行右端 / 命令动作的「弹窗显示结果」）。原先是一个 16px
+   原生勾选框，缩在整行右端又小又和下拉框不搭。appearance: none 之后滑块靠 ::after 画，
+   表单控件只在 appearance: none 时才渲染伪元素。 */
 .toggle {
-  width: 16px;
-  height: 16px;
-  accent-color: var(--accent);
-  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
   flex-shrink: 0;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.toggle::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: transform 0.15s, background 0.15s;
+}
+
+.toggle:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.toggle:checked::after {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 /* 行内操作按钮（⋯ / 目录的 ＋）：hover 才显示 */
@@ -1861,60 +1901,161 @@ button:disabled:hover {
   flex: 1;
 }
 
-/* ---------- 设置 ---------- */
-.settings-list {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin-bottom: 16px;
-  max-width: 480px;
+/* ---------- 设置 ----------
+   一张卡片 = 一类设置：卡片头是类别名（可有右侧动作按钮），卡片体是一行行设置。
+   行内一律「左标签 + 右控件」，行与行之间只画一条细分隔线——原先每项各自成一个带边框的
+   小方块，十来个方块摞起来像一列按钮，而且只有 480px 宽（右边大半个窗口空着）。 */
+.set-grid {
+  display: grid;
+  /* 窄窗口一列 —— 应用默认窗口（860 宽）可用宽约 796px，够不着一格 520px 的两列；
+     窗口拉宽 / 最大化时并成两列（每列 ≥520px，正好放下「标签 + 说明 + 控件」一行）。
+     上限 1100px：再宽也不会散成三四列，且与编辑页（880px）大致同一条竖轴。 */
+  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+  align-items: start;
+  gap: 16px;
+  max-width: 1100px;
 }
 
-.setting-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
+.set-card {
   background: var(--panel);
   border: 1px solid var(--line);
-  border-radius: 8px;
-  padding: 8px 12px;
-  cursor: pointer;
+  border-radius: 10px;
+  /* 圆角处不露出行底色：卡片头那条分隔线要贴着圆角收尾。 */
+  overflow: hidden;
 }
 
-.settings-actions {
-  display: flex;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.settings-section {
-  margin-bottom: 16px;
-  max-width: 480px;
-}
-
-.settings-section-head {
+.set-card-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--line);
   font-weight: 600;
-  margin-bottom: 8px;
+  font-size: var(--fs-lg);
 }
 
+/* 卡片头里的动作按钮（新建层 / 检查更新）别继承标题的粗体。 */
+.set-card-head button {
+  font-weight: 400;
+}
+
+.set-rows,
+.set-body,
 .layer-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-bottom: 8px;
+}
+
+.set-body {
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+/* 行分隔线画在行的上边，首个不画（+ 选的是后续兄弟）。 */
+.set-row + .set-row,
+.layer-row + .layer-row {
+  border-top: 1px solid var(--line-soft);
+}
+
+.set-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+.set-row:hover {
+  background: var(--hover-bg);
+}
+
+.set-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.set-name {
+  font-size: var(--fs-lg);
+}
+
+.set-sub {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.set-sub code {
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-size: var(--fs-xs);
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+
+/* 控件列：一律贴右缘，各行下拉 / 输入框右边缘对齐（原先控件紧跟标签、长短不齐）。 */
+.set-row > select,
+.set-row > input[type="number"],
+.set-row > button {
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.set-row > select {
+  min-width: 150px;
+}
+
+.set-row > input[type="number"] {
+  width: 96px;
+}
+
+/* 卡片内的折叠说明：贴着卡片底边，与上面的设置行用一条分隔线断开。 */
+.set-card > .hint-fold {
+  padding: 8px 14px 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.set-card > .hint-fold > .hint:first-of-type {
+  margin-top: 6px;
+}
+
+.set-empty {
+  padding: 12px 14px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.set-status {
+  font-size: var(--fs-md);
+}
+
+.set-note {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.set-actions {
+  display: flex;
+  gap: 6px;
 }
 
 .layer-row {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  background: var(--panel);
+  gap: 8px;
+  padding: 8px 14px;
+  /* 卡片本身就是框，层行不再各自成框（此前每行都有边框 + 底色 = 卡里套卡）。 */
+  border: none;
+  border-radius: 0;
+  background: none;
+}
+
+.layer-row:hover {
+  background: var(--hover-bg);
 }
 
 .layer-name {
@@ -2087,6 +2228,19 @@ button:disabled:hover {
   font-weight: 600;
   margin-bottom: 2px;
   color: var(--text);
+}
+
+/* 能定位到条目的标题：可点击跳到它的编辑页。 */
+.conflict-name.conflict-link {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 2px;
+}
+
+.conflict-name.conflict-link:hover {
+  color: var(--accent);
+  text-decoration-color: var(--accent);
 }
 
 .conflict-msg {
