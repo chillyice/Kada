@@ -165,10 +165,13 @@ pub fn sample_config() -> Config {
     ));
     cfg.shortcuts.push(sc(
         "和弦触发演示",
-        "同时按住 I 和 O——和弦适合双拇指 / 双指同按的快捷触发",
-        &["I&O"],
+        // 成员键必须避开两处：① 序列/组合键用过的键（`F9 J K`、`Ctrl+Alt+U/B/R`）；② 热串触发词
+        // 里用到的字母（;sig/;addr/;btw 用了 s i g a d r b t w）——和弦成员键按下即被吞、不进
+        // 热串缓冲，含它就永远凑不齐（;sig 曾因示例和弦 `I&O` 含 i 而彻底不展开）。
+        "同时按住 Y 和 Z——和弦适合双拇指 / 双指同按的快捷触发",
+        &["Y&Z"],
         vec![Action::Text {
-            text: "和弦触发成功（I + O 同按）".into(),
+            text: "和弦触发成功（Y + Z 同按）".into(),
             mode: Default::default(),
             description: None,
         }],
@@ -191,11 +194,11 @@ pub fn sample_config() -> Config {
     #[cfg(feature = "automation")]
     {
         cfg.shortcuts.push(sc(
-            "打开 Kada 发布页",
+            "打开百度",
             "OpenUrl 动作：用系统默认浏览器打开网址",
             &["Ctrl+Alt+U"],
             vec![Action::OpenUrl {
-                url: "https://ihomy.top/kada".into(),
+                url: "https://www.baidu.com".into(),
                 description: None,
             }],
         ));
@@ -283,6 +286,31 @@ mod tests {
         assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::OpenUrl { .. }))), "缺 OpenUrl");
         assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::Command { .. }))), "缺命令");
         assert!(cfg.shortcuts.iter().any(|s| s.when.is_some()), "缺条件门控");
+    }
+
+    /// 和弦成员键按下即被吞、不进热串缓冲，所以触发词里不能含成员键——含了就永远凑不齐
+    /// （示例的和弦曾是 `I&O`，把示例自己的热串 `;sig` 打死了，现象是「;sig 死活不展开」）。
+    #[test]
+    fn sample_chord_members_stay_out_of_hotstring_triggers() {
+        let cfg = sample_config();
+        let members: std::collections::BTreeSet<char> = cfg
+            .shortcuts
+            .iter()
+            .flat_map(|s| s.triggers.iter())
+            .filter(|t| t.contains('&'))
+            .flat_map(|t| t.split('&'))
+            .filter_map(|m| m.chars().find(|c| c.is_ascii_alphabetic()))
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
+        for e in &cfg.expansions {
+            for c in e.trigger.chars().filter(|c| c.is_ascii_alphabetic()) {
+                assert!(
+                    !members.contains(&c.to_ascii_lowercase()),
+                    "热串 {:?} 含和弦成员键 {c}，成员键会被吞掉、该热串永远不展开",
+                    e.trigger
+                );
+            }
+        }
     }
 
     /// 能原样序列化再解析回来（合并导入走的就是这条路）。
