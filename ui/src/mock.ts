@@ -113,16 +113,39 @@ const DEMO_CONFIG = {
 
 const DEMO_RESULTS = [
   {
-    kind: "command",
-    label: "CMD",
-    command: "git status --short",
-    trigger: "Ctrl+Alt+G",
-    name: "Git 状态",
-    stdout: "M ui/src/main.ts\nM ui/src/style.css",
+    kind: "config",
+    label: "配置",
+    command: "配置文件已被重新加载",
+    trigger: "外部修改",
+    name: "",
+    stdout: "",
     stderr: "",
-    exit_code: 0,
+    exit_code: null,
     show_output: false,
     time: "2026-09-28 10:00:00",
+    run_id: null,
+  },
+];
+
+// 演示执行记录：一条带「条件判断 + 并行 + 失败动作」的链，让时间线（并排的泳道）与
+// 流水线（分支泳道、点块展开）在纯浏览器里也能验收。字段与后端 RunRecord / ActionStep 一致。
+const DEMO_RUNS = [
+  {
+    id: 1759046400000001,
+    trigger: "Ctrl+Alt+G",
+    name: "Git 提交",
+    time: "2026-09-28 10:01:02",
+    start_epoch_ms: 1759046462000,
+    duration_ms: 820,
+    status: "error",
+    steps: [
+      { id: 0, parent: null, lane: 0, kind: "if", title: "条件判断（仓库有改动）", branch: true, detail: { kind: "exists", path: "D:\\work\\repo\\.git" }, status: "ok", start_ms: 0, end_ms: 6, stdout: "", stderr: "", exit_code: null },
+      { id: 1, parent: null, lane: 0, kind: "parallel", title: "并行执行 3 个动作", branch: null, detail: null, status: "ok", start_ms: 6, end_ms: 820, stdout: "", stderr: "", exit_code: null },
+      { id: 2, parent: 1, lane: 0, kind: "command", title: "git add -A", branch: null, detail: null, status: "ok", start_ms: 8, end_ms: 240, stdout: "", stderr: "", exit_code: 0 },
+      { id: 3, parent: 1, lane: 1, kind: "command", title: "npm run build", branch: null, detail: null, status: "ok", start_ms: 12, end_ms: 820, stdout: "built in 1.2s\n", stderr: "", exit_code: 0 },
+      { id: 4, parent: 1, lane: 2, kind: "os", title: "删除 D:\\work\\repo\\dist\\stale", branch: null, detail: null, status: "error", start_ms: 20, end_ms: 60, stdout: "", stderr: "删除失败：「D:\\work\\repo\\dist\\stale」不存在", exit_code: null },
+      { id: 5, parent: null, lane: 0, kind: "text", title: "已提交", branch: null, detail: null, status: "ok", start_ms: 821, end_ms: 890, stdout: "", stderr: "", exit_code: null },
+    ],
   },
 ];
 
@@ -161,6 +184,7 @@ export function installBrowserMock() {
   let unread = false;
   let paused = false;
   const results = structuredClone(DEMO_RESULTS);
+  const runs = structuredClone(DEMO_RUNS);
   const w = window as unknown as {
     __TAURI_INTERNALS__: unknown;
     [key: string]: unknown;
@@ -189,6 +213,8 @@ export function installBrowserMock() {
           return [];
         case "get_command_results":
           return structuredClone(results);
+        case "get_run_records":
+          return structuredClone(runs);
         case "get_unread":
           return unread;
         case "mark_results_read":
@@ -196,6 +222,7 @@ export function installBrowserMock() {
           return null;
         case "clear_command_results":
           results.length = 0;
+          runs.length = 0;
           return null;
         case "get_conflicts":
           // 演示冲突见 DEMO_CONFLICTS（与演示配置一致），不再恒返回空。
@@ -240,8 +267,10 @@ export function installBrowserMock() {
         // 停止执行：演示模式没有真的在跑的动作，如实返回 0（前端提示「当前没有正在执行的动作」）。
         case "abort_actions":
           return 0;
-        // 编辑页「执行」：演示模式跑不了真动作，只确认前端点了按钮（后端 fire 不在浏览器里）。
-        case "run_entry":
+// 编辑页「执行」：演示模式跑不了真动作，但把这次执行演出来——逐步推一条执行记录，
+// 界面的时间线 / 流水线就能在纯浏览器里验收（真跑一遍带并行与失败成员的链）。
+case "run_entry":
+          demoRun();
           return null;
         // 导入：演示模式的文件对话框恒返回「取消」，走不到这里；留着是为了让 IPC 契约完整
         // （后端 ImportOutcome 的形状）并在将来放开文件选择时不至于崩在「不支持命令」。
@@ -326,6 +355,37 @@ export function installBrowserMock() {
           throw new Error(`演示模式不支持命令 ${cmd}（请在 Tauri 壳内使用）`);
       }
     },
+  };
+  // 演示「手动执行」：开一条记录 → 逐步推动作块 → 收尾（与后端 fire 的推送节奏一致）。
+  const demoRun = () => {
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const run: (typeof DEMO_RUNS)[number] = {
+      id: now.getTime() * 1000,
+      trigger: "手动执行",
+      name: "演示宏",
+      time: `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`,
+      start_epoch_ms: now.getTime(),
+      duration_ms: 0,
+      status: "running",
+      steps: [],
+    };
+    const push = (run: (typeof DEMO_RUNS)[number]) => {
+      const i = runs.findIndex((r) => r.id === run.id);
+      if (i >= 0) runs[i] = run;
+      else runs.unshift(run);
+      emit("run-update", structuredClone(run));
+    };
+    push(run);
+    const demo = DEMO_RUNS[0];
+    demo.steps.forEach((s, i) => {
+      setTimeout(() => {
+        run.duration_ms = s.end_ms;
+        run.status = demo.status;
+        run.steps.push(structuredClone(s));
+        push(run);
+      }, 300 * (i + 1));
+    });
   };
   console.info("[kada] 浏览器演示模式：已注入模拟 IPC，配置为演示数据。paused =", paused);
 }

@@ -51,7 +51,7 @@ type Action =
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
-type Layer = { id: string; name: string };
+type Layer = { id: string; name: string; mark?: string | null };
 type ShortcutItem = {
   name?: string | null;
   description?: string | null;
@@ -183,6 +183,36 @@ type CommandResult = {
   exit_code: number | null;
   show_output: boolean;
   time: string;
+  run_id: number | null;
+};
+
+// 一个动作的执行记录：时间线的时间块 / 流水线的节点（字段与 kada-actions 的 ActionStep 对齐）。
+type ActionStep = {
+  id: number;
+  parent: number | null;
+  lane: number;
+  kind: string;
+  title: string;
+  branch: boolean | null;
+  detail: unknown;
+  status: string;
+  start_ms: number;
+  end_ms: number;
+  stdout: string;
+  stderr: string;
+  exit_code: number | null;
+};
+
+// 一次触发 = 一条执行记录。
+type RunRecord = {
+  id: number;
+  trigger: string;
+  name: string;
+  time: string;
+  start_epoch_ms: number;
+  duration_ms: number;
+  status: string;
+  steps: ActionStep[];
 };
 
 // ---- 动作类型预设 ----
@@ -686,11 +716,15 @@ let entryTab: EntryTab = "work";
 let recording = false;
 let conflicts: Conflict[] = [];
 let search = "";
-let messages: CommandResult[] = []; // 消息中心（最新在前）
-let msgIndex = 0; // 当前选中的结果 tab
+let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
+let runs: RunRecord[] = []; // 执行记录（最新在前）：一次触发一条
+let msgIndex = 0; // 当前选中的记录 tab（在 msgEntries() 的合成列表里）
+let msgSelId = ""; // 当前选中的记录 id（跟着 tab 走，重绘不丢选中）
+let msgMode: "timeline" | "pipeline" = "timeline"; // 记录卡片的两种展示方式
+let msgSelStep = -1; // 时间线上选中的动作块（详情显示在下方）
 let unread = false; // 未读红点
 let conflictBubbleDismissed = false; // 快捷键列表里的冲突气泡是否已被用户消除
-let msgView: "results" | "conflicts" = "results"; // 消息页标签：命令结果 / 冲突
+let msgView: "results" | "conflicts" = "results"; // 消息页标签：执行记录 / 冲突
 // 复制/剪切板：存对象引用而非下标（增删/重排后仍指对那条），多选整批进同一份。
 // ponytail: 条目在编辑页「保存」时整条换新对象，这里的旧引用会失效（剪切粘贴到的是旧内容）——
 // 需要跨编辑保真时改成 kind + 下标并按内容重定位。
@@ -779,6 +813,7 @@ const KEY_OPTIONS = [
 async function load() {
   cfg = await invoke<Config>("get_config");
   messages = await invoke<CommandResult[]>("get_command_results");
+  runs = await invoke<RunRecord[]>("get_run_records");
   unread = await invoke<boolean>("get_unread");
   updateStatus = await invoke<UpdateStatus>("get_update_status");
   await refreshConflicts();
@@ -1348,6 +1383,8 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
 
   const more = moreButton((btn) => openRowMenu(btn, li, s));
   li.append(kindIcon("shortcut"), trig, name, more);
+  const mark = layerMarkNode(layerById(s.layer)?.mark);
+  if (mark) li.append(mark);
   return li;
 }
 
@@ -1371,6 +1408,8 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
     el("span", "row-name", r.name?.trim() || remapSummary(r)),
     moreButton((btn) => openRowMenu(btn, li, r)),
   );
+  const mark = layerMarkNode(layerById(r.layer)?.mark);
+  if (mark) li.append(mark);
   return li;
 }
 
@@ -1427,7 +1466,8 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
       if (v) {
         f.name = v;
       } else {
-        cfg.folders = cfg.folders.filter((x) => x.id !== f.id);
+        dropFolderTree(f.id);
+        saveCollapsed();
       }
       editingFolderId = null;
       void save();
@@ -1712,19 +1752,46 @@ function shortcutLabel(s: ShortcutItem): string {
   return s.name?.trim() || s.triggers.join(" / ") || "未命名";
 }
 
+const FOLDER_ENTRY_KINDS: [string, () => AnyEntry[]][] = [
+  ["快捷键", () => cfg.shortcuts],
+  ["改键", () => cfg.remaps],
+  ["文本扩展", () => cfg.expansions],
+];
+
+// 这批目录（含子目录）里各类条目各有多少条，0 条的不报。
+function folderEntryCounts(ids: Set<string>): [string, number][] {
+  return FOLDER_ENTRY_KINDS.map(([label, list]) => [label, list().filter((e) => e.folder && ids.has(e.folder)).length] as [string, number]).filter(
+    ([, n]) => n > 0,
+  );
+}
+
+// 删目录 = 连目录带里面的条目一起删（三类条目都算，不然 folder 悬空、条目在列表里凭空消失又被 save 挪回根级）。
+function dropFolderTree(id: string) {
+  const ids = collectDescendantIds(id);
+  for (const [, list] of FOLDER_ENTRY_KINDS) {
+    const arr = list();
+    // 原地删除：条目对象被草稿/选中态按引用持有，换数组会让它们变孤儿。
+    for (let i = arr.length - 1; i >= 0; i--) {
+      const f = arr[i].folder;
+      if (f && ids.has(f)) arr.splice(i, 1);
+    }
+  }
+  cfg.folders = cfg.folders.filter((f) => !ids.has(f.id));
+  for (const fid of ids) collapsedFolders.delete(fid);
+}
+
 async function deleteFolder(id: string) {
   const target = cfg.folders.find((f) => f.id === id);
   if (!target) return;
-  const ids = collectDescendantIds(id);
-  const n = cfg.shortcuts.filter((s) => s.folder && ids.has(s.folder)).length;
+  const detail = folderEntryCounts(collectDescendantIds(id))
+    .map(([label, n]) => `${n} 条${label}`)
+    .join("、");
   const ok = await confirmAsk(
-    `删除目录「${target.name}」${n ? `及其中的 ${n} 条快捷键` : "及其所有内容"}？删除后无法撤销。`,
+    `删除目录「${target.name}」${detail ? `及其中的 ${detail}` : "及其所有内容"}？删除后无法撤销。`,
     { title: "删除目录", kind: "warning" },
   );
   if (!ok) return;
-  cfg.folders = cfg.folders.filter((f) => !ids.has(f.id));
-  cfg.shortcuts = cfg.shortcuts.filter((s) => !(s.folder && ids.has(s.folder)));
-  for (const fid of ids) collapsedFolders.delete(fid);
+  dropFolderTree(id);
   saveCollapsed();
   discardDraft();
   draftNew = false;
@@ -4400,6 +4467,39 @@ function layerName(id: string | null | undefined): string {
   return cfg.layers.find((l) => l.id === id)?.name ?? "基础层";
 }
 
+// 层标记调色板：固定色值，保证「已用颜色在别的层不可选」的判重稳定，也免得调出肉眼难分的近似色。
+// 每层至多一个标记：颜色（`#rrggbb`）或一个 emoji 字符，互斥，存 core `Layer.mark`。
+const LAYER_COLORS: { value: string; label: string }[] = [
+  { value: "#e5484d", label: "红" },
+  { value: "#f76b15", label: "橙" },
+  { value: "#f5b300", label: "黄" },
+  { value: "#46a758", label: "绿" },
+  { value: "#12a594", label: "青" },
+  { value: "#4f9cf9", label: "蓝" },
+  { value: "#6e56cf", label: "紫" },
+  { value: "#e93d82", label: "粉" },
+  { value: "#a18072", label: "棕" },
+  { value: "#8b8d98", label: "灰" },
+];
+
+function isLayerColor(mark: string | null | undefined): boolean {
+  return !!mark && mark.startsWith("#");
+}
+
+function layerById(id: string | null | undefined): Layer | undefined {
+  return id ? cfg.layers.find((l) => l.id === id) : undefined;
+}
+
+// 列表条目左下角的层标记：颜色 → 实心三角（CSS 画），emoji → 原字符。无标记 → null。
+function layerMarkNode(mark: string | null | undefined): HTMLElement | null {
+  if (!mark) return null;
+  const color = isLayerColor(mark);
+  const s = el("span", `row-layer-mark ${color ? "mark-color" : "mark-emoji"}`);
+  if (color) s.style.setProperty("--mark", mark);
+  else s.textContent = mark;
+  return s;
+}
+
 // 改键形态的人类可读摘要（列表行 + 详情标题共用），与 kada-core 的 Remap::describe 对齐。
 function remapSummary(r: Remap): string {
   if (r.sticky) return `粘滞 ${r.sticky}`;
@@ -4418,10 +4518,25 @@ function remapSummary(r: Remap): string {
 function renderLayers() {
   const list = document.getElementById("layer-list")!;
   list.replaceChildren();
+  // 颜色唯一：已被别的层占用的颜色在本层下拉里禁用（emoji 不受限）。
+  const usedColors = new Set(
+    cfg.layers.map((l) => l.mark).filter((m): m is string => isLayerColor(m)),
+  );
   cfg.layers.forEach((l) => {
     const row = el("div", "layer-row");
+
+    // 预览色块 / emoji（与列表条目左下角的标记同义）。
+    const swatch = el(
+      "span",
+      "layer-swatch" + (isLayerColor(l.mark) ? " mark-color" : l.mark ? " mark-emoji" : ""),
+    );
+    if (isLayerColor(l.mark)) swatch.style.setProperty("--mark", l.mark!);
+    else if (l.mark) swatch.textContent = l.mark;
+    row.append(swatch);
+
+    // 名称：点击改名（新建时直接进改名态）。
     if (editingLayerId === l.id) {
-      const inp = el("input", "folder-input") as HTMLInputElement;
+      const inp = el("input", "layer-name-input") as HTMLInputElement;
       inp.value = l.name;
       inp.placeholder = "层名";
       let done = false;
@@ -4433,8 +4548,6 @@ function renderLayers() {
         else cfg.layers = cfg.layers.filter((x) => x.id !== l.id);
         editingLayerId = null;
         void save();
-        renderLayers();
-        renderDetail();
       };
       inp.addEventListener("keydown", (e) => {
         e.stopPropagation();
@@ -4451,9 +4564,52 @@ function renderLayers() {
       row.append(inp);
       setTimeout(() => inp.focus(), 0);
     } else {
-      row.append(el("span", "layer-name", l.name));
+      const name = el("span", "layer-name", l.name);
+      name.title = "点击改名";
+      name.addEventListener("click", () => {
+        editingLayerId = l.id;
+        renderLayers();
+      });
+      row.append(name);
     }
-    const del = el("button", "row-more", "×") as HTMLButtonElement;
+
+    // 颜色下拉（含「无」）：已用颜色在别的层里禁用。
+    const sel = el("select", "layer-color") as HTMLSelectElement;
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = "无颜色";
+    sel.append(none);
+    for (const c of LAYER_COLORS) {
+      const o = document.createElement("option");
+      o.value = c.value;
+      o.textContent = c.label;
+      o.style.color = c.value;
+      if (usedColors.has(c.value) && c.value !== l.mark) o.disabled = true;
+      sel.append(o);
+    }
+    sel.value = isLayerColor(l.mark) ? l.mark! : "";
+    sel.title = "层颜色（已被其它层占用的颜色不可选）";
+    sel.addEventListener("change", () => {
+      if (sel.value) l.mark = sel.value; // 选颜色 → 盖掉旧标记（含 emoji）
+      else if (isLayerColor(l.mark)) l.mark = null; // 选「无」→ 仅在原为颜色时清空，保留 emoji
+      void save();
+    });
+    row.append(sel);
+
+    // emoji 输入：填了就盖过颜色（互斥）。
+    const emoji = el("input", "layer-emoji") as HTMLInputElement;
+    emoji.value = isLayerColor(l.mark) ? "" : (l.mark ?? "");
+    emoji.placeholder = "emoji";
+    emoji.maxLength = 4;
+    emoji.title = "层 emoji 图标（填了就顶掉颜色）";
+    emoji.addEventListener("change", () => {
+      const v = emoji.value.trim();
+      l.mark = v || null;
+      void save();
+    });
+    row.append(emoji);
+
+    const del = el("button", "row-more layer-del", "×") as HTMLButtonElement;
     del.title = "删除层";
     del.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -4920,10 +5076,6 @@ function markRead() {
   void invoke("mark_results_read");
 }
 
-function tabLabel(r: CommandResult): string {
-  return r.name ? `${r.label} · ${r.name}` : `${r.label} · ${r.trigger}`;
-}
-
 function msgField(k: string, v: string, code = false): HTMLElement {
   const row = el("div", "msg-field");
   row.append(el("span", "msg-k", k));
@@ -4945,6 +5097,266 @@ function resultCard(r: CommandResult): HTMLElement {
   return card;
 }
 
+// ---- 执行记录（时间线 / 流水线）----
+
+function fmtMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
+  const m = Math.floor(ms / 60_000);
+  return `${m}分${Math.round((ms % 60_000) / 1000)}秒`;
+}
+
+// 执行时刻（绝对钟点）：记录的起始 epoch 毫秒 + 相对毫秒 → HH:MM:SS.mmm
+function clockAt(run: RunRecord, offsetMs: number): string {
+  const d = new Date(run.start_epoch_ms + offsetMs);
+  const p = (n: number, w = 2) => String(n).padStart(w, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
+}
+
+const STEP_STATUS_LABEL: Record<string, string> = {
+  ok: "成功",
+  error: "失败",
+  abort: "已中止",
+  running: "执行中",
+};
+
+const RUN_STATUS_LABEL: Record<string, string> = {
+  running: "执行中",
+  ok: "成功",
+  error: "有失败",
+  abort: "已中止",
+};
+
+// 记录 tab 的一行：优先用名称，否则「触发键 · 时刻」。
+function entryTitle(run: RunRecord): string {
+  const when = run.time.slice(11);
+  return `${run.name || run.trigger} · ${when}`;
+}
+
+// 消息中心一条 tab：执行记录，或一条不属于任何执行的普通消息（配置变更、热串失败等）。
+// 后者在界面上按「只有一个动作块的记录」渲染，两类共用一套时间线 / 流水线。
+type MsgEntry = { id: string; time: string; label: string; run: RunRecord };
+function msgEntries(): MsgEntry[] {
+  const fromRuns: MsgEntry[] = runs.map((r) => ({
+    id: `r${r.id}`,
+    time: r.time,
+    label: entryTitle(r),
+    run: r,
+  }));
+  const fromMsgs: MsgEntry[] = messages
+    .filter((r) => r.run_id === null)
+    .map((r) => ({
+      id: `m${r.time}-${r.kind}-${r.command}`,
+      time: r.time,
+      label: r.name ? `${r.label} · ${r.name}` : `${r.label} · ${r.trigger}`,
+      run: {
+        id: 0,
+        trigger: r.trigger,
+        name: r.name,
+        time: r.time,
+        start_epoch_ms: new Date(r.time.replace(" ", "T")).getTime() || Date.now(),
+        duration_ms: 0,
+        status: r.kind === "error" || r.kind === "abort" ? "error" : "ok",
+        steps: [
+          {
+            id: 0,
+            parent: null,
+            lane: 0,
+            kind: r.kind,
+            title: r.command,
+            branch: null,
+            detail: null,
+            status: r.kind === "ok" ? "ok" : "error",
+            start_ms: 0,
+            end_ms: 0,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            exit_code: r.exit_code,
+          },
+        ],
+      } as RunRecord,
+    }));
+  return [...fromRuns, ...fromMsgs].sort((a, b) => (a.time < b.time ? 1 : a.time > b.time ? -1 : 0));
+}
+
+// 动作的一行标题：「类型 · 摘要」。摘要本身若已以类型名开头（后端渲的「并行执行 3 个动作」
+// 之类）就不再重复一遍；条件判断改用条件摘要（光有「条件判断」四个字没信息量）。
+function stepTitle(step: ActionStep): string {
+  if (step.kind === "if" && step.detail) return condSummary(step.detail as Condition);
+  return step.title || step.kind;
+}
+
+function stepLabel(step: ActionStep): string {
+  const label = ACTION_TYPE_LABELS[step.kind as Action["type"]] ?? step.kind;
+  const title = stepTitle(step);
+  return title.startsWith(label) ? title : `${label} · ${title}`;
+}
+
+// 时间线上一个动作块的详情（时间线模式下点块看这里）。
+function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
+  const box = el("div", "msg-step-fields");
+  box.append(msgField("开始", `${clockAt(run, step.start_ms)}（+${fmtMs(step.start_ms)}）`));
+  box.append(msgField("结束", `${clockAt(run, step.end_ms)}（+${fmtMs(step.end_ms)}）`));
+  box.append(msgField("耗时", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+  box.append(msgField("状态", STEP_STATUS_LABEL[step.status] ?? step.status));
+  if (step.kind === "if" && step.detail) {
+    const c = step.detail as Condition;
+    box.append(msgField("条件", condSummary(c)));
+    box.append(msgField("走向", step.branch ? "条件成立（then）" : "条件不成立（otherwise）"));
+  } else {
+    box.append(msgField("动作", stepLabel(step), true));
+  }
+  if (step.stdout) box.append(msgField("stdout", step.stdout, true));
+  if (step.stderr) box.append(msgField("stderr", step.stderr, true));
+  box.append(msgField("退出码", step.exit_code === null ? "—" : String(step.exit_code)));
+  return box;
+}
+
+// ---- 时间线：每个动作按真实起止时间占一段，横着排开（重叠的自动分泳道）----
+function renderTimeline(run: RunRecord): HTMLElement {
+  const host = el("div", "tl");
+  const steps = run.steps.slice().sort((a, b) => a.start_ms - b.start_ms || a.id - b.id);
+  if (steps.length === 0) {
+    host.append(el("div", "tl-empty", run.status === "running" ? "正在执行…" : "没有可展示的动作"));
+    return host;
+  }
+  const total = Math.max(run.duration_ms, ...steps.map((s) => s.end_ms), 1);
+  // 泳道：贪心装不下就新开一条（区间分配），这样并行动作能真正并排看到。
+  const laneEnds: number[] = [];
+  const placed = steps.map((s) => {
+    let lane = laneEnds.findIndex((e) => e <= s.start_ms);
+    if (lane < 0) {
+      lane = laneEnds.length;
+      laneEnds.push(0);
+    }
+    laneEnds[lane] = s.end_ms;
+    return { step: s, lane };
+  });
+  const ruler = el("div", "tl-ruler");
+  for (let i = 0; i <= 4; i++) {
+    const tick = el("span", "tl-tick", `+${fmtMs(Math.round((total * i) / 4))}`);
+    tick.style.left = `${(i * 100) / 4}%`;
+    ruler.append(tick);
+  }
+  host.append(ruler);
+  const rows = el("div", "tl-rows");
+  // 泳道数决定时间线的高度（每条 22px 一行）。
+  rows.style.height = `${laneEnds.length * 22 + 4}px`;
+  for (const { step, lane } of placed) {
+    const block = el(
+      "button",
+      `tl-block st-${step.status}` + (step.id === msgSelStep ? " sel" : ""),
+    );
+    block.style.left = `${(step.start_ms / total) * 100}%`;
+    block.style.width = `${Math.max(((step.end_ms - step.start_ms) / total) * 100, 1.5)}%`;
+    block.style.top = `${lane * 22 + 2}px`;
+    block.title = `${ACTION_ICONS[step.kind as Action["type"]] ?? ""} ${stepLabel(step)}\n${clockAt(run, step.start_ms)} → ${clockAt(run, step.end_ms)}（${fmtMs(Math.max(0, step.end_ms - step.start_ms))}）`;
+    block.append(el("span", "tl-block-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
+    block.append(el("span", "tl-block-title", stepLabel(step)));
+    block.append(el("span", "tl-block-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+    block.addEventListener("click", () => {
+      msgSelStep = msgSelStep === step.id ? -1 : step.id;
+      renderMessages();
+    });
+    rows.append(block);
+  }
+  host.append(rows);
+  return host;
+}
+
+// ---- 流水线：自上而下，条件 / 并行各占泳道（像 IDE 的提交图，只是从上往下）----
+function renderPipeline(run: RunRecord): HTMLElement {
+  const host = el("div", "pipe");
+  if (run.steps.length === 0) {
+    host.append(el("div", "tl-empty", run.status === "running" ? "正在执行…" : "没有可展示的动作"));
+    return host;
+  }
+  const kids = new Map<number, ActionStep[]>();
+  for (const s of run.steps) {
+    const key = s.parent ?? -1;
+    const list = kids.get(key);
+    if (list) list.push(s);
+    else kids.set(key, [s]);
+  }
+for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - b.id);
+
+  const build = (step: ActionStep): HTMLElement => {
+    const block = el("div", `pipe-block st-${step.status}`);
+    const head = el("div", "pipe-head");
+    head.append(el("span", "pipe-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
+    head.append(el("span", "pipe-title", stepLabel(step)));
+    head.append(el("span", "pipe-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+    head.append(el("span", `pipe-flag ${STEP_STATUS_LABEL[step.status] ?? step.status}`, STEP_STATUS_LABEL[step.status] ?? step.status));
+    block.append(head);
+    const detail = stepDetail(run, step);
+    detail.classList.add("pipe-detail");
+    detail.classList.add("hidden");
+    block.append(detail);
+    block.addEventListener("click", () => detail.classList.toggle("hidden"));
+
+    const node = el("div", "pipe-node");
+    node.append(block);
+    const children = kids.get(step.id) ?? [];
+    if (children.length) {
+      const rail = el("div", "pipe-rail");
+      children.forEach((c, i) => {
+        const lane = el("div", "pipe-lane");
+        // 条件只画走的那条分支；并行每个成员一条泳道（序号对应编排里的成员下标）。
+        lane.append(
+          el(
+            "span",
+            "pipe-lane-label",
+            step.kind === "if"
+              ? step.branch
+                ? "条件成立"
+                : "条件不成立"
+              : step.kind === "parallel"
+                ? `并行 ${i + 1}`
+                : "",
+          ),
+        );
+        lane.append(build(c));
+        rail.append(lane);
+      });
+      node.append(rail);
+    }
+    return node;
+  };
+  for (const s of kids.get(-1) ?? []) host.append(build(s));
+  return host;
+}
+
+function renderRunCard(run: RunRecord): void {
+  const title = document.getElementById("msg-run-title")!;
+  title.textContent = `${run.name || "（未命名）"} · ${run.trigger} · ${run.time}`;
+  const badges = document.getElementById("msg-run-badges")!;
+  badges.replaceChildren(
+    el("span", `msg-run-badge st-${run.status}`, RUN_STATUS_LABEL[run.status] ?? run.status),
+    el("span", "msg-run-badge", `总耗时 ${fmtMs(run.duration_ms)}`),
+    el("span", "msg-run-badge", `${run.steps.length} 个动作`),
+  );
+  document.getElementById("msg-run-modes")!.classList.toggle("hidden", run.steps.length === 0);
+  const timeline = document.getElementById("msg-timeline")!;
+  const pipeline = document.getElementById("msg-pipeline")!;
+  const onTimeline = msgMode === "timeline";
+  timeline.classList.toggle("hidden", !onTimeline);
+  pipeline.classList.toggle("hidden", onTimeline);
+  (document.getElementById("msg-mode-timeline") as HTMLElement).classList.toggle("active", onTimeline);
+  (document.getElementById("msg-mode-pipeline") as HTMLElement).classList.toggle("active", !onTimeline);
+  const detail = document.getElementById("msg-step-detail")!;
+  if (onTimeline) {
+    timeline.replaceChildren(renderTimeline(run));
+    pipeline.replaceChildren();
+    const sel = run.steps.find((s) => s.id === msgSelStep);
+    detail.classList.toggle("hidden", !sel);
+    if (sel) detail.replaceChildren(el("div", "msg-step-title", stepLabel(sel)), stepDetail(run, sel));
+  } else {
+    timeline.replaceChildren();
+    pipeline.replaceChildren(renderPipeline(run));
+    detail.classList.add("hidden");
+  }
+}
+
 function renderMessages() {
   renderBadge();
 
@@ -4954,7 +5366,7 @@ function renderMessages() {
   conflictCount.classList.toggle("hidden", conflicts.length === 0);
   renderConflictList();
 
-  // 视图切换：命令结果 / 冲突。
+  // 视图切换：执行记录 / 冲突。
   const onResults = msgView === "results";
   document.getElementById("msg-results-view")!.classList.toggle("hidden", !onResults);
   document.getElementById("msg-conflicts-view")!.classList.toggle("hidden", onResults);
@@ -4962,30 +5374,44 @@ function renderMessages() {
   document.getElementById("msg-view-conflicts")!.classList.toggle("active", !onResults);
   document.getElementById("clear-messages")!.classList.toggle("hidden", !onResults);
 
-  // 命令结果视图内容（tablist / 空态 / 内容卡）。
+  // 执行记录视图内容（tablist / 空态 / 记录卡）。
   const tablist = document.getElementById("msg-tablist")!;
   const empty = document.getElementById("msg-empty")!;
   const content = document.getElementById("msg-content")!;
+  const entries = msgEntries();
   tablist.replaceChildren();
-  const has = messages.length > 0;
+  const has = entries.length > 0;
   empty.classList.toggle("hidden", has);
   content.classList.toggle("hidden", !has);
   (document.getElementById("msg-prev") as HTMLButtonElement).disabled = !has;
   (document.getElementById("msg-next") as HTMLButtonElement).disabled = !has;
   if (!has) return;
-  if (msgIndex >= messages.length) msgIndex = 0;
-  if (msgIndex < 0) msgIndex = messages.length - 1;
-  messages.forEach((r, i) => {
-    const t = el("button", "msg-tab" + (i === msgIndex ? " active" : ""), tabLabel(r));
+  // 选中项按 id 记住（后台线程会持续推更新，按下标记住会漂）；找不到就退回原下标。
+  let sel = entries.findIndex((e) => e.id === msgSelId);
+  if (sel < 0) {
+    sel = Math.min(Math.max(msgIndex, 0), entries.length - 1);
+    msgSelStep = -1;
+  }
+  msgIndex = sel;
+  msgSelId = entries[sel].id;
+  entries.forEach((e, i) => {
+    const t = el(
+      "button",
+      "msg-tab" + (i === msgIndex ? " active" : "") + (e.run.status === "running" ? " running" : ""),
+      e.label,
+    );
+    t.title = e.run.steps.some((s) => s.status === "error") ? "有失败的动作" : e.label;
     t.addEventListener("click", () => {
       msgIndex = i;
+      msgSelId = e.id;
+      msgSelStep = -1;
       renderMessages();
     });
     tablist.append(t);
   });
   const active = tablist.children[msgIndex] as HTMLElement | undefined;
   active?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  content.replaceChildren(resultCard(messages[msgIndex]));
+  renderRunCard(entries[msgIndex].run);
 }
 
 // 弹窗打开前的焦点：关掉后还回去（还给已重绘消失的元素等于没还，isConnected 挡掉）。
@@ -5030,20 +5456,38 @@ function bindMessages() {
     renderMessages();
   });
   document.getElementById("abort-actions")!.addEventListener("click", () => void abortActions());
+  document.getElementById("msg-mode-timeline")!.addEventListener("click", () => {
+    msgMode = "timeline";
+    msgSelStep = -1;
+    renderMessages();
+  });
+  document.getElementById("msg-mode-pipeline")!.addEventListener("click", () => {
+    msgMode = "pipeline";
+    renderMessages();
+  });
   document.getElementById("msg-prev")!.addEventListener("click", () => {
-    if (!messages.length) return;
-    msgIndex = (msgIndex - 1 + messages.length) % messages.length;
+    const entries = msgEntries();
+    if (!entries.length) return;
+    msgIndex = (msgIndex - 1 + entries.length) % entries.length;
+    msgSelId = entries[msgIndex].id;
+    msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("msg-next")!.addEventListener("click", () => {
-    if (!messages.length) return;
-    msgIndex = (msgIndex + 1) % messages.length;
+    const entries = msgEntries();
+    if (!entries.length) return;
+    msgIndex = (msgIndex + 1) % entries.length;
+    msgSelId = entries[msgIndex].id;
+    msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("clear-messages")!.addEventListener("click", () => {
     void invoke("clear_command_results");
     messages = [];
+    runs = [];
     msgIndex = 0;
+    msgSelId = "";
+    msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("modal-close")!.addEventListener("click", hideResultModal);
@@ -5053,11 +5497,27 @@ function bindMessages() {
 async function initEvents() {
   await listen<CommandResult>("command-result", (event) => {
     const r = event.payload;
-    messages.unshift(r);
-    msgIndex = 0;
+    if (r.run_id === null) {
+      // 非触发的普通消息（配置变更、热串注入失败等）：单独成条，弹窗 / 红点照旧。
+      messages.unshift(r);
+      msgSelId = `m${r.time}-${r.kind}-${r.command}`;
+    }
     if (r.show_output) {
       showResultModal(r);
     } else {
+      unread = true;
+    }
+    renderMessages();
+  });
+  // 执行记录：每条动作结束就推一次整张卡（后台线程边跑边刷，界面能看到逐步推进）。
+  await listen<RunRecord>("run-update", (event) => {
+    const run = event.payload;
+    const i = runs.findIndex((r) => r.id === run.id);
+    if (i >= 0) runs[i] = run;
+    else {
+      runs.unshift(run);
+      msgSelId = `r${run.id}`;
+      msgIndex = 0;
       unread = true;
     }
     renderMessages();

@@ -20,12 +20,15 @@ use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
+use kada_actions::{
+    abort as actions_abort, run_actions, ActionStep, CommandResult, Reporter, RunOptions,
+    RunRecord, RunStatus, TriggerCtx,
+};
 use kada_core::{
     detect_conflicts, matches, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
-    Key, Modifier, RawEvent, Settings, Shortcut, Severity, SnippetPick, TextInjectMode, Trigger,
+    Key, Modifier, RawEvent, Settings, Severity, Shortcut, SnippetPick, TextInjectMode, Trigger,
     TriggerContext, Vars, SYSTEM_SHORTCUTS,
 };
-use kada_actions::{abort as actions_abort, run_actions, CommandResult, RunOptions, TriggerCtx};
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
 /// 输入决策引擎（tap-hold/层/和弦/键序列/热串的状态机），与 Tauri 解耦、可单测。
@@ -150,8 +153,14 @@ mod input {
 /// 跨平台键盘事件：各平台钩子统一喂给决策器/录制器。
 #[derive(Clone, Debug)]
 enum Ev {
-    Down { key: Key, mods: BTreeSet<Modifier>, repeat: bool },
-    Up { key: Key },
+    Down {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+        repeat: bool,
+    },
+    Up {
+        key: Key,
+    },
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -274,7 +283,13 @@ fn layer_label(cfg: &Config, id: &str) -> String {
     cfg.layers
         .iter()
         .find(|l| l.id == id)
-        .map(|l| if l.name.trim().is_empty() { l.id.clone() } else { l.name.clone() })
+        .map(|l| {
+            if l.name.trim().is_empty() {
+                l.id.clone()
+            } else {
+                l.name.clone()
+            }
+        })
         .unwrap_or_else(|| id.to_string())
 }
 
@@ -282,13 +297,25 @@ fn layer_label(cfg: &Config, id: &str) -> String {
 fn build_status(st: &EngineStatus, cfg: &Config) -> StatusPayload {
     let layer = st.layer.as_deref().map(|id| layer_label(cfg, id));
     let mut mods: Vec<StatusMod> = Vec::new();
-    for (kind, set) in [("hold", &st.hold), ("sticky", &st.sticky), ("oneshot", &st.oneshot)] {
+    for (kind, set) in [
+        ("hold", &st.hold),
+        ("sticky", &st.sticky),
+        ("oneshot", &st.oneshot),
+    ] {
         for k in set {
-            mods.push(StatusMod { kind, key: key_name(*k).to_string() });
+            mods.push(StatusMod {
+                kind,
+                key: key_name(*k).to_string(),
+            });
         }
     }
     let summary = status_summary(layer.as_deref(), st.layer_locked, &mods);
-    StatusPayload { layer, locked: st.layer_locked, mods, summary }
+    StatusPayload {
+        layer,
+        locked: st.layer_locked,
+        mods,
+        summary,
+    }
 }
 
 /// 指示摘要（托盘提示用）：`层：游戏（锁定） · 按住 Ctrl · 单次 A`。
@@ -297,7 +324,14 @@ fn status_summary(layer: Option<&str>, locked: bool, mods: &[StatusMod]) -> Stri
     if let Some(l) = layer {
         // 两种来源与 `LayerState` 对齐：锁定 = 长按切换一次后保持（`lock_layer`）；
         // 其余 = 按住切层键期间生效（`hold_layer`）。
-        parts.push(format!("层：{l}{}", if locked { "（锁定）" } else { "（按住）" }));
+        parts.push(format!(
+            "层：{l}{}",
+            if locked {
+                "（锁定）"
+            } else {
+                "（按住）"
+            }
+        ));
     }
     for m in mods {
         parts.push(format!("{} {}", mod_kind_label(m.kind), m.key));
@@ -324,6 +358,9 @@ struct KadaState {
     results: Arc<Mutex<Vec<CommandResult>>>,
     /// 是否有未读命令结果（红点）。
     unread: Arc<AtomicBool>,
+    /// 消息中心的执行记录表（内存态，重启清空）：一次触发一条，内含逐步记录
+    /// （时间线 / 流水线视图的数据源，见 [`fire`]）。
+    runs: Arc<Mutex<Vec<RunRecord>>>,
     /// 最近一次触发气泡的载荷（懒创建 toast 窗口时，供前端加载后兜底读取）。
     toast: Arc<Mutex<Option<ToastPayload>>>,
     /// 最近一次输入状态指示的载荷（懒创建状态指示窗时，供前端加载后兜底读取）。
@@ -348,7 +385,11 @@ struct KadaState {
 /// 单条事件的决定。
 enum Outcome {
     /// 命中快捷键：返回其全部动作（按顺序执行）+ 触发键与名称（供消息中心展示）。
-    Shortcut { actions: Vec<Action>, trigger: String, name: String },
+    Shortcut {
+        actions: Vec<Action>,
+        trigger: String,
+        name: String,
+    },
     /// 命中改键：改发某个键。
     Replace(Key),
     /// 放行。
@@ -436,7 +477,11 @@ fn match_shortcut(
         for t in &s.triggers {
             if let Ok(sc) = t.parse::<Shortcut>() {
                 if matches(raw, &sc) && s.when_matches(ctx) {
-                    return Some((s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                    return Some((
+                        s.actions.clone(),
+                        t.clone(),
+                        s.name.clone().unwrap_or_default(),
+                    ));
                 }
             }
         }
@@ -470,9 +515,18 @@ fn decide(ev: &Ev, cfg: &Config, active_layer: Option<&str>, ctx: &TriggerContex
                 return Outcome::Replace(to);
             }
             if !*repeat {
-                let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
-                if let Some((actions, trigger, name)) = match_shortcut(cfg, &raw, active_layer, ctx) {
-                    return Outcome::Shortcut { actions, trigger, name };
+                let raw = RawEvent {
+                    key: *key,
+                    mods: mods.clone(),
+                    pressed: true,
+                };
+                if let Some((actions, trigger, name)) = match_shortcut(cfg, &raw, active_layer, ctx)
+                {
+                    return Outcome::Shortcut {
+                        actions,
+                        trigger,
+                        name,
+                    };
                 }
             }
             Outcome::Pass
@@ -526,6 +580,7 @@ fn spawn_hotstring(
                     exit_code: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    run_id: None,
                 },
             );
             return;
@@ -586,14 +641,20 @@ const WAKE_DOUBLE_TAP_MS: u64 = 400;
 /// 冷启动时建 WebView 要几百毫秒，跑在钩子回调里会被系统判超时摘掉钩子，之后快捷键 /
 /// 改键 / 热串全部静默失效。这里不持有 `AppHandle`，顺带也就能单测了。
 fn wake_double_tap(cfg: &RwLock<Config>, last_tap: &mut Option<Instant>, ev: &Ev) -> bool {
-    let Ev::Down { key, repeat, .. } = ev else { return false };
+    let Ev::Down { key, repeat, .. } = ev else {
+        return false;
+    };
     if *repeat {
         return false;
     }
     {
         let guard = cfg.read().unwrap();
-        let Some(wake) = guard.settings.wake_key.as_ref() else { return false };
-        let Ok(wk) = wake.parse::<Key>() else { return false };
+        let Some(wake) = guard.settings.wake_key.as_ref() else {
+            return false;
+        };
+        let Ok(wk) = wake.parse::<Key>() else {
+            return false;
+        };
         if *key != wk {
             // 按下其它键 → 上一次唤醒键单击不算数（可能是组合键的一部分）。
             last_tap.take();
@@ -632,7 +693,10 @@ struct FocusTracker {
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 impl FocusTracker {
     fn new(initial: Option<isize>) -> Self {
-        Self { confirmed: initial, candidate: None }
+        Self {
+            confirmed: initial,
+            candidate: None,
+        }
     }
 
     /// 观察一次当前前台窗口，返回是否是一次**真的**切换。
@@ -741,14 +805,19 @@ fn spawn_engine_ticker(
             // 口径——注入的收回来、缓冲里的丢弃不回放、锁定层保留。切换键位层 / 删掉序列 leader
             // 之后，按住的旧层与待定的和弦都属于上一份配置，留着只会打进新配置里。
             let cfg_replaced = cfg_stale.swap(false, Ordering::Relaxed);
-            let reason = reset_reason.or(if cfg_replaced { Some("配置已重新加载") } else { None });
+            let reason = reset_reason.or(if cfg_replaced {
+                Some("配置已重新加载")
+            } else {
+                None
+            });
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
             let (payload, hud_enabled, use_mouse, user_paused) = {
                 let guard = cfg.read().unwrap();
-                let frozen =
-                    rec.lock().unwrap().is_some() || pause_active(&paused_until) || guard.settings.paused;
+                let frozen = rec.lock().unwrap().is_some()
+                    || pause_active(&paused_until)
+                    || guard.settings.paused;
                 // 暂停 / 录制期间不推进状态机（那段时间事件根本不进状态机），但指示照常反映当前
                 // 状态：暂停这个动作本身不该让已经按住的层从指示里消失。
                 let status = if frozen {
@@ -850,12 +919,15 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                     exit_code: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    run_id: None,
                 },
             );
             continue;
         }
         // 采纳成功（上面已换进内存）：自启跟着系统同步一次，引擎复位交给定时器线程。
-        let Some((cfg, autostart_changed)) = reloaded else { continue };
+        let Some((cfg, autostart_changed)) = reloaded else {
+            continue;
+        };
         if autostart_changed {
             sync_autostart(&app, cfg.settings.autostart);
         }
@@ -883,6 +955,7 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                 exit_code: None,
                 show_output: false,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: None,
             },
         );
         let _ = app.emit("config-changed", &cfg);
@@ -956,6 +1029,7 @@ fn reload_config_now(app: &tauri::AppHandle) {
                     exit_code: None,
                     show_output: false,
                     time: now.clone(),
+                    run_id: None,
                 },
             );
             return;
@@ -976,6 +1050,7 @@ fn reload_config_now(app: &tauri::AppHandle) {
             exit_code: None,
             show_output: false,
             time: now,
+            run_id: None,
         },
     );
 }
@@ -989,6 +1064,7 @@ fn fire(
     app: tauri::AppHandle,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
     actions: Vec<Action>,
     trigger: String,
     name: String,
@@ -1003,6 +1079,24 @@ fn fire(
         let trigger = trigger.clone();
         std::thread::spawn(move || show_toast(&app, &name, &trigger));
     }
+    // 先落一条「正在执行」：界面立刻能点进去看（逐步汇报会持续刷新同一张卡）。
+    // ponytail: 记录 id 用微秒时间戳——同一微秒起两条链的概率可忽略，省一个全局计数器。
+    let id = chrono::Local::now().timestamp_micros() as u64;
+    start_run(
+        &app,
+        &runs,
+        &unread,
+        RunRecord {
+            id,
+            trigger: trigger.clone(),
+            name: name.clone(),
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            start_epoch_ms: chrono::Local::now().timestamp_millis() as u64,
+            duration_ms: 0,
+            status: "running".into(),
+            steps: Vec::new(),
+        },
+    );
     // 触发设备在**回调线程上**取（同步）：`current_device` 是「最近一次事件的设备」，
     // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Windows / macOS 恒 None。
     let device = input::current_device();
@@ -1031,14 +1125,21 @@ fn fire(
                     exit_code: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                    run_id: Some(id),
                 },
             );
+            finish_run(&app, &runs, &unread, id, "error");
             return;
         }
         let mut vars: Vars = BTreeMap::new();
         let mut last_copied: Option<String> = None;
         let frontmost = input::frontmost_context();
         let mut commit = |result: CommandResult| commit_result(&app, &results, &unread, result);
+        let mut on_step = |step: ActionStep| add_step(&app, &runs, &unread, id, step);
+        let mut rep = Reporter {
+            commit: &mut commit,
+            on_step: &mut on_step,
+        };
         let opts = RunOptions {
             action_timeout: Duration::from_millis(timeout_ms),
             text_inject_mode: text_mode,
@@ -1049,8 +1150,115 @@ fn fire(
             frontmost: frontmost.as_ref(),
             device: device.as_deref(),
         };
-        run_actions(&mut commit, &actions, t, &mut vars, &mut last_copied, &opts);
+        let status = run_actions(
+            &mut rep,
+            &actions,
+            t,
+            &mut vars,
+            &mut last_copied,
+            &opts,
+            Some(id),
+        );
+        let mut failed = false;
+        update_run(&app, &runs, id, |run| {
+            failed = run.steps.iter().any(|s| s.status == "error");
+        });
+        finish_run(
+            &app,
+            &runs,
+            &unread,
+            id,
+            match status {
+                RunStatus::Aborted => "abort",
+                RunStatus::Finished if failed => "error",
+                RunStatus::Finished => "ok",
+            },
+        );
     });
+}
+
+/// 执行记录表的条数上限（超出丢最旧的一条）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+const MAX_RUNS: usize = 50;
+/// 单条执行记录的动作条数上限（宏里套一大坨循环时会超；丢最旧的，中间的时间线仍完整）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+const MAX_RUN_STEPS: usize = 500;
+
+/// 新开一条执行记录（最新在前）并广播。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn start_run(
+    app: &tauri::AppHandle,
+    runs: &Mutex<Vec<RunRecord>>,
+    unread: &AtomicBool,
+    run: RunRecord,
+) {
+    {
+        let mut g = runs.lock().unwrap();
+        g.insert(0, run.clone());
+        g.truncate(MAX_RUNS);
+    }
+    unread.store(true, Ordering::Relaxed);
+    set_tray_unread(app, true);
+    let _ = app.emit("run-update", run);
+}
+
+/// 就地改一条执行记录并返回改后的快照；记录已被清掉时返回 `None`。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn update_run(
+    app: &tauri::AppHandle,
+    runs: &Mutex<Vec<RunRecord>>,
+    id: u64,
+    f: impl FnOnce(&mut RunRecord),
+) -> Option<RunRecord> {
+    let snapshot = {
+        let mut g = runs.lock().unwrap();
+        let run = g.iter_mut().find(|r| r.id == id)?;
+        f(run);
+        if run.steps.len() > MAX_RUN_STEPS {
+            run.steps.drain(..run.steps.len() - MAX_RUN_STEPS);
+        }
+        run.clone()
+    };
+    let _ = app.emit("run-update", &snapshot);
+    Some(snapshot)
+}
+
+/// 追加一条动作执行记录（时间线的一个时间块 / 流水线的一个节点），顺带把总耗时推到最新。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn add_step(
+    app: &tauri::AppHandle,
+    runs: &Mutex<Vec<RunRecord>>,
+    unread: &AtomicBool,
+    id: u64,
+    step: ActionStep,
+) {
+    let end = step.end_ms;
+    let failed = step.status == "error";
+    let snapshot = update_run(app, runs, id, move |run| {
+        run.duration_ms = run.duration_ms.max(end);
+        if failed && run.status != "abort" {
+            run.status = "error".into();
+        }
+        run.steps.push(step);
+    });
+    if snapshot.is_some() {
+        unread.store(true, Ordering::Relaxed);
+        set_tray_unread(app, true);
+    }
+}
+
+/// 收尾：把整条记录的结论（跑完 / 有失败 / 被中止）定下来。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn finish_run(
+    app: &tauri::AppHandle,
+    runs: &Mutex<Vec<RunRecord>>,
+    unread: &AtomicBool,
+    id: u64,
+    status: &'static str,
+) {
+    let _ = update_run(app, runs, id, |run| run.status = status.into());
+    unread.store(true, Ordering::Relaxed);
+    set_tray_unread(app, true);
 }
 
 /// 这串动作里有没有「往目标程序注入按键」的动作（Text / Keys / Mouse，含 If / Parallel 分支内的）。
@@ -1062,7 +1270,9 @@ fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
         #[cfg(feature = "automation")]
-        Action::If { then, otherwise, .. } => injects_keys(then) || injects_keys(otherwise),
+        Action::If {
+            then, otherwise, ..
+        } => injects_keys(then) || injects_keys(otherwise),
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => injects_keys(actions),
         _ => false,
@@ -1074,6 +1284,7 @@ fn fire(
     _app: tauri::AppHandle,
     _results: Arc<Mutex<Vec<CommandResult>>>,
     _unread: Arc<AtomicBool>,
+    _runs: Arc<Mutex<Vec<RunRecord>>>,
     _actions: Vec<Action>,
     _trigger: String,
     _name: String,
@@ -1182,7 +1393,9 @@ fn ensure_hud(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
 fn publish_status(app: &tauri::AppHandle, payload: &StatusPayload, hud_enabled: bool) {
     // 定时器线程比 `app.manage(KadaState)` 先起步（差几十毫秒），用 `try_state` 兜一下：
     // 拿不到就等下一拍，别在后台线程里 panic。
-    let Some(state) = app.try_state::<KadaState>() else { return };
+    let Some(state) = app.try_state::<KadaState>() else {
+        return;
+    };
     // 载荷存进 state：悬浮窗是懒创建的，前端加载后据此兜底渲染（与触发气泡同一个套路）。
     state.status.lock().unwrap().replace(payload.clone());
     // 托盘提示：悬停才看得见，但零成本、最不打扰，状态为空时回到应用名。
@@ -1217,15 +1430,27 @@ fn publish_status(app: &tauri::AppHandle, payload: &StatusPayload, hud_enabled: 
 /// 悬浮指示窗渲染完成（前端量出内容宽高后调用）：按内容调整窗口、贴工作区底部居中并显示。
 #[tauri::command]
 fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
-    let Some(w) = app.get_webview_window("hud") else { return };
+    let Some(w) = app.get_webview_window("hud") else {
+        return;
+    };
     // 尺寸来自界面，不可全信：钳一下，别让异常值把窗口撑满屏幕或只剩一条缝。
     let w_logical = width.clamp(120.0, 900.0);
     let h_logical = height.clamp(24.0, 240.0);
     let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
     let state = app.state::<KadaState>();
     // 先读配置、再读状态载荷（加锁顺序与 [`publish_status`] 一致）。
-    let enabled = state.config.read().map(|c| c.settings.show_status_hud).unwrap_or(true);
-    let active = state.status.lock().unwrap().as_ref().map(|p| !p.idle()).unwrap_or(false);
+    let enabled = state
+        .config
+        .read()
+        .map(|c| c.settings.show_status_hud)
+        .unwrap_or(true);
+    let active = state
+        .status
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|p| !p.idle())
+        .unwrap_or(false);
     if !enabled || !active {
         // 量尺寸这段时间里状态已经过去了（或指示被关掉）：别把刚藏起来的窗又亮回来。
         let _ = w.hide();
@@ -1236,9 +1461,9 @@ fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
         let work = m.work_area();
         let x =
             (work.position.x as f64 + (work.size.width as f64 - w_logical * scale) / 2.0) / scale;
-        let y = (work.position.y as f64 + work.size.height as f64 - h_logical * scale
-            - 24.0 * scale)
-            / scale;
+        let y =
+            (work.position.y as f64 + work.size.height as f64 - h_logical * scale - 24.0 * scale)
+                / scale;
         let _ = w.set_position(tauri::LogicalPosition::new(x, y));
     }
     let _ = w.show();
@@ -1307,10 +1532,21 @@ fn hints_state_of(app: &tauri::AppHandle) -> HintsState {
     // 窗口真实位置优先于配置：拖动中配置还是旧的（松手才落盘），拿它当基准会跳。
     let pos = app.get_webview_window("hints").and_then(|w| {
         let scale = w.scale_factor().unwrap_or(1.0);
-        w.outer_position().ok().map(|p| (p.x as f64 / scale, p.y as f64 / scale))
+        w.outer_position()
+            .ok()
+            .map(|p| (p.x as f64 / scale, p.y as f64 / scale))
     });
-    let (x, y) = pos.unwrap_or((hints.x.map(f64::from).unwrap_or(0.0), hints.y.map(f64::from).unwrap_or(0.0)));
-    HintsState { visible: hints.visible, scale: hints.scale, opacity: hints.opacity, x, y }
+    let (x, y) = pos.unwrap_or((
+        hints.x.map(f64::from).unwrap_or(0.0),
+        hints.y.map(f64::from).unwrap_or(0.0),
+    ));
+    HintsState {
+        visible: hints.visible,
+        scale: hints.scale,
+        opacity: hints.opacity,
+        x,
+        y,
+    }
 }
 
 /// 保存位置是否落在某块显示器的工作区里（至少露出一角够拖回来）。
@@ -1318,7 +1554,9 @@ fn hints_state_of(app: &tauri::AppHandle) -> HintsState {
 /// 配置是跨平台同步的：在双屏机器上拖到副屏，同步到单屏机器上就落在屏幕外了——
 /// 那时宁可回到默认位，也不能让提示框「显示着但看不见」。
 fn hints_position_on_screen(app: &tauri::AppHandle, x: i32, y: i32, w: f64, h: f64) -> bool {
-    let Ok(monitors) = app.available_monitors() else { return false };
+    let Ok(monitors) = app.available_monitors() else {
+        return false;
+    };
     monitors.iter().any(|m| {
         let s = m.scale_factor();
         let area = m.work_area();
@@ -1347,12 +1585,21 @@ fn hints_target_position(
     let m = app.primary_monitor().ok().flatten()?;
     let scale = m.scale_factor();
     let area = m.work_area();
-    let (mx, my) = (area.position.x as f64 / scale, area.position.y as f64 / scale);
-    let (mw, mh) = (area.size.width as f64 / scale, area.size.height as f64 / scale);
+    let (mx, my) = (
+        area.position.x as f64 / scale,
+        area.position.y as f64 / scale,
+    );
+    let (mw, mh) = (
+        area.size.width as f64 / scale,
+        area.size.height as f64 / scale,
+    );
     // 默认贴右侧、垂直居中：不挡正在打字的输入框，也不挡底部居中的状态指示。
     let x = mx + mw - logical_w - 24.0;
     let y = my + (mh - logical_h) / 2.0;
-    Some(tauri::LogicalPosition::new(x.max(mx + 8.0), y.max(my + 8.0)))
+    Some(tauri::LogicalPosition::new(
+        x.max(mx + 8.0),
+        y.max(my + 8.0),
+    ))
 }
 
 /// 提示框渲染完成（前端量出内容宽高后调用）：按内容定尺寸、首次落地并显示。
@@ -1368,7 +1615,11 @@ fn hints_ready(app: tauri::AppHandle, width: f64, height: f64) -> Option<HintsSt
     let state = app.try_state::<KadaState>()?;
     let (visible, x, y) = {
         let guard = state.config.read().ok()?;
-        (guard.settings.hints.visible, guard.settings.hints.x, guard.settings.hints.y)
+        (
+            guard.settings.hints.visible,
+            guard.settings.hints.x,
+            guard.settings.hints.y,
+        )
     };
     if !visible {
         // 量尺寸这段时间里它已经被关掉了：别把刚藏起来的窗又亮回来（同 `hud_ready`）。
@@ -1403,10 +1654,17 @@ fn hints_move(app: tauri::AppHandle, x: f64, y: f64) {
 /// 拖动结束：把当前位置记进配置，下次启动还在原地。
 #[tauri::command]
 fn hints_commit(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> Result<(), String> {
-    let Some(w) = app.get_webview_window("hints") else { return Ok(()) };
+    let Some(w) = app.get_webview_window("hints") else {
+        return Ok(());
+    };
     let scale = w.scale_factor().unwrap_or(1.0);
-    let Ok(pos) = w.outer_position() else { return Ok(()) };
-    let (x, y) = ((pos.x as f64 / scale).round() as i32, (pos.y as f64 / scale).round() as i32);
+    let Ok(pos) = w.outer_position() else {
+        return Ok(());
+    };
+    let (x, y) = (
+        (pos.x as f64 / scale).round() as i32,
+        (pos.y as f64 / scale).round() as i32,
+    );
     save_settings_patch(&app, &state, |s| {
         s.hints.x = Some(x);
         s.hints.y = Some(y);
@@ -1478,7 +1736,9 @@ fn spawn_hints_hover_watch(app: tauri::AppHandle) {
         loop {
             std::thread::sleep(Duration::from_millis(HINTS_HOVER_POLL_MS));
             // 还没建（懒创建）：没有窗口可管，等它出来。
-            let Some(w) = app.get_webview_window("hints") else { continue };
+            let Some(w) = app.get_webview_window("hints") else {
+                continue;
+            };
             if !w.is_visible().unwrap_or(false) {
                 // 被关掉 / 还没显示：相位复位，下次显示重新从「进框即让位」开始。
                 // 这里必须真的撤掉穿透标记，不能只改相位——否则关掉时正让着位，下次显示出来
@@ -1584,8 +1844,11 @@ fn save_settings_patch(
 
 /// 在屏幕右下角弹一个短暂的气泡（常驻 3 秒后自动消失）。
 fn show_toast(app: &tauri::AppHandle, name: &str, trigger: &str) {
-    let payload =
-        ToastPayload { name: name.to_string(), trigger: trigger.to_string(), subtitle: None };
+    let payload = ToastPayload {
+        name: name.to_string(),
+        trigger: trigger.to_string(),
+        subtitle: None,
+    };
     show_toast_payload(app, payload);
 }
 
@@ -1602,7 +1865,11 @@ fn show_toast_note(app: &tauri::AppHandle, title: &str, subtitle: &str) {
 fn show_toast_payload(app: &tauri::AppHandle, payload: ToastPayload) {
     // 先把载荷写进状态：toast 窗口若是首次懒创建，前端加载后据此兜底渲染，
     // 避免「事件早于监听器注册」导致第一次触发无内容。
-    app.state::<KadaState>().toast.lock().unwrap().replace(payload.clone());
+    app.state::<KadaState>()
+        .toast
+        .lock()
+        .unwrap()
+        .replace(payload.clone());
     let Some(w) = ensure_toast(app) else { return };
     let _ = w.emit("toast-show", payload);
     let _ = w.show();
@@ -1618,40 +1885,48 @@ fn show_toast_payload(app: &tauri::AppHandle, payload: ToastPayload) {
     });
 }
 
+/// 把已存在的主窗口拉到最前：单靠 `set_focus` 常常抢不到前台（窗口被别的窗口压着、
+/// 最小化、或被 `SetForegroundWindow` 的调用方限制挡住——双击 Alt 唤醒就会表现为
+/// 「窗口出来了但没在最前」）。补两步：先取消最小化，再用「临时置顶 + 聚焦 + 撤掉
+/// 置顶」把窗口顶到最前。已经在前台就什么都不做，免得凭空闪一下。
+fn raise_main_window(w: &tauri::WebviewWindow) {
+    let _ = w.unminimize();
+    if w.is_focused().unwrap_or(false) {
+        return;
+    }
+    let _ = w.set_always_on_top(true);
+    let _ = w.show();
+    let _ = w.set_focus();
+    let w = w.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(200));
+        let _ = w.set_always_on_top(false);
+    });
+}
+
 /// 按需创建/显示主窗口：首次打开时才真正建出 WebView，冷启动不加载任何界面。
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
-        let _ = w.show();
-        let _ = w.set_focus();
+        raise_main_window(&w);
         return;
     }
-    match tauri::WebviewWindowBuilder::new(
-        app,
-        "main",
-        tauri::WebviewUrl::App("index.html".into()),
-    )
-    .title("咔哒 Kada")
-    .inner_size(860.0, 560.0)
-    // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
-    // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
-    .min_inner_size(900.0, 480.0)
-    .resizable(true)
-    .center()
-    .build()
+    match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+        .title("咔哒 Kada")
+        .inner_size(860.0, 560.0)
+        // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
+        // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
+        .min_inner_size(900.0, 480.0)
+        .resizable(true)
+        .center()
+        .build()
     {
-        Ok(w) => {
-            let _ = w.show();
-            let _ = w.set_focus();
-        }
+        Ok(w) => raise_main_window(&w),
         Err(e) => {
             // 唤起现在跑在后台线程（见 `wake_double_tap` 的接线），冷启动期间连点两次双击
             // 可能两个线程都走到这里：主线程是串行处理的，后到的那次会撞上「窗口已存在」。
             // 窗口其实已经建好了，补一次显示即可，不必让用户看到一句吓人的创建失败。
             match app.get_webview_window("main") {
-                Some(w) => {
-                    let _ = w.show();
-                    let _ = w.set_focus();
-                }
+                Some(w) => raise_main_window(&w),
                 None => eprintln!("创建主窗口失败: {e}"),
             }
         }
@@ -1711,7 +1986,11 @@ fn set_tray_unread(app: &tauri::AppHandle, unread: bool) {
     let state = app.state::<KadaState>();
     let tray = state.tray.lock().unwrap();
     if let Some(tray) = tray.as_ref() {
-        let icon = if unread { state.tray_unread.clone() } else { state.tray_base.clone() };
+        let icon = if unread {
+            state.tray_unread.clone()
+        } else {
+            state.tray_base.clone()
+        };
         let _ = tray.set_icon(icon);
     }
 }
@@ -1781,7 +2060,10 @@ impl Recorder {
         if down {
             // 一组新组合键的开始（之前无按住的键）：先记下间隔
             if self.held.is_empty() && gap >= 20 {
-                self.actions.push(Action::PauseMs { ms: gap, description: None });
+                self.actions.push(Action::PauseMs {
+                    ms: gap,
+                    description: None,
+                });
             }
             self.held.push(key);
             self.chord.push(key);
@@ -1789,9 +2071,16 @@ impl Recorder {
             self.held.retain(|k| *k != key);
             // 组合键全部松开 → 落成一条 Keys 动作
             if self.held.is_empty() {
-                let keys: Vec<String> = self.chord.drain(..).map(|k| key_name(k).to_string()).collect();
+                let keys: Vec<String> = self
+                    .chord
+                    .drain(..)
+                    .map(|k| key_name(k).to_string())
+                    .collect();
                 if !keys.is_empty() {
-                    self.actions.push(Action::Keys { keys, description: None });
+                    self.actions.push(Action::Keys {
+                        keys,
+                        description: None,
+                    });
                 }
             }
         }
@@ -1800,8 +2089,15 @@ impl Recorder {
     /// 结束：仍在按住的键按剩余组合键收尾，返回录制所得动作。
     fn finish(mut self) -> Vec<Action> {
         if !self.chord.is_empty() {
-            let keys: Vec<String> = self.chord.drain(..).map(|k| key_name(k).to_string()).collect();
-            self.actions.push(Action::Keys { keys, description: None });
+            let keys: Vec<String> = self
+                .chord
+                .drain(..)
+                .map(|k| key_name(k).to_string())
+                .collect();
+            self.actions.push(Action::Keys {
+                keys,
+                description: None,
+            });
         }
         self.actions
     }
@@ -1822,8 +2118,9 @@ mod tests {
     /// 前端这两处必须是**显式字面量**（不能 spread / 循环拼），否则解析不到——这是有意的约束。
     #[test]
     fn frontend_key_table_matches_core() {
-        let src = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/main.ts"))
-            .expect("读取 ui/src/main.ts 失败");
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/main.ts"))
+                .expect("读取 ui/src/main.ts 失败");
         let names: std::collections::BTreeSet<&str> =
             Key::ALL.iter().map(|k| key_name(*k)).collect();
 
@@ -1833,20 +2130,31 @@ mod tests {
             options.iter().map(String::as_str).collect();
         let missing: Vec<&&str> = names.difference(&options).collect();
         let extra: Vec<&&str> = options.difference(&names).collect();
-        assert!(missing.is_empty(), "KEY_OPTIONS 缺少 core 里的键：{missing:?}");
-        assert!(extra.is_empty(), "KEY_OPTIONS 有 core 里没有的键（拼写错 / 已删除）：{extra:?}");
+        assert!(
+            missing.is_empty(),
+            "KEY_OPTIONS 缺少 core 里的键：{missing:?}"
+        );
+        assert!(
+            extra.is_empty(),
+            "KEY_OPTIONS 有 core 里没有的键（拼写错 / 已删除）：{extra:?}"
+        );
 
         // ② 录入时 KeyboardEvent.code → 键名的映射：每个显示名都必须是合法键名。
         for table in ["const CODE_TABLE", "const CODE_PUNCT"] {
             for lit in quoted_literals(region(&src, table)) {
-                assert!(names.contains(lit.as_str()), "{table} 里的「{lit}」不是合法键名");
+                assert!(
+                    names.contains(lit.as_str()),
+                    "{table} 里的「{lit}」不是合法键名"
+                );
             }
         }
     }
 
     /// 取 `marker` 起到其后第一个 `];` / `};` 之间的源码片段。
     fn region<'a>(src: &'a str, marker: &str) -> &'a str {
-        let start = src.find(marker).unwrap_or_else(|| panic!("找不到标记：{marker}"));
+        let start = src
+            .find(marker)
+            .unwrap_or_else(|| panic!("找不到标记：{marker}"));
         let rest = &src[start..];
         let end = ["\n];", "\n};"]
             .iter()
@@ -1890,22 +2198,33 @@ mod tests {
             mode: kada_core::TextMode::Input,
             description: None,
         }];
-        let keys = vec![Action::Keys { keys: vec!["Ctrl".into(), "C".into()], description: None }];
+        let keys = vec![Action::Keys {
+            keys: vec!["Ctrl".into(), "C".into()],
+            description: None,
+        }];
         assert!(injects_keys(&text));
         assert!(injects_keys(&keys));
 
         // 鼠标模拟也注入输入：物理修饰键没松时同样会变成 Ctrl+点击 / 拖拽，等它释放。
         let mouse = vec![Action::Mouse {
-            op: kada_core::MouseOp::Click { button: kada_core::MouseButton::Left },
+            op: kada_core::MouseOp::Click {
+                button: kada_core::MouseButton::Left,
+            },
             description: None,
         }];
         assert!(injects_keys(&mouse));
 
         // 命令 / 暂停不受修饰键影响，不该白等 300ms。
         let plain = vec![
-            Action::PauseMs { ms: 10, description: None },
+            Action::PauseMs {
+                ms: 10,
+                description: None,
+            },
             #[cfg(feature = "automation")]
-            Action::OpenUrl { url: "https://kada.test".into(), description: None },
+            Action::OpenUrl {
+                url: "https://kada.test".into(),
+                description: None,
+            },
         ];
         assert!(!injects_keys(&plain));
 
@@ -1913,14 +2232,18 @@ mod tests {
         #[cfg(feature = "automation")]
         {
             let branched = vec![Action::If {
-                condition: kada_core::Condition::Exists { path: "C:\\".into() },
+                condition: kada_core::Condition::Exists {
+                    path: "C:\\".into(),
+                },
                 then: vec![],
                 otherwise: keys,
                 description: None,
             }];
             assert!(injects_keys(&branched));
             let empty_branch = vec![Action::If {
-                condition: kada_core::Condition::Exists { path: "C:\\".into() },
+                condition: kada_core::Condition::Exists {
+                    path: "C:\\".into(),
+                },
                 then: vec![],
                 otherwise: vec![],
                 description: None,
@@ -1945,7 +2268,11 @@ mod tests {
     }
 
     fn down(key: Key) -> Ev {
-        Ev::Down { key, mods: BTreeSet::new(), repeat: false }
+        Ev::Down {
+            key,
+            mods: BTreeSet::new(),
+            repeat: false,
+        }
     }
 
     fn up(key: Key) -> Ev {
@@ -1961,7 +2288,12 @@ mod tests {
     ) -> Option<Outcome> {
         let mut fire = |_a: Vec<Action>, _t: String, _n: String| {};
         let ev = engine.step(ev, cfg, &TriggerContext::empty(), inj, &mut fire)?;
-        Some(decide(&ev, cfg, engine.active_layer(), &TriggerContext::empty()))
+        Some(decide(
+            &ev,
+            cfg,
+            engine.active_layer(),
+            &TriggerContext::empty(),
+        ))
     }
 
     /// 同 [`decide_via_engine`]，但把触发的触发键收集下来（和弦/序列在 `step` 里就 fire 了）。
@@ -1979,7 +2311,11 @@ mod tests {
     /// 「长按进入层」的切层键（CapsLock → L1）+ 该层内一条快捷键（触发键由参数给出）。
     fn cfg_with_layer(trigger: &str) -> Config {
         Config {
-            layers: vec![kada_core::Layer { id: "L1".into(), name: "层1".into() }],
+            layers: vec![kada_core::Layer {
+                id: "L1".into(),
+                name: "层1".into(),
+                ..Default::default()
+            }],
             remaps: vec![kada_core::Remap {
                 from: "CapsLock".into(),
                 hold_layer: Some("L1".into()),
@@ -2011,7 +2347,11 @@ mod tests {
 
         assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
         decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
-        assert_eq!(inj.log, vec!["down CapsLock", "up CapsLock"], "短按回放原键");
+        assert_eq!(
+            inj.log,
+            vec!["down CapsLock", "up CapsLock"],
+            "短按回放原键"
+        );
         assert_eq!(engine.active_layer(), None, "短按不进层");
     }
 
@@ -2027,7 +2367,11 @@ mod tests {
         assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
         std::thread::sleep(std::time::Duration::from_millis(30));
         decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
-        assert_eq!(inj.log, vec!["down CapsLock", "up CapsLock"], "长按无输出时回放原键");
+        assert_eq!(
+            inj.log,
+            vec!["down CapsLock", "up CapsLock"],
+            "长按无输出时回放原键"
+        );
         assert_eq!(engine.active_layer(), None, "没按别的键就不进层");
     }
 
@@ -2038,7 +2382,11 @@ mod tests {
         // → 5 → Y → 松开。和弦与组合都应在按住切层键期间命中。
         const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            layers: vec![kada_core::Layer {
+                id: LID.into(),
+                name: "和弦层".into(),
+                ..Default::default()
+            }],
             remaps: vec![kada_core::Remap {
                 from: "Tab".into(),
                 to: String::new(),
@@ -2067,7 +2415,11 @@ mod tests {
         let mut fired: Vec<String> = Vec::new();
         step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Tab), &mut fired);
         for _ in 0..5 {
-            let repeat = Ev::Down { key: Key::Tab, mods: BTreeSet::new(), repeat: true };
+            let repeat = Ev::Down {
+                key: Key::Tab,
+                mods: BTreeSet::new(),
+                repeat: true,
+            };
             step_collecting_fire(&mut engine, &mut inj, &cfg, &repeat, &mut fired);
         }
         assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
@@ -2093,7 +2445,12 @@ mod tests {
         };
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &z_down, &mut fired);
         let layer = engine.active_layer().map(str::to_string);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref(), &TriggerContext::empty()) {
+        match decide(
+            &out.expect("Alt+Z 应放行进 decide"),
+            &cfg,
+            layer.as_deref(),
+            &TriggerContext::empty(),
+        ) {
             Outcome::Shortcut { trigger, .. } => assert_eq!(trigger, "Alt+Z"),
             other => panic!(
                 "层内 Alt+Z 应命中该层快捷键，实际 {:?}",
@@ -2125,12 +2482,21 @@ mod tests {
         let mut inj = TestInject::default();
         let mut fired: Vec<String> = Vec::new();
 
-        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::CapsLock), &mut fired);
+        step_collecting_fire(
+            &mut engine,
+            &mut inj,
+            &cfg,
+            &down(Key::CapsLock),
+            &mut fired,
+        );
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::CapsLock), &mut fired);
         assert_eq!(engine.active_layer(), None, "松开切层键即退层");
         step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
         step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
-        assert!(fired.is_empty(), "层未激活时层内和弦不触发，实际：{fired:?}");
+        assert!(
+            fired.is_empty(),
+            "层未激活时层内和弦不触发，实际：{fired:?}"
+        );
     }
 
     #[test]
@@ -2141,7 +2507,11 @@ mod tests {
         // 做不到（层随松手消失，层内和弦还得一直按住切层键），切换式才用得起来。
         const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            layers: vec![kada_core::Layer {
+                id: LID.into(),
+                name: "和弦层".into(),
+                ..Default::default()
+            }],
             remaps: vec![kada_core::Remap {
                 from: "Tab".into(),
                 to: String::new(),
@@ -2204,10 +2574,19 @@ mod tests {
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::F9), &mut fired);
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::J), &mut fired);
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::K), &mut fired);
-        let alt_z = Ev::Down { key: Key::Z, mods: BTreeSet::from([Modifier::Alt]), repeat: false };
+        let alt_z = Ev::Down {
+            key: Key::Z,
+            mods: BTreeSet::from([Modifier::Alt]),
+            repeat: false,
+        };
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
         let layer = engine.active_layer().map(str::to_string);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, layer.as_deref(), &TriggerContext::empty()) {
+        match decide(
+            &out.expect("Alt+Z 应放行进 decide"),
+            &cfg,
+            layer.as_deref(),
+            &TriggerContext::empty(),
+        ) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "输入密码", "层内 Alt+Z 应优先"),
             Outcome::Replace(_) => panic!("不该走改键"),
             Outcome::Pass => panic!("层内 Alt+Z 未命中"),
@@ -2219,7 +2598,12 @@ mod tests {
         step_collecting_fire(&mut engine, &mut inj, &cfg, &up(Key::Tab), &mut fired);
         assert_eq!(engine.active_layer(), None, "再长按一次退出切层");
         let out = step_collecting_fire(&mut engine, &mut inj, &cfg, &alt_z, &mut fired);
-        match decide(&out.expect("Alt+Z 应放行进 decide"), &cfg, None, &TriggerContext::empty()) {
+        match decide(
+            &out.expect("Alt+Z 应放行进 decide"),
+            &cfg,
+            None,
+            &TriggerContext::empty(),
+        ) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "基础层 Alt+Z"),
             Outcome::Replace(_) => panic!("不该走改键"),
             Outcome::Pass => panic!("基础层 Alt+Z 未命中"),
@@ -2236,7 +2620,11 @@ mod tests {
         assert!(decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::CapsLock)).is_none());
         assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
         let out = decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::K)).expect("K 应放行");
-        assert_eq!(engine.active_layer(), Some("L1"), "按住切层键 + 按 K → 进层");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L1"),
+            "按住切层键 + 按 K → 进层"
+        );
         match out {
             Outcome::Shortcut { trigger, .. } => assert_eq!(trigger, "K"),
             _ => panic!("层内 K 应命中该层快捷键"),
@@ -2247,7 +2635,10 @@ mod tests {
         decide_via_engine(&mut engine, &mut inj, &cfg, &up(Key::CapsLock));
         assert_eq!(engine.active_layer(), None, "松开切层键退回基础层");
         let out = decide_via_engine(&mut engine, &mut inj, &cfg, &down(Key::K)).expect("K 应放行");
-        assert!(matches!(out, Outcome::Pass), "基础层下 K 不该命中层内快捷键");
+        assert!(
+            matches!(out, Outcome::Pass),
+            "基础层下 K 不该命中层内快捷键"
+        );
     }
 
     #[test]
@@ -2259,7 +2650,13 @@ mod tests {
         let mut inj = TestInject::default();
         let mut engine = Engine::new();
 
-        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::CapsLock), &mut fired);
+        step_collecting_fire(
+            &mut engine,
+            &mut inj,
+            &cfg,
+            &down(Key::CapsLock),
+            &mut fired,
+        );
         step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Digit5), &mut fired);
         step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Y), &mut fired);
         assert_eq!(engine.active_layer(), Some("L1"), "按住切层键即进层");
@@ -2269,9 +2666,18 @@ mod tests {
         let mut fired2: Vec<String> = Vec::new();
         let mut inj2 = TestInject::default();
         let mut engine2 = Engine::new();
-        step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Digit5), &mut fired2);
+        step_collecting_fire(
+            &mut engine2,
+            &mut inj2,
+            &cfg,
+            &down(Key::Digit5),
+            &mut fired2,
+        );
         step_collecting_fire(&mut engine2, &mut inj2, &cfg, &down(Key::Y), &mut fired2);
-        assert!(fired2.is_empty(), "基础层下不应命中层内和弦，实际：{fired2:?}");
+        assert!(
+            fired2.is_empty(),
+            "基础层下不应命中层内和弦，实际：{fired2:?}"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -2289,12 +2695,21 @@ mod tests {
         // 同触发键 Ctrl+K：一条只在 Chrome 生效，另一条无条件兜底。
         let cfg = Config {
             shortcuts: vec![
-                mk("Chrome", Some(Condition::FrontmostApp { app: "chrome".into() })),
+                mk(
+                    "Chrome",
+                    Some(Condition::FrontmostApp {
+                        app: "chrome".into(),
+                    }),
+                ),
                 mk("兜底", None),
             ],
             ..Default::default()
         };
-        let ev = Ev::Down { key: Key::K, mods: BTreeSet::from([Modifier::Ctrl]), repeat: false };
+        let ev = Ev::Down {
+            key: Key::K,
+            mods: BTreeSet::from([Modifier::Ctrl]),
+            repeat: false,
+        };
 
         let chrome = FrontmostContext {
             process_name: "chrome.exe".into(),
@@ -2302,15 +2717,23 @@ mod tests {
         };
         match decide(&ev, &cfg, None, &TriggerContext::fixed(Some(&chrome), None)) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "Chrome"),
-            other => panic!("应命中 Chrome 条目，实际 Pass={}", matches!(other, Outcome::Pass)),
+            other => panic!(
+                "应命中 Chrome 条目，实际 Pass={}",
+                matches!(other, Outcome::Pass)
+            ),
         }
 
         // 别的前台：条件条目跳过，落到兜底条目。
-        let code =
-            FrontmostContext { process_name: "Code.exe".into(), window_title: String::new() };
+        let code = FrontmostContext {
+            process_name: "Code.exe".into(),
+            window_title: String::new(),
+        };
         match decide(&ev, &cfg, None, &TriggerContext::fixed(Some(&code), None)) {
             Outcome::Shortcut { name, .. } => assert_eq!(name, "兜底"),
-            other => panic!("应落到兜底条目，实际 Pass={}", matches!(other, Outcome::Pass)),
+            other => panic!(
+                "应落到兜底条目，实际 Pass={}",
+                matches!(other, Outcome::Pass)
+            ),
         }
 
         // 无前台上下文（Linux）：条件条目恒不成立，仍落到兜底。
@@ -2327,7 +2750,11 @@ mod tests {
         // 自动重复）→ U → Y。
         const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into() }],
+            layers: vec![kada_core::Layer {
+                id: LID.into(),
+                name: "和弦层".into(),
+                ..Default::default()
+            }],
             remaps: vec![kada_core::Remap {
                 from: "`".into(),
                 to: String::new(),
@@ -2360,11 +2787,20 @@ mod tests {
         let mut inj = TestInject::default();
         let mut fired: Vec<String> = Vec::new();
 
-        step_collecting_fire(&mut engine, &mut inj, &cfg, &down(Key::Backquote), &mut fired);
+        step_collecting_fire(
+            &mut engine,
+            &mut inj,
+            &cfg,
+            &down(Key::Backquote),
+            &mut fired,
+        );
         // 按住 ` 期间系统会发自动重复的 Down。
         for _ in 0..5 {
-            let repeat =
-                Ev::Down { key: Key::Backquote, mods: BTreeSet::new(), repeat: true };
+            let repeat = Ev::Down {
+                key: Key::Backquote,
+                mods: BTreeSet::new(),
+                repeat: true,
+            };
             step_collecting_fire(&mut engine, &mut inj, &cfg, &repeat, &mut fired);
         }
         assert_eq!(engine.active_layer(), None, "还没按别的键，未进层");
@@ -2376,7 +2812,11 @@ mod tests {
 
     #[test]
     fn recorder_transcribes_events() {
-        let down = |key: Key| Ev::Down { key, mods: BTreeSet::new(), repeat: false };
+        let down = |key: Key| Ev::Down {
+            key,
+            mods: BTreeSet::new(),
+            repeat: false,
+        };
         let up = |key: Key| Ev::Up { key };
 
         let mut r = Recorder::new();
@@ -2397,12 +2837,18 @@ mod tests {
             })
             .collect();
         assert!(combos.iter().any(|k| *k == &vec!["K".to_string()]));
-        assert!(combos.iter().any(|k| *k == &vec!["Ctrl".to_string(), "C".to_string()]));
+        assert!(combos
+            .iter()
+            .any(|k| *k == &vec!["Ctrl".to_string(), "C".to_string()]));
 
         // 重复 down 折叠：按住 Ctrl 只产生一次组合键
         let mut r = Recorder::new();
         r.push(&down(Key::Control));
-        r.push(&Ev::Down { key: Key::Control, mods: BTreeSet::new(), repeat: true });
+        r.push(&Ev::Down {
+            key: Key::Control,
+            mods: BTreeSet::new(),
+            repeat: true,
+        });
         r.push(&up(Key::Control));
         let ctrl = r
             .finish()
@@ -2424,10 +2870,22 @@ mod tests {
         // 判定已与「建窗口」解耦（见 wake_double_tap 的注释），所以这层时序规则能单测。
         let cfg = wake_cfg(Some("Alt"));
         let mut last = None;
-        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "第一击只是单击");
-        assert!(wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "窗口内的第二击命中");
-        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "计完归零，第三击重新算单击");
-        assert!(wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "第四击又凑成一次双击");
+        assert!(
+            !wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "第一击只是单击"
+        );
+        assert!(
+            wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "窗口内的第二击命中"
+        );
+        assert!(
+            !wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "计完归零，第三击重新算单击"
+        );
+        assert!(
+            wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "第四击又凑成一次双击"
+        );
     }
 
     #[test]
@@ -2436,7 +2894,10 @@ mod tests {
 
         // 上一次单击已落在判定窗口之外：这一击只算新的单击，不该唤窗。
         let mut last = Some(Instant::now() - Duration::from_millis(WAKE_DOUBLE_TAP_MS + 50));
-        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "超出窗口不算双击");
+        assert!(
+            !wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "超出窗口不算双击"
+        );
         assert!(last.is_some(), "超时后要重新计时（这一击仍是单击）");
 
         // 中间按了别的键 → 上一次单击作废（那次多半是 Alt+Tab 这类组合的一部分）。
@@ -2444,12 +2905,22 @@ mod tests {
         assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)));
         assert!(!wake_double_tap(&cfg, &mut last, &down(Key::K)));
         assert!(last.is_none(), "按其它键要清掉单击计数");
-        assert!(!wake_double_tap(&cfg, &mut last, &down(Key::Alt)), "清空后这一击是新单击");
+        assert!(
+            !wake_double_tap(&cfg, &mut last, &down(Key::Alt)),
+            "清空后这一击是新单击"
+        );
 
         // 自动重复的按下不是独立一击：长按唤醒键不该被当成连击而唤窗。
         let mut last = None;
-        let repeated = Ev::Down { key: Key::Alt, mods: BTreeSet::new(), repeat: true };
-        assert!(!wake_double_tap(&cfg, &mut last, &repeated), "自动重复不算一击");
+        let repeated = Ev::Down {
+            key: Key::Alt,
+            mods: BTreeSet::new(),
+            repeat: true,
+        };
+        assert!(
+            !wake_double_tap(&cfg, &mut last, &repeated),
+            "自动重复不算一击"
+        );
         assert!(last.is_none(), "自动重复也不该开始计时");
     }
 
@@ -2508,7 +2979,11 @@ mod tests {
     #[test]
     fn status_payload_maps_layer_name_and_modifier_kinds() {
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: "L1".into(), name: "游戏层".into() }],
+            layers: vec![kada_core::Layer {
+                id: "L1".into(),
+                name: "游戏层".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let st = EngineStatus {
@@ -2521,9 +2996,12 @@ mod tests {
         let p = build_status(&st, &cfg);
         assert_eq!(p.layer.as_deref(), Some("游戏层"), "层 id 要换成显示名");
         assert!(p.locked);
-        let kinds: Vec<(&str, &str)> =
-            p.mods.iter().map(|m| (m.kind, m.key.as_str())).collect();
-        assert_eq!(kinds, vec![("hold", "Ctrl"), ("oneshot", "Alt")], "形态不能混为一谈");
+        let kinds: Vec<(&str, &str)> = p.mods.iter().map(|m| (m.kind, m.key.as_str())).collect();
+        assert_eq!(
+            kinds,
+            vec![("hold", "Ctrl"), ("oneshot", "Alt")],
+            "形态不能混为一谈"
+        );
         assert_eq!(p.summary, "层：游戏层（锁定） · 按住 Ctrl · 单次 Alt");
         assert!(!p.idle());
     }
@@ -2532,7 +3010,10 @@ mod tests {
     #[test]
     fn status_payload_falls_back_to_layer_id() {
         let cfg = Config::default();
-        let st = EngineStatus { layer: Some("ghost".into()), ..Default::default() };
+        let st = EngineStatus {
+            layer: Some("ghost".into()),
+            ..Default::default()
+        };
         let p = build_status(&st, &cfg);
         assert_eq!(p.layer.as_deref(), Some("ghost"));
         assert_eq!(p.summary, "层：ghost（按住）");
@@ -2551,7 +3032,14 @@ mod tests {
         };
         let p = build_status(&st, &Config::default());
         let kinds: Vec<(&str, &str)> = p.mods.iter().map(|m| (m.kind, m.key.as_str())).collect();
-        assert_eq!(kinds, vec![("hold", "Enter"), ("sticky", "MouseBack"), ("oneshot", "Alt")]);
+        assert_eq!(
+            kinds,
+            vec![
+                ("hold", "Enter"),
+                ("sticky", "MouseBack"),
+                ("oneshot", "Alt")
+            ]
+        );
         assert_eq!(p.summary, "按住 Enter · 粘滞 MouseBack · 单次 Alt");
     }
 
@@ -2590,10 +3078,16 @@ mod tests {
         // 停够了：恢复可交互，且一直保持到挪出边界。
         let settled = hints_hover_step(HintsHover::Passing, true, HINTS_HOVER_DWELL_MS);
         assert_eq!(settled, HintsHover::Settled);
-        assert_eq!(hints_hover_step(settled, true, HINTS_HOVER_DWELL_MS + 60_000), HintsHover::Settled);
+        assert_eq!(
+            hints_hover_step(settled, true, HINTS_HOVER_DWELL_MS + 60_000),
+            HintsHover::Settled
+        );
         // 挪出去之后再进来：又让位（否则「一直悬着」就再也点不到框了）。
         assert_eq!(hints_hover_step(settled, false, 0), HintsHover::Out);
-        assert_eq!(hints_hover_step(HintsHover::Out, true, 0), HintsHover::Passing);
+        assert_eq!(
+            hints_hover_step(HintsHover::Out, true, 0),
+            HintsHover::Passing
+        );
     }
 }
 
@@ -2691,15 +3185,25 @@ fn platform_caps() -> kada_core::PlatformCaps {
     #[cfg(target_os = "linux")]
     {
         // 前台条件 false；设备条件可用（DeviceIs 在 Linux 真生效），故只覆盖前台。
-        kada_core::PlatformCaps { frontmost_conditions: false, ..Default::default() }
+        kada_core::PlatformCaps {
+            frontmost_conditions: false,
+            ..Default::default()
+        }
     }
     #[cfg(target_os = "macos")]
     {
         let mut keys = std::collections::BTreeSet::new();
         for k in [
-            Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
-            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp,
-            Key::F21, Key::F22, Key::F23, Key::F24,
+            Key::MediaPlayPause,
+            Key::MediaPrev,
+            Key::MediaNext,
+            Key::VolumeMute,
+            Key::VolumeDown,
+            Key::VolumeUp,
+            Key::F21,
+            Key::F22,
+            Key::F23,
+            Key::F24,
         ] {
             keys.insert(k);
         }
@@ -2714,7 +3218,10 @@ fn platform_caps() -> kada_core::PlatformCaps {
     // 恒 None，见规划 7.3-㉓ 的后续）→ 设备条件标注不可用。
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        kada_core::PlatformCaps { device_conditions: false, ..Default::default() }
+        kada_core::PlatformCaps {
+            device_conditions: false,
+            ..Default::default()
+        }
     }
 }
 
@@ -2735,7 +3242,9 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
             continue;
         }
         for t in &s.triggers {
-            let Ok(sc) = t.parse::<Shortcut>() else { continue };
+            let Ok(sc) = t.parse::<Shortcut>() else {
+                continue;
+            };
             for (combo, desc) in SYSTEM_SHORTCUTS {
                 if let Ok(sys) = combo.parse::<Shortcut>() {
                     if sys == sc {
@@ -2869,7 +3378,11 @@ fn import_config(
         apply_hints_visible(&app, hints_after);
     }
     Ok(ImportOutcome {
-        mode: if replace { "replace".into() } else { "merge".into() },
+        mode: if replace {
+            "replace".into()
+        } else {
+            "merge".into()
+        },
         added,
         notes,
         backup: backup.map(|p| p.display().to_string()),
@@ -2982,6 +3495,7 @@ fn run_entry(
         app,
         state.results.clone(),
         state.unread.clone(),
+        state.runs.clone(),
         actions,
         "手动执行".into(),
         name,
@@ -3034,7 +3548,14 @@ fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String
 #[tauri::command]
 fn get_command_results(state: tauri::State<'_, KadaState>) -> Vec<CommandResult> {
     // 倒序产出，免去先克隆整表再 reverse 的那一趟。
-    state.results.lock().unwrap().iter().rev().cloned().collect()
+    state
+        .results
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .cloned()
+        .collect()
 }
 
 /// 当前是否有未读命令结果（红点）。
@@ -3056,12 +3577,19 @@ fn mark_results_read(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) 
     set_tray_unread(&app, false);
 }
 
-/// 清空消息中心（同时熄灭红点）。
+/// 清空消息中心（命令结果与执行记录一起清，同时熄灭红点）。
 #[tauri::command]
 fn clear_command_results(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
     state.results.lock().unwrap().clear();
+    state.runs.lock().unwrap().clear();
     state.unread.store(false, Ordering::Relaxed);
     set_tray_unread(&app, false);
+}
+
+/// 读取全部执行记录（最新在前）。界面的「执行记录」标签页拿它铺列表。
+#[tauri::command]
+fn get_run_records(state: tauri::State<'_, KadaState>) -> Vec<RunRecord> {
+    state.runs.lock().unwrap().clone()
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -3087,6 +3615,7 @@ pub fn run() {
             start_record,
             stop_record,
             get_command_results,
+            get_run_records,
             get_unread,
             get_toast_payload,
             get_status_payload,
@@ -3109,22 +3638,26 @@ pub fn run() {
 
             // 配置读取走 config_io：原子写 + 损坏自愈。解析失败不静默清空——原文件留档，
             // 能从 .bak 恢复就恢复，经过作为告警在托盘建好后推给消息中心（见文件末尾）。
-            let config_io::LoadOutcome { config: loaded, warnings: load_warnings } =
-                config_io::load(&file);
+            let config_io::LoadOutcome {
+                config: loaded,
+                warnings: load_warnings,
+            } = config_io::load(&file);
             let config = Arc::new(RwLock::new(loaded));
             let paused_until = Arc::new(AtomicU64::new(0));
             let rec = Arc::new(Mutex::new(None::<Recorder>));
             let results: Arc<Mutex<Vec<CommandResult>>> = Arc::new(Mutex::new(Vec::new()));
             let unread = Arc::new(AtomicBool::new(false));
+            let runs: Arc<Mutex<Vec<RunRecord>>> = Arc::new(Mutex::new(Vec::new()));
             // 外部修改监听的基线：此刻磁盘上的内容就是刚读进来的这一份。
             let cfg_watch = Arc::new(Mutex::new(config_watch::ConfigWatcher::new(&file)));
             // 「配置被整份换掉」的旗标：监听线程置位，状态机定时器线程消费（见 spawn_engine_ticker）。
             let cfg_stale = Arc::new(AtomicBool::new(false));
 
             // 托盘图标：基础 + 带红点（未读态）。转为 owned 以存入 state。
-            let base_icon: Option<tauri::image::Image<'static>> = app
-                .default_window_icon()
-                .map(|img| tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height()));
+            let base_icon: Option<tauri::image::Image<'static>> =
+                app.default_window_icon().map(|img| {
+                    tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height())
+                });
             let unread_icon = base_icon.as_ref().map(with_red_dot);
 
             // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
@@ -3144,96 +3677,105 @@ pub fn run() {
                 let app_handle = app.handle().clone();
                 let results = results.clone();
                 let unread = unread.clone();
+                let runs = runs.clone();
                 let engine = engine.clone();
                 let mut last_tap: Option<Instant> = None;
                 input::start(move |ev: input::KeyEvent| {
-                        let ev = to_ev(&ev);
-                        // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
-                        {
-                            let mut g = r.lock().unwrap();
-                            if let Some(recorder) = g.as_mut() {
-                                recorder.push(&ev);
-                                return input::HookAction::Allow;
-                            }
-                        }
-                        // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
-                        // 判定留在回调里（只读配置 + 比时间，很快），**建窗口丢后台线程**：
-                        // 冷启动时 WebView 要几百毫秒，同步建会把钩子回调拖过系统超时线、
-                        // 钩子被摘掉，之后整个应用静默失效（开机自启时主窗口还没预建，
-                        // 首次双击唤醒正好撞在这条路上）。
-                        if wake_double_tap(&cfg, &mut last_tap, &ev) {
-                            let app = app_handle.clone();
-                            std::thread::spawn(move || show_main_window(&app));
-                        }
-                        let guard = cfg.read().unwrap();
-                        if pause_active(&pause) || guard.settings.paused {
+                    let ev = to_ev(&ev);
+                    // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
+                    {
+                        let mut g = r.lock().unwrap();
+                        if let Some(recorder) = g.as_mut() {
+                            recorder.push(&ev);
                             return input::HookAction::Allow;
                         }
-                        // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
-                        // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
-                        let action_timeout = guard.settings.action_timeout_ms;
-                        let text_mode = guard.settings.text_inject_mode;
-                        // 触发侧 `when` 门控上下文（7.2-㊶）：前台窗口**惰性查询**——只有真的
-                        // 命中带 `when` 的条目时才查（macOS 的前台查询走 AX 调用，不该让每次
-                        // 按键都买单）；设备在该事件上同步取（Windows / macOS 恒 None）。
-                        let device = input::current_device();
-                        let fetch_frontmost = || input::frontmost_context();
-                        let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());
-                        let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
+                    }
+                    // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
+                    // 判定留在回调里（只读配置 + 比时间，很快），**建窗口丢后台线程**：
+                    // 冷启动时 WebView 要几百毫秒，同步建会把钩子回调拖过系统超时线、
+                    // 钩子被摘掉，之后整个应用静默失效（开机自启时主窗口还没预建，
+                    // 首次双击唤醒正好撞在这条路上）。
+                    if wake_double_tap(&cfg, &mut last_tap, &ev) {
+                        let app = app_handle.clone();
+                        std::thread::spawn(move || show_main_window(&app));
+                    }
+                    let guard = cfg.read().unwrap();
+                    if pause_active(&pause) || guard.settings.paused {
+                        return input::HookAction::Allow;
+                    }
+                    // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
+                    // 状态机没凑成快捷键时会自行回放被吞的键，不会让按键变哑。
+                    let action_timeout = guard.settings.action_timeout_ms;
+                    let text_mode = guard.settings.text_inject_mode;
+                    // 触发侧 `when` 门控上下文（7.2-㊶）：前台窗口**惰性查询**——只有真的
+                    // 命中带 `when` 的条目时才查（macOS 的前台查询走 AX 调用，不该让每次
+                    // 按键都买单）；设备在该事件上同步取（Windows / macOS 恒 None）。
+                    let device = input::current_device();
+                    let fetch_frontmost = || input::frontmost_context();
+                    let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());
+                    let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
+                        fire(
+                            app_handle.clone(),
+                            results.clone(),
+                            unread.clone(),
+                            runs.clone(),
+                            actions,
+                            trigger,
+                            name,
+                            action_timeout,
+                            text_mode,
+                        );
+                    };
+                    let Some(ev) = engine.lock().unwrap().step(
+                        &ev,
+                        &guard,
+                        &when_ctx,
+                        &mut SimulatedInject,
+                        &mut fire_hit,
+                    ) else {
+                        return input::HookAction::Block;
+                    };
+                    let layer = engine.lock().unwrap().active_layer().map(str::to_string);
+                    match decide(&ev, &guard, layer.as_deref(), &when_ctx) {
+                        Outcome::Shortcut {
+                            actions,
+                            trigger,
+                            name,
+                        } => {
                             fire(
                                 app_handle.clone(),
                                 results.clone(),
                                 unread.clone(),
+                                runs.clone(),
                                 actions,
                                 trigger,
                                 name,
                                 action_timeout,
                                 text_mode,
                             );
-                        };
-                        let Some(ev) = engine
-                            .lock()
-                            .unwrap()
-                            .step(&ev, &guard, &when_ctx, &mut SimulatedInject, &mut fire_hit)
-                        else {
-                            return input::HookAction::Block;
-                        };
-                        let layer = engine.lock().unwrap().active_layer().map(str::to_string);
-                        match decide(&ev, &guard, layer.as_deref(), &when_ctx) {
-                            Outcome::Shortcut { actions, trigger, name } => {
-                                fire(
-                                    app_handle.clone(),
-                                    results.clone(),
-                                    unread.clone(),
-                                    actions,
-                                    trigger,
-                                    name,
-                                    action_timeout,
-                                    text_mode,
-                                );
-                                input::HookAction::Block
-                            }
-                            Outcome::Replace(to) => input::HookAction::Replace(to),
-                            Outcome::Pass => {
-                                // 命中文本扩展：后缀键（空格/回车/Tab）吞掉，改由后台线程
-                                // 回删触发词 + 注入替换文本 + 补回后缀（注入要上百毫秒，绝不能
-                                // 跑在钩子回调里——回调超时会被系统摘掉钩子，之后全部功能失效）。
-                                match engine.lock().unwrap().hotstring(&ev, &guard.expansions) {
-                                    Some(hit) => {
-                                        spawn_hotstring(
-                                            app_handle.clone(),
-                                            results.clone(),
-                                            unread.clone(),
-                                            hit,
-                                            text_mode,
-                                        );
-                                        input::HookAction::Block
-                                    }
-                                    None => input::HookAction::Allow,
+                            input::HookAction::Block
+                        }
+                        Outcome::Replace(to) => input::HookAction::Replace(to),
+                        Outcome::Pass => {
+                            // 命中文本扩展：后缀键（空格/回车/Tab）吞掉，改由后台线程
+                            // 回删触发词 + 注入替换文本 + 补回后缀（注入要上百毫秒，绝不能
+                            // 跑在钩子回调里——回调超时会被系统摘掉钩子，之后全部功能失效）。
+                            match engine.lock().unwrap().hotstring(&ev, &guard.expansions) {
+                                Some(hit) => {
+                                    spawn_hotstring(
+                                        app_handle.clone(),
+                                        results.clone(),
+                                        unread.clone(),
+                                        hit,
+                                        text_mode,
+                                    );
+                                    input::HookAction::Block
                                 }
+                                None => input::HookAction::Allow,
                             }
                         }
-                    })
+                    }
+                })
             };
 
             // 起不来的处置分两种，因为「起不来」在平台的含义不同：
@@ -3246,21 +3788,28 @@ pub fn run() {
             //   macOS 的 `start` 已顺手弹过系统授权框）。改为照常启动 + 把指引记进消息中心
             //   （托盘建好后统一推，见下面 startup_warnings），修好权限重启即可。
             #[cfg(windows)]
-            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) = (
+            let (hook_handle, hook_warning): (
+                Option<input::HookHandle>,
+                Option<(String, String)>,
+            ) = (
                 Some(hook_start.map_err(|e: std::io::Error| e.to_string())?),
                 None,
             );
 
             #[cfg(any(target_os = "linux", target_os = "macos"))]
-            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) =
-                match hook_start {
-                    Ok(h) => (Some(h), None),
-                    Err(e) => (None, Some(("输入层".to_string(), e.to_string()))),
-                };
+            let (hook_handle, hook_warning): (
+                Option<input::HookHandle>,
+                Option<(String, String)>,
+            ) = match hook_start {
+                Ok(h) => (Some(h), None),
+                Err(e) => (None, Some(("输入层".to_string(), e.to_string()))),
+            };
 
             #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
-            let (hook_handle, hook_warning): (Option<input::HookHandle>, Option<(String, String)>) =
-                (None, None);
+            let (hook_handle, hook_warning): (
+                Option<input::HookHandle>,
+                Option<(String, String)>,
+            ) = (None, None);
 
             // 定时推进状态机（键序列超时回放 / 连击等待窗提交，见 spawn_engine_ticker），
             // 顺带把输入状态可视指示推给界面（托盘提示 + 悬浮指示窗，见规划 7.3-⑬）。
@@ -3284,6 +3833,7 @@ pub fn run() {
                 _hook: Mutex::new(hook_handle),
                 results,
                 unread,
+                runs,
                 tray: Mutex::new(None),
                 tray_base: base_icon.clone(),
                 tray_unread: unread_icon,
@@ -3297,7 +3847,9 @@ pub fn run() {
             // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
             spawn_config_watcher(app.handle().clone());
             // 更新状态单独托管：设置页/托盘都要读，与配置无关（不进 config.json）。
-            app.manage(update::UpdateState::new(app.package_info().version.to_string()));
+            app.manage(update::UpdateState::new(
+                app.package_info().version.to_string(),
+            ));
 
             // 确保开机自启注册项带 `--autostart` 参数（旧版注册的是裸 exe 路径，无法区分启动来源）。
             let autostart_enabled = app
@@ -3349,8 +3901,10 @@ pub fn run() {
             let reload_i = MenuItem::with_id(app, "reload", "重载配置", true, None::<&str>)?;
             let update_i = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu =
-                Menu::with_items(app, &[&show_i, &pause_i, &hints_i, &reload_i, &update_i, &quit_i])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_i, &pause_i, &hints_i, &reload_i, &update_i, &quit_i],
+            )?;
             let tray_icon = TrayIconBuilder::new()
                 .icon(base_icon.unwrap())
                 // 托盘提示的初值；有层 / 修饰键生效时由 publish_status 换成当前状态摘要。
@@ -3381,7 +3935,11 @@ pub fn run() {
                 })
                 .on_tray_icon_event(|tray, event| {
                     // 双击托盘图标（左键）唤起主窗口。
-                    if let TrayIconEvent::DoubleClick { button: MouseButton::Left, .. } = event {
+                    if let TrayIconEvent::DoubleClick {
+                        button: MouseButton::Left,
+                        ..
+                    } = event
+                    {
                         show_main_window(tray.app_handle());
                     }
                 })
@@ -3438,6 +3996,7 @@ pub fn run() {
                             exit_code: None,
                             show_output: false,
                             time: time.clone(),
+                            run_id: None,
                         },
                     );
                 }

@@ -299,6 +299,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   user-select: none;
+  position: relative; /* 层标记（左下角三角 / emoji）的定位锚点 */
 }
 
 /* 行首类型徽标：三类条目同处一列，靠它一眼分辨（Postman 的 GET/POST/DEL 同理）。 */
@@ -391,6 +392,27 @@ body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* 条目所属层的标记：贴在行框左下角，颜色画三角、emoji 直接摆字符（不挡鼠标）。 */
+.row-layer-mark {
+  position: absolute;
+  left: 1px;
+  bottom: 0;
+  pointer-events: none;
+}
+
+.row-layer-mark.mark-color {
+  width: 8px;
+  height: 8px;
+  background: var(--mark);
+  clip-path: polygon(0 100%, 100% 100%, 0 0);
+}
+
+.row-layer-mark.mark-emoji {
+  font-size: 10px;
+  line-height: 1;
+  left: 0;
 }
 
 .toggle {
@@ -1064,6 +1086,35 @@ body {
 .help-body .qa-a {
   color: var(--muted);
   margin-top: 2px;
+}
+
+/* 帮助页落款：作者 + GitHub 仓库 */
+.help-foot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 32px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.help-foot a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.help-foot a:hover {
+  color: var(--text);
+}
+
+.help-foot .gh-ico {
+  display: block;
 }
 
 .editor-row {
@@ -1873,6 +1924,85 @@ button:disabled:hover {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  cursor: text;
+}
+
+/* 层行控件全常显：删除按钮别再只靠 hover 出现（.layer-row 不是 .row/.folder-row，
+   那条 hover 规则罩不到，等于永远不可见 = 删不了层）。 */
+.layer-swatch {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+}
+
+.layer-swatch.mark-color {
+  background: var(--mark);
+  border-color: var(--mark);
+}
+
+.layer-swatch.mark-emoji {
+  background: none;
+  border-color: transparent;
+}
+
+.layer-name-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: var(--fs-md);
+  font-family: inherit;
+}
+
+.layer-name-input:focus {
+  outline: none;
+}
+
+.layer-color {
+  flex-shrink: 0;
+  height: 24px;
+  padding: 0 4px;
+  font-size: var(--fs-sm);
+}
+
+.layer-emoji {
+  flex-shrink: 0;
+  width: 46px;
+  height: 24px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 4px;
+  font-size: var(--fs-md);
+  font-family: inherit;
+  text-align: center;
+}
+
+.layer-emoji:focus,
+.layer-color:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.layer-del {
+  opacity: 0.55;
+}
+
+.layer-del:hover {
+  opacity: 1;
 }
 
 /* ---------- 提示 / 冲突 / 通用 ---------- */
@@ -2477,6 +2607,283 @@ pre.msg-v {
   overflow-y: auto;
 }
 
+/* ---------- 执行记录：卡片头 / 时间线 / 流水线 ---------- */
+
+/* 「停止执行 / 清空」下放到标签栏右端，与标签同一行。 */
+.msg-view-tabs .head-actions {
+  margin-left: auto;
+  padding-bottom: 4px;
+}
+
+.msg-run-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.msg-run-id {
+  min-width: 0;
+}
+
+.msg-run-title {
+  display: block;
+  font-size: var(--fs-lg);
+  color: var(--text);
+  word-break: break-all;
+}
+
+.msg-run-badges {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+
+.msg-run-badge {
+  padding: 1px 8px;
+  border-radius: 9px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+/* 结论色：状态徽标、时间线块、流水线块共用一套（st-ok / st-error / st-abort / st-running）。 */
+.st-ok {
+  border-color: #2f9e63;
+}
+.st-error {
+  border-color: #e0574f;
+}
+.st-abort {
+  border-color: #c8a13a;
+}
+.st-running {
+  border-color: var(--accent);
+}
+
+.msg-run-badge.st-ok {
+  color: #4cc38a;
+}
+.msg-run-badge.st-error {
+  color: #f0736b;
+}
+.msg-run-badge.st-abort {
+  color: #e0bb5c;
+}
+.msg-run-badge.st-running {
+  color: var(--accent);
+}
+
+.msg-run-modes {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.msg-run-mode {
+  height: var(--ctl-h);
+  padding: 0 12px;
+  font-size: var(--fs-sm);
+  color: var(--muted);
+}
+
+.msg-run-mode.active {
+  color: #fff;
+  background: var(--accent-dim);
+  border-color: var(--accent);
+}
+
+/* ---- 时间线：横轴是时间，一行一泳道，块按真实起止时间定位 ---- */
+.tl {
+  padding-top: 2px;
+}
+
+.tl-ruler {
+  position: relative;
+  height: 16px;
+  margin: 0 0 4px;
+}
+
+.tl-tick {
+  position: absolute;
+  transform: translateX(-50%);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+}
+
+.tl-tick::before {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 13px;
+  width: 1px;
+  height: 5px;
+  background: var(--line);
+}
+
+.tl-rows {
+  position: relative;
+  border-top: 1px solid var(--line);
+}
+
+.tl-block {
+  position: absolute;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  min-width: 26px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+}
+
+.tl-block:hover {
+  background: var(--hover-bg);
+}
+
+.tl-block.sel {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+
+.tl-block-ico {
+  flex-shrink: 0;
+}
+
+.tl-block-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tl-block-ms {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+}
+
+.tl-empty {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  padding: 12px 0;
+}
+
+/* ---- 流水线：自上而下，条件 / 并行分泳道（左线 + 肘形连接）---- */
+.pipe-node {
+  position: relative;
+}
+
+.pipe-block {
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: var(--panel);
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.pipe-block:hover {
+  background: var(--hover-bg);
+}
+
+.pipe-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-sm);
+  min-width: 0;
+}
+
+.pipe-title {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pipe-ms {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+}
+
+.pipe-flag {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.pipe-detail {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+}
+
+.pipe-rail {
+  margin-left: 10px;
+  padding-left: 16px;
+  border-left: 1px solid var(--line);
+  margin-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pipe-lane {
+  position: relative;
+}
+
+.pipe-lane::before {
+  content: "";
+  position: absolute;
+  left: -16px;
+  top: 14px;
+  width: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.pipe-lane-label {
+  position: absolute;
+  right: 100%;
+  margin-right: 8px;
+  top: 2px;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+/* 时间线上选中动作后，详情显示在时间线下方。 */
+.msg-step-detail {
+  margin-top: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px 14px;
+}
+
+.msg-step-title {
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  margin-bottom: 8px;
+}
+
+.msg-step-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .action-check {
   display: flex;
   align-items: center;
@@ -2609,7 +3016,8 @@ pre.msg-v {
   box-shadow: inset 0 3px 0 var(--accent);
 }
 
-/* 详情页头部的一组按钮（编辑页的「执行/删除/撤销/保存/关闭」、消息页的「停止执行 / 清空」）。 */
+/* 详情页头部的一组按钮（编辑页的「执行/删除/撤销/保存/关闭」、消息页标签栏右侧的
+   「停止执行 / 清空」）。 */
 .head-actions {
   display: flex;
   align-items: center;
