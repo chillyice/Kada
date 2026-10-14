@@ -4531,13 +4531,14 @@ function layerById(id: string | null | undefined): Layer | undefined {
 }
 
 // 层标记贴在组合键 chip 的左下角（绝对定位，不占组合键的字符位）：颜色是与 chip 融为一体的角标——
-// 摆在 chip 内部左下角、圆角跟 chip 一致，看着像 chip 自己染了色；emoji 像贴纸贴在左下角上——骑跨
+// chip 内部左下角一枚直角被修圆的三角（直角落在角上、收在 9px 内，够不着从 6px 起排的组合键字符，
+// 所以有没有标记的行字符都从同一处起），看着像 chip 自己染了色；emoji 像贴纸贴在左下角上——骑跨
 // 在角上，既不完全在外也不完全在内。两者都 pointer-events:none，不挡点击。
 function appendLayerMark(trig: HTMLElement, layerId: string | null | undefined) {
   const mark = layerById(layerId)?.mark;
   if (!mark) return;
   const color = isLayerColor(mark);
-  trig.classList.add(color ? "mark-shape-color" : "mark-shape-emoji");
+  if (!color) trig.classList.add("mark-shape-emoji");
   const s = el("span", `row-layer-mark ${color ? "mark-color" : "mark-emoji"}`);
   if (color) s.style.setProperty("--mark", mark);
   else s.textContent = mark;
@@ -5182,6 +5183,19 @@ const RUN_STATUS_LABEL: Record<string, string> = {
   abort: "已中止",
 };
 
+// 记录列表里一眼要分得清的状态：跑起来 = 执行中；一个动作都没落 = 未执行
+//（记录先落、动作还没开跑，或修饰键没松开整条被跳过）；跑完按结论分执行完成 / 有失败 / 已中止。
+// class 用 is-*（别用 st-*：那套是给带边框的元素设 border-color 的，挂到 tab 上会给整格染边框）。
+function runState(run: RunRecord): { cls: string; label: string } {
+  if (run.status === "running") {
+    return run.steps.length ? { cls: "is-running", label: "执行中" } : { cls: "is-idle", label: "未执行" };
+  }
+  if (!run.steps.length) return { cls: "is-idle", label: "未执行" };
+  if (run.status === "ok") return { cls: "is-ok", label: "执行完成" };
+  if (run.status === "error") return { cls: "is-error", label: "有失败" };
+  return { cls: "is-abort", label: "已中止" };
+}
+
 // 记录 tab 的一行：优先用名称，否则「触发键 · 时刻」。
 function entryTitle(run: RunRecord): string {
   const when = run.time.slice(11);
@@ -5450,12 +5464,12 @@ function renderMessages() {
   msgIndex = sel;
   msgSelId = entries[sel].id;
   entries.forEach((e, i) => {
-    const t = el(
-      "button",
-      "msg-tab" + (i === msgIndex ? " active" : "") + (e.run.status === "running" ? " running" : ""),
-      e.label,
-    );
-    t.title = e.run.steps.some((s) => s.status === "error") ? "有失败的动作" : e.label;
+    const st = runState(e.run);
+    const t = el("button", `msg-tab ${st.cls}` + (i === msgIndex ? " active" : ""));
+    const state = el("span", "msg-tab-state");
+    state.append(el("i", "msg-tab-dot"), st.label);
+    t.append(state, el("span", "msg-tab-title", e.label));
+    t.title = `${st.label} · ${e.label}`;
     t.addEventListener("click", () => {
       msgIndex = i;
       msgSelId = e.id;

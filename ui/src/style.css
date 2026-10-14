@@ -410,13 +410,15 @@ body {
   pointer-events: none;
 }
 
-/* 颜色：chip 内部左下角的一小块角标，圆角（3px = chip 的 4px 圆角减掉 1px 边框）与 chip 对齐，
+/* 颜色：chip 内部左下角的一枚三角角标——直角正好落在 chip 的左下角、两条直角边贴着 chip 的左边与下边，
+   斜边朝右上。只有那个直角被修成圆角（3px = chip 的 4px 圆角减掉它自己 1px 边框，与 chip 同心），
    看着就是 chip 左下角自己染了色，与 chip 融为一体。 */
 .row-layer-mark.mark-color {
   width: 9px;
   height: 9px;
   background: var(--mark);
-  border-bottom-left-radius: 3px;
+  /* 直角在左下：左上 (0,0) → 沿左边下到 (0,6) → 圆角切到 (3,9) → 沿下边右到 (9,9) → 回到 (0,0)。 */
+  clip-path: path("M 0 0 L 0 6 Q 0 9 3 9 L 9 9 Z");
 }
 
 /* emoji：骑跨在 chip 左下角上的「贴纸」——中心压在角上，一半在 chip 内侧、一半探到外侧。
@@ -428,14 +430,11 @@ body {
   filter: drop-shadow(0 0 1px var(--float-bg)) drop-shadow(0 0 1px var(--float-bg));
 }
 
-/* 标记绝对定位后不再占字符位，组合键字符得自己让开一截：颜色小块贴着 chip 内左边缘（整块让），
-   emoji 贴纸只有右半边压进 chip 内部（让开半张即可），所以颜色反而要让得更多。 */
+/* 标记绝对定位、不占字符位，但三角角标与 emoji 贴纸对字符的侵占程度不同：颜色三角在 9px 内就收在
+   chip 左下角（组合键字符从 6px 起，够不着），所以不动内边距——有没有层标记的行，组合键字符都从同一
+   处起排；emoji 贴纸要把右半边压进 chip 里，得让开半张。 */
 .row-trigger.mark-shape-emoji {
   padding-left: 11px;
-}
-
-.row-trigger.mark-shape-color {
-  padding-left: 13px;
 }
 
 /* 开关：全站布尔项统一用它（设置页整行右端 / 命令动作的「弹窗显示结果」）。原先是一个 16px
@@ -2719,19 +2718,68 @@ body:has(.hints-panel) {
   height: 0;
 }
 
+/* 每格固定一档宽度：任务名再长也只占这一格（标题一行、超出省略、悬停看全称），
+   标签条不会被某一条记录撑得老宽。两行：上状态、下「名称 · 时刻」。 */
 .msg-tab {
   flex-shrink: 0;
-  height: var(--ctl-h);
-  padding: 0 10px;
-  line-height: 1;
+  width: 172px;
+  height: auto;
+  min-height: var(--ctl-h);
+  padding: 4px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  line-height: 1.3;
   font-size: var(--fs-sm);
   font-family: Consolas, "Microsoft YaHei UI", monospace;
   white-space: nowrap;
+  overflow: hidden;
   color: var(--muted);
 }
 
+.msg-tab-state {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: var(--fs-xs);
+  font-family: "Microsoft YaHei UI", system-ui, sans-serif;
+}
+
+/* 状态色落在圆点上（图形只要 3:1 就够），文字保持主题正文色——同一行彩色小字
+   在深浅两套底色上总有一套看不清。 */
+.msg-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted);
+  flex-shrink: 0;
+}
+
+.msg-tab.is-running .msg-tab-dot {
+  background: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.msg-tab.is-ok .msg-tab-dot {
+  background: #2f9e63;
+}
+.msg-tab.is-error .msg-tab-dot {
+  background: #e0574f;
+}
+.msg-tab.is-abort .msg-tab-dot {
+  /* 比 .st-abort 的 #c8a13a 深一档：圆点要在浅色面板上也够 3:1。 */
+  background: #a8801f;
+}
+
+.msg-tab-title {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .msg-tab.active {
-  color: #fff;
+  /* 文字不能写死 #fff：浅色主题的 --accent-dim 是淡粉底，白字糊成一片看不清。 */
+  color: var(--text);
   background: var(--accent-dim);
   border-color: var(--accent);
 }
@@ -2864,7 +2912,7 @@ pre.msg-v {
 }
 
 .msg-run-mode.active {
-  color: #fff;
+  color: var(--text); /* 同 .msg-tab.active：#fff 糊在浅色主题的淡粉底上 */
   background: var(--accent-dim);
   border-color: var(--accent);
 }

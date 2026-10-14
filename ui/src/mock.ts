@@ -381,7 +381,8 @@ case "run_entry":
     demo.steps.forEach((s, i) => {
       setTimeout(() => {
         run.duration_ms = s.end_ms;
-        run.status = demo.status;
+        // 收尾状态到最后一步才落，中途一直是 running——与后端 fire 的节奏一致。
+        if (i === demo.steps.length - 1) run.status = demo.status;
         run.steps.push(structuredClone(s));
         push(run);
       }, 300 * (i + 1));
