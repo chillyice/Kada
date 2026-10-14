@@ -57,6 +57,12 @@
   color: color-mix(in srgb, var(--type-color, var(--muted)) 70%, var(--text));
 }
 
+/* 同理：列表行里那格「组合键 / 原键 / 触发词」在深色底上用 --accent 是 5.2:1，换到浅色底只剩
+   3.7:1（11px 等宽小字，AA 要 4.5）——往正文色混同样的 30%，保住橙色系的同时提到 ~5.7:1。 */
+[data-theme="light"] .row-trigger {
+  color: color-mix(in srgb, var(--accent) 70%, var(--text));
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -808,9 +814,10 @@ body {
   cursor: pointer;
 }
 
+/* 悬停底色同样是 --accent-dim：字色不能写死白（同 .chip，浅色主题下会白压淡粉） */
 .mode-item:hover {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--text);
 }
 
 .mode-item.active {
@@ -922,7 +929,7 @@ body {
 
 .key-tool:hover {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--text); /* 同上：淡粉底上不能用白字 */
 }
 
 .key-tool:disabled {
@@ -959,7 +966,7 @@ body {
 
 .key-item:hover {
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--text); /* 同上：淡粉底上不能用白字 */
 }
 
 /* 标题行右侧的图标按钮：执行 / 删除 / 撤销 / 保存 / 关闭（+ 未保存标记）。
@@ -1204,12 +1211,14 @@ body {
   gap: 8px;
 }
 
+/* 触发键胶囊的底色是 --accent-dim（深色主题的暗红 / 浅色主题的淡粉），**字色不能用写死的白**：
+   浅色主题下白字压淡粉只有 1.29:1，等于看不见。走 --text 两种主题都够（深色 ~9:1 / 浅色 ~13:1）。 */
 .chip {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   background: var(--accent-dim);
-  color: #fff;
+  color: var(--text);
   border-radius: 6px;
   padding: 3px 10px;
   font-family: Consolas, monospace;
