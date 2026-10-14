@@ -3,7 +3,7 @@
 > 本文件供 ZCode 跨会话加载：**只留规则 + 导航索引**，目标 **≤20KB** 保证完整注入上下文（超出会被截断且尾部最先丢失）。
 > 完整功能需求见 `docs/需求设计说明书.md`（活文档，未实现规划在 §7）；实现历史归档见 `docs/变更归档.md`（新归档只追加到该文件，不写回本文件）。
 
-> **⚠ Git 规定（必须遵守）**：非人工指令，不得主动提交代码（`git commit`/`git add -A`/`git push` 一律禁止）。`git add` 只能指定具体文件路径，禁止 `git add -A`/`git add .`。归档文档走 `/archive` 技能（归档推送）。
+> **⚠ Git 规定（必须遵守）**：非人工指令，不得主动提交代码（`git commit`/`git add -A`/`git push` 一律禁止）。`git add` 只能指定具体文件路径，禁止 `git add -A`/`git add .`。归档文档走 `/archive` 技能（归档推送）。**例外（用户已授权）：归档自动提交**——每完成一次修改，归档流程写完全部文档即自动 `git commit` 并 `git push`（该技能即「归档推送」，不必再等指令）；`git add` 仍只给具体路径。
 
 > **⚠ 编码/路径警示（遵守以防误写）**：工作目录为本仓库根目录。含中文的源码/配置/文档一律走本工具的 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content`/`Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo/npm 构建与运行 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
 
