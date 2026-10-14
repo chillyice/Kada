@@ -1247,11 +1247,10 @@ fn launch_program(program: &str, args: &[String]) -> Result<(), String> {
 
 /// 用系统默认浏览器打开网址。Windows 走 `explorer`（直接以参数传入，不经 shell，
 /// 避免 URL 里的 `&`/`?` 等被 cmd 二次解析）；macOS 走 `open`；Linux 走 `xdg-open`。
-#[cfg(all(
-    any(target_os = "windows", target_os = "linux", target_os = "macos"),
-    feature = "automation"
-))]
-fn open_url(url: &str) -> Result<(), String> {
+///
+/// `pub` 且不随 `automation` 门控：桌面壳拦到界面外链（`<a target="_blank">`）时也走这里，
+/// 基础版同样要能打开外链——平台分叉只留这一份。
+pub fn open_url(url: &str) -> Result<(), String> {
     let res = if cfg!(target_os = "windows") {
         std::process::Command::new("explorer").arg(url).spawn()
     } else if cfg!(target_os = "macos") {

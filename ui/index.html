@@ -517,7 +517,8 @@
             <p class="qa-q">变量名有什么限制？</p>
             <p class="qa-a">任意非空字符串即可，别含 <code>{}</code>、<code>.</code>、空白；建议用简单英文/拼音（如 <code>drive</code>、<code>f</code>）。</p>
 
-            <!-- ponytail: target=_blank 够用（WebView2 / 浏览器默认交给系统浏览器）。Linux/macOS 上点不开再上 tauri-plugin-opener。 -->
+            <!-- 外链靠 `target=_blank`：壳层主窗口的 on_new_window 会把它拦给系统浏览器
+                 （wry 默认把新窗口请求吞掉，点了没反应）；纯浏览器演示模式本就是新标签页。 -->
             <footer class="help-foot">
               <span>作者：<strong>chillyice</strong></span>
               <a href="https://github.com/chillyice/Kada" target="_blank" rel="noreferrer" title="GitHub 仓库">

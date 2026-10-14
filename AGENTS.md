@@ -76,7 +76,8 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 - **输入层起不来的处置**：Windows 失败退出（异常）；macOS / Linux（权限没配好）**照常启动**，`start` 的错误串（带可照抄指引）经消息中心推给用户——退出应用用户就连设置页都进不去。
 - **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定（读配置、比时间、状态机）——同步建 WebView 会拖过系统约 300ms 的超时线，钩子被摘掉后全部功能静默失效（机制见 `docs/架构设计.md` §3.6）。判定与副作用分开写：判定用不持有 `AppHandle` 的纯函数。
 - **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**：`focused(false)` 只保证**首次** show 不抢焦点，而这些窗会反复 show；一旦能被激活就成了 `GetForegroundWindow`——前台条件全读错，`ResetWatch` 还会误判「前台切换」→ 复位输入状态、踢掉按住的 momentary 层。**`hints`（快捷键提示框，7.1-㊳）是唯一可交互浮窗——默认不能 `set_ignore_cursor_events`**（靠鼠标事件，`WS_EX_NOACTIVATE` 只挡激活不挡鼠标消息），且 `zoom_hotkeys_enabled(false)` 防 Ctrl+wheel 被当成浏览器缩放；**一律 `shadow(false)`**（投影交 CSS，原因见 `变更归档.md` V0.39 条）。唯一的例外是它自己那条**悬停让位**巡检线程（`spawn_hints_hover_watch`，见下）：常态可交互，光标进框才临时 `set_ignore_cursor_events(true)` 让位。
-- **提示框悬停让位（`spawn_hints_hover_watch`，机制见 `架构设计.md` §3.22）**：光标进框即穿透 + 变淡，停满 2s 恢复可交互直到挪出边界，下次再进来照样让位。**穿透之后收不到任何鼠标事件，只能轮询全局光标位置**（120ms，与配置监听同一取舍），相位判定是纯函数 `hints_hover_step`（可单测）。两条硬约束：**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek` 让界面变淡。
+- **界面外链必须由壳层接住（主窗口 `on_new_window`）**：WebView 的「新窗口请求」（`<a target="_blank">` / `window.open`）**没人接就被 wry 直接吞掉**（WebView2 里 `SetHandled(true)` 后什么都不做），界面上的链接点了毫无反应。处置写在 `show_main_window` 建窗链上：一律 `Deny`（不在应用内再开窗口），只把 http(s) 交给 `kada_actions::open_url` 用系统浏览器打开（`external_link_to_open` 过滤，见 `需求设计说明书.md` §5）。**新增界面外链 / 改建窗代码时别把这段弄丢**；外链的真机验收见 `docs/人工验证清单.md` §21。
+- **提示框悬停让位（`spawn_hints_hover_watch`，机制见 `架构设计.md` §3.21）**：光标进框即穿透 + 变淡，停满 2s 恢复可交互直到挪出边界，下次再进来照样让位。三条硬约束：**穿透之后收不到任何鼠标事件，只能轮询全局光标位置**（120ms，与配置监听同一取舍），相位判定是纯函数 `hints_hover_step`（可单测）；**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek` 让界面变淡。
 - **Linux**（`kada-hook::linux`，细节见 §4.2）：evdev + uinput，`EVIOCGRAB` 抓键盘与**真鼠标**（触摸板/指点杆**不抓**），`/dev/uinput` 建键鼠合一虚拟设备（X11 / Wayland 通用）；鼠标键 `BTN_*`↔中键/侧键与键盘同走状态机，移动/滚轮原样转发。权限 = `input` 组 + udev 放行 uinput（起不来错误分诊见 §4.2）。**设备拔出就地复位三张表**并递增 `reinstall_count()`（壳层 `ResetWatch` 轮询接通）；热插拔仍无（重启应用）。修饰键按事件流维护（`MODS_DOWN`）、自动重复 `value==2`。**改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`（evdev 纯 Rust，本机可交叉类型检查）——**但这条查不到 Tauri 壳**（`-p kada` 要 gtk/webkit，本机交叉不了），壳的 Linux / macOS 分支只有 CI 或容器构建（`scripts/linux-package/`）拦得住：V0.61 就栽在壳里 `input` 模块的 `pub use` 与同名本地函数重定义（E0255）上，Windows 不走那段、静默红了 9 天。
 - **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V` / macOS 的 ⌘V（中文最稳）；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放——否则仍按住的触发修饰键会把注入污染成 `Ctrl+Alt+V`（Linux 空实现；macOS 投递到 HID 位置不需要 root）。
 - **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、走 `Inject` trait 假注入可单测，`lib.rs` 只剩接线）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick` 落地超时回放，事件路径另有懒判定兜底；`tick` 传 `cfg`——**配置读锁必须先于 `Engine` 锁**，同序否则死锁）。热串命中后吞掉后缀键，由**后台线程**回删 + 注入 + 补回后缀。输入状态指示也由这条线程每拍比快照推送。
@@ -88,8 +89,10 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
 
 ## 软件更新（Windows + Linux 已落地）
 
-- **信任链**：`tauri-plugin-updater` + GitHub Releases + Ed25519 签名；**公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `%USERPROFILE%\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`），绝不入库**。端点只解析**已发布**的 Release（流水线默认发 draft）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**。**已开 `requireSignedVersion`**（版本红线见下）。
-- **行为口径**（`update.rs`，详见 §5.5）：**Windows 上「安装」会退出应用**，故启动检查只提示不自动装；**其它平台装完由 `app.restart()` 自己重启**（否则一直跑旧二进制）。状态机在后端（`update-status` 推送 + `get_update_status` 兜底），前端只渲染；更新逻辑全在 Rust → capabilities **不开** `updater:*`。发版步骤见 `.github/workflows/release.yml` 顶部注释。
+> 机制与发版步骤见 `需求设计说明书.md` §5.5 与 `.github/workflows/release.yml` 顶部注释；这里只留红线。
+
+- **私钥绝不入库**：公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `%USERPROFILE%\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**；端点只解析**已发布**的 Release（流水线默认发 draft）。
+- **前端碰不到更新**：更新逻辑全在 Rust（`UpdaterExt`）→ capabilities **不开** `updater:*`（不是漏配，是最小权限）。**Windows 上「安装」会退出应用**，故启动检查只提示不自动装；其它平台装完 `app.restart()` 自己重启。
 
 ## 构建与验证命令
 
@@ -102,9 +105,9 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**三条渠道发的不是同一个文件**：GitHub Releases 发 **NSIS 包 + 便携版 zip + Linux deb/AppImage**（自动更新用），ihomy 发布页 `https://ihomy.top/kada` 直链发**裸 `kada.exe` + 便携 zip + 安装版（NSIS）+ Linux 的 deb / AppImage**（`/opt/ihomy/uploads/kada/`，`/files/kada/**` 免登录，换包人工 `scp`；macOS dmg 仍走 GitHub Releases）。**Linux 包本机只能靠 docker 容器出**（`scripts/linux-package/` 有 Dockerfile + build.sh + 用法，网络镜像全换过一遍）；**macOS 包只能靠 CI**（`release.yml` 的 macos job 出 universal dmg，本机没有 Mac、也交叉不了）。
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出运行中的 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**三条渠道发的不是同一个文件**：GitHub Releases 发 **NSIS 包 + 便携版 zip + Linux deb/AppImage**，ihomy 发布页 `https://ihomy.top/kada` 直链发**裸 `kada.exe` + 便携 zip + 安装版（NSIS）+ Linux 的 deb / AppImage**（`/opt/ihomy/uploads/kada/`，`/files/kada/**` 免登录，换包人工 `scp`；macOS dmg 仍走 GitHub Releases）。**Linux 包本机只能靠 docker 容器出**（`scripts/linux-package/`）、**macOS 包只能靠 CI**——本机没有 Mac，也交叉不了。详见 `需求设计说明书.md` §5.5。
 - **发布链路版本红线**：`requireSignedVersion = true` 要求安装包签名里带版本号，**tauri-cli < 2.12.1 的 `tauri build` 不写**（客户端会以 `MissingSignedVersion` 全部拒装，流水线还不报错）。根 `@tauri-apps/cli` 下限锁 `^2.12.1`，**动 CLI 版本/版本号/打包 targets 后必跑 `node scripts/verify-release.mjs`**（流水线最后一步也跑）。
-- **CI**：`ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + **macOS universal dmg**，`max-parallel: 1` 串行，**根目录 `npm ci` 不能省**——tauri-action 走 `npm run tauri`，没装 CLI 直接构建失败；最后一步的校验目录按 `target/<triple>/release/bundle` 与 `target/release/bundle` 自适应，别写死）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（清单见 `需求设计说明书.md` §4），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
+- **CI**：`ci.yml`（ubuntu + windows + **macos**：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + **macOS universal dmg**，`max-parallel: 1` 串行，**根目录 `npm ci` 不能省**——tauri-action 走 `npm run tauri`，没装 CLI 直接构建失败；「校验产物」那步的目录按 `target/<triple>/release/bundle` 与 `target/release/bundle` 自适应，别写死）。平台代码用 `#[cfg]` 门控，三后端暴露同一套接口（清单见 `需求设计说明书.md` §4），壳层与动作层不为平台分叉。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 ## 里程碑与规划
 
 M0–M5 已完成（详见 §7）。

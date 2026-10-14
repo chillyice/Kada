@@ -1907,6 +1907,16 @@ fn raise_main_window(w: &tauri::WebviewWindow) {
     });
 }
 
+/// 界面外的链接只放行 http(s) 交给系统浏览器——`about:blank` / `data:` / `javascript:`
+/// 之类（新窗口请求里也会出现）不往外丢，免得拿系统默认程序去开一个不是网址的东西。
+fn external_link_to_open(url: &str) -> Option<&str> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        Some(url)
+    } else {
+        None
+    }
+}
+
 /// 按需创建/显示主窗口：首次打开时才真正建出 WebView，冷启动不加载任何界面。
 fn show_main_window(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -1921,6 +1931,22 @@ fn show_main_window(app: &tauri::AppHandle) {
         .min_inner_size(900.0, 480.0)
         .resizable(true)
         .center()
+        // 界面外链（帮助页落款的 GitHub）交给系统默认浏览器。WebView 的「新窗口请求」
+        // 没人接时会被 wry 直接吞掉（WebView2 里 `SetHandled(true)` 后什么都不做），
+        // 于是 `<a target="_blank">` 点了毫无反应——必须自己接住。这里一律不建应用内
+        // 新窗口（Deny），只把能交给浏览器的 http(s) 链接丢出去。
+        .on_new_window(|url, _features| {
+            if let Some(target) = external_link_to_open(url.as_str()) {
+                let target = target.to_string();
+                // 与钩子回调同一条纪律：发起进程调用不当场做，挪到后台线程。
+                std::thread::spawn(move || {
+                    if let Err(e) = kada_actions::open_url(&target) {
+                        eprintln!("打开外链失败: {e}");
+                    }
+                });
+            }
+            tauri::webview::NewWindowResponse::Deny
+        })
         .build()
     {
         Ok(w) => raise_main_window(&w),
@@ -2191,6 +2217,28 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn external_link_filter_accepts_only_http() {
+        // 界面外链（帮助页 GitHub）只把 http(s) 丢给系统浏览器，其余新窗口请求一律不理。
+        assert_eq!(
+            external_link_to_open("https://github.com/chillyice/Kada"),
+            Some("https://github.com/chillyice/Kada")
+        );
+        assert_eq!(
+            external_link_to_open("http://example.com/x?y=1&z=2"),
+            Some("http://example.com/x?y=1&z=2")
+        );
+        for other in [
+            "about:blank",
+            "data:text/html,hi",
+            "file:///C:/",
+            "javascript:alert(1)",
+            "tauri://localhost/index.html",
+        ] {
+            assert_eq!(external_link_to_open(other), None, "{other}");
+        }
     }
 
     #[test]
