@@ -5217,6 +5217,8 @@ mod platform_caps_tests {
     use super::*;
 
     /// Linux 口径的 caps：前台条件不可用（Wayland / X11 都未接前台查询）。
+    /// 用它的测试全是 automation 专属（条件类），基础版编译时一并消失，故同样门控。
+    #[cfg(feature = "automation")]
     fn linux_caps() -> PlatformCaps {
         PlatformCaps { frontmost_conditions: false, ..Default::default() }
     }
@@ -5260,6 +5262,7 @@ mod platform_caps_tests {
     }
 
     /// `platform` 分组标记：平台能力缺失为 true、规则类冲突（重复触发键）为 false。
+    #[cfg(feature = "automation")]
     #[test]
     fn platform_flag_separates_caps_gap_from_rule_conflicts() {
         let cfg = Config {
@@ -5288,6 +5291,7 @@ mod platform_caps_tests {
         assert_eq!(rule[0].severity, Severity::Error, "{rule:?}");
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn frontmost_condition_flagged_on_linux() {
         let cfg = Config {
@@ -5311,6 +5315,7 @@ mod platform_caps_tests {
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn device_condition_flagged_when_unsupported() {
         let cfg = Config {
@@ -5335,6 +5340,7 @@ mod platform_caps_tests {
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn nested_if_frontmost_also_flagged() {
         let cfg = Config {
@@ -5359,6 +5365,7 @@ mod platform_caps_tests {
         assert!(hits.iter().any(|c| c.message.contains("前台")), "{hits:?}");
     }
 
+    #[cfg(feature = "automation")]
     #[test]
     fn parallel_group_is_scanned() {
         // 并行组内的动作同样参与平台扫描（㉞）：注入不了的键进「注入不了」提示，

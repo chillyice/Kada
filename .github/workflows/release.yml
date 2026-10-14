@@ -48,11 +48,22 @@ jobs:
           # （TAURI_SIGNING_RPM_KEY），现在没人用 rpm，加进来只是多一个失败点。
           - platform: ubuntu-22.04
             args: --bundles deb,appimage
+          # macOS 出 universal（arm64 + x86_64 一份 app）的 dmg。**没人手上有 Mac**，
+          # 所以这个平台只能靠 CI 出包（见 docs/人工验证清单.md 附.4）。
+          # 没有 Apple 开发者证书 → 产物未签名、未公证，用户首次打开要右键「打开」或
+          # 自己 `xattr -dr com.apple.quarantine /Applications/Kada.app`（页面文案要写清）。
+          - platform: macos-latest
+            args: --target universal-apple-darwin --bundles dmg
     steps:
       - uses: actions/checkout@v4
 
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+
+      # universal 架构要把两个 macOS 目标都装上（否则 tauri 打包时报「target not installed」）。
+      - name: Add macOS universal targets
+        if: runner.os == 'macOS'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -118,7 +129,7 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "咔哒 Kada v__VERSION__"
-          releaseBody: "Windows 安装包见下方 Assets（`Kada___VERSION___x64-setup.exe`；便携版是 `Kada___VERSION___x64-portable.zip`，解压即用）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级。"
+          releaseBody: "各平台安装包见下方 Assets：Windows 是 `Kada___VERSION___x64-setup.exe`（便携版 `Kada___VERSION___x64-portable.zip`，解压即用）；Linux 是 `Kada___VERSION___amd64.deb` 与 `.AppImage`；macOS 是 `Kada___VERSION___universal.dmg`（未签名 / 未公证，首次打开请右键「打开」）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级（macOS 需签名后才走得通）。"
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -147,4 +158,11 @@ jobs:
           set -euo pipefail
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           gh release download "v$version" --pattern latest.json --dir "$RUNNER_TEMP"
-          node scripts/verify-release.mjs --dir target/release/bundle --latest "$RUNNER_TEMP/latest.json"
+          # 带 --target 的构建（Windows / macOS universal）产物落在 target/<triple>/release/bundle，
+          # 不带的落在 target/release/bundle——两种都兜住，别让校验在某个平台上空跑。
+          dir=target/release/bundle
+          if [ ! -d "$dir" ]; then
+            dir="$(find target -maxdepth 3 -type d -path '*/release/bundle' | head -n 1)"
+          fi
+          echo "校验目录：$dir"
+          node scripts/verify-release.mjs --dir "$dir" --latest "$RUNNER_TEMP/latest.json"

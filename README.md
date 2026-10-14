@@ -33,7 +33,7 @@ cargo run -p kada-hook --example demo      # 钩子冒烟 demo（三平台真人
 ```
 
 - 纯浏览器调试前端：`npm --prefix ui run dev` 后直开 `http://localhost:1420`（无 Tauri 壳时自动注入模拟 IPC 与演示配置）。
-- 打包：`npm run tauri -- build --bundles nsis`，需 `TAURI_SIGNING_PRIVATE_KEY`（安装包签名带版本号，否则客户端拒装）；产物在仓库根 `target/release/bundle/`。
+- 打包：`npm run tauri -- build --bundles nsis`，需 `TAURI_SIGNING_PRIVATE_KEY`（安装包签名带版本号，否则客户端拒装）；产物在仓库根 `target/release/bundle/`。**Linux 包**（deb / AppImage）在 Windows 上打不出来，借 docker 容器出（`scripts/linux-package/`）；**macOS 包**（universal dmg）由 CI 发布矩阵出（本机没有 Mac，也交叉不了）。
 
 ## 文档
 

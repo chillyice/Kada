@@ -79,9 +79,12 @@ mod input {
 #[cfg(target_os = "linux")]
 mod input {
     //! Linux：evdev + uinput 全局钩子（kada-hook），X11 / Wayland 通用。
+    // 注意 `reinstall_count` **不在这份名单里**：下面有同名的包装函数（带语义说明），
+    // 名单里再 import 一次就是 E0255 重定义——Windows 分支不走这里，本机编译不会报，
+    // 只有 Linux/macOS 的 CI（或容器构建）才拦得住（2026-10-04 起这条就是红的，见 变更归档）。
     pub use kada_hook::linux::{
-        current_device, frontmost_context, reinstall_count, simulate, start, Action as HookAction,
-        HookHandle, KeyEvent,
+        current_device, frontmost_context, simulate, start, Action as HookAction, HookHandle,
+        KeyEvent,
     };
 
     /// 输入层是否已启动：无权限（没进 input 组 / udev 没放行 /dev/uinput）时

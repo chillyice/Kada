@@ -3,7 +3,9 @@
 //! 全部条目放进同一个目录、共用同一个层——用户删掉那个目录就整体清走，不用一条条找。
 //! 目录 / 层用固定 id：重复载入时合并按判重跳过，不会翻倍。
 
-use crate::{Action, Config, Folder, Layer, MouseOp, Remap, ShortcutItem, TextExpansion};
+use crate::{
+    Action, Config, Folder, Layer, MouseButton, MouseOp, Remap, ShortcutItem, TextExpansion, TextMode,
+};
 #[cfg(feature = "automation")]
 use crate::{Condition, Shell};
 
@@ -25,6 +27,8 @@ pub fn sample_config() -> Config {
         layers: vec![Layer {
             id: LAYER.into(),
             name: "示例层".into(),
+            // 层标记（纯展示）：emoji 会当「贴纸」骑在组合键 chip 左下角上，一眼看出这条属于哪层。
+            mark: Some("🧭".into()),
             ..Default::default()
         }],
         ..Config::default()
@@ -82,12 +86,13 @@ pub fn sample_config() -> Config {
         });
     }
     cfg.remaps.push(Remap {
-        name: Some("Insert 双击 → Esc".into()),
-        description: Some("tap-dance 连击：单击不变，双击 Insert 发 Esc".into()),
+        name: Some("Insert 连击：双击 Esc / 三击 Delete".into()),
+        description: Some("tap-dance 连击：单击不变，双击 Insert 发 Esc，三击发 Delete".into()),
         folder: folder.clone(),
         from: "Insert".into(),
         to: "Insert".into(),
         tap2: Some("Escape".into()),
+        tap3: Some("Delete".into()),
         enabled: true,
         ..Remap::default()
     });
@@ -112,12 +117,33 @@ pub fn sample_config() -> Config {
         ..Remap::default()
     });
 
+    cfg.remaps.push(Remap {
+        name: Some("鼠标侧键前进 → 中键点击".into()),
+        description: Some("普通改键 + 鼠标键：把鼠标侧键「前进」改成中键单击（左右键与滚轮不纳入触发，避免误拦日常点击）".into()),
+        folder: folder.clone(),
+        from: "MouseForward".into(),
+        to: "MouseMiddle".into(),
+        enabled: true,
+        ..Remap::default()
+    });
+
     // ---- 快捷键（基础版动作）----
     let sc = |name: &str, desc: &str, triggers: &[&str], actions: Vec<Action>| ShortcutItem {
         name: Some(name.into()),
         description: Some(desc.into()),
         folder: folder.clone(),
         layer: None,
+        triggers: triggers.iter().map(|s| s.to_string()).collect(),
+        actions,
+        enabled: true,
+        ..ShortcutItem::default()
+    };
+    // 同上的层内版本：条目归属「示例层」，只有该层激活时才参与匹配。
+    let sc_in_layer = |name: &str, desc: &str, triggers: &[&str], actions: Vec<Action>| ShortcutItem {
+        name: Some(name.into()),
+        description: Some(desc.into()),
+        folder: folder.clone(),
+        layer: layer.clone(),
         triggers: triggers.iter().map(|s| s.to_string()).collect(),
         actions,
         enabled: true,
@@ -166,13 +192,86 @@ pub fn sample_config() -> Config {
     ));
     cfg.shortcuts.push(sc(
         "和弦触发演示",
-        // 成员键必须避开两处：① 序列/组合键用过的键（`F9 J K`、`Ctrl+Alt+U/B/R`）；② 热串触发词
-        // 里用到的字母（;sig/;addr/;btw 用了 s i g a d r b t w）——和弦成员键按下即被吞、不进
-        // 热串缓冲，含它就永远凑不齐（;sig 曾因示例和弦 `I&O` 含 i 而彻底不展开）。
+        // 成员键必须避开两处：① 序列/组合键用过的键（`F9 J K`、`Ctrl+Alt+O/B/R/S/V/M/P`）与
+        // 示例层改键的来源键（H/J/K/L，层内按一下就变方向键）；② 热串触发词里用到的字母
+        // （;sig/;addr/;btw/;date/;time/;site 用了 s i g a d r b t w e m 与 u/o 之外的常见字母）
+        //——和弦成员键按下即被吞、不进热串缓冲，含它就永远凑不齐（;sig 曾因示例和弦 `I&O` 含 i
+        // 而彻底不展开）。
+        // 冲突检测器替我们盯着这两条（`sample_has_no_self_conflicts` 会红）。
         "同时按住 Y 和 Z——和弦适合双拇指 / 双指同按的快捷触发",
         &["Y&Z"],
         vec![Action::Text {
             text: "和弦触发成功（Y + Z 同按）".into(),
+            mode: Default::default(),
+            description: None,
+        }],
+    ));
+
+    // ---- 快捷键（基础版动作·续）：动作类型与「层内条目」各留一条样例 ----
+    cfg.shortcuts.push(sc(
+        "选中文本转大写",
+        "文本动作的「转大写」模式：选中一段文字后按它，原地整段变大写",
+        &["Ctrl+Alt+Shift+U"],
+        vec![Action::Text {
+            text: String::new(),
+            mode: TextMode::ToUpper,
+            description: None,
+        }],
+    ));
+    cfg.shortcuts.push(sc(
+        "选中文本转小写",
+        "同上，转小写——两个模式都靠剪贴板走一遍，选中内容会被就地替换",
+        &["Ctrl+Alt+Shift+W"],
+        vec![Action::Text {
+            text: String::new(),
+            mode: TextMode::ToLower,
+            description: None,
+        }],
+    ));
+    cfg.shortcuts.push(sc(
+        "注入组合键演示",
+        "Keys 动作：触发后替你按一次 Ctrl+Shift+S（另存为）——把记不住的长组合收成一个键",
+        &["Ctrl+Alt+S"],
+        vec![Action::Keys {
+            keys: vec!["Ctrl".into(), "Shift".into(), "S".into()],
+            description: None,
+        }],
+    ));
+    cfg.shortcuts.push(sc_in_layer(
+        "层内快捷键演示",
+        "归属「示例层」：只有 F1 按住 / F2 锁定后这条才存在，退回基础层就消失——成套快捷键适合收进层里",
+        &["Ctrl+Alt+1"],
+        vec![Action::Text {
+            text: "层内快捷键生效：现在是「示例层」".into(),
+            mode: Default::default(),
+            description: None,
+        }],
+    ));
+
+    cfg.shortcuts.push(sc(
+        "鼠标移动 + 点击演示",
+        "Mouse 动作：先相对移动光标 60px、稍停，再左键点一下——鼠标三类动作（移动 / 点击 / 滚轮）都齐了",
+        &["Ctrl+Alt+Shift+D"],
+        vec![
+            Action::Mouse {
+                op: MouseOp::Move { dx: 60, dy: 0 },
+                description: None,
+            },
+            Action::PauseMs { ms: 60, description: None },
+            Action::Mouse {
+                op: MouseOp::Click {
+                    button: MouseButton::Left,
+                },
+                description: None,
+            },
+        ],
+    ));
+    cfg.shortcuts.push(sc(
+        "鼠标侧键触发演示",
+        "鼠标键也能当触发键：按下鼠标侧键「后退」即触发（配置引用鼠标键时才会挂鼠标钩子）",
+        &["MouseBack"],
+        vec![Action::Text {
+            text: "鼠标侧键触发成功（MouseBack）".into(),
             mode: Default::default(),
             description: None,
         }],
@@ -190,48 +289,145 @@ pub fn sample_config() -> Config {
     cfg.expansions.push(ex(";sig", "此致\n—— 来自咔哒 Kada", "输入 ;sig 再按空格 / 回车 / Tab 展开多行签名"));
     cfg.expansions.push(ex(";addr", "某市某区某路 88 号", "输入 ;addr 再按空格 / 回车 / Tab 展开地址"));
     cfg.expansions.push(ex(";btw", "顺带一提，", "热串适合高频短语；触发词要避开日常单词，加个前缀最稳"));
+    cfg.expansions.push(ex(";date", "{date}", "替换文本里的 {date} / {time} / {clipboard} 是动态片段：展开时才求值，这里插入当天日期"));
+    cfg.expansions.push(ex(";time", "{time}", "同上，插入当前时间（时分秒）"));
+    cfg.expansions.push(ex(";clip", "{clipboard}", "动态片段三兄弟之一：展开时插入当前剪贴板内容（{date} / {time} / {clipboard}）"));
+    cfg.expansions.push(ex(
+        ";site",
+        "咔哒 Kada 下载页：https://ihomy.top/kada",
+        "热串不只能打字，贴长链接 / 常用句子同样省事（触发词别用 H/J/K/L——层内它们被改成了方向键）",
+    ));
 
     // ---- automation 专属（默认开启的完整版才有）----
     #[cfg(feature = "automation")]
     {
-        cfg.shortcuts.push(sc(
-            "打开百度",
-            "OpenUrl 动作：用系统默认浏览器打开网址",
-            &["Ctrl+Alt+U"],
-            vec![Action::OpenUrl {
-                url: "https://www.baidu.com".into(),
-                description: None,
-            }],
-        ));
-        cfg.shortcuts.push(ShortcutItem {
-            name: Some("条件门控演示（记事本限定）".into()),
-            description: Some("带 when 条件：前台是记事本时这条才生效，其它应用里完全不存在".into()),
+        cfg.remaps.push(Remap {
+            name: Some("记事本里 F6 → Esc（改键条件门控）".into()),
+            description: Some("带 when 条件的改键：只有前台是记事本时 F6 才变 Esc，其它应用里 F6 保持原样".into()),
             folder: folder.clone(),
-            layer: None,
+            from: "F6".into(),
+            to: "Escape".into(),
             when: Some(Condition::FrontmostApp {
                 app: "notepad".into(),
             }),
-            triggers: vec!["Ctrl+Alt+B".into()],
-            actions: vec![Action::Text {
-                text: "条件快捷键生效：只在记事本里触发".into(),
-                mode: Default::default(),
-                description: None,
-            }],
             enabled: true,
+            ..Remap::default()
         });
         cfg.shortcuts.push(sc(
-            "命令输出到消息中心",
-            "Command 动作：执行一条命令，输出弹窗展示（也可存成变量给后续动作用）",
-            &["Ctrl+Alt+R"],
-            vec![Action::Command {
-                shell: Shell::Cmd,
-                command: "echo 来自 Kada 的命令输出".into(),
-                show_output: true,
-                var: String::new(),
+            "打开 Kada 发布页",
+            "OpenUrl 动作：用系统默认浏览器打开网址（示例直接开咔哒自己的下载页）",
+            &["Ctrl+Alt+O"],
+            vec![Action::OpenUrl {
+                url: "https://ihomy.top/kada".into(),
                 description: None,
             }],
         ));
-    }
+        cfg.shortcuts.push(sc(
+            "打开项目仓库",
+            "OpenUrl 的第二个例子：直接开 GitHub 仓库——看更新、反馈问题都从这里进",
+            &["Ctrl+Alt+G"],
+            vec![Action::OpenUrl {
+                url: "https://github.com/chillyice/Kada".into(),
+                description: None,
+            }],
+        ));
+    cfg.shortcuts.push(ShortcutItem {
+        name: Some("条件门控演示（记事本限定）".into()),
+        description: Some("带 when 条件：前台是记事本时这条才生效，其它应用里完全不存在".into()),
+        folder: folder.clone(),
+        layer: None,
+        when: Some(Condition::FrontmostApp {
+            app: "notepad".into(),
+        }),
+        triggers: vec!["Ctrl+Alt+B".into()],
+        actions: vec![Action::Text {
+            text: "条件快捷键生效：只在记事本里触发".into(),
+            mode: Default::default(),
+            description: None,
+        }],
+        enabled: true,
+    });
+    cfg.shortcuts.push(sc(
+        "命令输出到消息中心",
+        "Command 动作：执行一条命令，输出弹窗展示（也可存成变量给后续动作用）",
+        &["Ctrl+Alt+R"],
+        vec![Action::Command {
+            shell: Shell::Cmd,
+            command: "echo 来自 Kada 的命令输出".into(),
+            show_output: true,
+            var: String::new(),
+            description: None,
+        }],
+    ));
+    cfg.shortcuts.push(sc(
+        "命令取变量 + 引用",
+        "命令动作用 whoami 取当前用户名存进变量 user，下一步文本用 {user} 引用它——变量是把多步动作串成一条流水线的纽带",
+        &["Ctrl+Alt+V"],
+        vec![
+            Action::Command {
+                shell: Shell::Cmd,
+                command: "whoami".into(),
+                show_output: false,
+                var: "user".into(),
+                description: None,
+            },
+            Action::Text {
+                text: "你好，{user}！".into(),
+                mode: Default::default(),
+                description: None,
+            },
+        ],
+    ));
+    cfg.shortcuts.push(ShortcutItem {
+        name: Some("条件判断演示".into()),
+        description: Some("If 动作：前台是记事本时走「满足条件」分支，否则走「否则」分支（与触发条件共用同一套判定）".into()),
+        folder: folder.clone(),
+        layer: None,
+        when: None,
+        triggers: vec!["Ctrl+Alt+Shift+F".into()],
+        actions: vec![Action::If {
+            condition: Condition::FrontmostApp {
+                app: "notepad".into(),
+            },
+            then: vec![Action::Text {
+                text: "条件成立：当前前台是记事本".into(),
+                mode: Default::default(),
+                description: None,
+            }],
+            otherwise: vec![Action::Text {
+                text: "条件不成立：当前前台不是记事本".into(),
+                mode: Default::default(),
+                description: None,
+            }],
+            description: None,
+        }],
+        enabled: true,
+    });
+    cfg.shortcuts.push(sc(
+        "并行动作演示",
+        "Parallel 动作：两条命令各起一线程同时跑，全部结束才进下一步，两份输出都进消息中心",
+        &["Ctrl+Alt+Shift+A"],
+        vec![Action::Parallel {
+            actions: vec![
+                Action::Command {
+                    shell: Shell::Cmd,
+                    command: "echo parallel-A".into(),
+                    show_output: false,
+                    var: String::new(),
+                    description: None,
+                },
+                Action::Command {
+                    shell: Shell::Cmd,
+                    command: "echo parallel-B".into(),
+                    show_output: false,
+                    var: String::new(),
+                    description: None,
+                },
+            ],
+            description: None,
+        }],
+    ));
+}
 
     cfg
 }
@@ -270,13 +466,73 @@ mod tests {
         assert!(cfg.remaps.iter().any(|r| r.hold_layer.is_some()), "缺 momentary 切层");
         assert!(cfg.remaps.iter().any(|r| r.lock_layer.is_some()), "缺锁定切层");
         assert!(cfg.remaps.iter().any(|r| r.tap2.is_some()), "缺连击");
+        assert!(cfg.remaps.iter().any(|r| r.tap3.is_some()), "缺三击");
         assert!(cfg.remaps.iter().any(|r| r.oneshot.is_some()), "缺单次键");
         assert!(cfg.remaps.iter().any(|r| r.sticky.is_some()), "缺粘滞键");
         assert!(cfg.remaps.iter().any(|r| r.layer.is_some()), "缺层内改键");
+        // 普通改键（`to` 直给）：其余形态字段全空、只有一个目标键。
+        assert!(
+            cfg.remaps.iter().any(|r| !r.to.is_empty()
+                && r.tap.is_none()
+                && r.hold.is_none()
+                && r.oneshot.is_none()
+                && r.sticky.is_none()
+                && r.tap2.is_none()
+                && r.tap3.is_none()
+                && r.hold_layer.is_none()
+                && r.lock_layer.is_none()),
+            "缺普通改键（to）"
+        );
         assert!(cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.split(' ').count() > 1)), "缺序列");
         assert!(cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.contains('&'))), "缺和弦");
-        assert!(cfg.expansions.len() >= 2, "热串太少");
+        assert!(cfg.expansions.len() >= 5, "热串太少");
         assert!(cfg.shortcuts.iter().all(|s| s.enabled) && cfg.remaps.iter().all(|r| r.enabled), "样例必须全启用");
+    }
+
+    /// 动作类型与条目形态的覆盖面（跟着样例一起长：加新动作类型时先想「样例里怎么演示它」）。
+    #[test]
+    fn sample_covers_action_types_and_shapes() {
+        let cfg = sample_config();
+        let has_action = |pred: fn(&Action) -> bool| cfg.shortcuts.iter().any(|s| s.actions.iter().any(pred));
+        assert!(has_action(|a| matches!(a, Action::Text { .. })), "缺文本动作");
+        assert!(has_action(|a| matches!(a, Action::Keys { .. })), "缺注入组合键");
+        assert!(has_action(|a| matches!(a, Action::Mouse { .. })), "缺鼠标动作");
+        assert!(
+            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Move { .. }, .. })),
+            "缺鼠标移动"
+        );
+        assert!(
+            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Click { .. }, .. })),
+            "缺鼠标点击"
+        );
+        assert!(
+            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Scroll { .. }, .. })),
+            "缺鼠标滚轮"
+        );
+        assert!(has_action(|a| matches!(a, Action::PauseMs { .. })), "缺延迟");
+        assert!(
+            has_action(|a| matches!(a, Action::Text { mode: TextMode::ToUpper, .. })),
+            "缺「转大写」模式"
+        );
+        assert!(
+            has_action(|a| matches!(a, Action::Text { mode: TextMode::ToLower, .. })),
+            "缺「转小写」模式"
+        );
+        // 层内快捷键（不是层内改键）：成套快捷键收进层的用法要在样例里立着。
+        assert!(cfg.shortcuts.iter().any(|s| s.layer.is_some()), "缺层内快捷键");
+        // 鼠标键作触发键（配置引用鼠标键时才会挂鼠标钩子）。
+        assert!(
+            cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.contains("Mouse"))),
+            "缺鼠标键触发"
+        );
+        // 层标记（V0.60）：样例层带个标记，用户一眼看到「层标记」长什么样。
+        assert!(cfg.layers.iter().all(|l| l.mark.is_some()), "缺层标记演示");
+        // 热串要含动态片段，否则 {date}/{time}/{clipboard} 这条能力在样例里没有落点。
+        assert!(cfg.expansions.iter().any(|e| e.replace.contains("{date}")), "缺动态片段 {{date}}");
+        assert!(
+            cfg.expansions.iter().any(|e| e.replace.contains("{clipboard}")),
+            "缺动态片段 {{clipboard}}"
+        );
     }
 
     /// automation 追加的条目也在这份覆盖面里（默认 feature 开；基础版编译时整段消失）。
@@ -287,6 +543,28 @@ mod tests {
         assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::OpenUrl { .. }))), "缺 OpenUrl");
         assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::Command { .. }))), "缺命令");
         assert!(cfg.shortcuts.iter().any(|s| s.when.is_some()), "缺条件门控");
+        // 改键侧的触发条件门控（`when`）与快捷键侧是两套，各要有一条样例。
+        assert!(cfg.remaps.iter().any(|r| r.when.is_some()), "缺改键条件门控");
+        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::If { .. }))), "缺条件判断动作");
+        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::Parallel { .. }))), "缺并行动作");
+        // 变量要真的被「写出来又读回去」，否则 {var} 这条链在样例里只是摆设。
+        let writes: Vec<&str> = cfg
+            .shortcuts
+            .iter()
+            .flat_map(|s| s.actions.iter())
+            .filter_map(|a| match a {
+                Action::Command { var, .. } if !var.is_empty() => Some(var.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!writes.is_empty(), "缺「命令存变量」");
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .flat_map(|s| s.actions.iter())
+                .any(|a| matches!(a, Action::Text { text, .. } if writes.iter().any(|v| text.contains(&format!("{{{v}}}"))))),
+            "写出的变量没有任何条目引用（{writes:?}）"
+        );
     }
 
     /// 和弦成员键按下即被吞、不进热串缓冲，所以触发词里不能含成员键——含了就永远凑不齐
