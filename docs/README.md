@@ -23,6 +23,37 @@
 | `docs/人工验证清单.md` | 只能真机 + 真人操作才能确认的验收项：可照做的步骤 + 预期现象 + 判失败（锁屏/唤醒/切窗复位、动作超时与中止、动作失败上报、未保存改动守卫、删除确认与导入合并 / 替换、配置外部修改监听、更新端到端含产物自检）；**顶部有逐条验证状态**（最近一轮 2026-10-10：§1~§3、§5~§8 通过，§4 休眠唤醒未执行，§9~§14 与附录待真人复跑） | 验收相关改动、发版前 |
 | `docs/变更归档.md` | 已实现变更归档：按里程碑的文件-改动表、设计决策、冒烟结论 | 检索历史实现时 |
 
+## 代码地图
+
+> 目录与关键文件职责一览；AGENTS.md 只留规则，动代码前按这张图定位。
+
+```
+crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、片段摘取
+  src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
+  src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
+  src/snippet.rs            # 配置片段（分享用）：按「类别+下标」摘出条目 + 被引用的层，见 AGENTS「铁律」
+crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
+  src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
+  src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本
+  src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
+  src/macos.rs              # macOS: CGEventTap 钩子 + key↔虚拟键码 + AX 前台查询 + simulate（需「辅助功能」权限）
+  examples/demo.rs          # M1 冒烟 demo（三平台，真人按键验证）
+crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
+  src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）
+src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
+  src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建
+  src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
+  src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
+  src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
+  src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
+  tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
+ui/                         # Vite + TypeScript 前端（kada-ui）
+  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页；草稿隔离 + 未保存守卫
+  src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
+  src/style.css             # 深色 UI 样式
+.github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
+```
+
 ## 文档维护规矩
 
 - 新的变更归档**追加到 `docs/变更归档.md` 末尾**，不写回 AGENTS.md（AGENTS.md 只留规则 + 导航，20KB 上限——描述性细节一律外移到本目录，超限会挤掉注入上下文）。

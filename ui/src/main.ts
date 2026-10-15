@@ -5196,10 +5196,9 @@ function runState(run: RunRecord): { cls: string; label: string } {
   return { cls: "is-abort", label: "已中止" };
 }
 
-// 记录 tab 的一行：优先用名称，否则「触发键 · 时刻」。
+// 记录 tab 的一行：优先用名称，否则触发键（时刻不进标签，悬停 tooltip 里看）。
 function entryTitle(run: RunRecord): string {
-  const when = run.time.slice(11);
-  return `${run.name || run.trigger} · ${when}`;
+  return run.name || run.trigger;
 }
 
 // 消息中心一条 tab：执行记录，或一条不属于任何执行的普通消息（配置变更、热串失败等）。
@@ -5282,6 +5281,13 @@ function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
 }
 
 // ---- 时间线：每个动作按真实起止时间占一段，横着排开（重叠的自动分泳道）----
+// 时间块是贴着横轴挂下来的标签页：一行 42px（块 38px、两行内容），顶边不画线（轴线即顶边），
+// 右侧 24px 渐变淡出；块宽尾部多出 12px 专门给后触发的块当遮盖（z-index 按触发顺序）——后块
+// 的硬边切在前块渐变一半（alpha≈0.5）处，遮盖与渐变才都看得出来。max-width 把右边界压在区内：
+// 末块恰好停在右侧留白前，不顶出页面。
+const TL_LANE_H = 42;
+const TL_TAIL_PX = 12;
+
 function renderTimeline(run: RunRecord): HTMLElement {
   const host = el("div", "tl");
   const steps = run.steps.slice().sort((a, b) => a.start_ms - b.start_ms || a.id - b.id);
@@ -5309,20 +5315,28 @@ function renderTimeline(run: RunRecord): HTMLElement {
   }
   host.append(ruler);
   const rows = el("div", "tl-rows");
-  // 泳道数决定时间线的高度（每条 22px 一行）。
-  rows.style.height = `${laneEnds.length * 22 + 4}px`;
-  for (const { step, lane } of placed) {
+  // 泳道数决定时间线的高度（每条 TL_LANE_H 一行，末行占 TL_LANE_H - 4）。
+  rows.style.height = `${laneEnds.length * TL_LANE_H - 4}px`;
+  for (const [i, { step, lane }] of placed.entries()) {
+    const left = step.start_ms / total;
+    const frac = Math.max((step.end_ms - step.start_ms) / total, 0.02);
     const block = el(
       "button",
       `tl-block st-${step.status}` + (step.id === msgSelStep ? " sel" : ""),
     );
-    block.style.left = `${(step.start_ms / total) * 100}%`;
-    block.style.width = `${Math.max(((step.end_ms - step.start_ms) / total) * 100, 1.5)}%`;
-    block.style.top = `${lane * 22 + 2}px`;
+    block.style.left = `${left * 100}%`;
+    block.style.width = `calc(${frac * 100}% + ${TL_TAIL_PX}px)`;
+    block.style.maxWidth = `calc(100% - ${left * 100}%)`;
+    block.style.top = `${lane * TL_LANE_H}px`;
+    block.style.zIndex = String(i + 1); // 后触发的盖在前一块尾巴上（标签页式遮盖）
     block.title = `${ACTION_ICONS[step.kind as Action["type"]] ?? ""} ${stepLabel(step)}\n${clockAt(run, step.start_ms)} → ${clockAt(run, step.end_ms)}（${fmtMs(Math.max(0, step.end_ms - step.start_ms))}）`;
-    block.append(el("span", "tl-block-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
-    block.append(el("span", "tl-block-title", stepLabel(step)));
-    block.append(el("span", "tl-block-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+    const head = el("span", "tl-block-head");
+    head.append(el("span", "tl-block-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
+    head.append(el("span", "tl-block-title", stepLabel(step)));
+    const meta = el("span", "tl-block-meta");
+    meta.append(el("span", "tl-block-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+    meta.append(el("span", "tl-block-flag", STEP_STATUS_LABEL[step.status] ?? step.status));
+    block.append(head, meta);
     block.addEventListener("click", () => {
       msgSelStep = msgSelStep === step.id ? -1 : step.id;
       renderMessages();
@@ -5466,10 +5480,9 @@ function renderMessages() {
   entries.forEach((e, i) => {
     const st = runState(e.run);
     const t = el("button", `msg-tab ${st.cls}` + (i === msgIndex ? " active" : ""));
-    const state = el("span", "msg-tab-state");
-    state.append(el("i", "msg-tab-dot"), st.label);
-    t.append(state, el("span", "msg-tab-title", e.label));
-    t.title = `${st.label} · ${e.label}`;
+    // 状态只留一个色点（与任务名同一行平齐），文字标签收进 tooltip。
+    t.append(el("i", "msg-tab-dot"), el("span", "msg-tab-title", e.label));
+    t.title = `${st.label} · ${e.label} · ${e.time}`;
     t.addEventListener("click", () => {
       msgIndex = i;
       msgSelId = e.id;
