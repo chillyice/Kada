@@ -5016,10 +5016,8 @@ function isFormTarget(t: EventTarget | null): boolean {
 }
 
 // 鸣谢名单：写死在前端（纯展示，不进 config）。有「首页」的名字点击跳首页；没设首页的点一下从鼠标
-// 点击处喷一串向上漂浮的字符泡泡。只有「胡萝北」喷爱心，其余喷感谢 / 尊敬的 emoji 与颜文字。
-type ThanksEntry = { name: string; homepage?: string; hearts?: boolean };
-const THANKS: ThanksEntry[] = [{ name: "大爷" }, { name: "胡萝北", hearts: true }];
-
+// 点击处喷一串向上漂浮的字符泡泡（字符取自该人自己的池子）。
+type ThanksEntry = { name: string; homepage?: string; pool?: string[] };
 const THANKS_THANKS = [
   "🙏", "🙇", "🎉", "✨", "🌟", "💐", "🍻", "🎊", "谢谢", "感谢",
   "(◍•ᴗ•◍)", "m(_ _)m", "(*´▽`*)", "ヽ(•‿•)ノ",
@@ -5027,6 +5025,15 @@ const THANKS_THANKS = [
 const THANKS_HEARTS = [
   "❤️", "🧡", "💛", "💚", "💙", "💜", "💗", "💖", "💕", "💞", "♥",
   "(♡˙︶˙♡)", "(´▽`ʃ♡ƪ)",
+];
+const THANKS_ART = [
+  "🎨", "🖌️", "🖍️", "✏️", "🖼️", "🎭", "🌈", "🖊️", "✒️", "📐", "✨",
+  "(๑•̀ㅂ•́)و✧", "٩(ˊᗜˋ*)و", "✿",
+];
+const THANKS: ThanksEntry[] = [
+  { name: "大爷", pool: THANKS_THANKS },
+  { name: "胡萝北", pool: THANKS_HEARTS },
+  { name: "卯秀", pool: THANKS_ART },
 ];
 
 // 从鼠标点击处喷一串字符泡泡：随机字符、随机横向漂移与字号，由透明变不透明并上浮，动画结束自删。
@@ -5059,7 +5066,7 @@ function renderThanks() {
       b.type = "button";
       b.title = "点一下";
       b.addEventListener("click", (e) =>
-        burstBubbles(e.clientX, e.clientY, t.hearts ? THANKS_HEARTS : THANKS_THANKS),
+        burstBubbles(e.clientX, e.clientY, t.pool ?? THANKS_THANKS),
       );
       return b;
     }),
