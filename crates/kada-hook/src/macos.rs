@@ -74,7 +74,9 @@ use core_graphics::event::{
 use core_graphics::event_source::CGEventSourceStateID;
 use core_graphics::geometry::CGPoint;
 
-use kada_core::{FrontmostContext, Key, Modifier};
+use kada_core::{FrontmostContext, Key, Modifier, MouseButton};
+
+use crate::{MouseRecord, MouseRecordKind};
 
 /// 一次键盘事件。
 #[derive(Clone, Debug)]
@@ -97,6 +99,13 @@ pub enum Action {
 type Handler = Box<dyn FnMut(KeyEvent) -> Action + Send>;
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
+/// 鼠标操作录制回调（仅录制期间设置）：每次鼠标触发（点击 / 滚轮）回调它，附自上次触发
+/// 以来的位移。回调里只做转录（无 IO / 建窗），**永远放行**事件。
+type MouseRecorder = Box<dyn FnMut(MouseRecord) + Send>;
+static MOUSE_RECORDER: Mutex<Option<MouseRecorder>> = Mutex::new(None);
+/// 上一次触发时的光标位置（事件坐标），用来算「自上次触发以来的位移」。
+static LAST_TRIGGER_POS: LazyLock<Mutex<CGPoint>> =
+    LazyLock::new(|| Mutex::new(CGPoint::new(0.0, 0.0)));
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
@@ -261,9 +270,11 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
     Ok(())
 }
 
-/// tap 要看的几类事件：键盘按下/抬起、修饰键变化、鼠标「其它键」（中键 / 侧键）。
+/// tap 要看的几类事件：键盘按下/抬起、修饰键变化、鼠标「其它键」（中键 / 侧键），
+/// 以及鼠标操作录制需要的左/右键按下与滚轮。
 ///
-/// 有意不看鼠标左/右键与滚轮、移动：那些事件量大，且不属于键模型（拦它们只会让点击变哑）。
+/// 左/右键与滚轮**只为录制**而看：它们不进键模型，回调里一律原样放行（拦它们只会让
+/// 点击变哑）；移动事件不在此列（量大且录制用不到）。
 fn events_of_interest() -> Vec<CGEventType> {
     vec![
         CGEventType::KeyDown,
@@ -271,6 +282,9 @@ fn events_of_interest() -> Vec<CGEventType> {
         CGEventType::FlagsChanged,
         CGEventType::OtherMouseDown,
         CGEventType::OtherMouseUp,
+        CGEventType::LeftMouseDown,
+        CGEventType::RightMouseDown,
+        CGEventType::ScrollWheel,
     ]
 }
 
@@ -311,7 +325,41 @@ fn tap_callback(_proxy: CGEventTapProxy, etype: CGEventType, event: &CGEvent) ->
         CGEventType::FlagsChanged => handle_flags_changed(event),
         CGEventType::OtherMouseDown => handle_mouse(event, true),
         CGEventType::OtherMouseUp => handle_mouse(event, false),
+        // 左/右键与滚轮不进键模型，只为录制上报，一律放行。
+        CGEventType::LeftMouseDown => {
+            record_trigger(event, MouseRecordKind::Click(MouseButton::Left));
+            CallbackResult::Keep
+        }
+        CGEventType::RightMouseDown => {
+            record_trigger(event, MouseRecordKind::Click(MouseButton::Right));
+            CallbackResult::Keep
+        }
+        CGEventType::ScrollWheel => {
+            let dy = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1) as i32;
+            let dx = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2) as i32;
+            if dx != 0 || dy != 0 {
+                record_trigger(event, MouseRecordKind::Scroll { dx, dy });
+            }
+            CallbackResult::Keep
+        }
         _ => CallbackResult::Keep,
+    }
+}
+
+/// 鼠标触发 → 录制回调，附自上次触发以来自事件坐标算出的位移。没有录制器时立即返回。
+fn record_trigger(event: &CGEvent, kind: MouseRecordKind) {
+    if MOUSE_RECORDER.lock().unwrap().is_none() {
+        return;
+    }
+    let p = event.location();
+    let (move_dx, move_dy) = {
+        let mut last = LAST_TRIGGER_POS.lock().unwrap();
+        let d = ((p.x - last.x) as i32, (p.y - last.y) as i32);
+        *last = p;
+        d
+    };
+    if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
+        f(MouseRecord { kind, move_dx, move_dy });
     }
 }
 
@@ -357,6 +405,18 @@ fn handle_mouse(event: &CGEvent, down: bool) -> CallbackResult {
     let Some(key) = mouse_button_to_key(button) else {
         return CallbackResult::Keep;
     };
+    // 只在按下时录一次（中键 / 侧键）。
+    if down {
+        let record = match key {
+            Key::MouseMiddle => Some(MouseButton::Middle),
+            Key::MouseBack => Some(MouseButton::Back),
+            Key::MouseForward => Some(MouseButton::Forward),
+            _ => None,
+        };
+        if let Some(b) = record {
+            record_trigger(event, MouseRecordKind::Click(b));
+        }
+    }
     let mods = flags_to_mods(event.get_flags());
     dispatch(key, mods, down, false)
 }
@@ -488,6 +548,16 @@ fn take_replaced_down() -> Vec<Key> {
 /// 自愈重装累计次数（诊断 / 壳层「输入状态复位」用）。
 pub fn reinstall_count() -> u64 {
     REINSTALLS.load(Ordering::Relaxed)
+}
+
+/// 设置鼠标操作录制回调（`None` = 结束录制）。开始录制时把当前光标位置记成位移原点，
+/// 首次触发的位移才是真实移动量。macOS 的 tap 本就收左/右键与滚轮（见 [`events_of_interest`]），
+/// 无「按需装钩子」一说。
+pub fn set_mouse_recorder(f: Option<MouseRecorder>) {
+    if f.is_some() {
+        *LAST_TRIGGER_POS.lock().unwrap() = simulate::current_pos();
+    }
+    *MOUSE_RECORDER.lock().unwrap() = f;
 }
 
 /// 看门狗线程：盯住「tap 还活着」的证据，失效时重新启用。
@@ -1125,6 +1195,13 @@ pub mod simulate {
                     MouseButton::Middle => {
                         (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 2)
                     }
+                    // 侧键按钮号 3/4 是驱动约定（与 [`mouse_button_to_key`] 一致）。
+                    MouseButton::Back => {
+                        (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 3)
+                    }
+                    MouseButton::Forward => {
+                        (CGEventType::OtherMouseDown, CGEventType::OtherMouseUp, 4)
+                    }
                 };
                 let p = current_pos();
                 post_mouse_at(down, p, num)?;
@@ -1143,7 +1220,7 @@ pub mod simulate {
     }
 
     /// 读当前光标位置（`CGEventCreate(NULL)` 生成的事件带的就是当前鼠标位置）。
-    fn current_pos() -> CGPoint {
+    pub(crate) fn current_pos() -> CGPoint {
         unsafe {
             let probe = CGEventCreate(std::ptr::null_mut());
             if probe.is_null() {

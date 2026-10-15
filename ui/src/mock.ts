@@ -179,6 +179,16 @@ const DEMO_RECORDED_ACTIONS = [
   { type: "keys", keys: ["Enter"] },
 ];
 
+// 演示鼠标录制结果（「● 录制鼠标操作」停止后注入）：移动到某处点击 / 滚轮。
+const DEMO_RECORDED_MOUSE_ACTIONS = [
+  { type: "mouse", op: { op: "move", dx: 120, dy: -40 } },
+  { type: "mouse", op: { op: "click", button: "left" } },
+  { type: "mouse", op: { op: "move", dx: -30, dy: 0 } },
+  { type: "mouse", op: { op: "scroll", dx: 0, dy: -3 } },
+  { type: "mouse", op: { op: "move", dx: 0, dy: 60 } },
+  { type: "mouse", op: { op: "click", button: "back" } },
+];
+
 export function installBrowserMock() {
   if ("__TAURI_INTERNALS__" in window) return;
   let unread = false;
@@ -354,6 +364,11 @@ case "run_entry":
         case "stop_record":
           // 演示录制结果：非空，点「■ 停止」能看到录下来的动作进草稿。
           return structuredClone(DEMO_RECORDED_ACTIONS);
+        case "start_mouse_record":
+          return null;
+        case "stop_mouse_record":
+          // 演示鼠标录制结果：移动 + 点击 / 滚轮。
+          return structuredClone(DEMO_RECORDED_MOUSE_ACTIONS);
         case "get_toast_payload":
           return null;
         // 输入状态指示：演示模式给一份「层 + 三种修饰键」的样例，让 `index.html#hud`

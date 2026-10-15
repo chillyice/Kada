@@ -28,7 +28,7 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -38,7 +38,9 @@ use evdev::{
     uinput::VirtualDevice,
 };
 
-use kada_core::{FrontmostContext, Key, Modifier};
+use kada_core::{FrontmostContext, Key, Modifier, MouseButton};
+
+use crate::{MouseRecord, MouseRecordKind};
 
 /// Linux errno（grab / open 失败原因判定用；跨架构取值一致）。
 const EPERM: i32 = 1;
@@ -87,6 +89,55 @@ static LAST_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::ne
 /// 无事件时为 `None`。事件的设备名在 poll_loop 里随每个事件更新。
 pub fn current_device() -> Option<String> {
     LAST_DEVICE.lock().unwrap().clone()
+}
+
+/// 鼠标操作录制回调（仅录制期间设置）：每次鼠标触发（点击 / 滚轮）回调它，附自上次触发
+/// 以来的位移。回调里只做转录（无 IO）。
+type MouseRecorder = Box<dyn FnMut(MouseRecord) + Send>;
+static MOUSE_RECORDER: Mutex<Option<MouseRecorder>> = Mutex::new(None);
+/// 自上次触发以来累积的光标位移：Linux（evdev）拿不到光标绝对位置，只能用相对量累加，
+/// 语义与 Windows / macOS 的「两次触发坐标之差」一致（见 [`poll_loop`]）。
+static ACC_X: AtomicI32 = AtomicI32::new(0);
+static ACC_Y: AtomicI32 = AtomicI32::new(0);
+
+/// 设置鼠标操作录制回调（`None` = 结束录制）。
+pub fn set_mouse_recorder(f: Option<MouseRecorder>) {
+    ACC_X.store(0, Ordering::Relaxed);
+    ACC_Y.store(0, Ordering::Relaxed);
+    *MOUSE_RECORDER.lock().unwrap() = f;
+}
+
+/// 鼠标触发（点击 / 滚轮）→ 录制回调，附累积位移并清零累积器。没有录制器时立即返回。
+fn report_mouse_trigger(kind: MouseRecordKind) {
+    if MOUSE_RECORDER.lock().unwrap().is_none() {
+        return;
+    }
+    let move_dx = ACC_X.swap(0, Ordering::Relaxed);
+    let move_dy = ACC_Y.swap(0, Ordering::Relaxed);
+    if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
+        f(MouseRecord { kind, move_dx, move_dy });
+    }
+}
+
+/// 鼠标键按下 → 录制上报（左右键、中键、侧键都算）。抬起不报（一次点击只录一下）。
+fn report_mouse_button(code: u16, value: i32) {
+    if value != 1 {
+        return;
+    }
+    let button = if code == KeyCode::BTN_LEFT.0 {
+        MouseButton::Left
+    } else if code == KeyCode::BTN_RIGHT.0 {
+        MouseButton::Right
+    } else if code == KeyCode::BTN_MIDDLE.0 {
+        MouseButton::Middle
+    } else if code == KeyCode::BTN_SIDE.0 {
+        MouseButton::Back
+    } else if code == KeyCode::BTN_EXTRA.0 {
+        MouseButton::Forward
+    } else {
+        return;
+    };
+    report_mouse_trigger(MouseRecordKind::Click(button));
 }
 
 /// 输入层是否已启动。Linux 与 macOS 一样存在「起不来但应用该照常活着」的场景
@@ -289,10 +340,33 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
                         match ev.event_type() {
                             EventType::KEY => {
                                 *LAST_DEVICE.lock().unwrap() = dev_name.clone();
+                                report_mouse_button(ev.code(), ev.value());
                                 handle_key(ev.code(), ev.value());
                             }
                             // 移动 / 滚轮：不进键模型，原样转发（虚拟设备已声明相对轴）。
+                            // 移动累积进录制位移，滚轮本身就是一次触发（录制上报）。
                             EventType::RELATIVE => {
+                                match ev.code() {
+                                    c if c == RelativeAxisCode::REL_X.0 => {
+                                        ACC_X.fetch_add(ev.value(), Ordering::Relaxed);
+                                    }
+                                    c if c == RelativeAxisCode::REL_Y.0 => {
+                                        ACC_Y.fetch_add(ev.value(), Ordering::Relaxed);
+                                    }
+                                    c if c == RelativeAxisCode::REL_WHEEL.0 => {
+                                        report_mouse_trigger(MouseRecordKind::Scroll {
+                                            dx: 0,
+                                            dy: ev.value(),
+                                        });
+                                    }
+                                    c if c == RelativeAxisCode::REL_HWHEEL.0 => {
+                                        report_mouse_trigger(MouseRecordKind::Scroll {
+                                            dx: ev.value(),
+                                            dy: 0,
+                                        });
+                                    }
+                                    _ => {}
+                                }
                                 forward_raw(EventType::RELATIVE.0, ev.code(), ev.value())
                             }
                             // SYN 由 emit 自动补；LED / SND 等不转发（用户态用不到）。
@@ -670,6 +744,8 @@ pub mod simulate {
                     MouseButton::Left => KeyCode::BTN_LEFT,
                     MouseButton::Right => KeyCode::BTN_RIGHT,
                     MouseButton::Middle => KeyCode::BTN_MIDDLE,
+                    MouseButton::Back => KeyCode::BTN_SIDE,
+                    MouseButton::Forward => KeyCode::BTN_EXTRA,
                 };
                 events.push(InputEvent::new(EventType::KEY.0, code.0, 1));
                 events.push(InputEvent::new(EventType::KEY.0, code.0, 0));

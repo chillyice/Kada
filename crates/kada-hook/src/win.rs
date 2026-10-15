@@ -37,7 +37,7 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::RemoteDesktop::{
     WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
     WTSSessionInfoEx, WTSINFOEXW,
@@ -50,7 +50,9 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
-use kada_core::{FrontmostContext, Key, Modifier, Shortcut};
+use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
+
+use crate::{MouseRecord, MouseRecordKind};
 
 pub mod simulate;
 
@@ -82,6 +84,13 @@ static MOUSE_HOOK: AtomicIsize = AtomicIsize::new(0);
 /// 否则少一个全局钩子 = 更小的拦截面。由壳层按配置设置（见 [`set_mouse_enabled`]）。
 /// 默认 `true` 保险：没人显式关掉时维持旧行为（鼠标键照常可用）。
 static MOUSE_ENABLED: AtomicBool = AtomicBool::new(true);
+/// 鼠标操作录制回调（仅录制期间设置）：钩子层每次鼠标触发（点击 / 滚轮）都回调它，
+/// 附「自上次触发以来的位移」。回调里只做转录（无 IO / 建窗），**永远放行**事件。
+type MouseRecorder = Box<dyn FnMut(MouseRecord) + Send>;
+static MOUSE_RECORDER: LazyLock<Mutex<Option<MouseRecorder>>> =
+    LazyLock::new(|| Mutex::new(None));
+/// 上一次触发时的光标位置（屏幕坐标）：用来算「自上次触发以来的位移」。
+static LAST_TRIGGER_POS: LazyLock<Mutex<(i32, i32)>> = LazyLock::new(|| Mutex::new((0, 0)));
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
@@ -202,8 +211,9 @@ fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
 fn install_hooks() -> io::Result<()> {
     let kbd = unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard_proc), None, 0) }
         .map_err(|e| io::Error::other(format!("SetWindowsHookEx 键盘钩子失败: {e}")))?;
-    // 鼠标钩子按需安装：配置没过鼠标键就不挂，缩小全局拦截面（见 [`MOUSE_ENABLED`]）。
-    let mouse = if MOUSE_ENABLED.load(Ordering::Relaxed) {
+    // 鼠标钩子按需安装：配置没过鼠标键、也没在录制鼠标操作就不挂，缩小全局拦截面
+    // （见 [`MOUSE_ENABLED`] / [`set_mouse_recorder`]）。
+    let mouse = if mouse_wanted() {
         match unsafe { SetWindowsHookExW(WH_MOUSE_LL, Some(mouse_proc), None, 0) } {
             Ok(m) => m.0 as isize,
             Err(e) => {
@@ -385,12 +395,49 @@ pub fn request_reinstall() -> bool {
     tid != 0 && unsafe { PostThreadMessageW(tid, WM_APP_REINSTALL, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 
+/// 现在要不要挂鼠标钩子：配置引用了鼠标键触发，或正在录制鼠标操作。
+fn mouse_wanted() -> bool {
+    MOUSE_ENABLED.load(Ordering::Relaxed) || MOUSE_RECORDER.lock().unwrap().is_some()
+}
+
 /// 告诉钩子层「配置现在（不）需要鼠标钩子」：值变了才请求重装（重装会在钩子线程上按新值
 /// 重挂，鼠标钩子随之增删）。启动前调用同样有效——此刻钩子线程还没起来，`request_reinstall`
 /// 返回 false 什么也不做，值已被记下，首次安装即按它决定。见 [`MOUSE_ENABLED`]。
 pub fn set_mouse_enabled(on: bool) {
     if MOUSE_ENABLED.swap(on, Ordering::Relaxed) != on {
         request_reinstall();
+    }
+}
+
+/// 设置鼠标操作录制回调（`None` = 结束录制）。
+///
+/// 开始录制时把当前光标位置记成位移原点（首次触发的位移才是真实移动量），并在
+/// 「是否需要鼠标钩子」变化时请求重装——配置没用鼠标键时，录制也要临时把钩子挂上。
+pub fn set_mouse_recorder(f: Option<MouseRecorder>) {
+    if f.is_some() {
+        if let Ok(p) = cursor_pos() {
+            *LAST_TRIGGER_POS.lock().unwrap() = p;
+        }
+    }
+    let now = f.is_some();
+    let was = {
+        let mut g = MOUSE_RECORDER.lock().unwrap();
+        let was = g.is_some();
+        *g = f;
+        was
+    };
+    if was != now {
+        request_reinstall();
+    }
+}
+
+/// 当前光标位置（屏幕坐标）。
+fn cursor_pos() -> Result<(i32, i32), ()> {
+    let mut p = POINT::default();
+    if unsafe { GetCursorPos(&mut p) }.is_ok() {
+        Ok((p.x, p.y))
+    } else {
+        Err(())
     }
 }
 
@@ -542,9 +589,12 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
     LAST_MOUSE_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
-        // 注入事件一律放行，防回环。
-        if ms.flags & LLMHF_INJECTED == 0 && swallow_mouse(wparam.0 as u32, ms) {
-            return LRESULT(1);
+        // 注入事件一律放行，防回环（也不进录制——录制器只转录人手的动作）。
+        if ms.flags & LLMHF_INJECTED == 0 {
+            record_mouse(wparam.0 as u32, ms);
+            if swallow_mouse(wparam.0 as u32, ms) {
+                return LRESULT(1);
+            }
         }
     }
     let hook = MOUSE_HOOK.load(Ordering::Relaxed);
@@ -611,6 +661,41 @@ fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
             true
         }
     }
+}
+
+/// 鼠标触发（点击 / 滚轮）→ 录制回调，附自上次触发以来的光标位移。没有录制器时立即返回。
+fn record_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) {
+    if MOUSE_RECORDER.lock().unwrap().is_none() {
+        return;
+    }
+    let kind = match wparam {
+        WM_LBUTTONDOWN => MouseRecordKind::Click(MouseButton::Left),
+        WM_RBUTTONDOWN => MouseRecordKind::Click(MouseButton::Right),
+        WM_MBUTTONDOWN => MouseRecordKind::Click(MouseButton::Middle),
+        WM_XBUTTONDOWN => match ms.mouseData >> 16 {
+            1 => MouseRecordKind::Click(MouseButton::Back),
+            2 => MouseRecordKind::Click(MouseButton::Forward),
+            _ => return,
+        },
+        WM_MOUSEWHEEL => MouseRecordKind::Scroll { dx: 0, dy: wheel_ticks(ms.mouseData) },
+        WM_MOUSEHWHEEL => MouseRecordKind::Scroll { dx: wheel_ticks(ms.mouseData), dy: 0 },
+        _ => return,
+    };
+    let pos = (ms.pt.x, ms.pt.y);
+    let (move_dx, move_dy) = {
+        let mut last = LAST_TRIGGER_POS.lock().unwrap();
+        let d = (pos.0 - last.0, pos.1 - last.1);
+        *last = pos;
+        d
+    };
+    if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
+        f(MouseRecord { kind, move_dx, move_dy });
+    }
+}
+
+/// 滚轮 `mouseData` 高 16 位是带符号的 `WHEEL_DELTA`（120 = 一格）→ 格数。
+fn wheel_ticks(mouse_data: u32) -> i32 {
+    (mouse_data >> 16) as u16 as i16 as i32 / 120
 }
 
 fn current_mods() -> BTreeSet<Modifier> {
@@ -956,6 +1041,15 @@ mod tests {
         let _ = SWALLOWED.lock().unwrap().remove(&Key::MouseBack);
         assert_eq!(seen.len(), 2, "按下与抬起都要回调 handler，实际：{seen:?}");
         assert!(seen[0].contains("Down") && seen[1].contains("Up"), "实际：{seen:?}");
+    }
+
+    #[test]
+    fn wheel_ticks_reads_signed_high_word() {
+        // mouseData 高 16 位是带符号的 WHEEL_DELTA（120 = 一格）：上滚 = 0x0078_0000，
+        // 下滚 = 0xFF88_0000（-120 的补码）。
+        assert_eq!(wheel_ticks(120u32 << 16), 1);
+        assert_eq!(wheel_ticks((-120i32 as u32) << 16), -1);
+        assert_eq!(wheel_ticks(0), 0);
     }
 
     #[test]

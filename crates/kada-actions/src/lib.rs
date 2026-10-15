@@ -723,6 +723,8 @@ fn mouse_body(op: &MouseOp) -> String {
                 MouseButton::Left => "左键",
                 MouseButton::Right => "右键",
                 MouseButton::Middle => "中键",
+                MouseButton::Back => "侧键·后退",
+                MouseButton::Forward => "侧键·前进",
             };
             format!("鼠标点击{b}")
         }

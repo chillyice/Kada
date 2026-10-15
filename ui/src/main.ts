@@ -33,7 +33,7 @@ type AppOperation =
   | { op: "restart"; program: string; args: string[] };
 type TextMode = "input" | "to_upper" | "to_lower";
 type Shell = "cmd" | "powershell";
-type MouseButton = "left" | "right" | "middle";
+type MouseButton = "left" | "right" | "middle" | "back" | "forward";
 type MouseOp =
   | { op: "move"; dx: number; dy: number }
   | { op: "click"; button: MouseButton }
@@ -639,6 +639,8 @@ const MOUSE_BUTTON_LABELS: Record<MouseButton, string> = {
   left: "左键",
   right: "右键",
   middle: "中键",
+  back: "侧键·后退",
+  forward: "侧键·前进",
 };
 
 function mouseSummary(op: MouseOp): string {
@@ -723,6 +725,7 @@ let draftBaseline: string | null = null;
 // 类型没有该页签时回落「详情」）。
 let entryTab: EntryTab = "work";
 let recording = false;
+let mouseRecording = false;
 let conflicts: Conflict[] = [];
 let search = "";
 let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
@@ -3385,7 +3388,7 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
     if (sub) typeRow.append(sub);
     row.append(typeRow);
     // 第三行：其他输入内容
-    row.append(actionFields(a, rerender));
+    row.append(actionFields(a, rerender, { actions, idx: i }));
   }
 
   step.append(rail, row);
@@ -3779,7 +3782,57 @@ function renderWhenEditor(
   draw();
 }
 
-function actionFields(a: Action, rerender: () => void): HTMLElement {
+// 鼠标操作编辑器里的「录制」按钮：录一段鼠标动作（移动到某处再点击 / 滚轮），录完替换掉
+// 当前动作。与键盘宏录制（#action-record）独立，结果只含鼠标操作动作。
+function mouseRecordButton(
+  rerender: () => void,
+  ctx?: { actions: Action[]; idx: number },
+): HTMLElement {
+  const btn = el("button", "record action-mouse-record") as HTMLButtonElement;
+  btn.textContent = mouseRecording ? "■ 录制中（点此停止）" : "● 录制鼠标操作";
+  if (mouseRecording) btn.classList.add("recording");
+  btn.title = "录一段鼠标动作：移动到某处点击 / 滚轮，录完替换当前动作";
+  btn.addEventListener("click", async () => {
+    if (!mouseRecording) {
+      try {
+        await invoke("start_mouse_record");
+      } catch (err) {
+        toast(`开始录制失败: ${err}`);
+        return;
+      }
+      mouseRecording = true;
+      btn.classList.add("recording");
+      btn.textContent = "■ 录制中（点此停止）";
+      return;
+    }
+    mouseRecording = false;
+    let rec: Action[];
+    try {
+      rec = await invoke<Action[]>("stop_mouse_record");
+    } catch (err) {
+      toast(`停止录制失败: ${err}`);
+      btn.classList.remove("recording");
+      btn.textContent = "● 录制鼠标操作";
+      return;
+    }
+    btn.classList.remove("recording");
+    btn.textContent = "● 录制鼠标操作";
+    if (rec.length && ctx) {
+      // 录到的鼠标动作替换掉当前这一条（占位），其余顺次插在后面。
+      ctx.actions.splice(ctx.idx, 1, ...rec);
+      rerender();
+    } else {
+      toast("未录到鼠标动作");
+    }
+  });
+  return btn;
+}
+
+function actionFields(
+  a: Action,
+  rerender: () => void,
+  ctx?: { actions: Action[]; idx: number },
+): HTMLElement {
   const body = el("div", "action-body");
   if (a.type === "text") {
     if (a.mode === "input") {
@@ -3933,7 +3986,7 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       );
     } else {
       const sel = el("select", "action-input") as HTMLSelectElement;
-      for (const b of ["left", "right", "middle"] as MouseButton[]) {
+      for (const b of ["left", "right", "middle", "back", "forward"] as MouseButton[]) {
         const o = el("option") as HTMLOptionElement;
         o.value = b;
         o.textContent = MOUSE_BUTTON_LABELS[b];
@@ -3946,6 +3999,7 @@ function actionFields(a: Action, rerender: () => void): HTMLElement {
       line.append(el("span", "unit-hint", "在当前光标位置点击"), sel);
     }
     body.append(line);
+    body.append(mouseRecordButton(rerender, ctx));
   } else if (a.type === "pause_ms") {
     const line = el("div", "action-line");
     const num = el("input", "action-input") as HTMLInputElement;
@@ -5364,6 +5418,10 @@ async function stopRecIfAny() {
     btn.classList.remove("recording");
     btn.textContent = "● 开始录制";
     await invoke("stop_record").catch(() => {});
+  }
+  if (mouseRecording) {
+    mouseRecording = false;
+    await invoke("stop_mouse_record").catch(() => {});
   }
 }
 

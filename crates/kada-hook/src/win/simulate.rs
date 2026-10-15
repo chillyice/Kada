@@ -206,10 +206,18 @@ pub fn mouse(op: &MouseOp) -> io::Result<()> {
             }
         }
         MouseOp::Click { button } => {
+            // 侧键走 XDOWN/XUP，`mouseData` 高 16 位承载 X 按钮号（1=后退、2=前进）。
+            if let MouseButton::Back | MouseButton::Forward = button {
+                let data = if matches!(button, MouseButton::Back) { 1u32 } else { 2u32 } << 16;
+                send_mouse(mouse_input(0, 0, data, MOUSEEVENTF_XDOWN))?;
+                send_mouse(mouse_input(0, 0, data, MOUSEEVENTF_XUP))?;
+                return Ok(());
+            }
             let (down, up) = match button {
                 MouseButton::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
                 MouseButton::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
                 MouseButton::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+                MouseButton::Back | MouseButton::Forward => unreachable!(),
             };
             send_mouse(mouse_input(0, 0, 0, down))?;
             send_mouse(mouse_input(0, 0, 0, up))?;

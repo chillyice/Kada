@@ -69,7 +69,8 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, foreground_window, frontmost_context, hotkey_occupied, reinstall_count,
-        set_mouse_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        set_mouse_enabled, set_mouse_recorder, simulate, start, Action as HookAction, HookHandle,
+        KeyEvent,
     };
 
     pub fn hooks_supported() -> bool {
@@ -84,8 +85,8 @@ mod input {
     // 名单里再 import 一次就是 E0255 重定义——Windows 分支不走这里，本机编译不会报，
     // 只有 Linux/macOS 的 CI（或容器构建）才拦得住（2026-10-04 起这条就是红的，见 变更归档）。
     pub use kada_hook::linux::{
-        current_device, frontmost_context, simulate, start, Action as HookAction, HookHandle,
-        KeyEvent,
+        current_device, frontmost_context, set_mouse_recorder, simulate, start, Action as HookAction,
+        HookHandle, KeyEvent,
     };
 
     /// 输入层是否已启动：无权限（没进 input 组 / udev 没放行 /dev/uinput）时
@@ -116,8 +117,8 @@ mod input {
 mod input {
     //! macOS：CGEventTap 全局钩子（kada-hook），需要「辅助功能」权限。
     pub use kada_hook::macos::{
-        current_device, foreground_window, frontmost_context, reinstall_count, simulate, start,
-        Action as HookAction, HookHandle, KeyEvent,
+        current_device, foreground_window, frontmost_context, reinstall_count, set_mouse_recorder,
+        simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 输入层是否可用 = 有没有「辅助功能」权限。
@@ -148,11 +149,19 @@ mod input {
     /// 无输入层实现：无鼠标钩子可开关。
     pub fn set_mouse_enabled(_on: bool) {}
 
+    /// 无输入层实现：没有鼠标录制。
+    pub fn set_mouse_recorder(_f: Option<crate::MouseRecordCallback>) {}
+
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
         None
     }
 }
+
+/// 鼠标录制回调：钩子层每次鼠标触发（点击 / 滚轮）调用一次（见 [`MouseRecorder`]）。
+/// 仅在无输入层的占位模块里用到（有输入层时直接用各平台签名）。
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+type MouseRecordCallback = Box<dyn FnMut(kada_hook::MouseRecord) + Send>;
 
 /// 跨平台键盘事件：各平台钩子统一喂给决策器/录制器。
 #[derive(Clone, Debug)]
@@ -350,6 +359,8 @@ struct KadaState {
     paused_until: Arc<AtomicU64>,
     /// 录制器：Some = 正在录制（此时快捷键/改键全暂停）。
     rec: Arc<Mutex<Option<Recorder>>>,
+    /// 鼠标操作录制器：Some = 正在录制鼠标（与 [`KadaState::rec`] 互斥使用）。
+    mrec: Arc<Mutex<Option<MouseRecorder>>>,
     file: PathBuf,
     /// 外部修改监听的基线（见 [`config_watch`]）。**本进程每次写盘都要在这里销账**，而且写盘
     /// 与销账必须同持这把锁——否则巡检线程可能插在中间，把刚写的配置当成外部修改再加载一遍。
@@ -2138,6 +2149,45 @@ fn key_name(k: Key) -> &'static str {
     kada_core::key_name(k)
 }
 
+/// 鼠标操作录制器：把钩子层上报的鼠标触发表成 [`Action::Mouse`] 序列——先按位移补一条
+/// `Move`（为 0 则省，见吞键 / 判重口径），再补触发本身（`Click` / `Scroll`）。
+///
+/// 与键盘 [`Recorder`] 独立：鼠标录制只转录鼠标，按键一律不记。位移由钩子层算好
+/// （Windows / macOS 取两次触发坐标之差、Linux 取累积相对量），壳层无平台分叉。
+#[derive(Default)]
+struct MouseRecorder {
+    actions: Vec<Action>,
+}
+
+impl MouseRecorder {
+    fn push(&mut self, ev: &kada_hook::MouseRecord) {
+        // 滚轮量为 0（高精度滚轮的次格信号）不算一次触发，直接丢弃——`MouseOp::Scroll`
+        // 的偏移不能同时为 0，落盘时会被当成坏条目。
+        let op = match ev.kind {
+            kada_hook::MouseRecordKind::Click(button) => kada_core::MouseOp::Click { button },
+            kada_hook::MouseRecordKind::Scroll { dx, dy } if dx == 0 && dy == 0 => return,
+            kada_hook::MouseRecordKind::Scroll { dx, dy } => kada_core::MouseOp::Scroll { dx, dy },
+        };
+        if ev.move_dx != 0 || ev.move_dy != 0 {
+            self.actions.push(Action::Mouse {
+                op: kada_core::MouseOp::Move {
+                    dx: ev.move_dx,
+                    dy: ev.move_dy,
+                },
+                description: None,
+            });
+        }
+        self.actions.push(Action::Mouse {
+            op,
+            description: None,
+        });
+    }
+
+    fn into_actions(self) -> Vec<Action> {
+        self.actions
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2990,6 +3040,54 @@ mod tests {
             .filter(|a| matches!(a, Action::Keys { keys, .. } if keys == &vec!["Ctrl".to_string()]))
             .count();
         assert_eq!(ctrl, 1, "重复 down 必须折叠");
+    }
+
+    #[test]
+    fn mouse_recorder_transcribes_events() {
+        use kada_hook::{MouseRecord, MouseRecordKind};
+
+        let ev = |kind: MouseRecordKind, move_dx: i32, move_dy: i32| MouseRecord {
+            kind,
+            move_dx,
+            move_dy,
+        };
+        let mut r = MouseRecorder::default();
+        r.push(&ev(
+            MouseRecordKind::Click(kada_core::MouseButton::Left),
+            120,
+            -40,
+        ));
+        r.push(&ev(MouseRecordKind::Scroll { dx: 0, dy: -3 }, 0, 0));
+        r.push(&ev(
+            MouseRecordKind::Click(kada_core::MouseButton::Back),
+            0,
+            60,
+        ));
+
+        let ops: Vec<kada_core::MouseOp> = r
+            .into_actions()
+            .into_iter()
+            .map(|a| match a {
+                Action::Mouse { op, .. } => op,
+                other => panic!("鼠标录制只应产出 Action::Mouse，得到 {other:?}"),
+            })
+            .collect();
+
+        // 位移非 0 先补 Move；若位移到下一个触发之间没挪动则不补（滚轮那条）。
+        assert_eq!(
+            ops,
+            vec![
+                kada_core::MouseOp::Move { dx: 120, dy: -40 },
+                kada_core::MouseOp::Click {
+                    button: kada_core::MouseButton::Left
+                },
+                kada_core::MouseOp::Scroll { dx: 0, dy: -3 },
+                kada_core::MouseOp::Move { dx: 0, dy: 60 },
+                kada_core::MouseOp::Click {
+                    button: kada_core::MouseButton::Back
+                },
+            ]
+        );
     }
 
     /// 只有「快速唤醒键」一项不同的配置。
@@ -3861,6 +3959,9 @@ fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
     if !input::hooks_supported() {
         return Err(RECORD_UNAVAILABLE.into());
     }
+    if state.mrec.lock().unwrap().is_some() {
+        return Err("已在录制中".into());
+    }
     let mut g = state.rec.lock().unwrap();
     if g.is_some() {
         return Err("已在录制中".into());
@@ -3882,6 +3983,50 @@ fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String
     };
     set_pause_lease(&state.paused_until, false);
     Ok(rec.finish())
+}
+
+/// 开始录制鼠标操作：快捷键/改键随即暂停，之后的鼠标点击 / 滚轮进时间线（按键不记）。
+///
+/// 钩子层按「录制中」临时挂上鼠标钩子（配置没用鼠标键触发时也要监听），并把当前光标
+/// 位置记成位移原点——每次触发的位移即「移动到该处再触发」的移动量。
+#[tauri::command]
+fn start_mouse_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
+    if !input::hooks_supported() {
+        return Err(RECORD_UNAVAILABLE.into());
+    }
+    if state.rec.lock().unwrap().is_some() {
+        return Err("已在录制中".into());
+    }
+    {
+        let mut g = state.mrec.lock().unwrap();
+        if g.is_some() {
+            return Err("已在录制中".into());
+        }
+        *g = Some(MouseRecorder::default());
+    }
+    set_pause_lease(&state.paused_until, true);
+    let mrec = state.mrec.clone();
+    input::set_mouse_recorder(Some(Box::new(move |ev| {
+        if let Some(r) = mrec.lock().unwrap().as_mut() {
+            r.push(&ev);
+        }
+    })));
+    Ok(())
+}
+
+/// 停止鼠标录制，返回鼠标操作动作时间线（`Move` / `Click` / `Scroll`）。
+#[tauri::command]
+fn stop_mouse_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String> {
+    if !input::hooks_supported() {
+        return Err(RECORD_UNAVAILABLE.into());
+    }
+    input::set_mouse_recorder(None);
+    let rec = state.mrec.lock().unwrap().take();
+    let Some(rec) = rec else {
+        return Err("没有正在进行的鼠标录制".into());
+    };
+    set_pause_lease(&state.paused_until, false);
+    Ok(rec.into_actions())
 }
 
 /// 读取消息中心全部命令结果（最新在前）。
@@ -3960,6 +4105,8 @@ pub fn run() {
             run_entry,
             start_record,
             stop_record,
+            start_mouse_record,
+            stop_mouse_record,
             get_command_results,
             get_run_records,
             get_unread,
@@ -3991,6 +4138,7 @@ pub fn run() {
             let config = Arc::new(RwLock::new(loaded));
             let paused_until = Arc::new(AtomicU64::new(0));
             let rec = Arc::new(Mutex::new(None::<Recorder>));
+            let mrec = Arc::new(Mutex::new(None::<MouseRecorder>));
             let results: Arc<Mutex<Vec<CommandResult>>> = Arc::new(Mutex::new(Vec::new()));
             let unread = Arc::new(AtomicBool::new(false));
             let runs: Arc<Mutex<Vec<RunRecord>>> = Arc::new(Mutex::new(Vec::new()));
@@ -4173,6 +4321,7 @@ pub fn run() {
                 config,
                 paused_until,
                 rec,
+                mrec,
                 file,
                 cfg_watch,
                 cfg_stale,

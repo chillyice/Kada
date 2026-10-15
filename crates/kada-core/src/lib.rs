@@ -1007,6 +1007,10 @@ pub enum MouseButton {
     Right,
     /// 中键（滚轮按下）。
     Middle,
+    /// 后退键（侧键 MB4）。
+    Back,
+    /// 前进键（侧键 MB5）。
+    Forward,
 }
 
 /// 鼠标模拟操作（[`Action::Mouse`]，规划 7.1-㊱）：坐标与滚轮量都是**相对**值。
