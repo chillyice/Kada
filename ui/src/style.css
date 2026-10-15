@@ -2905,7 +2905,8 @@ pre.msg-v {
 /* ---- 时间线：横轴是时间，一行一泳道，块按真实起止时间定位 ---- */
 .tl {
   padding-top: 2px;
-  /* 右侧留白：刻度与末块的右边界都停在页面右缘之前，不顶出横向滚动。 */
+  /* 两侧留白：首/末刻度（translateX(-50%) 半宽）与末块都停在页面内，不顶出横向滚动。 */
+  padding-left: 16px;
   padding-right: 16px;
 }
 
@@ -3027,6 +3028,13 @@ pre.msg-v {
 }
 
 /* ---- 流水线：自上而下，条件 / 并行分泳道（左线 + 肘形连接）---- */
+/* 顶层块之间留 8px：没有这条时块与块边框贴死，看不出是几个独立动作。 */
+.pipe {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .pipe-node {
   position: relative;
 }
@@ -3065,6 +3073,8 @@ pre.msg-v {
   align-items: center;
   gap: 6px;
   font-size: var(--fs-sm);
+  /* 定死行高：肘形连接线（.pipe-lane::before）按块头垂直中心（1+6+8=15px）对齐，不随主题行距漂。 */
+  line-height: 16px;
   min-width: 0;
 }
 
@@ -3088,6 +3098,19 @@ pre.msg-v {
   font-size: var(--fs-xs);
 }
 
+.pipe-block.st-ok .pipe-flag {
+  color: #4cc38a;
+}
+.pipe-block.st-error .pipe-flag {
+  color: #f0736b;
+}
+.pipe-block.st-abort .pipe-flag {
+  color: #e0bb5c;
+}
+.pipe-block.st-running .pipe-flag {
+  color: var(--accent);
+}
+
 .pipe-detail {
   margin-top: 8px;
   padding-top: 8px;
@@ -3098,31 +3121,33 @@ pre.msg-v {
   margin-left: 10px;
   padding-left: 16px;
   border-left: 1px solid var(--line);
-  margin-top: 6px;
+  margin-top: 8px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
 .pipe-lane {
   position: relative;
 }
 
+/* 肘形连接线：横穿「rail 竖线 → 块左缘」16px 缺口，高度对齐块头中心。
+   30 = 标签行 13 + 行距 2 + 块顶到头中心 15（border 1 + padding 6 + line-height 16/2）。 */
 .pipe-lane::before {
   content: "";
   position: absolute;
   left: -16px;
-  top: 14px;
+  top: 30px;
   width: 16px;
   border-top: 1px solid var(--line);
 }
 
+/* 泳道标签（条件成立 / 并行 N）：块上方一行小字。
+   原先绝对定位挂在块左侧槽里——文字会横穿 rail 竖线、还溢出卡片左缘，改流式排版零溢出。 */
 .pipe-lane-label {
-  position: absolute;
-  right: 100%;
-  margin-right: 8px;
-  top: 2px;
-  white-space: nowrap;
+  display: block;
+  margin-bottom: 2px;
+  line-height: 13px;
   color: var(--muted);
   font-size: var(--fs-xs);
 }

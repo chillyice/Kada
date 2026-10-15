@@ -5369,7 +5369,7 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
     head.append(el("span", "pipe-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
     head.append(el("span", "pipe-title", stepLabel(step)));
     head.append(el("span", "pipe-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
-    head.append(el("span", `pipe-flag ${STEP_STATUS_LABEL[step.status] ?? step.status}`, STEP_STATUS_LABEL[step.status] ?? step.status));
+    head.append(el("span", `pipe-flag st-${step.status}`, STEP_STATUS_LABEL[step.status] ?? step.status));
     block.append(head);
     const detail = stepDetail(run, step);
     detail.classList.add("pipe-detail");
