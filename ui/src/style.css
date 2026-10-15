@@ -1178,7 +1178,7 @@ body {
   display: block;
 }
 
-/* 鸣谢名单：每个名字是可点的（有首页 → 跳首页；没首页 → 喷字符泡泡）。 */
+/* 鸣谢名单：每个名字是可点的（有首页 → 跳首页；没首页 → 喷字符泡泡）。外观对齐落款的 GitHub 外链。 */
 .thanks-list {
   display: flex;
   flex-wrap: wrap;
@@ -1188,8 +1188,8 @@ body {
 
 .thanks-name {
   font: inherit;
-  font-size: var(--fs-md);
-  color: var(--accent);
+  font-size: var(--fs-sm);
+  color: var(--muted);
   background: none;
   border: none;
   padding: 0;
@@ -1199,10 +1199,10 @@ body {
 }
 
 .thanks-name:hover {
-  text-decoration: underline;
+  color: var(--text);
 }
 
-/* 字符泡泡：从被点名字上方原地冒出一串、上浮淡出后自删（装配见 main.ts 的 burstBubbles）。
+/* 字符泡泡：从鼠标点击处冒出、由透明变不透明并上浮（装配见 main.ts 的 burstBubbles）。
    fixed 定位到视口、pointer-events:none 不挡任何点击；横向漂移量由 --dx 给。 */
 .thanks-bubble {
   position: fixed;
@@ -1216,9 +1216,9 @@ body {
 @keyframes thanks-float {
   0% {
     opacity: 0;
-    transform: translate(-50%, 8px) scale(0.5);
+    transform: translate(-50%, 0) scale(0.5);
   }
-  20% {
+  25% {
     opacity: 1;
   }
   100% {

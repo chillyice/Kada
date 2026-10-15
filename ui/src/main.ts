@@ -5015,8 +5015,8 @@ function isFormTarget(t: EventTarget | null): boolean {
   );
 }
 
-// 鸣谢名单：写死在前端（纯展示，不进 config）。有「首页」的名字点击跳首页；没设首页的点一下从
-// 名字上方喷一串向上漂浮的字符泡泡。只有「胡萝北」喷爱心，其余喷感谢 / 尊敬的 emoji 与颜文字。
+// 鸣谢名单：写死在前端（纯展示，不进 config）。有「首页」的名字点击跳首页；没设首页的点一下从鼠标
+// 点击处喷一串向上漂浮的字符泡泡。只有「胡萝北」喷爱心，其余喷感谢 / 尊敬的 emoji 与颜文字。
 type ThanksEntry = { name: string; homepage?: string; hearts?: boolean };
 const THANKS: ThanksEntry[] = [{ name: "大爷" }, { name: "胡萝北", hearts: true }];
 
@@ -5029,13 +5029,12 @@ const THANKS_HEARTS = [
   "(♡˙︶˙♡)", "(´▽`ʃ♡ƪ)",
 ];
 
-// 从被点的名字上方喷一串字符泡泡：随机字符、随机横向漂移与字号，CSS 上浮淡出后自删。
-function burstBubbles(from: HTMLElement, pool: string[]) {
-  const r = from.getBoundingClientRect();
+// 从鼠标点击处喷一串字符泡泡：随机字符、随机横向漂移与字号，由透明变不透明并上浮，动画结束自删。
+function burstBubbles(x: number, y: number, pool: string[]) {
   for (let i = 0; i < 12; i++) {
     const b = el("span", "thanks-bubble", pool[Math.floor(Math.random() * pool.length)]);
-    b.style.left = `${r.left + r.width / 2}px`;
-    b.style.top = `${r.top}px`;
+    b.style.left = `${x}px`;
+    b.style.top = `${y}px`;
     b.style.setProperty("--dx", `${Math.round((Math.random() - 0.5) * 120)}px`);
     b.style.fontSize = `${16 + Math.random() * 12}px`;
     b.style.animationDelay = `${i * 40}ms`;
@@ -5059,7 +5058,9 @@ function renderThanks() {
       const b = el("button", "thanks-name", t.name) as HTMLButtonElement;
       b.type = "button";
       b.title = "点一下";
-      b.addEventListener("click", () => burstBubbles(b, t.hearts ? THANKS_HEARTS : THANKS_THANKS));
+      b.addEventListener("click", (e) =>
+        burstBubbles(e.clientX, e.clientY, t.hearts ? THANKS_HEARTS : THANKS_THANKS),
+      );
       return b;
     }),
   );
