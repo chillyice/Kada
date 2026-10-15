@@ -124,6 +124,10 @@ type Settings = {
     scale: number;
     opacity: number;
   };
+  /**
+   * 片段市场的索引地址（规划 7.2-㉕）：一份能下载到的静态 JSON；缺字段 / 空串 = 用后端内置默认。
+   */
+  snippet_index_url?: string;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -1592,6 +1596,139 @@ async function exportFragment(picks: SnippetPick[]) {
     toast(`已导出 ${n} 项到 ${path}（对方用「导入配置 → 合并」即可）`);
   } catch (e) {
     toast(`导出失败: ${e}`);
+  }
+}
+
+// ---- 片段市场（规划 7.2-㉕）：浏览索引 / 搜索 / 一键安装 ----
+//
+// 没有服务端：索引是一份能下载到的 JSON（地址在设置里，默认指向仓库的 snippets/index.json），
+// 搜索在本地做——几百条以内不值得为它加一个服务端。
+
+type IndexEntry = {
+  name: string;
+  url: string;
+  description?: string;
+  author?: string;
+  tags?: string[];
+};
+
+// 片段下载结果（后端 `fetch_snippet`）：清洗后的条目 + 原文（装的时候回传原文，
+// 保证「看到什么装什么」）。
+type SnippetFetch = {
+  text: string;
+  preview: { shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[] };
+};
+
+let marketEntries: IndexEntry[] = [];
+// 预览框点「安装」时要用：null = 没待装的片段。
+let snippetPending: { text: string; name: string } | null = null;
+
+async function openMarket() {
+  document.getElementById("market-modal")!.classList.remove("hidden");
+  const note = document.getElementById("market-note")!;
+  const list = document.getElementById("market-list")!;
+  note.textContent = "正在拉取索引…";
+  list.replaceChildren();
+  try {
+    marketEntries = await invoke<IndexEntry[]>("fetch_snippet_index");
+    const set = cfg.settings.snippet_index_url?.trim();
+    note.textContent = `共 ${marketEntries.length} 条 · 索引：${set || "内置地址"}`;
+  } catch (e) {
+    marketEntries = [];
+    note.textContent = `拉取失败：${e}（可在「片段索引地址」里换一个）`;
+  }
+  renderMarket();
+}
+
+function hideMarket() {
+  document.getElementById("market-modal")!.classList.add("hidden");
+}
+
+function renderMarket() {
+  const q = (document.getElementById("market-search") as HTMLInputElement).value
+    .trim()
+    .toLowerCase();
+  const list = document.getElementById("market-list")!;
+  const hit = marketEntries.filter((e) =>
+    !q || [e.name, e.description ?? "", e.author ?? "", ...(e.tags ?? [])].join(" ").toLowerCase().includes(q),
+  );
+  if (!hit.length) {
+    list.replaceChildren(el("p", "market-empty", q ? "没有匹配的片段" : "索引里一条片段也没有"));
+    return;
+  }
+  list.replaceChildren(...hit.map(marketCard));
+}
+
+function marketCard(e: IndexEntry): HTMLElement {
+  const card = el("div", "market-card");
+  const head = el("div", "market-card-head");
+  const btn = el("button", "primary", "安装…") as HTMLButtonElement;
+  btn.addEventListener("click", () => void previewSnippet(e));
+  head.append(el("span", "market-name", e.name), el("span", "flex-spacer"), btn);
+  card.append(head);
+  if (e.description) card.append(el("div", "market-desc", e.description));
+  const meta = [e.author, ...(e.tags ?? [])].filter(Boolean).join(" · ");
+  if (meta) card.append(el("div", "market-meta", meta));
+  return card;
+}
+
+// 片段装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
+function actionCanRun(a: Action): boolean {
+  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url")
+    return true;
+  if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
+  if (a.type === "parallel") return a.actions.some(actionCanRun);
+  return false;
+}
+
+async function previewSnippet(e: IndexEntry) {
+  try {
+    const r = await invoke<SnippetFetch>("fetch_snippet", { url: e.url });
+    const p = r.preview;
+    const total = p.shortcuts.length + p.remaps.length + p.expansions.length;
+    snippetPending = { text: r.text, name: e.name };
+    document.getElementById("snippet-name")!.textContent = `${e.name}：共 ${total} 条`;
+    const lines: HTMLElement[] = [];
+    for (const s of p.shortcuts)
+      lines.push(
+        el(
+          "li",
+          undefined,
+          `快捷键 ${s.triggers.join(" / ")}${s.name ? ` · ${s.name}` : ""} → ${s.actions
+            .map(actionSummary)
+            .join(" → ")}`,
+        ),
+      );
+    for (const r2 of p.remaps)
+      lines.push(el("li", undefined, `改键 ${r2.from} → ${remapSummary(r2)}`));
+    for (const x of p.expansions)
+      lines.push(el("li", undefined, `文本扩展 ${x.trigger} → ${x.replace.slice(0, 40)}`));
+    document.getElementById("snippet-list")!.replaceChildren(...lines);
+    const warn = document.getElementById("snippet-warn")!;
+    const risky = p.shortcuts.some((s) => s.actions.some(actionCanRun));
+    warn.classList.toggle("hidden", !risky);
+    if (risky) warn.textContent = "⚠ 这个片段含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。";
+    document.getElementById("snippet-modal")!.classList.remove("hidden");
+  } catch (err) {
+    toast(`片段下载失败：${err}`);
+  }
+}
+
+function hideSnippetPreview() {
+  document.getElementById("snippet-modal")!.classList.add("hidden");
+  snippetPending = null;
+}
+
+async function confirmSnippetInstall() {
+  const pending = snippetPending;
+  if (!pending) return;
+  hideSnippetPreview();
+  try {
+    const r = await invoke<ImportOutcome>("install_snippet", { text: pending.text });
+    await load();
+    showImportResult(r);
+  } catch (e) {
+    toast(`安装失败: ${e}`);
   }
 }
 
@@ -4209,6 +4346,9 @@ function syncSettings() {
   // 缺字段的老配置按默认「剪贴板粘贴」显示，与后端 serde default 一致。
   (document.getElementById("set-text-inject") as HTMLSelectElement).value =
     cfg.settings.text_inject_mode ?? "clipboard";
+  // 索引地址：老配置没有这个字段，显示空 = 用内置默认（后端也是这个口径）。
+  (document.getElementById("set-snippet-index") as HTMLInputElement).value =
+    cfg.settings.snippet_index_url ?? "";
 }
 
 function bindSettings() {
@@ -4274,9 +4414,24 @@ function bindSettings() {
     cfg.settings.text_inject_mode = textInject.value as "clipboard" | "unicode";
     void save();
   });
+  // 索引地址：留空 = 内置默认（后端把空串也当默认，别让人以为索引被关掉了）。
+  const snippetIndex = document.getElementById("set-snippet-index") as HTMLInputElement;
+  snippetIndex.addEventListener("change", () => {
+    cfg.settings.snippet_index_url = snippetIndex.value.trim();
+    void save();
+  });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
   document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
+  document.getElementById("open-market")!.addEventListener("click", () => void openMarket());
+  // 片段市场：搜索是本地过滤（索引已全量拿在手上），改输入框就重画列表。
+  document.getElementById("market-search")!.addEventListener("input", renderMarket);
+  document.getElementById("market-reload")!.addEventListener("click", () => void openMarket());
+  document.getElementById("market-close")!.addEventListener("click", hideMarket);
+  document.getElementById("market-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideMarket);
+  document.getElementById("snippet-install")!.addEventListener("click", () => void confirmSnippetInstall());
+  document.getElementById("snippet-cancel")!.addEventListener("click", hideSnippetPreview);
+  document.getElementById("snippet-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideSnippetPreview);
   document.getElementById("check-update")!.addEventListener("click", () => {
     void invoke("check_update");
   });

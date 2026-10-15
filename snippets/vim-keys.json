@@ -1,0 +1,60 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "Vim 光标移动",
+    "description": "按住 F1 / 长按 F2 锁定后，HJKL 变方向键；不用 vim 也能用上 vim 的手感。层内只放改键，退层即失效。",
+    "author": "Kada",
+    "tags": ["vim", "改键", "层", "方向键"]
+  },
+  "layers": [{ "id": "snip-vim", "name": "Vim 光标层", "mark": "🧭" }],
+  "remaps": [
+    {
+      "name": "F1 按住进入 Vim 光标层",
+      "from": "F1",
+      "to": "",
+      "hold_layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "F2 长按锁定 Vim 光标层",
+      "from": "F2",
+      "to": "",
+      "lock_layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "H → 行首",
+      "from": "H",
+      "to": "Home",
+      "layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "L → 行尾",
+      "from": "L",
+      "to": "End",
+      "layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "J → 下",
+      "from": "J",
+      "to": "Down",
+      "layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "K → 上",
+      "from": "K",
+      "to": "Up",
+      "layer": "snip-vim",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    }
+  ]
+}

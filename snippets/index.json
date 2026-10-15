@@ -1,0 +1,52 @@
+{
+  "version": 1,
+  "snippets": [
+    {
+      "name": "常用中文热串",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/phrases.json",
+      "description": "写文档 / 聊天高频短语与日期时间：;ok、;thx、;brb、;addr、;sig、;date、;time。触发词后打空格 / 回车 / Tab 展开。",
+      "author": "Kada",
+      "tags": [
+        "热串",
+        "文本扩展",
+        "中文"
+      ]
+    },
+    {
+      "name": "词级跳转（Ctrl+Alt+方向）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/word-jump.json",
+      "description": "Windows 上 Ctrl+Alt+左右切虚拟桌面、和编辑器里的词级跳转撞车；改成注入 Ctrl+左右，各编辑器通用。",
+      "author": "Kada",
+      "tags": [
+        "快捷键",
+        "编辑器",
+        "跳转",
+        "keys"
+      ]
+    },
+    {
+      "name": "CapsLock 双用：短按 Esc / 长按 Ctrl",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/caps-esc-ctrl.json",
+      "description": "tap-hold 经典用法：小拇指够得到的大键，平时当 Esc（Vim / 终端），按住当 Ctrl 组合键。",
+      "author": "Kada",
+      "tags": [
+        "capslock",
+        "改键",
+        "tap-hold",
+        "vim"
+      ]
+    },
+    {
+      "name": "Vim 光标移动",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/vim-keys.json",
+      "description": "按住 F1 / 长按 F2 锁定后，HJKL 变方向键；不用 vim 也能用上 vim 的手感。层内只放改键，退层即失效。",
+      "author": "Kada",
+      "tags": [
+        "vim",
+        "改键",
+        "层",
+        "方向键"
+      ]
+    }
+  ]
+}

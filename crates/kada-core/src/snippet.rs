@@ -19,6 +19,65 @@ use serde::{Deserialize, Serialize};
 
 use crate::Config;
 
+/// 在线索引的格式版本（索引文件顶层 `version`）。老客户端读到更大的版本会直接拒绝，
+/// 而不是按老字段猜——猜错的代价是装上一堆用户看不懂的条目。
+pub const SNIPPET_INDEX_VERSION: u32 = 1;
+
+/// 内置索引地址（设置页可改，别处自建索引就填自己的）。指向本仓库的 `snippets/index.json`，
+/// 由 `scripts/build-snippet-index.mjs` 从 `snippets/*.json` 生成——**没有任何服务端**：
+/// 索引就是一份能 GET 到的静态 JSON。
+pub const DEFAULT_SNIPPET_INDEX_URL: &str =
+    "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/index.json";
+
+/// 索引里的一条片段（展示用；片段本体是另一个 JSON，走现有「导入 → 合并」）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct IndexEntry {
+    /// 展示名（列表 / 搜索都靠它）。
+    pub name: String,
+    /// 片段 JSON 的地址（绝对 URL）。
+    pub url: String,
+    /// 一句话说明，可空。
+    #[serde(default)]
+    pub description: String,
+    /// 分享者，可空。
+    #[serde(default)]
+    pub author: String,
+    /// 搜索关键词，可空。
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// 索引文件本体（顶层）。`snippets` 之外的字段忽略，方便索引方再塞自己的东西。
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SnippetIndex {
+    #[serde(default = "default_snippet_index_version")]
+    pub version: u32,
+    #[serde(default)]
+    pub snippets: Vec<IndexEntry>,
+}
+
+/// `SnippetIndex.version` 的缺省值（缺 `version` 的旧索引按 v1 读）。
+pub fn default_snippet_index_version() -> u32 {
+    SNIPPET_INDEX_VERSION
+}
+
+/// 解析索引文本：结构不对 / 版本过新报错；缺名字或地址的条目丢掉（半个条目在列表里没法点）。
+pub fn parse_snippet_index(text: &str) -> Result<Vec<IndexEntry>, String> {
+    let idx: SnippetIndex =
+        serde_json::from_str(text).map_err(|e| format!("索引解析失败：{e}"))?;
+    if idx.version > SNIPPET_INDEX_VERSION {
+        return Err(format!(
+            "索引格式版本 v{} 过新（当前支持到 v{}），请更新 Kada",
+            idx.version, SNIPPET_INDEX_VERSION
+        ));
+    }
+    Ok(idx
+        .snippets
+        .into_iter()
+        .filter(|e| !e.name.trim().is_empty() && !e.url.trim().is_empty())
+        .collect())
+}
+
 /// 片段里点名的是哪一类条目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -178,5 +237,32 @@ mod tests {
         assert_eq!(back.shortcuts.len(), 1);
         assert_eq!(back.shortcuts[0].name.as_deref(), Some("备份"));
         assert!(back.remaps.is_empty() && back.folders.is_empty());
+    }
+
+    #[test]
+    fn index_parses_and_drops_incomplete_entries() {
+        let text = serde_json::json!({
+            "version": 1,
+            "snippets": [
+                { "name": "Vim 光标", "url": "https://x/vim.json", "tags": ["vim"] },
+                { "name": "没有地址", "url": "  " },
+                { "name": "", "url": "https://x/a.json" }
+            ]
+        })
+        .to_string();
+        let entries = parse_snippet_index(&text).unwrap();
+        assert_eq!(entries.len(), 1, "缺名字 / 缺地址的条目没法点，直接丢");
+        assert_eq!(entries[0].name, "Vim 光标");
+        assert!(entries[0].description.is_empty() && entries[0].author.is_empty());
+        assert_eq!(entries[0].tags, vec!["vim".to_string()]);
+    }
+
+    #[test]
+    fn index_rejects_future_version_and_garbage() {
+        let future = serde_json::json!({ "version": SNIPPET_INDEX_VERSION + 1, "snippets": [] });
+        assert!(parse_snippet_index(&future.to_string()).unwrap_err().contains("过新"));
+        assert!(parse_snippet_index("not json").is_err());
+        // 缺 version 的索引按 v1 读（默认走 default_snippet_index_version）。
+        assert!(parse_snippet_index(r#"{"snippets":[]}"#).is_ok());
     }
 }

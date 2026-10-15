@@ -1,0 +1,24 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "常用中文热串",
+    "description": "写文档 / 聊天高频短语与日期时间：;ok、;thx、;brb、;addr、;sig、;date、;time。触发词后打空格 / 回车 / Tab 展开。",
+    "author": "Kada",
+    "tags": ["热串", "文本扩展", "中文"]
+  },
+  "expansions": [
+    { "name": ";ok", "trigger": ";ok", "replace": "好的，收到。", "enabled": true },
+    { "name": ";thx", "trigger": ";thx", "replace": "谢谢！", "enabled": true },
+    { "name": ";brb", "trigger": ";brb", "replace": "马上回来。", "enabled": true },
+    { "name": ";addr", "trigger": ";addr", "replace": "某市某区某路 88 号", "enabled": true },
+    {
+      "name": ";sig",
+      "trigger": ";sig",
+      "replace": "此致\n敬礼\n—— 来自咔哒 Kada",
+      "enabled": true
+    },
+    { "name": ";date", "trigger": ";date", "replace": "{date}", "enabled": true },
+    { "name": ";time", "trigger": ";time", "replace": "{time}", "enabled": true },
+    { "name": ";clip", "trigger": ";clip", "replace": "{clipboard}", "enabled": true }
+  ]
+}

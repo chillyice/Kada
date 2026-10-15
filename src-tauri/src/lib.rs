@@ -25,9 +25,10 @@ use kada_actions::{
     RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
-    detect_conflicts, matches, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
-    Key, Modifier, RawEvent, Settings, Severity, Shortcut, SnippetPick, TextInjectMode, Trigger,
-    TriggerContext, Vars, SYSTEM_SHORTCUTS,
+    detect_conflicts, matches, parse_snippet_index, sanitize_config, snippet, snippet_title, Action,
+    Config, Conflict, IndexEntry, Key, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
+    ShortcutItem, SnippetPick, TextExpansion, TextInjectMode, Trigger, TriggerContext, Vars,
+    DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -2179,6 +2180,87 @@ mod tests {
         }
     }
 
+    /// 片段市场（7.2-㉕）：索引 / 片段的地址只收 http(s)。设置里那个字符串不该变成读本地
+    /// 文件的口子（`file://`、`\\?\C:\...` 之类一律拒在下载之前）。
+    #[test]
+    fn snippet_download_only_accepts_http_urls() {
+        for bad in [
+            "file:///C:/Windows/System32/config/SAM",
+            r"\\?\C:\secrets.json",
+            "ftp://example.com/index.json",
+            "",
+        ] {
+            let err = tauri::async_runtime::block_on(http_get_text(bad)).unwrap_err();
+            assert!(err.contains("不是 http"), "{bad} 应被拒：{err}");
+        }
+    }
+
+    /// 片段市场（7.2-㉕）端到端：真起一个本地 HTTP 服务，把仓库里的 `snippets/` 当托管端，
+    /// 走一遍「下载 → 解析索引 → 下载片段 → 清洗 → 预览」——顺带钉住「仓库里那几份片段
+    /// 文件本身就是合法的 `Config`」（字段名写错的话 serde 会静默忽略，装出来是空壳）。
+    #[test]
+    fn snippet_market_serves_repo_snippets_over_http() {
+        let dir = format!("{}/../snippets", env!("CARGO_MANIFEST_DIR"));
+        let (base, stop) = serve_dir(&dir);
+
+        let index = tauri::async_runtime::block_on(http_get_text(&format!("{base}/index.json"))).unwrap();
+        let entries = parse_snippet_index(&index).unwrap();
+        assert!(!entries.is_empty(), "仓库里的索引没有条目");
+
+        // 索引里的 url 指向 GitHub raw（上线才是那个地址），这里换成同一个本地服务：逐条下载，
+        // 钉住「仓库里每份片段都是合法且非空的 `Config`」（字段名写错 serde 会静默忽略，
+        // 装出来是个空壳，而用户只会觉得「片段市场是坏的」）。
+        for e in &entries {
+            let file = e.url.rsplit('/').next().unwrap();
+            let got = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/{file}")))
+                .unwrap_or_else(|err| panic!("片段 {file} 下载/解析失败：{err}"));
+            let n = got.preview.shortcuts.len() + got.preview.remaps.len() + got.preview.expansions.len();
+            assert!(n > 0, "片段 {file} 清洗后一条条目都不剩");
+        }
+
+        let fetched =
+            tauri::async_runtime::block_on(fetch_snippet(format!("{base}/caps-esc-ctrl.json"))).unwrap();
+        let remap = &fetched.preview.remaps[0];
+        assert_eq!(remap.from, "CapsLock");
+        assert_eq!(remap.tap.as_deref(), Some("Escape"));
+        assert_eq!(remap.hold.as_deref(), Some("Ctrl"));
+        assert!(fetched.preview.shortcuts.is_empty());
+
+        // 层片段：被引用的层必须一起带过来（否则装进去层引用被清成基础层 = 静默改行为）。
+        let vim = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/vim-keys.json"))).unwrap();
+        assert_eq!(vim.preview.remaps.len(), 6);
+        assert!(fetched.text.len() > 0 && !vim.text.is_empty());
+        stop.store(true, Ordering::Relaxed);
+    }
+
+    /// 单线程的「静态文件服务」：回一个请求就够测试用（每条连接单独 spawn）。
+    fn serve_dir(dir: &str) -> (String, Arc<AtomicBool>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("端口绑定失败");
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let stop = Arc::new(AtomicBool::new(false));
+        let dir = dir.to_string();
+        let flag = stop.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                let Ok(mut s) = stream else { continue };
+                use std::io::{BufRead, BufReader, Write};
+                let mut line = String::new();
+                BufReader::new(&s).read_line(&mut line).unwrap_or_default();
+                let path = line.split_whitespace().nth(1).unwrap_or("/").to_string();
+                let body = std::fs::read(format!("{dir}{path}")).unwrap_or_default();
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(&body));
+            }
+        });
+        (base, stop)
+    }
+
     /// 取 `marker` 起到其后第一个 `];` / `};` 之间的源码片段。
     fn region<'a>(src: &'a str, marker: &str) -> &'a str {
         let start = src
@@ -3360,6 +3442,37 @@ struct ImportOutcome {
     backup: Option<String>,
 }
 
+/// 把一份「来路不同的子集配置」合并进当前配置并落盘——「导入配置 → 合并」「载入示例配置」
+/// 「从片段市场安装片段」三条路共用这一条：只增不删、不碰本机设置、坏条目清洗后逐条报出
+/// （口径见 [`kada_core::merge_configs`]）。
+///
+/// 落盘口径与 [`set_config`] 一致：写盘 + 改内存 + 给外部修改监听销账同持 `cfg_watch` 锁。
+fn merge_into_config(
+    app: &tauri::AppHandle,
+    state: &KadaState,
+    incoming: Config,
+) -> Result<ImportOutcome, String> {
+    let (incoming, mut notes) = sanitize_config(&incoming);
+    let current = state.config.read().unwrap().clone();
+    let (merged, report) = kada_core::merge_configs(&current, &incoming);
+    let added = report.added(); // 先取计数，再把 skipped 移进 notes（部分移动后不能再借 report）
+    notes.extend(report.skipped);
+    // 合并保留本机设置，自启按现值同步（不做系统层改动，只是让状态机与配置一致）。
+    let autostart = current.settings.autostart;
+
+    let mut watch = state.cfg_watch.lock().unwrap();
+    config_io::save(&state.file, &merged)?;
+    *state.config.write().unwrap() = merged;
+    watch.adopt_own_write(&state.file);
+    drop(watch);
+    sync_autostart(app, autostart);
+    // 合并不碰 settings，提示框可见性不会变——不需要 apply_hints_visible 那条对齐路径。
+    if let Ok(snapshot) = state.config.read() {
+        let _ = app.emit("config-updated", &*snapshot);
+    }
+    Ok(ImportOutcome { mode: "merge".into(), added, notes, backup: None })
+}
+
 /// 从指定路径导入配置。
 ///
 /// 两种方式：
@@ -3386,31 +3499,25 @@ fn import_config(
 
     let s = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
     let imported: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
-    let (incoming, mut notes) = sanitize_config(&imported);
+    if !replace {
+        // 合并交给共用的落地路径（导入 / 载入示例 / 安装片段同一条）：它自己清洗、自己落盘。
+        return merge_into_config(&app, &state, imported);
+    }
 
-    let (next, added, autostart, backup) = if replace {
-        let backup = config_io::archive_copy(&state.file, config_io::PRE_IMPORT_MARK);
-        // 留档是尽力而为（可能没配置可读或写不进去），失败要说一声：`save` 那层的 `.bak`
-        // 仍是被覆盖内容的回滚点，所以不为它中断导入。
-        if backup.is_none() && state.file.exists() {
-            notes.push("导入前的配置留档失败（配置仍已替换；可回滚到 config.json.bak）".into());
-        }
-        let added = incoming.folders.len()
-            + incoming.layers.len()
-            + incoming.shortcuts.len()
-            + incoming.remaps.len()
-            + incoming.expansions.len();
-        let autostart = incoming.settings.autostart;
-        (incoming, added, autostart, backup)
-    } else {
-        let current = state.config.read().unwrap().clone();
-        let (merged, report) = kada_core::merge_configs(&current, &incoming);
-        let added = report.added(); // 先取计数，再把 skipped 移进 notes（部分移动后不能再借 report）
-        notes.extend(report.skipped);
-        // 合并保留本机设置，自启按现值同步（不做系统层改动，只是让状态机与配置一致）。
-        let autostart = current.settings.autostart;
-        (merged, added, autostart, None)
-    };
+    let (incoming, mut notes) = sanitize_config(&imported);
+    let backup = config_io::archive_copy(&state.file, config_io::PRE_IMPORT_MARK);
+    // 留档是尽力而为（可能没配置可读或写不进去），失败要说一声：`save` 那层的 `.bak`
+    // 仍是被覆盖内容的回滚点，所以不为它中断导入。
+    if backup.is_none() && state.file.exists() {
+        notes.push("导入前的配置留档失败（配置仍已替换；可回滚到 config.json.bak）".into());
+    }
+    let added = incoming.folders.len()
+        + incoming.layers.len()
+        + incoming.shortcuts.len()
+        + incoming.remaps.len()
+        + incoming.expansions.len();
+    let autostart = incoming.settings.autostart;
+    let next = incoming;
 
     // 与 set_config 同一套口径：写盘 + 改内存 + 给监听销账同持一把锁（导入也是一种「自己写的盘」）。
     let hints_before = state.config.read().unwrap().settings.hints.visible;
@@ -3447,31 +3554,7 @@ fn load_sample_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, KadaState>,
 ) -> Result<ImportOutcome, String> {
-    let incoming = kada_core::sample::sample_config();
-    let (incoming, mut notes) = sanitize_config(&incoming);
-    let current = state.config.read().unwrap().clone();
-    let (merged, report) = kada_core::merge_configs(&current, &incoming);
-    let added = report.added();
-    notes.extend(report.skipped);
-    let autostart = current.settings.autostart;
-
-    // 与 set_config 同一套落盘口径：写盘 + 改内存 + 给监听销账同持一把锁。
-    let mut watch = state.cfg_watch.lock().unwrap();
-    config_io::save(&state.file, &merged)?;
-    *state.config.write().unwrap() = merged;
-    watch.adopt_own_write(&state.file);
-    drop(watch);
-    sync_autostart(&app, autostart);
-    // 合并不碰 settings，提示框可见性不会变——不需要 apply_hints_visible 那条对齐路径。
-    if let Ok(snapshot) = state.config.read() {
-        let _ = app.emit("config-updated", &*snapshot);
-    }
-    Ok(ImportOutcome {
-        mode: "merge".into(),
-        added,
-        notes,
-        backup: None,
-    })
+    merge_into_config(&app, &state, kada_core::sample::sample_config())
 }
 
 /// 导出配置片段（规划 7.2-㉕，配置分享 / 片段市场）：把点名的那几条（单条、多选、或某个
@@ -3509,6 +3592,124 @@ fn export_fragment(
     let json = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
     std::fs::write(&path, json).map_err(|e| format!("写入失败：{e}"))?;
     Ok(n)
+}
+
+// ---- 片段市场（规划 7.2-㉕ 在线索引） ----
+//
+// 没有服务端：索引就是一份能 GET 到的静态 JSON（默认指向本仓库 `snippets/index.json`，
+// 设置里可改），里面的每条指向一个片段文件——片段文件本身仍是「子集 Config + kada_snippet」，
+// 安装走的是和「导入配置 → 合并」同一条落地路径。
+
+/// 片段下载的时限与体积上限：一份索引 / 一个片段都是几百 KB 量级，超了当坏文件处理。
+const SNIPPET_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
+const SNIPPET_MAX_BYTES: usize = 4 * 1024 * 1024;
+
+/// 下载一段文本（索引 / 片段本体）。
+///
+/// 只收 http(s)：设置里的这个字符串不该变成读本地文件的口子（`file://` 之类一律拒）。
+/// 体积上限是「下完再判」——几百 KB 的上限下没必要为流式计数多写一层。
+async fn http_get_text(url: &str) -> Result<String, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err(format!("不是 http(s) 地址：{url}"));
+    }
+    // reqwest 用的是 `rustls-no-provider`：TLS 后端由**进程级** crypto provider 决定。updater
+    // 是自己在建 client 前才装的 provider——没检查过更新的进程里没人装过，这里建 client 会
+    // 直接 panic。装一次即可（已装时静默跳过）。
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    let client = reqwest::Client::builder()
+        .timeout(SNIPPET_FETCH_TIMEOUT)
+        .user_agent(concat!("kada/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("网络初始化失败：{e}"))?;
+    let resp = client
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("下载失败：{e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("下载失败：HTTP {}", resp.status()));
+    }
+    let body = resp.bytes().await.map_err(|e| format!("下载中断：{e}"))?;
+    if body.len() > SNIPPET_MAX_BYTES {
+        return Err(format!("内容太大（{} MB），不像是索引或片段", body.len() / 1024 / 1024));
+    }
+    String::from_utf8(body.to_vec()).map_err(|_| "下载内容不是 UTF-8 文本".to_string())
+}
+
+/// 索引地址：设置里留空等价于「用内置默认」（见 `Settings::snippet_index_url`）。
+fn snippet_index_url(state: &KadaState) -> String {
+    let url = state.config.read().unwrap().settings.snippet_index_url.trim().to_string();
+    if url.is_empty() {
+        DEFAULT_SNIPPET_INDEX_URL.to_string()
+    } else {
+        url
+    }
+}
+
+/// 拉取片段索引（浏览 / 搜索 / 一键安装都从它出发）。地址取设置里的索引地址。
+#[tauri::command]
+async fn fetch_snippet_index(
+    state: tauri::State<'_, KadaState>,
+) -> Result<Vec<IndexEntry>, String> {
+    let url = snippet_index_url(&state);
+    let text = http_get_text(&url).await?;
+    let entries = parse_snippet_index(&text)?;
+    if entries.is_empty() {
+        return Err(format!("索引里一条片段也没有（{url}）"));
+    }
+    Ok(entries)
+}
+
+/// 一个片段的下载结果：原文 + 清洗后的条目。
+///
+/// 装的时候回传 `text` 而不是重新下载：用户确认时看到的正是要装进去的那份字节，
+/// 中间不会换成另一份内容（片段是别人托管的文件，改内容是常事）。
+#[derive(Serialize)]
+struct SnippetFetch {
+    text: String,
+    preview: SnippetPreview,
+}
+
+/// 片段预览：条目原样交给前端渲染（前端已有各条类的展示与动作摘要，后端不重复造一遍）。
+#[derive(Serialize)]
+struct SnippetPreview {
+    shortcuts: Vec<ShortcutItem>,
+    remaps: Vec<Remap>,
+    expansions: Vec<TextExpansion>,
+}
+
+/// 下载一个片段并给出预览，**不落盘**。
+///
+/// 预览这步不能省：片段能带命令 / 脚本动作，等于「装进来就会跑」，必须让人先看清里面是什么。
+#[tauri::command]
+async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
+    let text = http_get_text(&url).await?;
+    let part: Config = serde_json::from_str(&text).map_err(|e| format!("片段解析失败：{e}"))?;
+    let (part, _ignored) = sanitize_config(&part);
+    if part.shortcuts.is_empty() && part.remaps.is_empty() && part.expansions.is_empty() {
+        return Err("片段里没有可用的条目（全是坏条目或本来就是空的）".into());
+    }
+    Ok(SnippetFetch {
+        text,
+        preview: SnippetPreview {
+            shortcuts: part.shortcuts,
+            remaps: part.remaps,
+            expansions: part.expansions,
+        },
+    })
+}
+
+/// 把预览时拿到的片段文本合并进配置：与「导入配置 → 合并」同一口径（只增不删、不碰设置）。
+#[tauri::command]
+fn install_snippet(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    text: String,
+) -> Result<ImportOutcome, String> {
+    let part: Config = serde_json::from_str(&text).map_err(|e| format!("片段解析失败：{e}"))?;
+    merge_into_config(&app, &state, part)
 }
 
 /// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
@@ -3658,6 +3859,9 @@ pub fn run() {
             get_conflicts,
             export_config,
             export_fragment,
+                fetch_snippet_index,
+                fetch_snippet,
+                install_snippet,
             import_config,
             load_sample_config,
             set_paused,

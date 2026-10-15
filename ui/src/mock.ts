@@ -285,6 +285,62 @@ case "run_entry":
         // 导出片段：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
         case "export_fragment":
           return (args?.picks as unknown[] | undefined)?.length ?? 0;
+        // 片段市场：演示模式没有网络，给一份样例索引 + 样例片段，好让市场列表与安装预览能验收。
+        // 片段里特意放一条命令动作——安装预览的「会执行东西」警示就是给它看的。
+        case "fetch_snippet_index":
+          return [
+            {
+              name: "Vim 光标移动",
+              description: "HJKL 移到行首 / 行尾 / 上 / 下",
+              author: "Kada",
+              tags: ["vim", "改键"],
+              url: "https://demo.invalid/vim.json",
+            },
+            {
+              name: "常用中文短语",
+              description: "写周报 / 提 PR / 甩锅 三件套",
+              author: "Kada",
+              tags: ["文本扩展"],
+              url: "https://demo.invalid/phrases.json",
+            },
+          ];
+        case "fetch_snippet":
+          return args?.url?.toString().includes("phrases")
+            ? {
+                text: JSON.stringify({ demo: true }),
+                preview: {
+                  shortcuts: [],
+                  remaps: [],
+                  expansions: [
+                    { trigger: ";pr", replace: "PR 已提交，麻烦 review 一下 🙏", folder: null, enabled: true },
+                    { trigger: ";ok", replace: "好的，收到", folder: null, enabled: true },
+                  ],
+                },
+              }
+            : {
+                text: JSON.stringify({ demo: true }),
+                preview: {
+                  shortcuts: [
+                    {
+                      name: "打开终端",
+                      folder: null,
+                      layer: null,
+                      triggers: ["Ctrl+Alt+T"],
+                      enabled: true,
+                      actions: [
+                        { type: "command", shell: "cmd", command: "start wt", show_output: false, var: "" },
+                      ],
+                    },
+                  ],
+                  remaps: [
+                    { from: "H", to: "Home", tap: null, hold: null, layer: null, hold_layer: null, folder: null },
+                    { from: "L", to: "End", tap: null, hold: null, layer: null, hold_layer: null, folder: null },
+                  ],
+                  expansions: [],
+                },
+              };
+        case "install_snippet":
+          return { mode: "merge", added: 3, notes: [], backup: null };
         case "start_record":
           return null;
         case "stop_record":

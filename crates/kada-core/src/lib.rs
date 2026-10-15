@@ -147,7 +147,10 @@ pub use merge::{merge_configs, MergeReport};
 
 /// 配置片段（分享用）：摘出被点名的条目组成可分享的子集配置（见规划 7.2-㉕）。
 mod snippet;
-pub use snippet::{snippet, snippet_title, PickKind, SnippetPick};
+pub use snippet::{
+    parse_snippet_index, snippet, snippet_title, IndexEntry, PickKind, SnippetIndex, SnippetPick,
+    DEFAULT_SNIPPET_INDEX_URL, SNIPPET_INDEX_VERSION,
+};
 
 /// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
 pub mod sample;
@@ -1724,6 +1727,18 @@ pub struct Settings {
     /// 和一个只在生效时才出现的状态指示不同——不请自来地占着屏幕比「找不到入口」更烦人。
     #[serde(default)]
     pub hints: HintsWindow,
+    /// 片段市场的索引地址（规划 7.2-㉕）：一份能 GET 到的静态 JSON，浏览器 / 搜索 /
+    /// 一键安装都靠它，别处自建索引就填自己的。
+    ///
+    /// 缺字段取 [`DEFAULT_SNIPPET_INDEX_URL`]（本仓库的 `snippets/index.json`）。
+    /// 填空白串等价于「用内置默认」：留着旧值删干净反而会让人以为索引被关掉了。
+    #[serde(default = "default_snippet_index_url")]
+    pub snippet_index_url: String,
+}
+
+/// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
+pub fn default_snippet_index_url() -> String {
+    DEFAULT_SNIPPET_INDEX_URL.to_string()
 }
 
 /// `show_status_hud` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1758,6 +1773,7 @@ impl Default for Settings {
             show_status_hud: true,
             text_inject_mode: TextInjectMode::Clipboard,
             hints: HintsWindow::default(),
+            snippet_index_url: default_snippet_index_url(),
         }
     }
 }

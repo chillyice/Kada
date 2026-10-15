@@ -3263,6 +3263,70 @@ pre.msg-v {
   display: none;
 }
 
+/* ---------- 片段市场（索引列表 + 安装预览） ---------- */
+.market-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.market-search {
+  margin: 0;
+  flex: 1;
+}
+
+.market-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.market-card {
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.market-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.market-name {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.market-desc {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.market-meta,
+.market-empty {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.market-empty {
+  margin-top: 0;
+  padding: 18px 0;
+  text-align: center;
+}
+
+/* 索引地址是很长的 URL：给它有限宽度，别把左边的说明挤没了 */
+.set-row > input[type="text"] {
+  flex: 0 1 340px;
+  margin-left: auto;
+  font-size: var(--fs-sm);
+}
+
 .modal-foot {
   display: flex;
   align-items: center;

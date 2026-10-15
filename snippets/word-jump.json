@@ -1,0 +1,29 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "词级跳转（Ctrl+Alt+方向）",
+    "description": "Windows 上 Ctrl+Alt+左右切虚拟桌面、和编辑器里的词级跳转撞车；改成注入 Ctrl+左右，各编辑器通用。",
+    "author": "Kada",
+    "tags": ["快捷键", "编辑器", "跳转", "keys"]
+  },
+  "shortcuts": [
+    {
+      "name": "上一个词",
+      "triggers": ["Ctrl+Alt+Left"],
+      "actions": [{ "type": "keys", "keys": ["Ctrl", "Left"] }],
+      "enabled": true
+    },
+    {
+      "name": "下一个词",
+      "triggers": ["Ctrl+Alt+Right"],
+      "actions": [{ "type": "keys", "keys": ["Ctrl", "Right"] }],
+      "enabled": true
+    },
+    {
+      "name": "选中整行",
+      "triggers": ["Ctrl+Alt+Up"],
+      "actions": [{ "type": "keys", "keys": ["Home", "Shift", "End"] }],
+      "enabled": true
+    }
+  ]
+}

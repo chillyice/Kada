@@ -31,7 +31,7 @@
 crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、片段摘取
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
-  src/snippet.rs            # 配置片段（分享用）：按「类别+下标」摘出条目 + 被引用的层，见 AGENTS「铁律」
+  src/snippet.rs            # 配置片段（分享用）：按「类别+下标」摘出条目 + 被引用的层；片段市场的索引模型/解析，见 AGENTS「铁律」
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本
@@ -48,9 +48,11 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页；草稿隔离 + 未保存守卫
+  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页/片段市场；草稿隔离 + 未保存守卫
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
   src/style.css             # 深色 UI 样式
+snippets/                   # 片段市场的内置索引托管：*.json 片段 + index.json（脚本生成，客户端只 GET）
+scripts/                    # build-snippet-index.mjs（片段→索引，CI 用 --check 查同步）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）
 .github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
 ```
 

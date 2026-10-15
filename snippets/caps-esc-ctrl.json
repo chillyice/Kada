@@ -1,0 +1,21 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "CapsLock 双用：短按 Esc / 长按 Ctrl",
+    "description": "tap-hold 经典用法：小拇指够得到的大键，平时当 Esc（Vim / 终端），按住当 Ctrl 组合键。",
+    "author": "Kada",
+    "tags": ["capslock", "改键", "tap-hold", "vim"]
+  },
+  "remaps": [
+    {
+      "name": "CapsLock：短按 Esc / 长按 Ctrl",
+      "description": "短按（200 毫秒内）出 Escape，按住则把 Ctrl 加到下一个键上",
+      "from": "CapsLock",
+      "to": "",
+      "tap": "Escape",
+      "hold": "Ctrl",
+      "tap_timeout_ms": 200,
+      "enabled": true
+    }
+  ]
+}

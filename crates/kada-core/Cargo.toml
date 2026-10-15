@@ -5,9 +5,10 @@ edition = "2021"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
+# 解析在线索引（snippet.rs 的 `parse_snippet_index`）：纯 JSON 反序列化，不引任何别的。
+serde_json = "1"
 
 [dev-dependencies]
-serde_json = "1"
 
 [features]
 # `automation`：命令 / 文件 / 应用 / 条件 / 变量 / 脚本 等「动作自动化」schema 变体。

@@ -48,6 +48,11 @@ jobs:
       - name: Frontend build
         run: npm --prefix ui run build
 
+      # 片段市场（7.2-㉕）：片段市场没有服务端，索引就是仓库里这份 JSON，忘了重新生成
+      # 就等于「市场里少了一条 / 指向了已删掉的文件」，客户端不会报错（只有用户点不动）。
+      - name: Snippet index in sync
+        run: node scripts/build-snippet-index.mjs --check
+
       - name: Cargo tests (all crates)
         shell: bash
         run: |
