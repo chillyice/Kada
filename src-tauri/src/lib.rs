@@ -10,7 +10,7 @@
 //! 可编译运行（改键/快捷键/录制暂不可用，托盘与配置界面可用）。
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
@@ -1843,6 +1843,7 @@ fn save_settings_patch(
     // 广播给别的窗口：主界面的 `cfg.settings.hints` 已经旧了，它下次保存会把旧值写回去
     // （用户在提示框里拖了位置、旋了滚轮，回设置页改个快捷键就被打回原形）。
     let _ = app.emit("config-updated", &cfg);
+    push_sync(&cfg);
     Ok(())
 }
 
@@ -3222,6 +3223,53 @@ mod tests {
             HintsHover::Passing
         );
     }
+
+    /// 同步存档（规划 7.2-㉝）：`sync_file` 拼固定文件名、空白目录视为未配置；
+    /// `push_sync` 把整份配置原子写到该目录（写出去的是能解析回来的同一份配置）。
+    #[test]
+    fn sync_archive_writes_config_to_dir() {
+        let mut cfg = Config::default();
+        assert!(sync_file(&cfg).is_none(), "未配置同步目录时不该有任何同步文件");
+        cfg.settings.sync_dir = Some("   ".into());
+        assert!(sync_file(&cfg).is_none(), "空白目录视为未配置");
+
+        let dir = std::env::temp_dir().join(format!("kada_sync_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        cfg.settings.sync_dir = Some(dir.display().to_string());
+        cfg.settings.action_timeout_ms = 1234;
+
+        assert_eq!(sync_file(&cfg).unwrap(), dir.join(SYNC_FILE_NAME));
+        push_sync(&cfg);
+
+        let text = std::fs::read_to_string(dir.join(SYNC_FILE_NAME)).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.settings.action_timeout_ms, 1234, "同步出去的是整份配置");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// 同步存档目录里写死的文件名：换机器只要在设置里选同一个目录就能找到同一份配置。
+const SYNC_FILE_NAME: &str = "kada-config.json";
+
+/// 同步存档文件的完整路径；未配置（`None` / 空白）时返回 `None`。
+fn sync_file(cfg: &Config) -> Option<PathBuf> {
+    let dir = cfg.settings.sync_dir.as_deref()?.trim();
+    (!dir.is_empty()).then(|| Path::new(dir).join(SYNC_FILE_NAME))
+}
+
+/// 把配置同步写一份到「同步存档」目录（OneDrive 等）；未配置则什么都不做。
+///
+/// 与本地配置同一套 `config_io::save`（原子写 + `.bak`）：同步目录里也留一份可回滚副本，
+/// 半截 JSON 不会被同步客户端传到别处。**尽力而为**——失败只打日志、绝不拦本地保存
+/// （与 [`sync_autostart`] 同一取舍：OneDrive 目录临时不在 / 被占用，都不该让「改个快捷键」
+/// 失败）。需要明确反馈时走 `sync_now` 命令。
+fn push_sync(cfg: &Config) {
+    let Some(file) = sync_file(cfg) else { return };
+    if let Err(e) = config_io::save(&file, cfg) {
+        eprintln!("同步存档写入失败（{}）: {e}", file.display());
+    }
 }
 
 /// 读取当前配置。
@@ -3257,6 +3305,7 @@ fn set_config(
     // 外观）——`set_config` 只改内存不通知的话，提示框会一直显示保存前的旧快捷键。
     if let Ok(snapshot) = state.config.read() {
         let _ = app.emit("config-updated", &*snapshot);
+        push_sync(&snapshot);
     }
     if hints_visible != hints_before {
         apply_hints_visible(&app, hints_visible);
@@ -3420,6 +3469,43 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
     out
 }
 
+/// 立即把当前配置同步写一份到「同步存档」目录，返回写入的文件路径（前端据此给明确反馈）。
+/// 与自动推送（每次保存时的 [`push_sync`]）不同：这条失败要报错给用户看。
+#[tauri::command]
+fn sync_now(state: tauri::State<'_, KadaState>) -> Result<String, String> {
+    let cfg = state.config.read().unwrap().clone();
+    let file = sync_file(&cfg).ok_or("尚未设置同步存档目录")?;
+    config_io::save(&file, &cfg)?;
+    Ok(file.display().to_string())
+}
+
+/// 「从同步存档恢复」用：返回存档文件的路径，前端拿它走既有的导入流程（合并 / 替换 + 结果弹窗）。
+/// 未配置目录 / 存档文件不存在都报错。
+#[tauri::command]
+fn sync_import_path(state: tauri::State<'_, KadaState>) -> Result<String, String> {
+    let cfg = state.config.read().unwrap().clone();
+    let file = sync_file(&cfg).ok_or("尚未设置同步存档目录")?;
+    if !file.exists() {
+        return Err(format!("同步存档里还没有配置：{}", file.display()));
+    }
+    Ok(file.display().to_string())
+}
+
+/// 探测本机 OneDrive 目录（给「选择目录」对话框做默认位置）：Windows 读 OneDrive 客户端写的
+/// 环境变量（个人版 / 商业版 / 消费者版都试），macOS / Linux 猜常见的 `~/OneDrive`；都没有则 `None`。
+#[tauri::command]
+fn default_sync_dir(app: tauri::AppHandle) -> Option<String> {
+    for key in ["OneDrive", "OneDriveCommercial", "OneDriveConsumer"] {
+        if let Ok(dir) = std::env::var(key) {
+            if !dir.trim().is_empty() && Path::new(&dir).is_dir() {
+                return Some(dir);
+            }
+        }
+    }
+    let p = app.path().home_dir().ok()?.join("OneDrive");
+    p.is_dir().then(|| p.display().to_string())
+}
+
 /// 导出当前配置到指定路径（JSON）。
 #[tauri::command]
 fn export_config(state: tauri::State<'_, KadaState>, path: String) -> Result<(), String> {
@@ -3469,6 +3555,7 @@ fn merge_into_config(
     // 合并不碰 settings，提示框可见性不会变——不需要 apply_hints_visible 那条对齐路径。
     if let Ok(snapshot) = state.config.read() {
         let _ = app.emit("config-updated", &*snapshot);
+        push_sync(&snapshot);
     }
     Ok(ImportOutcome { mode: "merge".into(), added, notes, backup: None })
 }
@@ -3531,6 +3618,7 @@ fn import_config(
     // 导入也可能换掉提示框的设置（替换导入会连设置一起覆盖）：与 set_config 走同一条对齐路径。
     if let Ok(snapshot) = state.config.read() {
         let _ = app.emit("config-updated", &*snapshot);
+        push_sync(&snapshot);
     }
     if hints_after != hints_before {
         apply_hints_visible(&app, hints_after);
@@ -3858,6 +3946,9 @@ pub fn run() {
             set_config,
             get_conflicts,
             export_config,
+            sync_now,
+            sync_import_path,
+            default_sync_dir,
             export_fragment,
                 fetch_snippet_index,
                 fetch_snippet,

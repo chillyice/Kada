@@ -282,6 +282,14 @@ case "run_entry":
         // 导出：对话框现在返回路径（不是取消），导出必须成功收场，否则演示成「导出坏了」。
         case "export_config":
           return null;
+        // 同步存档（规划 7.2-㉝）：演示模式没有真实 OneDrive 目录——探测恒返回「没找到」，
+        // 推送 / 取路径返回一个假路径，好让「设置目录 → 立即同步 / 从存档恢复」的界面流程走得通。
+        case "default_sync_dir":
+          return null;
+        case "sync_now":
+          return "D:\\OneDrive\\kada-config.json";
+        case "sync_import_path":
+          return "D:\\OneDrive\\kada-config.json";
         // 导出片段：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
         case "export_fragment":
           return (args?.picks as unknown[] | undefined)?.length ?? 0;

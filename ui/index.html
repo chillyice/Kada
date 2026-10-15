@@ -407,12 +407,29 @@
                     </span>
                     <input type="text" id="set-snippet-index" spellcheck="false" />
                   </label>
+                  <div class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">同步存档</span>
+                      <span class="set-sub" id="sync-dir">未设置 —— 选一个目录（如 OneDrive）即可自动存一份</span>
+                    </span>
+                    <button id="sync-choose">选择目录…</button>
+                    <button id="sync-clear">清除</button>
+                  </div>
+                  <div class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">手动同步</span>
+                      <span class="set-sub">立即同步 = 把当前配置再写一份过去；从存档恢复 = 用目录里的那份合并 / 覆盖回来</span>
+                    </span>
+                    <button id="sync-now">立即同步</button>
+                    <button id="sync-restore">从存档恢复…</button>
+                  </div>
                 </div>
                 <details class="hint-fold">
                   <summary>导入与分享的规则</summary>
                   <p class="hint">改动即时保存并生效。导入可选「合并」（只新增，触发键撞车的条目跳过、本机设置不动）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
                   <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为片段</strong>），或目录行 ⋯ → <strong>导出该目录为片段</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。片段不含设置、也不含目录分组（目录是本机的）。</p>
                   <p class="hint">片段市场没有服务端：索引就是一个放在网上、能下载到的 JSON 文件，索引里每条再指向一个片段文件。想收录自己的片段，把导出的片段文件按索引格式加进索引即可（内置索引在本仓库 <code>snippets/</code>，由 <code>scripts/build-snippet-index.mjs</code> 生成）。</p>
+                  <p class="hint"><strong>同步存档</strong>：选一个目录（如你的 OneDrive 文件夹），之后每次配置落盘都会在那目录里自动存一份 <code>kada-config.json</code>（保留一份 <code>.bak</code>）。换机器时在新机器的设置里选<strong>同一个目录</strong>，点「从存档恢复」即可把配置搬过去（可选合并或替换）。走的是本地文件夹、不登录任何账号——云端上传下载由 OneDrive 客户端自己负责。</p>
                 </details>
               </section>
 

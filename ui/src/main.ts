@@ -128,6 +128,11 @@ type Settings = {
    * 片段市场的索引地址（规划 7.2-㉕）：一份能下载到的静态 JSON；缺字段 / 空串 = 用后端内置默认。
    */
   snippet_index_url?: string;
+  /**
+   * 同步存档目录（规划 7.2-㉝）：每次配置落盘额外写一份 `kada-config.json` 到这里
+   * （如 OneDrive 文件夹）；空 / 缺字段 = 关闭。
+   */
+  sync_dir?: string | null;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -1326,6 +1331,7 @@ function listRow(li: HTMLElement, obj: object, kind: ListKind, idx: number) {
       togglePicked(obj);
       return;
     }
+    pickAnchor = obj; // 记录锚点，之后的 Shift 点击从这条开始范围选
     void requestOpenDetail(idx, false, kind);
   });
   li.addEventListener("contextmenu", (e) => {
@@ -1335,15 +1341,18 @@ function listRow(li: HTMLElement, obj: object, kind: ListKind, idx: number) {
   });
 }
 
-// Shift 范围选：按当前可见行的顺序，把锚点到目标之间整段收进选择集。
+// Shift 范围选：按当前可见行的顺序，把锚点到目标之间整段收进选择集。**不跨目录**——
+// 锚点与目标不在同一目录时只选目标本身（Shift 与 Ctrl 同为「在列表里选条目」，只是批量）。
 function pickRange(target: object) {
   const objs = [...document.querySelectorAll<HTMLElement>("#shortcut-list .row")]
     .map(rowObject)
     .filter((o): o is object => o !== null);
+  const folder = (target as { folder?: string | null }).folder ?? null;
+  const inSame = (o: object) => ((o as { folder?: string | null }).folder ?? null) === folder;
   const a = pickAnchor ? objs.indexOf(pickAnchor) : -1;
   const b = objs.indexOf(target);
-  if (a < 0 || b < 0) picked.add(target);
-  else for (const o of objs.slice(Math.min(a, b), Math.max(a, b) + 1)) picked.add(o);
+  if (a < 0 || b < 0 || !inSame(pickAnchor as object)) picked.add(target);
+  else for (const o of objs.slice(Math.min(a, b), Math.max(a, b) + 1)) if (inSame(o)) picked.add(o);
   renderListPane();
 }
 
@@ -1537,6 +1546,12 @@ function folderMenuItems(f: Folder): MenuItem[] {
       label: `导出该目录为片段（${inFolder.length} 项）`,
       run: () => void exportFragment(inFolder),
     });
+  // 目录级启停：一次作用到该目录（含子目录）里的全部条目。
+  const n = folderEntryCounts(collectDescendantIds(f.id)).reduce((sum, [, c]) => sum + c, 0);
+  if (n) {
+    items.push({ label: `启用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, true) });
+    items.push({ label: `禁用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, false) });
+  }
   items.push({ label: "删除", run: () => void deleteFolder(f.id) });
   return items;
 }
@@ -2533,6 +2548,21 @@ async function setPickedEnabled(v: boolean) {
   if (ok) toast(`已${v ? "启用" : "停用"} ${n} 项`);
 }
 
+// 目录级启停：作用到该目录（含全部子目录）里的每一条。
+async function setFolderEnabled(rootId: string, v: boolean) {
+  const ids = collectDescendantIds(rootId);
+  let n = 0;
+  for (const [, list] of FOLDER_ENTRY_KINDS)
+    for (const e of list())
+      if (e.folder && ids.has(e.folder)) {
+        e.enabled = v;
+        n++;
+      }
+  if (!n) return;
+  const ok = await save();
+  if (ok) toast(`已${v ? "启用" : "停用"} ${n} 项`);
+}
+
 function renderDetail() {
   const entry = isListSection(section);
   document.getElementById("detail-entry")!.classList.toggle("hidden", !entry);
@@ -2787,6 +2817,7 @@ function renderKeyMenu(filter: string) {
 function pickRemapKey(k: string) {
   const input = document.getElementById("remap-from") as HTMLInputElement;
   input.value = k;
+  showFieldError(input, "");
   if (remapDraft) remapDraft.from = k;
   closeKeyMenu();
   refreshDirty();
@@ -2829,7 +2860,7 @@ function openDetail(
     fillShortcutEditor();
   } else if (section === "remaps") {
     remapDraft = isNew
-      ? { name: null, description: null, folder: folderId, from: "CapsLock", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
+      ? { name: null, description: null, folder: folderId, from: "", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
       : deepClone(cfg.remaps[i]);
     if (isNew && seed) {
       remapDraft.name = seed.name ?? null;
@@ -2903,7 +2934,16 @@ async function saveShortcutDetail(): Promise<boolean> {
 async function saveRemapDetail(): Promise<boolean> {
   if (section !== "remaps" || !remapDraft) return false;
   remapDraft.description = domValue("edit-desc") || null;
-  remapDraft.from = domValue("remap-from");
+  remapDraft.from = domValue("remap-from").trim();
+  // 原键是必填：留空（新增时的默认）会被后端 sanitize 整条丢掉（toast 只报「原键无法解析」，
+  // 用户以为存了其实条目没了）。保存前拦住并把输入框标红。别名（Escape 等）交给后端解析。
+  if (!remapDraft.from) {
+    const input = document.getElementById("remap-from") as HTMLInputElement;
+    showFieldError(input, "请选择原键");
+    input.focus();
+    toast("请先选择原键");
+    return false;
+  }
   remapDraft.tap = domValue("remap-tap") || null;
   remapDraft.hold = domValue("remap-hold") || null;
   remapDraft.oneshot = domValue("remap-oneshot") || null;
@@ -4349,6 +4389,9 @@ function syncSettings() {
   // 索引地址：老配置没有这个字段，显示空 = 用内置默认（后端也是这个口径）。
   (document.getElementById("set-snippet-index") as HTMLInputElement).value =
     cfg.settings.snippet_index_url ?? "";
+  // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
+  document.getElementById("sync-dir")!.textContent =
+    cfg.settings.sync_dir?.trim() || "未设置 —— 选一个目录（如 OneDrive）即可自动存一份";
 }
 
 function bindSettings() {
@@ -4421,6 +4464,13 @@ function bindSettings() {
     void save();
   });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
+  document.getElementById("sync-choose")!.addEventListener("click", () => void chooseSyncDir());
+  document.getElementById("sync-clear")!.addEventListener("click", () => {
+    cfg.settings.sync_dir = null;
+    void save();
+  });
+  document.getElementById("sync-now")!.addEventListener("click", () => void syncNow());
+  document.getElementById("sync-restore")!.addEventListener("click", () => void syncRestore());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
   document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
   document.getElementById("open-market")!.addEventListener("click", () => void openMarket());
@@ -4451,6 +4501,46 @@ async function exportConfig() {
     toast("已导出到 " + path);
   } catch (e) {
     toast(`导出失败: ${e}`);
+  }
+}
+
+// 选同步存档目录：以本机探测到的 OneDrive 目录作默认位置（后端 `default_sync_dir`），
+// 选定后写进配置并保存——保存本身就会立刻推一份过去（后端 `push_sync`，规划 7.2-㉝）。
+async function chooseSyncDir() {
+  const def = (await invoke<string | null>("default_sync_dir").catch(() => null)) ?? undefined;
+  const dir = await openFile({ directory: true, defaultPath: def });
+  if (!dir || Array.isArray(dir)) return;
+  cfg.settings.sync_dir = dir;
+  await save();
+}
+
+// 手动推送：把当前配置立刻写一份到同步存档目录，成功给明确反馈（与自动推送的静默失败区分）。
+async function syncNow() {
+  try {
+    const path = await invoke<string>("sync_now");
+    toast("已同步到 " + path);
+  } catch (e) {
+    toast(`同步失败: ${e}`);
+  }
+}
+
+// 从存档恢复：后端给存档文件路径，走既有的「导入配置」流程（合并 / 替换 + 结果弹窗）。
+async function syncRestore() {
+  let path: string;
+  try {
+    path = await invoke<string>("sync_import_path");
+  } catch (e) {
+    toast(`无法读取同步存档: ${e}`);
+    return;
+  }
+  const mode = await askImportMode(fileName(path));
+  if (!mode) return;
+  try {
+    const r = await invoke<ImportOutcome>("import_config", { path, mode });
+    await load();
+    showImportResult(r);
+  } catch (e) {
+    toast(`恢复失败: ${e}`);
   }
 }
 

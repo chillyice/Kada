@@ -1734,6 +1734,13 @@ pub struct Settings {
     /// 填空白串等价于「用内置默认」：留着旧值删干净反而会让人以为索引被关掉了。
     #[serde(default = "default_snippet_index_url")]
     pub snippet_index_url: String,
+    /// 「同步存档」目录（如 OneDrive 里的一个文件夹）：非空时，每次配置落盘都会把同一份 JSON
+    /// 额外写一份 `kada-config.json` 过去，换机器 / 重装后可从它恢复（规划 7.2-㉝）。
+    ///
+    /// 走的是**本地文件夹**，不登录任何账号——云端同步交给 OneDrive 等客户端自己做。空 / 缺字段
+    /// = 关闭同步（口径同 `wake_key`：`None` 且不把字段写进 JSON）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sync_dir: Option<String>,
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1774,6 +1781,7 @@ impl Default for Settings {
             text_inject_mode: TextInjectMode::Clipboard,
             hints: HintsWindow::default(),
             snippet_index_url: default_snippet_index_url(),
+            sync_dir: None,
         }
     }
 }
