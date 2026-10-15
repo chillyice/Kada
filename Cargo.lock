@@ -1934,7 +1934,6 @@ dependencies = [
  "kada-core",
  "kada-hook",
  "reqwest",
- "ring",
  "rustls",
  "serde",
  "serde_json",
