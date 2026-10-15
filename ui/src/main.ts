@@ -5159,10 +5159,11 @@ function bind() {
     applyEntryTab();
   });
 
-  // 改键「原键」输入框 = 可过滤的按键下拉。
+  // 改键「原键」输入框 = 可过滤的按键下拉。点开（focus / click）先列全部按键，
+  // 而不是拿框里已有的键去过滤（否则选好一个键后再点开只剩那一个）。
   const fromInput = document.getElementById("remap-from") as HTMLInputElement;
-  fromInput.addEventListener("focus", () => renderKeyMenu(fromInput.value));
-  fromInput.addEventListener("click", () => renderKeyMenu(fromInput.value));
+  fromInput.addEventListener("focus", () => renderKeyMenu(""));
+  fromInput.addEventListener("click", () => renderKeyMenu(""));
   fromInput.addEventListener("input", () => {
     if (remapDraft) remapDraft.from = fromInput.value;
     renderKeyMenu(fromInput.value);
