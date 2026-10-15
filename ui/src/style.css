@@ -1178,6 +1178,55 @@ body {
   display: block;
 }
 
+/* 鸣谢名单：每个名字是可点的（有首页 → 跳首页；没首页 → 喷字符泡泡）。 */
+.thanks-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.thanks-name {
+  font: inherit;
+  font-size: var(--fs-md);
+  color: var(--accent);
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.thanks-name:hover {
+  text-decoration: underline;
+}
+
+/* 字符泡泡：从被点名字上方原地冒出一串、上浮淡出后自删（装配见 main.ts 的 burstBubbles）。
+   fixed 定位到视口、pointer-events:none 不挡任何点击；横向漂移量由 --dx 给。 */
+.thanks-bubble {
+  position: fixed;
+  transform: translate(-50%, 0);
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 9999;
+  animation: thanks-float 1.5s ease-out forwards;
+}
+
+@keyframes thanks-float {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.5);
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(calc(-50% + var(--dx, 0px)), -120px) scale(1.15);
+  }
+}
+
 .editor-row {
   display: flex;
   flex-direction: column;
