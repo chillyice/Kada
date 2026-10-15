@@ -939,13 +939,24 @@ function codeToKey(code: string): string | null {
 function comboFromEvent(e: KeyboardEvent): string | null {
   const main = codeToKey(e.code);
   if (!main) return null;
-  const parts: string[] = [];
-  if (e.ctrlKey) parts.push("Ctrl");
-  if (e.altKey) parts.push("Alt");
-  if (e.shiftKey) parts.push("Shift");
-  if (e.metaKey) parts.push("Meta");
-  parts.push(main);
-  return parts.join("+");
+  return withMods(e, main);
+}
+
+// 鼠标键 → 键名（DOM `MouseEvent.button`：1=中键、3=后退 MB4、4=前进 MB5）。左/右键（0/2）
+// 不纳入——那是普通点击，不该当触发键，也避免吞掉界面点击。名字与 `kada-core` 的 Key 同名。
+function mouseKeyFromEvent(e: MouseEvent): string | null {
+  switch (e.button) {
+    case 1: return "MouseMiddle";
+    case 3: return "MouseBack";
+    case 4: return "MouseForward";
+    default: return null;
+  }
+}
+
+// 修饰键前缀（Ctrl/Alt/Shift/Meta，顺序同键盘录入）+ 主键；鼠标组合键复用同一口径。
+function withMods(e: KeyboardEvent | MouseEvent, main: string): string {
+  const mods = currentMods(e);
+  return mods ? `${mods}+${main}` : main;
 }
 
 // 录入捕获（组合键/序列/和弦）进行中的解除函数。捕获开始时暂停快捷键（避免自己触发自己），
@@ -977,7 +988,7 @@ function captureHint(text: string | null) {
 function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement) {
   stopCapture();
   btn.disabled = true;
-  captureHint("请按组合键…（Esc 取消）");
+  captureHint("请按组合键或鼠标侧键…（Esc 取消）");
   void invoke("set_paused", { paused: true });
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -989,15 +1000,25 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
       finish();
     }
   };
+  const onMouse = (e: MouseEvent) => {
+    const key = mouseKeyFromEvent(e);
+    if (!key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onCommit(withMods(e, key));
+    finish();
+  };
   const finish = () => {
     activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
+    window.removeEventListener("mousedown", onMouse, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     captureHint(null);
   };
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
+  window.addEventListener("mousedown", onMouse, true);
 }
 
 // 键序列录入：逐键累积 comboFromEvent 出的组合（空格拼接实时预览），Enter 提交、Esc 取消。
@@ -1008,7 +1029,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
   const update = () => {
-    captureHint(steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键序列…（Enter 提交，Esc 取消）");
+    captureHint(steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键或鼠标侧键序列…（Enter 提交，Esc 取消）");
   };
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -1024,15 +1045,25 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
       update();
     }
   };
+  const onMouse = (e: MouseEvent) => {
+    const key = mouseKeyFromEvent(e);
+    if (!key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    steps.push(withMods(e, key));
+    update();
+  };
   const finish = () => {
     activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
+    window.removeEventListener("mousedown", onMouse, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     captureHint(null);
   };
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
+  window.addEventListener("mousedown", onMouse, true);
   update();
 }
 
@@ -1054,7 +1085,7 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
   const update = () => {
     captureHint(held.length
       ? `和弦：${chordText()}（松开提交，Esc 取消）`
-      : "请同时按住多个键…（松开提交，Esc 取消）");
+      : "请同时按住多个键或鼠标侧键…（松开提交，Esc 取消）");
   };
   const EXCLUDED = new Set([
     "ControlLeft", "ControlRight", "AltLeft", "AltRight",
@@ -1081,10 +1112,29 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
       update();
     }
   };
+  // 鼠标键成员：按下加入、松开（与其他成员任一松开一样）提交。
+  const onMouse = (e: MouseEvent) => {
+    const key = mouseKeyFromEvent(e);
+    if (!key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "mouseup") {
+      if (held.length >= 2) onCommit(chordText());
+      finish();
+      return;
+    }
+    if (held.length === 0) mods = currentMods(e);
+    if (!held.includes(key)) {
+      held.push(key);
+      update();
+    }
+  };
   const finish = () => {
     activeCaptureCleanup = null;
     window.removeEventListener("keydown", onKey, true);
     window.removeEventListener("keyup", onKey, true);
+    window.removeEventListener("mousedown", onMouse, true);
+    window.removeEventListener("mouseup", onMouse, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     captureHint(null);
@@ -1092,11 +1142,13 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", onKey, true);
   window.addEventListener("keyup", onKey, true);
+  window.addEventListener("mousedown", onMouse, true);
+  window.addEventListener("mouseup", onMouse, true);
   update();
 }
 
-// 当前按住的修饰键（与后端键名一致：Ctrl / Alt / Shift / Meta）。
-function currentMods(e: KeyboardEvent): string {
+// 当前按住的修饰键（与后端键名一致：Ctrl / Alt / Shift / Meta）。键盘与鼠标事件都有这四个字段。
+function currentMods(e: KeyboardEvent | MouseEvent): string {
   const mods: string[] = [];
   if (e.ctrlKey) mods.push("Ctrl");
   if (e.altKey) mods.push("Alt");
