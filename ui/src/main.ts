@@ -135,6 +135,8 @@ type Settings = {
   sync_dir?: string | null;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
+/** OneDrive 登录状态（后端 `OnedriveStatus`）。 */
+type OnedriveStatus = { configured: boolean; connected: boolean; account: string };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
 type StatusPayload = {
   /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
@@ -724,6 +726,7 @@ let draftBaseline: string | null = null;
 let entryTab: EntryTab = "work";
 let recording = false;
 let conflicts: Conflict[] = [];
+let onedrive: OnedriveStatus = { configured: false, connected: false, account: "" };
 let search = "";
 let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
 let runs: RunRecord[] = []; // 执行记录（最新在前）：一次触发一条
@@ -825,6 +828,7 @@ async function load() {
   runs = await invoke<RunRecord[]>("get_run_records");
   unread = await invoke<boolean>("get_unread");
   updateStatus = await invoke<UpdateStatus>("get_update_status");
+  onedrive = await invoke<OnedriveStatus>("onedrive_status");
   await refreshConflicts();
   render();
   syncSettings();
@@ -4392,6 +4396,22 @@ function syncSettings() {
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
     cfg.settings.sync_dir?.trim() || "未设置 —— 选一个目录（如 OneDrive）即可自动存一份";
+  renderOnedrive();
+}
+
+/** 渲染 OneDrive 登录状态：状态文字 + 按钮可用性（未配应用 ID / 未登录时禁用对应按钮）。 */
+function renderOnedrive() {
+  const text = document.getElementById("onedrive-status")!;
+  text.textContent = !onedrive.configured
+    ? "未配置应用 ID —— 无法登录"
+    : onedrive.connected
+      ? `已登录：${onedrive.account || "（未知账号）"}`
+      : "未登录 —— 登录后可直接同步到云端，不必装 OneDrive 客户端";
+  (document.getElementById("onedrive-connect") as HTMLButtonElement).disabled =
+    !onedrive.configured || onedrive.connected;
+  (document.getElementById("onedrive-logout") as HTMLButtonElement).disabled = !onedrive.connected;
+  (document.getElementById("onedrive-upload") as HTMLButtonElement).disabled = !onedrive.connected;
+  (document.getElementById("onedrive-download") as HTMLButtonElement).disabled = !onedrive.connected;
 }
 
 function bindSettings() {
@@ -4471,6 +4491,10 @@ function bindSettings() {
   });
   document.getElementById("sync-now")!.addEventListener("click", () => void syncNow());
   document.getElementById("sync-restore")!.addEventListener("click", () => void syncRestore());
+  document.getElementById("onedrive-connect")!.addEventListener("click", () => void onedriveConnect());
+  document.getElementById("onedrive-logout")!.addEventListener("click", () => void onedriveLogout());
+  document.getElementById("onedrive-upload")!.addEventListener("click", () => void onedriveUpload());
+  document.getElementById("onedrive-download")!.addEventListener("click", () => void onedriveDownload());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
   document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
   document.getElementById("open-market")!.addEventListener("click", () => void openMarket());
@@ -4541,6 +4565,51 @@ async function syncRestore() {
     showImportResult(r);
   } catch (e) {
     toast(`恢复失败: ${e}`);
+  }
+}
+
+// 登录 OneDrive：开系统浏览器走 OAuth（后端阻塞等回调，最多几分钟），成功后就地刷新状态。
+async function onedriveConnect() {
+  toast("已打开浏览器，请完成 OneDrive 登录…");
+  try {
+    onedrive = await invoke<OnedriveStatus>("onedrive_connect");
+    renderOnedrive();
+    toast(`已登录 OneDrive：${onedrive.account || "（未知账号）"}`);
+  } catch (e) {
+    toast(`登录失败: ${e}`);
+  }
+}
+
+async function onedriveLogout() {
+  try {
+    await invoke("onedrive_disconnect");
+    onedrive = { configured: onedrive.configured, connected: false, account: "" };
+    renderOnedrive();
+    toast("已退出 OneDrive");
+  } catch (e) {
+    toast(`退出失败: ${e}`);
+  }
+}
+
+async function onedriveUpload() {
+  try {
+    const name = await invoke<string>("onedrive_upload");
+    toast(`已上传到 OneDrive：${name}`);
+  } catch (e) {
+    toast(`上传失败: ${e}`);
+  }
+}
+
+// 从云端下载：走既有的「导入配置」流程（合并 / 替换 + 结果弹窗）。
+async function onedriveDownload() {
+  const mode = await askImportMode("OneDrive 云端配置");
+  if (!mode) return;
+  try {
+    const r = await invoke<ImportOutcome>("onedrive_download", { mode });
+    await load();
+    showImportResult(r);
+  } catch (e) {
+    toast(`下载失败: ${e}`);
   }
 }
 

@@ -45,6 +45,9 @@ mod config_io;
 /// 配置外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），与 Tauri 壳解耦、可单测。
 mod config_watch;
 
+/// OneDrive 同步（OAuth2 + PKCE + Graph 仅应用文件夹），与 Tauri 壳解耦、纯逻辑可单测。
+mod onedrive;
+
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use engine::{Engine, HotstringHit, Inject};
 
@@ -3506,6 +3509,85 @@ fn default_sync_dir(app: tauri::AppHandle) -> Option<String> {
     p.is_dir().then(|| p.display().to_string())
 }
 
+/// 本机 OneDrive 令牌文件（与 `config.json` 同目录）。**不是配置的一部分**——不进
+/// `config.json`，也不参与导出 / 同步存档（令牌是设备凭据，不该跟着配置到处跑）。
+fn onedrive_auth_path(state: &KadaState) -> PathBuf {
+    state.file.with_file_name("onedrive-auth.json")
+}
+
+/// OneDrive 登录 / 连接状态（设置页据此渲染）。
+#[derive(Serialize)]
+struct OnedriveStatus {
+    /// 是否配了应用 ID（否则登录按钮点了只会报「未配置」）。
+    configured: bool,
+    /// 是否有本机令牌（已登录）。
+    connected: bool,
+    /// 展示用账号名（邮箱 / 用户名）。
+    account: String,
+}
+
+/// 读取 OneDrive 登录状态。
+#[tauri::command]
+fn onedrive_status(state: tauri::State<'_, KadaState>) -> OnedriveStatus {
+    let auth = onedrive::load(&onedrive_auth_path(&state));
+    OnedriveStatus {
+        configured: !onedrive::CLIENT_ID.is_empty(),
+        connected: auth.is_some(),
+        account: auth.map(|a| a.account).unwrap_or_default(),
+    }
+}
+
+/// 登录 OneDrive：开系统浏览器走 OAuth（授权码 + PKCE，回调走本机回环端口），成功后把
+/// 令牌存本机。等待浏览器回调是阻塞的（最多 5 分钟），故命令是 async。
+#[tauri::command]
+async fn onedrive_connect(state: tauri::State<'_, KadaState>) -> Result<OnedriveStatus, String> {
+    let auth = onedrive::authorize(onedrive::CLIENT_ID).await?;
+    onedrive::save(&onedrive_auth_path(&state), &auth)?;
+    Ok(OnedriveStatus { configured: true, connected: true, account: auth.account })
+}
+
+/// 退出 OneDrive 登录（删除本机令牌）。
+#[tauri::command]
+fn onedrive_disconnect(state: tauri::State<'_, KadaState>) -> Result<(), String> {
+    onedrive::clear(&onedrive_auth_path(&state))
+}
+
+/// 把当前配置上传到 OneDrive 应用私有文件夹（`Apps/Kada/kada-config.json`）。
+#[tauri::command]
+async fn onedrive_upload(state: tauri::State<'_, KadaState>) -> Result<String, String> {
+    let cfg = state.config.read().unwrap().clone();
+    let path = onedrive_auth_path(&state);
+    let mut auth = onedrive::load(&path).ok_or("尚未登录 OneDrive")?;
+    let body = serde_json::to_string_pretty(&cfg)
+        .map_err(|e| e.to_string())?
+        .into_bytes();
+    onedrive::upload(onedrive::CLIENT_ID, &mut auth, body).await?;
+    // 上传可能顺带刷新了令牌：回写（失败不影响这次上传结果）。
+    if let Err(e) = onedrive::save(&path, &auth) {
+        eprintln!("保存刷新后的 OneDrive 令牌失败: {e}");
+    }
+    Ok(onedrive::FILE_NAME.to_string())
+}
+
+/// 从 OneDrive 应用私有文件夹下载配置并应用（合并 / 替换，走 [`apply_import`] 同一条落地路径）。
+#[tauri::command]
+async fn onedrive_download(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    mode: Option<String>,
+) -> Result<ImportOutcome, String> {
+    let replace = parse_import_mode(mode.as_deref())?;
+    let path = onedrive_auth_path(&state);
+    let mut auth = onedrive::load(&path).ok_or("尚未登录 OneDrive")?;
+    let bytes = onedrive::download(onedrive::CLIENT_ID, &mut auth).await?;
+    if let Err(e) = onedrive::save(&path, &auth) {
+        eprintln!("保存刷新后的 OneDrive 令牌失败: {e}");
+    }
+    let imported: Config =
+        serde_json::from_slice(&bytes).map_err(|e| format!("云端配置解析失败：{e}"))?;
+    apply_import(&app, &state, imported, replace)
+}
+
 /// 导出当前配置到指定路径（JSON）。
 #[tauri::command]
 fn export_config(state: tauri::State<'_, KadaState>, path: String) -> Result<(), String> {
@@ -3560,37 +3642,13 @@ fn merge_into_config(
     Ok(ImportOutcome { mode: "merge".into(), added, notes, backup: None })
 }
 
-/// 从指定路径导入配置。
-///
-/// 两种方式：
-/// - `merge`：并进当前配置——**只增不删**，现有条目一条不动；改键按原键、文本扩展按触发词、
-///   快捷键按触发键判重，撞车的保留现有并逐条报出；`settings` 保留本机现值
-///   （口径见 [`kada_core::merge_configs`]）。
-/// - `replace`：整份覆盖（含设置）。因为不可逆，覆盖前先把现有配置复制留档
-///   （`config.json.pre-import-<时间戳>`；随后 `config_io::save` 还会把旧内容留成 `.bak`）。
-///
-/// 两种方式都先对导入内容逐条清洗，坏条目被忽略并报出。
-#[tauri::command]
-fn import_config(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, KadaState>,
-    path: String,
-    mode: Option<String>,
+/// 应用一份**整份配置**（`replace` 语义）：清洗 → 留档 → 覆盖落盘。「导入配置 → 替换」与
+/// 「从 OneDrive 下载 → 替换」共用；口径见 [`import_config`]。
+fn replace_into_config(
+    app: &tauri::AppHandle,
+    state: &KadaState,
+    imported: Config,
 ) -> Result<ImportOutcome, String> {
-    let replace = match mode.as_deref() {
-        Some("merge") => false,
-        // 缺省按整份替换（老前端 / 手调 IPC 的既有行为）。
-        None | Some("replace") => true,
-        Some(other) => return Err(format!("未知的导入方式：{other}")),
-    };
-
-    let s = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
-    let imported: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
-    if !replace {
-        // 合并交给共用的落地路径（导入 / 载入示例 / 安装片段同一条）：它自己清洗、自己落盘。
-        return merge_into_config(&app, &state, imported);
-    }
-
     let (incoming, mut notes) = sanitize_config(&imported);
     let backup = config_io::archive_copy(&state.file, config_io::PRE_IMPORT_MARK);
     // 留档是尽力而为（可能没配置可读或写不进去），失败要说一声：`save` 那层的 `.bak`
@@ -3614,25 +3672,68 @@ fn import_config(
     *state.config.write().unwrap() = next;
     watch.adopt_own_write(&state.file);
     drop(watch);
-    sync_autostart(&app, autostart);
+    sync_autostart(app, autostart);
     // 导入也可能换掉提示框的设置（替换导入会连设置一起覆盖）：与 set_config 走同一条对齐路径。
     if let Ok(snapshot) = state.config.read() {
         let _ = app.emit("config-updated", &*snapshot);
         push_sync(&snapshot);
     }
     if hints_after != hints_before {
-        apply_hints_visible(&app, hints_after);
+        apply_hints_visible(app, hints_after);
     }
     Ok(ImportOutcome {
-        mode: if replace {
-            "replace".into()
-        } else {
-            "merge".into()
-        },
+        mode: "replace".into(),
         added,
         notes,
         backup: backup.map(|p| p.display().to_string()),
     })
+}
+
+/// 按方式把一份**已解析**的配置应用进来：`replace` → [`replace_into_config`]，否则 →
+/// [`merge_into_config`]。[`import_config`] 与「从 OneDrive 下载」共用这条分发。
+fn apply_import(
+    app: &tauri::AppHandle,
+    state: &KadaState,
+    imported: Config,
+    replace: bool,
+) -> Result<ImportOutcome, String> {
+    if replace {
+        replace_into_config(app, state, imported)
+    } else {
+        merge_into_config(app, state, imported)
+    }
+}
+
+/// 解析导入方式字符串：`merge` / `replace`（缺省 replace，老前端 / 手调 IPC 的既有行为）。
+fn parse_import_mode(mode: Option<&str>) -> Result<bool, String> {
+    match mode {
+        Some("merge") => Ok(false),
+        None | Some("replace") => Ok(true),
+        Some(other) => Err(format!("未知的导入方式：{other}")),
+    }
+}
+
+/// 从指定路径导入配置。
+///
+/// 两种方式：
+/// - `merge`：并进当前配置——**只增不删**，现有条目一条不动；改键按原键、文本扩展按触发词、
+///   快捷键按触发键判重，撞车的保留现有并逐条报出；`settings` 保留本机现值
+///   （口径见 [`kada_core::merge_configs`]）。
+/// - `replace`：整份覆盖（含设置）。因为不可逆，覆盖前先把现有配置复制留档
+///   （`config.json.pre-import-<时间戳>`；随后 `config_io::save` 还会把旧内容留成 `.bak`）。
+///
+/// 两种方式都先对导入内容逐条清洗，坏条目被忽略并报出。
+#[tauri::command]
+fn import_config(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    path: String,
+    mode: Option<String>,
+) -> Result<ImportOutcome, String> {
+    let replace = parse_import_mode(mode.as_deref())?;
+    let s = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
+    let imported: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
+    apply_import(&app, &state, imported, replace)
 }
 
 /// 载入内置示例配置（设置页「载入示例配置」）：并入当前配置，走合并语义——只增不删、
@@ -3692,6 +3793,17 @@ fn export_fragment(
 const SNIPPET_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const SNIPPET_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+/// 确保进程装好 rustls 的 crypto provider。
+///
+/// reqwest 用的是 `rustls-no-provider`：TLS 后端由**进程级** crypto provider 决定。updater
+/// 是自己在建 client 前才装的——没检查过更新的进程里没人装过，任何一处建 client（本文件的
+/// 片段下载、`onedrive.rs` 的令牌 / Graph 请求）都会直接 panic。装一次即可（已装时静默跳过）。
+pub(crate) fn ensure_tls_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
 /// 下载一段文本（索引 / 片段本体）。
 ///
 /// 只收 http(s)：设置里的这个字符串不该变成读本地文件的口子（`file://` 之类一律拒）。
@@ -3700,12 +3812,7 @@ async fn http_get_text(url: &str) -> Result<String, String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(format!("不是 http(s) 地址：{url}"));
     }
-    // reqwest 用的是 `rustls-no-provider`：TLS 后端由**进程级** crypto provider 决定。updater
-    // 是自己在建 client 前才装的 provider——没检查过更新的进程里没人装过，这里建 client 会
-    // 直接 panic。装一次即可（已装时静默跳过）。
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
+    ensure_tls_provider();
     let client = reqwest::Client::builder()
         .timeout(SNIPPET_FETCH_TIMEOUT)
         .user_agent(concat!("kada/", env!("CARGO_PKG_VERSION")))
@@ -3949,6 +4056,11 @@ pub fn run() {
             sync_now,
             sync_import_path,
             default_sync_dir,
+            onedrive_status,
+            onedrive_connect,
+            onedrive_disconnect,
+            onedrive_upload,
+            onedrive_download,
             export_fragment,
                 fetch_snippet_index,
                 fetch_snippet,

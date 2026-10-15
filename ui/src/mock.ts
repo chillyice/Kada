@@ -290,6 +290,18 @@ case "run_entry":
           return "D:\\OneDrive\\kada-config.json";
         case "sync_import_path":
           return "D:\\OneDrive\\kada-config.json";
+        // OneDrive OAuth：演示模式没有真实云端与浏览器回调，给一份「已配好应用、未登录 →
+        // 登录即成功」的假状态，好让登录 / 上传 / 下载的界面流程能在纯浏览器里走通。
+        case "onedrive_status":
+          return { configured: true, connected: false, account: "" };
+        case "onedrive_connect":
+          return { configured: true, connected: true, account: "demo@outlook.com" };
+        case "onedrive_disconnect":
+          return null;
+        case "onedrive_upload":
+          return "kada-config.json";
+        case "onedrive_download":
+          return { mode: args?.mode ?? "replace", added: 0, notes: [], backup: null };
         // 导出片段：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
         case "export_fragment":
           return (args?.picks as unknown[] | undefined)?.length ?? 0;

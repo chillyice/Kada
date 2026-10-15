@@ -20,6 +20,9 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # reqwest 选的 TLS 后端由「进程级 crypto provider」决定，而 provider 要有人显式装
 # （updater 是自己在建 client 前才装的，没检查过更新的进程里没人装过）——见 `http_get_text`。
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# OneDrive OAuth（规划 7.2-㉝）：PKCE 要 SHA-256 + 密码学随机。ring 已随上面的 rustls 编进树，
+# 这里只是把它提升为直接依赖（`onedrive.rs` 用 `ring::digest` / `ring::rand`），不新增编译单元。
+ring = "0.17"
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
