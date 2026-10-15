@@ -828,9 +828,9 @@ pub enum Condition {
     NotFrontmostApp { app: String },
     /// 前台窗口标题包含该文本（不区分大小写）。
     WindowTitleContains { text: String },
-    /// 触发键来自某台输入设备（多键盘按设备区分，见规划 7.3-㉓）。
-    /// `id` 与设备标识（Linux evdev 的设备名）按「不区分大小写、含 `*`/`?` 走通配、
-    /// 否则子串」匹配；无设备上下文（Windows / macOS / 取不到设备）时恒不成立。
+    /// 触发键来自某台输入设备（多键盘按设备区分，见规划 7.1-㊷）。
+    /// `id` 与设备标识（Linux evdev 设备名 / Windows HID 设备路径）按「不区分大小写、
+    /// 含 `*`/`?` 走通配、否则子串」匹配；无设备上下文（macOS / 取不到设备）时恒不成立。
     DeviceIs { id: String },
 }
 
@@ -839,7 +839,7 @@ impl Condition {
     /// 在当前变量上下文 + 前台窗口上下文 + 设备上下文下求值。路径类条件支持 `{变量名}` 占位符。
     /// 变量/字段不存在时视为「条件不成立」（返回 false）；前台类条件在无前台上下文
     /// （`frontmost` 为 None，如 Linux/Wayland 受限）时同样视为不成立。设备类条件在无设备
-    /// 上下文（`device` 为 None，如 Windows / macOS）时也不成立。
+    /// 上下文（`device` 为 None，如 macOS）时也不成立。
     pub fn matches(
         &self,
         vars: &Vars,
@@ -3712,7 +3712,7 @@ mod os_and_sanitize_tests {
         assert!(Condition::DeviceIs { id: "AT Translated*".into() }.matches(&Vars::new(), None, dev));
         assert!(Condition::DeviceIs { id: "*Set ? keyboard".into() }.matches(&Vars::new(), None, dev));
 
-        // 无设备上下文（Windows / macOS / 取不到设备）→ 恒不成立
+        // 无设备上下文（macOS / 取不到设备）→ 恒不成立
         assert!(!Condition::DeviceIs { id: "keyboard".into() }.matches(&Vars::new(), None, None));
 
         // 空设备标识 → 校验拒绝

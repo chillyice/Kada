@@ -36,8 +36,8 @@ use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use windows::core::PWSTR;
-use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::core::{w, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::System::RemoteDesktop::{
     WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
     WTSSessionInfoEx, WTSINFOEXW,
@@ -48,6 +48,10 @@ use windows::Win32::System::Threading::{
     PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
+use windows::Win32::UI::Input::{
+    GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT, RAWINPUT,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RIDI_DEVICENAME, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEKEYBOARD,
+};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
@@ -182,6 +186,9 @@ where
 fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
     let tid = unsafe { GetCurrentThreadId() };
     install_hooks()?;
+    // 设备识别旁路（Raw Input，见 [`install_raw_input`]）：尽力而为，起不来只留痕，
+    // 不影响键盘钩子——此时 `current_device()` 恒 None，设备条件退化回「恒不成立」。
+    install_raw_input();
     HOOK_TID.store(tid, Ordering::Relaxed);
     let _ = ready_tx.send(tid);
 
@@ -194,12 +201,18 @@ fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
             reinstall_hooks();
             continue;
         }
+        // Raw Input 事件（设备识别）：只记设备、不派发（窗口是占位，wndproc 是系统 STATIC 的）。
+        if msg.message == WM_INPUT {
+            note_raw_input(msg.lParam);
+            continue;
+        }
         unsafe {
             _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
     }
 
+    destroy_raw_input();
     unhook();
     reset_runtime_state();
     HOOK_TID.store(0, Ordering::Relaxed);
@@ -869,11 +882,138 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
     Some(FrontmostContext { process_name, window_title })
 }
 
-/// 最近一次事件的设备标识。**Windows 恒 `None`**：`WH_KEYBOARD_LL` 拿不到设备信息
-/// （真实区分多键盘要另挂 Raw Input `WM_INPUT` 旁路 + SetupAPI 枚举设备名，见规划
-/// 7.3-㉓ 的后续）。壳层据此把「设备是」条件在本平台标注为不可用。
+/// Raw Input 消息窗口句柄（0 = 没建起来 / 已销毁）。WM_INPUT 发到它、由钩子线程的消息
+/// 循环就地取走（见 [`install_raw_input`] / [`note_raw_input`]）。
+static RAW_WINDOW: AtomicIsize = AtomicIsize::new(0);
+/// 最近一次按键来自哪台设备（Raw Input 设备路径）。仅由 [`note_raw_input`] 写。
+static RAW_LAST_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+/// 设备句柄 → 设备路径的缓存（`GetRawInputDeviceInfoW` 每次分配 + 转换太浪费，一次查询
+/// 后记住）。句柄只在设备在场时有效，拔出后残留条目无害（只被句柄引用）。
+static RAW_DEVICE_NAMES: LazyLock<Mutex<HashMap<isize, String>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// 最近一次按键来自哪台设备（Raw Input 设备接口路径，如
+/// `\\?\HID#VID_046D&PID_C31C&MI_00#...#{...}`）。
+///
+/// `WH_KEYBOARD_LL` 的结构里没有设备信息，故另建一个消息窗口、注册键盘 Raw Input
+/// （`RIDEV_INPUTSINK`）旁路追踪最近一次按键的设备（见 [`install_raw_input`]）。壳层在触发
+/// 事件的回调线程上同步读本值。返回**设备接口路径**（稳定、含 VID/PID）；「设备是」按
+/// 不区分大小写的子串 / 通配匹配，用户不必抄全名。
+///
+/// **已知一跳延迟**：低层钩子回调可能早于同一按键的 `WM_INPUT`，此时读到的是上一个事件的
+/// 设备——连续在同一台键盘上打字完全正确，**切换键盘后的第一个键**可能归到旧设备（触发键
+/// 通常是修饰键之后的那个键，届时已跟上）。注入事件（无设备句柄）不刷新本值。
 pub fn current_device() -> Option<String> {
-    None
+    RAW_LAST_DEVICE.lock().unwrap().clone()
+}
+
+/// 建消息窗口并注册键盘 Raw Input（在钩子线程的消息循环起来之前调用一次）。
+///
+/// 用系统预定义的 `STATIC` 类（`hInstance` 传 NULL 即可），窗口是消息专用
+/// （父窗口 `HWND_MESSAGE`）、从不显示；`WM_INPUT` 在消息循环里被就地取走、不派发给
+/// wndproc。**尽力而为**：建窗 / 注册失败只留痕，不影响键盘钩子——此时 [`current_device`]
+/// 恒 `None`，设备条件退化回「恒不成立」。
+fn install_raw_input() {
+    let hwnd = match unsafe {
+        CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("kada-raw-input"),
+            WINDOW_STYLE(0),
+            0,
+            0,
+            0,
+            0,
+            Some(HWND_MESSAGE),
+            None,
+            None,
+            None,
+        )
+    } {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("kada-hook: 创建 Raw Input 窗口失败（设备条件将不可用）：{e}");
+            return;
+        }
+    };
+    let device = RAWINPUTDEVICE {
+        usUsagePage: 0x01, // Generic Desktop
+        usUsage: 0x06,     // Keyboard
+        dwFlags: RIDEV_INPUTSINK,
+        hwndTarget: hwnd,
+    };
+    match unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) } {
+        Ok(()) => RAW_WINDOW.store(hwnd.0 as isize, Ordering::Relaxed),
+        Err(e) => {
+            eprintln!("kada-hook: 注册键盘 Raw Input 失败（设备条件将不可用）：{e}");
+            unsafe { _ = DestroyWindow(hwnd) };
+        }
+    }
+}
+
+/// 销毁 Raw Input 消息窗口（钩子线程退出时）。
+fn destroy_raw_input() {
+    let hwnd = RAW_WINDOW.swap(0, Ordering::Relaxed);
+    if hwnd != 0 {
+        unsafe { _ = DestroyWindow(HWND(hwnd as *mut c_void)) };
+    }
+    *RAW_LAST_DEVICE.lock().unwrap() = None;
+}
+
+/// 从一条 `WM_INPUT` 里取出设备并刷新「最近设备」。`lparam` 就是 `HRAWINPUT`。
+fn note_raw_input(lparam: LPARAM) {
+    let mut raw = RAWINPUT::default();
+    let mut size = size_of::<RAWINPUT>() as u32;
+    let got = unsafe {
+        GetRawInputData(
+            HRAWINPUT(lparam.0 as *mut c_void),
+            RID_INPUT,
+            Some(&mut raw as *mut RAWINPUT as *mut c_void),
+            &mut size,
+            size_of::<RAWINPUTHEADER>() as u32,
+        )
+    };
+    // 非键盘事件、或读取失败：忽略。
+    if got == u32::MAX || raw.header.dwType != RIM_TYPEKEYBOARD.0 {
+        return;
+    }
+    // 注入事件（SendInput）没有设备句柄：不刷新，免得把「最近设备」指向不存在的设备。
+    let dev = raw.header.hDevice;
+    if dev.0.is_null() {
+        return;
+    }
+    if let Some(name) = device_name(dev) {
+        *RAW_LAST_DEVICE.lock().unwrap() = Some(name);
+    }
+}
+
+/// 设备句柄 → 设备接口路径（带缓存）。取不到返回 None。
+fn device_name(dev: HANDLE) -> Option<String> {
+    let key = dev.0 as isize;
+    if let Some(name) = RAW_DEVICE_NAMES.lock().unwrap().get(&key) {
+        return Some(name.clone());
+    }
+    // 两段式：先问长度（`RIDI_DEVICENAME` 返回**字符数**，不含结尾 NUL），再取名字。
+    let mut len = 0u32;
+    unsafe { GetRawInputDeviceInfoW(Some(dev), RIDI_DEVICENAME, None, &mut len) };
+    if len == 0 {
+        return None;
+    }
+    let mut buf = vec![0u16; len as usize];
+    let n = unsafe {
+        GetRawInputDeviceInfoW(
+            Some(dev),
+            RIDI_DEVICENAME,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            &mut len,
+        )
+    };
+    if n == u32::MAX || n == 0 {
+        return None;
+    }
+    let name = String::from_utf16_lossy(&buf[..n as usize]);
+    RAW_DEVICE_NAMES.lock().unwrap().insert(key, name.clone());
+    Some(name)
 }
 
 /// 由进程 id 取可执行文件名（如 `chrome.exe`）；失败返回 None。
@@ -949,6 +1089,7 @@ mod tests {
     use super::*;
     use kada_core::key_name;
     use std::sync::Arc;
+    use windows::Win32::UI::Input::{GetRawInputDeviceList, RAWINPUTDEVICELIST};
 
     /// 动全局状态的用例必须串行——cargo test 默认多线程并行，两个用例同时改
     /// [`HANDLER`] / [`SWALLOWED`] / [`HELD_KEYS`] / [`REPLACED_DOWN`] 会互相打断
@@ -983,6 +1124,30 @@ mod tests {
         // 鼠标键不是虚拟键码。
         assert_eq!(key_to_vk(Key::MouseBack), None);
         assert_eq!(key_to_vk(Key::MouseMiddle), None);
+    }
+
+    /// `device_name` 的两段式 `GetRawInputDeviceInfoW`（先问长度、再取名字）在真设备上
+    /// 应能取到非空的设备接口路径。环境里没有键盘设备就跳过，不硬失败（免 CI 无 HID 时误红）。
+    #[test]
+    fn raw_input_device_name_resolvable() {
+        let header = size_of::<RAWINPUTDEVICELIST>() as u32;
+        let mut count = 0u32;
+        unsafe { GetRawInputDeviceList(None, &mut count, header) };
+        if count == 0 {
+            return;
+        }
+        let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
+        let got = unsafe { GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, header) };
+        if got == u32::MAX {
+            return;
+        }
+        for d in list.iter().take(got as usize) {
+            if d.dwType == RIM_TYPEKEYBOARD {
+                let name = device_name(d.hDevice).expect("键盘设备应能取到设备路径");
+                assert!(!name.is_empty(), "设备路径不该为空");
+                return;
+            }
+        }
     }
 
     #[test]

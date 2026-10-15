@@ -3696,7 +3696,7 @@ function conditionFields(cond: Condition): HTMLElement {
     const id = el("input", "action-input") as HTMLInputElement;
     id.type = "text";
     id.value = cond.id;
-    id.placeholder = "设备名，如 AT Translated Set 2 keyboard（含 * / ? 走通配，否则子串匹配）";
+    id.placeholder = "设备标识，如 AT Translated Set 2 keyboard 或 VID_046D&PID_C31C（含 * / ? 走通配，否则子串匹配）";
     id.addEventListener("input", () => {
       cond.id = id.value;
     });
@@ -3706,7 +3706,7 @@ function conditionFields(cond: Condition): HTMLElement {
       el(
         "div",
         "unit-hint",
-        "按触发键来自哪台键盘区分（仅 Linux 生效；Windows / macOS 取不到设备，恒走「否则」分支）。",
+        "按触发键来自哪台键盘区分（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。",
       ),
     );
   } else {

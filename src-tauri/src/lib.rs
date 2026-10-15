@@ -1113,7 +1113,8 @@ fn fire(
         },
     );
     // 触发设备在**回调线程上**取（同步）：`current_device` 是「最近一次事件的设备」，
-    // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Windows / macOS 恒 None。
+    // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Linux evdev / Windows
+    // Raw Input 有真值，macOS 恒 None（见 7.2-㊷）。
     let device = input::current_device();
     std::thread::spawn(move || {
         // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，此时注入按键会被
@@ -3456,11 +3457,12 @@ fn config_uses_mouse(cfg: &Config) -> bool {
 /// 当前平台的输入能力声明（[`get_conflicts`] 第④段用，见规划 7.3-⑲）。
 ///
 /// 各平台口径（与钩子层的实际能力一一对应，改钩子时同步这里）：
-/// - **Windows**：前台条件可用；但低层钩子拿不到设备 → 设备条件恒不成立。
+/// - **Windows**：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
+///   见 `kada-hook::win::current_device`）。
 /// - **Linux**：前台窗口取不到（X11 未接 / Wayland 无通用协议）→ 前台类条件恒不成立，
 ///   但设备条件可用（evdev 设备名）；键盘与鼠标键（中键/侧键）监听 + 注入都可用（7.3-㉔）。
 /// - **macOS**：媒体键与 F21~F24 无对应键码，监听与注入都不行；前台走 AX 可用；
-///   设备条件不可用（CGEventTap 不带设备信息）。
+///   设备条件仍不可用（CGEventTap 不带设备信息，见 7.2-㊷）。
 fn platform_caps() -> kada_core::PlatformCaps {
     #[cfg(target_os = "linux")]
     {
@@ -3494,9 +3496,14 @@ fn platform_caps() -> kada_core::PlatformCaps {
             device_conditions: false,
         }
     }
-    // Windows（与其它无输入层平台）：键与前台条件全支持，唯独设备拿不到（`current_device`
-    // 恒 None，见规划 7.3-㉓ 的后续）→ 设备条件标注不可用。
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
+    // 见 `kada-hook::win::current_device`）。
+    #[cfg(target_os = "windows")]
+    {
+        kada_core::PlatformCaps::default()
+    }
+    // 其它无输入层平台：拿不到设备 → 设备条件恒不成立。
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
     {
         kada_core::PlatformCaps {
             device_conditions: false,
@@ -4203,7 +4210,8 @@ pub fn run() {
                     let text_mode = guard.settings.text_inject_mode;
                     // 触发侧 `when` 门控上下文（7.2-㊶）：前台窗口**惰性查询**——只有真的
                     // 命中带 `when` 的条目时才查（macOS 的前台查询走 AX 调用，不该让每次
-                    // 按键都买单）；设备在该事件上同步取（Windows / macOS 恒 None）。
+                    // 按键都买单）；设备在该事件上同步取（Linux evdev / Windows Raw Input
+                    // 有真值，macOS 恒 None，见 7.2-㊷）。
                     let device = input::current_device();
                     let fetch_frontmost = || input::frontmost_context();
                     let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());

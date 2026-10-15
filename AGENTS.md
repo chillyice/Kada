@@ -59,7 +59,7 @@
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
 - **自愈看门狗**（`win.rs`/`macos.rs` 各一套，机制见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**，`start` 另起 1s 巡检线程 + 指数退避。Windows 命中后只投递 `WM_APP_REINSTALL`——**`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用**、**必须先卸旧再装新**（不卸旧 = 按键被处理两遍），并复位 `SWALLOWED`/`REPLACED_DOWN`/`HELD_KEYS`。解锁判据 `WTSInfoEx.SessionFlags` **反直觉：0=锁定、1=未锁定**；**判据缺观察者就不判**（没鼠标钩子时归因不到键盘，硬判会无限重装），故 `dead_hook` 在 `!mouse_hooked` 时返回 `None`。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。触发通道：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置 `cfg_stale` 旗标（均在定时器线程）。
-- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 恒 `None`（Wayland），前台条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名真生效、Windows/macOS 恒 `None`（设备条件恒走「否则」）。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
+- **前台上下文**（`frontmost_context`）：Windows 取 `GetForegroundWindow`，macOS 走 AX；Linux 恒 `None`（Wayland），前台条件恒不成立。**设备上下文**（`current_device`）：Linux evdev 设备名、Windows HID 设备路径（Raw Input 旁路，有一跳延迟，见 `架构设计.md` §3.22）真生效、macOS 恒 `None`（设备条件恒走「否则」）。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。
 - **已知天花板（升级路径）**：清单与升级项见 `需求设计说明书.md` §4.5 / §7.2（UAC 提权 / Linux 热插拔 / macOS 安全输入等）；触摸板/指点杆的中键·侧键不能作触发键是物理限制（不进 §7.2）。
 
 ## 软件更新（Windows + Linux 已落地）
