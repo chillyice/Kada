@@ -408,7 +408,7 @@ body {
 }
 
 /* 条目所属层的标记：贴在这个 chip 的左下角（装配见 main.ts 的 appendLayerMark）。标记绝对定位、
-   不占组合键的字符位也不挡鼠标，所以 chip 得把左边的空位让出来（见下面的 mark-shape-* 规则）。 */
+   不占组合键的字符位也不挡鼠标——两种形态各自收在左下角内边距里，组合键字符永远从 6px 内边距起排。 */
 .row-layer-mark {
   position: absolute;
   left: 0;
@@ -427,20 +427,15 @@ body {
   clip-path: path("M 0 0 L 0 6 Q 0 9 3 9 L 9 9 Z");
 }
 
-/* emoji：骑跨在 chip 左下角上的「贴纸」——中心压在角上，一半在 chip 内侧、一半探到外侧。
-   带一圈底色描边，压在 chip 边框线上仍像一张贴上去的贴纸（不描边就糊进边框里了）。 */
+/* emoji：贴在 chip 左下角的「贴纸」——右缘对齐组合键字符起点（6px 内边距处），整张贴纸落在内边距
+   与 chip 外，绝不侵入字符位；纵向中心仍压在 chip 下边上。带一圈底色描边，压在 chip 边框线上仍像一
+   张贴上去的贴纸（不描边就糊进边框里了）。 */
 .row-layer-mark.mark-emoji {
+  left: 6px;
   font-size: 11px;
   line-height: 1;
-  transform: translate(-50%, 50%);
+  transform: translate(-100%, 50%);
   filter: drop-shadow(0 0 1px var(--float-bg)) drop-shadow(0 0 1px var(--float-bg));
-}
-
-/* 标记绝对定位、不占字符位，但三角角标与 emoji 贴纸对字符的侵占程度不同：颜色三角在 9px 内就收在
-   chip 左下角（组合键字符从 6px 起，够不着），所以不动内边距——有没有层标记的行，组合键字符都从同一
-   处起排；emoji 贴纸要把右半边压进 chip 里，得让开半张。 */
-.row-trigger.mark-shape-emoji {
-  padding-left: 11px;
 }
 
 /* 开关：全站布尔项统一用它（设置页整行右端 / 命令动作的「弹窗显示结果」）。原先是一个 16px

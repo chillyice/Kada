@@ -4830,14 +4830,13 @@ function layerById(id: string | null | undefined): Layer | undefined {
 }
 
 // 层标记贴在组合键 chip 的左下角（绝对定位，不占组合键的字符位）：颜色是与 chip 融为一体的角标——
-// chip 内部左下角一枚直角被修圆的三角（直角落在角上、收在 9px 内，够不着从 6px 起排的组合键字符，
-// 所以有没有标记的行字符都从同一处起），看着像 chip 自己染了色；emoji 像贴纸贴在左下角上——骑跨
-// 在角上，既不完全在外也不完全在内。两者都 pointer-events:none，不挡点击。
+// chip 内部左下角一枚直角被修圆的三角（直角落在角上、收在 9px 内，够不着从 6px 起排的组合键字符）；
+// emoji 像贴纸贴在左下角——右缘对齐字符起点、探出 chip 外。两者都收在内边距里、不动字符起点，也不挡
+// 鼠标（pointer-events:none）。
 function appendLayerMark(trig: HTMLElement, layerId: string | null | undefined) {
   const mark = layerById(layerId)?.mark;
   if (!mark) return;
   const color = isLayerColor(mark);
-  if (!color) trig.classList.add("mark-shape-emoji");
   const s = el("span", `row-layer-mark ${color ? "mark-color" : "mark-emoji"}`);
   if (color) s.style.setProperty("--mark", mark);
   else s.textContent = mark;
