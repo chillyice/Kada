@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dialog";
 import { installBrowserMock } from "./mock";
 
+type DesktopDirection = "prev" | "next";
 type OsOperation =
   | { op: "copy"; source: string; dest: string }
   | { op: "cut"; source: string; dest: string }
@@ -13,7 +14,8 @@ type OsOperation =
   | { op: "open_folder"; path: string }
   | { op: "zip"; source: string; dest: string }
   | { op: "unzip"; source: string; dest: string }
-  | { op: "get_file_props"; path: string; var: string };
+  | { op: "get_file_props"; path: string; var: string }
+  | { op: "switch_desktop"; direction: DesktopDirection };
 type Condition =
   | { kind: "exists"; path: string }
   | { kind: "not_exists"; path: string }
@@ -40,7 +42,7 @@ type MouseOp =
   | { op: "scroll"; dx: number; dy: number };
 type Action =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
-  | { type: "command"; shell: Shell; command: string; show_output: boolean; var: string; description?: string }
+  | { type: "command"; shell: Shell; command: string; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
@@ -49,7 +51,7 @@ type Action =
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
-  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; var: string; description?: string };
+  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string; mark?: string | null };
 type ShortcutItem = {
@@ -391,6 +393,13 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
   { value: "zip", label: "压缩为 zip" },
   { value: "unzip", label: "解压 zip" },
   { value: "get_file_props", label: "获取文件属性" },
+  { value: "switch_desktop", label: "切换虚拟桌面" },
+];
+
+/** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
+const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
+  { value: "prev", label: "上一个（左）" },
+  { value: "next", label: "下一个（右）" },
 ];
 
 function newOsOp(op: OsOperation["op"]): OsOperation {
@@ -414,6 +423,8 @@ function newOsOp(op: OsOperation["op"]): OsOperation {
       return { op, source: "", dest: "" };
     case "get_file_props":
       return { op, path: "", var: "file" };
+    case "switch_desktop":
+      return { op, direction: "next" };
   }
   return { op: "copy", source: "", dest: "" };
 }
@@ -502,6 +513,9 @@ function osHasContent(o: OsOperation): boolean {
     case "open_folder":
     case "get_file_props":
       return o.path.trim().length > 0;
+    // 没有要填的字段（方向有默认值），新建出来就是可执行的。
+    case "switch_desktop":
+      return true;
   }
   return false;
 }
@@ -589,6 +603,8 @@ function osSummary(o: OsOperation): string {
       return `解压：${o.source} → ${o.dest}`;
     case "get_file_props":
       return `取属性：${o.path} → ${o.var}`;
+    case "switch_desktop":
+      return `切换虚拟桌面：${o.direction === "prev" ? "上一个" : "下一个"}`;
   }
   return "";
 }
@@ -3949,6 +3965,17 @@ function actionFields(
     popup.append(cb, el("span", undefined, "弹窗显示结果"));
     body.append(popup);
 
+    const hidden = el("label", "action-check") as HTMLLabelElement;
+    const hcb = el("input", "toggle") as HTMLInputElement;
+    hcb.type = "checkbox";
+    hcb.checked = !!a.hide_window;
+    hidden.title = "勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）";
+    hcb.addEventListener("change", () => {
+      a.hide_window = hcb.checked;
+    });
+    hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
+    body.append(hidden);
+
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
     vname.type = "text";
@@ -3989,6 +4016,17 @@ function actionFields(
     });
     popup.append(cb, el("span", undefined, "弹窗显示结果"));
     body.append(popup);
+
+    const hidden = el("label", "action-check") as HTMLLabelElement;
+    const hcb = el("input", "toggle") as HTMLInputElement;
+    hcb.type = "checkbox";
+    hcb.checked = !!a.hide_window;
+    hidden.title = "勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）";
+    hcb.addEventListener("change", () => {
+      a.hide_window = hcb.checked;
+    });
+    hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
+    body.append(hidden);
 
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
@@ -4138,6 +4176,32 @@ function actionFields(
         ),
       );
       body.append(line);
+    } else if (op.op === "switch_desktop") {
+      const line = el("div", "action-line");
+      const sel = el("select", "action-input") as HTMLSelectElement;
+      for (const d of DESKTOP_DIRECTIONS) {
+        const o = el("option") as HTMLOptionElement;
+        o.value = d.value;
+        o.textContent = d.label;
+        sel.append(o);
+      }
+      sel.value = op.direction;
+      sel.addEventListener("change", () => {
+        op.direction = sel.value as DesktopDirection;
+      });
+      line.append(
+        el("span", "unit-hint", "方向"),
+        sel,
+        helpIcon(
+          "按各系统的默认键位切换：Windows 注入 Win+Ctrl+←/→，macOS 注入 ⌃←/→，Linux 注入 Super+PageUp/PageDown。系统里改过这些快捷键的话，注入的就不生效了，那种情况改用「按键组合」动作写自己的键位。",
+        ),
+      );
+      body.append(line);
+
+      const hint = el("div", "unit-hint");
+      hint.textContent =
+        "切换虚拟桌面（不是切换显示器）。Windows：Win+Ctrl+←/→；macOS：⌃←/→；Linux（GNOME）：Super+PageUp/PageDown。";
+      body.append(hint);
     }
   } else if (a.type === "app") {
     const op = a.operation;

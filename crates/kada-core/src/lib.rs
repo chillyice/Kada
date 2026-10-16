@@ -700,7 +700,31 @@ type WhenKey = Option<Condition>;
 #[cfg(not(feature = "automation"))]
 type WhenKey = Option<()>;
 
-/// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩或取属性。
+/// 虚拟桌面切换方向（[`OsOperation::SwitchDesktop`]）：只有「上一个 / 下一个」。
+/// 缺省 [`Next`](DesktopDirection::Next)——手工配置只写 `{"op":"switch_desktop"}` 时也能用。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopDirection {
+    /// 向左 / 上一个桌面。
+    Prev,
+    /// 向右 / 下一个桌面。
+    #[default]
+    Next,
+}
+
+#[cfg(feature = "automation")]
+impl DesktopDirection {
+    /// 中文短标签（动作摘要 / 执行记录 / 界面下拉共用一套说法）。
+    pub fn label(self) -> &'static str {
+        match self {
+            DesktopDirection::Prev => "上一个",
+            DesktopDirection::Next => "下一个",
+        }
+    }
+}
+
+/// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩、取属性，或切换虚拟桌面。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -725,6 +749,13 @@ pub enum OsOperation {
     Unzip { source: String, dest: String },
     /// 取文件属性，存入变量 `var`（默认 "file"），供后续动作用占位符引用。
     GetFileProps { path: String, #[serde(default = "default_var")] var: String },
+    /// 切换虚拟桌面：注入**系统默认**的切换快捷键（Windows `Win+Ctrl+←/→`、macOS `⌃←/→`、
+    /// Linux GNOME `Super+PageUp/PageDown`）。不改系统键位设置，也不读当前桌面序号——
+    /// 「切到第 3 个桌面」这种要按次数的需求请用「按键组合」动作自排。
+    SwitchDesktop {
+        #[serde(default)]
+        direction: DesktopDirection,
+    },
 }
 
 #[cfg(feature = "automation")]
@@ -1042,8 +1073,12 @@ pub enum Action {
     /// 不改实际注入的内容——给密码 / 口令这类不该被人一眼看到的文本用。
     Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "is_false")] masked: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行命令（CMD 或 PowerShell），结果进消息中心；`var` 非空时把标准输出（去首尾空白）写入该变量。
+    ///
+    /// `hide_window` = 执行时不弹出子进程的控制台窗口（Windows 专有：GUI 进程 spawn
+    /// `cmd`/`powershell` 会新建一个黑窗，按一次快捷键就闪一下）。默认 `false` 保持原样——
+    /// 交互式命令（要在黑窗里敲字、看进度的）靠它才能用；纯后台命令打开它更清净。
     #[cfg(feature = "automation")]
-    Command { shell: Shell, command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Command { shell: Shell, command: String, #[serde(default)] show_output: bool, #[serde(default, skip_serializing_if = "is_false")] hide_window: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行 CMD 命令（旧版动作，加载时自动迁移为 `Command(Cmd)`）。
     #[cfg(feature = "automation")]
     Cmd { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1066,7 +1101,7 @@ pub enum Action {
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
     CloseProgram { program: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
-    /// 操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性）。
+    /// 操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性，以及切换虚拟桌面）。
     #[cfg(feature = "automation")]
     Os { operation: OsOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 应用动作（打开/关闭/查询状态/重启）。
@@ -1088,6 +1123,8 @@ pub enum Action {
     },
     /// 执行脚本文件（可选解释器，如 python/node/bash）。`path` 支持 `{变量名}` 占位符；
     /// 通过环境变量注入 `KADA_TRIGGER`/`KADA_NAME`/`KADA_VARS`（变量表 JSON），结果进消息中心。
+    ///
+    /// `hide_window` 与 [`Action::Command`] 同义：执行时不弹出子进程的控制台窗口。
     #[cfg(feature = "automation")]
     Script {
         path: String,
@@ -1095,6 +1132,8 @@ pub enum Action {
         interpreter: Option<String>,
         #[serde(default)]
         show_output: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        hide_window: bool,
         #[serde(default)]
         var: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1178,6 +1217,8 @@ impl Action {
                     }
                     // 变量名允许为空（执行时回退到 "file"），只要求路径非空。
                     GetFileProps { path, .. } => non_empty("路径", path),
+                    // 无字段可填（方向有缺省值），恒可执行。
+                    SwitchDesktop { .. } => Ok(()),
                 }
             }
             #[cfg(feature = "automation")]
@@ -2664,6 +2705,7 @@ pub fn migrate_action(a: Action) -> Action {
             shell: Shell::Cmd,
             command,
             show_output,
+            hide_window: false,
             var,
             description,
         },
@@ -2672,6 +2714,7 @@ pub fn migrate_action(a: Action) -> Action {
             shell: Shell::Powershell,
             command,
             show_output,
+            hide_window: false,
             var,
             description,
         },
@@ -4021,8 +4064,8 @@ mod new_action_and_folder_tests {
             Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
-            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), show_output: false, var: "".into(), description: None },
-            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), show_output: true, var: "".into(), description: None },
+            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), show_output: false, hide_window: false, var: "".into(), description: None },
+            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), show_output: true, hide_window: false, var: "".into(), description: None },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "应通过校验: {a:?}");
@@ -4034,7 +4077,7 @@ mod new_action_and_folder_tests {
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
         assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
-        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), show_output: false, var: "".into(), description: None }
+        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), show_output: false, hide_window: false, var: "".into(), description: None }
             .validate()
             .is_err());
     }
@@ -4059,6 +4102,43 @@ mod new_action_and_folder_tests {
 
         let plain = Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None };
         assert!(!serde_json::to_string(&plain).unwrap().contains("masked"), "默认值不该落盘");
+    }
+
+    /// 「隐式执行」开关（`Command` / `Script` 的 `hide_window`）与 `masked` 同一套口径：
+    /// 老配置（没这个键）读成「不隐藏」、打开过的能落盘并原样读回、默认值不落盘。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn command_and_script_hide_window_roundtrip() {
+        let old: Action = serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+        assert!(
+            matches!(old, Action::Command { hide_window: false, .. }),
+            "老配置该读成不隐藏: {old:?}"
+        );
+
+        let hidden = Action::Command {
+            shell: Shell::Cmd,
+            command: "echo hi".into(),
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        };
+        let json = serde_json::to_string(&hidden).unwrap();
+        assert!(json.contains(r#""hide_window":true"#), "开关该落盘: {json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), hidden);
+
+        let plain = Action::Script {
+            path: "x.py".into(),
+            interpreter: None,
+            show_output: false,
+            hide_window: false,
+            var: String::new(),
+            description: None,
+        };
+        assert!(
+            !serde_json::to_string(&plain).unwrap().contains("hide_window"),
+            "默认值不该落盘"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -4101,6 +4181,35 @@ mod new_action_and_folder_tests {
             .is_err());
     }
 
+    /// 切换虚拟桌面：没有必填字段（方向有缺省）；手工只写 `{"op":"switch_desktop"}` 也能读，
+    /// 且方向缺省为「下一个」。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn switch_desktop_validate_and_default_direction() {
+        for direction in [DesktopDirection::Prev, DesktopDirection::Next] {
+            assert!(Action::Os { operation: OsOperation::SwitchDesktop { direction }, description: None }
+                .validate()
+                .is_ok());
+        }
+
+        let bare: Action = serde_json::from_str(r#"{"type":"os","operation":{"op":"switch_desktop"}}"#).unwrap();
+        assert!(
+            matches!(
+                bare,
+                Action::Os { operation: OsOperation::SwitchDesktop { direction: DesktopDirection::Next }, .. }
+            ),
+            "缺省方向该是下一个: {bare:?}"
+        );
+
+        let prev = Action::Os {
+            operation: OsOperation::SwitchDesktop { direction: DesktopDirection::Prev },
+            description: None,
+        };
+        let json = serde_json::to_string(&prev).unwrap();
+        assert!(json.contains(r#""direction":"prev""#), "方向该落盘: {json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), prev);
+    }
+
     #[cfg(feature = "automation")]
     #[test]
     fn script_action_json_roundtrip_and_validate() {
@@ -4109,6 +4218,7 @@ mod new_action_and_folder_tests {
                 path: "C:\\scripts\\do.ps1".into(),
                 interpreter: None,
                 show_output: false,
+                hide_window: false,
                 var: "".into(),
                 description: None,
             },
@@ -4116,6 +4226,7 @@ mod new_action_and_folder_tests {
                 path: "backup.py".into(),
                 interpreter: Some("python".into()),
                 show_output: true,
+                hide_window: false,
                 var: "out".into(),
                 description: None,
             },
@@ -4132,6 +4243,7 @@ mod new_action_and_folder_tests {
             path: "  ".into(),
             interpreter: None,
             show_output: false,
+            hide_window: false,
             var: "".into(),
             description: None,
         }

@@ -34,7 +34,7 @@ use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, 
 use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
-use kada_core::{AppOperation, FileObject, OsOperation, Shell, TextValue, Value};
+use kada_core::{AppOperation, DesktopDirection, FileObject, OsOperation, Shell, TextValue, Value};
 
 #[cfg(target_os = "linux")]
 use kada_hook::linux::simulate;
@@ -759,6 +759,9 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
         OsOperation::GetFileProps { path, var } => {
             format!("读取 {} 的属性写入变量 {var}", sub(path))
         }
+        OsOperation::SwitchDesktop { direction } => {
+            format!("切换到{}虚拟桌面", direction.label())
+        }
     }
 }
 
@@ -904,6 +907,7 @@ fn run_action(
             shell,
             command,
             show_output,
+            hide_window,
             var,
             ..
         } => {
@@ -915,7 +919,7 @@ fn run_action(
                 return Err("PowerShell 命令仅 Windows 可用".into());
             }
             let command = substitute_vars(command, vars);
-            let out = run_cmd(label, is_powershell, &command, ctx)?;
+            let out = run_cmd(label, is_powershell, &command, ctx, *hide_window)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -941,7 +945,8 @@ fn run_action(
             ..
         } => {
             let command = substitute_vars(command, vars);
-            let out = run_cmd("CMD", false, &command, ctx)?;
+            // 旧版动作没有 hide_window 字段（加载时会迁移成 Command，见 Config::migrate）。
+            let out = run_cmd("CMD", false, &command, ctx, false)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -970,7 +975,8 @@ fn run_action(
                 return Err("PowerShell 动作仅 Windows 可用".into());
             }
             let command = substitute_vars(command, vars);
-            let out = run_cmd("PowerShell", true, &command, ctx)?;
+            // 同上：旧版动作无 hide_window。
+            let out = run_cmd("PowerShell", true, &command, ctx, false)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1008,11 +1014,12 @@ fn run_action(
                 &OsOperation::OpenFolder { path: path.clone() },
                 vars,
                 last_copied,
+                ctx,
             )?;
         }
         #[cfg(feature = "automation")]
         Action::Os { operation, .. } => {
-            run_os(operation, vars, last_copied)?;
+            run_os(operation, vars, last_copied, ctx)?;
         }
         #[cfg(feature = "automation")]
         Action::App { operation, .. } => {
@@ -1038,11 +1045,12 @@ fn run_action(
             path,
             interpreter,
             show_output,
+            hide_window,
             var,
             ..
         } => {
             let path = substitute_vars(path, vars);
-            let out = run_script(interpreter.as_deref(), &path, ctx, vars)?;
+            let out = run_script(interpreter.as_deref(), &path, ctx, vars, *hide_window)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1068,7 +1076,8 @@ fn run_action(
     Ok(None)
 }
 
-/// 执行一个操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性）。
+/// 执行一个操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性，或切换虚拟桌面）。
+/// `ctx` 只为「切换虚拟桌面」的链内注入锁而传（文件操作不注入，用不上）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -1077,6 +1086,7 @@ fn run_os(
     op: &OsOperation,
     vars: &mut Vars,
     last_copied: &mut Option<String>,
+    ctx: &Ctx<'_>,
 ) -> Result<(), String> {
     match op {
         OsOperation::Copy { source, dest } => {
@@ -1150,7 +1160,50 @@ fn run_os(
             };
             vars.insert(name, Value::File(obj));
         }
+        OsOperation::SwitchDesktop { direction } => {
+            // 持链内注入锁：`Win+Ctrl+←` 这种组合被别的并行成员插进半截，目标系统收到的是
+            // 一个混合组合键（切桌面就成了别的东西）。与 `Keys` 同款理由。
+            let _inj = lock_inject(ctx);
+            switch_desktop(*direction)?;
+        }
     }
+    Ok(())
+}
+
+/// 切换虚拟桌面：注入**系统默认**的切换快捷键（等价于用户手按一遍）。
+///
+/// 为什么不调系统 API：三平台都没有稳定的公开接口——Windows 的虚拟桌面是未公开的 COM
+/// （`IVirtualDesktopManagerInternal`，接口随系统版本变、每版都要重新逆向），Linux 由各桌面
+/// 环境自己实现（X11 `_NET_CURRENT_DESKTOP` / Wayland 无通用协议），macOS 的 Space 切换只有
+/// 私有 SkyLight 接口。注入默认键位是三平台唯一一致且不挑系统版本的做法，代价是**跟随各平台
+/// 的默认键位**——用户若在系统里改过快捷键，得同样改这里（Linux 的 KDE / XFCE 默认键位与
+/// GNOME 不同，见下）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn switch_desktop(direction: DesktopDirection) -> Result<(), String> {
+    use DesktopDirection::*;
+    // Windows：`Win+Ctrl+←/→`（Win10 / Win11 默认，Meta 在 Windows 侧映射到 VK_LWIN）。
+    // macOS：Mission Control 的「向左/右移动一个空间」默认 `⌃←/→`（系统设置里可改）。
+    // Linux：GNOME 默认 `Super+PageUp/PageDown`；KDE / XFCE 默认键位不同，届时用「按键组合」动作自排。
+    let keys: &[Key] = if cfg!(target_os = "windows") {
+        match direction {
+            Prev => &[Key::Meta, Key::Control, Key::ArrowLeft],
+            Next => &[Key::Meta, Key::Control, Key::ArrowRight],
+        }
+    } else if cfg!(target_os = "macos") {
+        match direction {
+            Prev => &[Key::Control, Key::ArrowLeft],
+            Next => &[Key::Control, Key::ArrowRight],
+        }
+    } else {
+        match direction {
+            Prev => &[Key::Meta, Key::PageUp],
+            Next => &[Key::Meta, Key::PageDown],
+        }
+    };
+    simulate::chord(keys);
     Ok(())
 }
 
@@ -1286,7 +1339,8 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
     } else {
         format!("pkill -f {image}")
     };
-    let out = run_cmd("关闭程序", false, &cmd, ctx)?;
+    // 内部命令（taskkill / pkill），恒不弹黑窗。
+    let out = run_cmd("关闭程序", false, &cmd, ctx, true)?;
     Ok(out.into_result("close_program", "关闭程序", cmd, ctx, false))
 }
 
@@ -1308,10 +1362,10 @@ fn restart_program(program: &str, args: &[String], ctx: &Ctx) -> Result<(), Stri
 ))]
 fn app_running(program: &str) -> bool {
     if cfg!(target_os = "windows") {
-        match std::process::Command::new("tasklist")
-            .args(["/FI", &format!("IMAGENAME eq {program}"), "/NH"])
-            .output()
-        {
+        let mut c = std::process::Command::new("tasklist");
+        c.args(["/FI", &format!("IMAGENAME eq {program}"), "/NH"]);
+        no_console_window(&mut c); // 内部查询，恒不弹黑窗
+        match c.output() {
             Ok(o) => String::from_utf8_lossy(&o.stdout)
                 .to_lowercase()
                 .contains(&program.to_lowercase()),
@@ -1466,9 +1520,10 @@ fn zip_path(source: &str, dest: &str) -> Result<(), String> {
             "Compress-Archive -Path '{}' -DestinationPath '{}' -Force",
             source, dest
         );
-        std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", full.as_str()])
-            .status()
+        let mut c = std::process::Command::new("powershell");
+        c.args(["-NoProfile", "-Command", full.as_str()]);
+        no_console_window(&mut c); // 内部压缩，恒不弹黑窗
+        c.status()
     } else {
         std::process::Command::new("zip")
             .args(["-r", &dest, source])
@@ -1498,9 +1553,10 @@ fn unzip_path(source: &str, dest: &str) -> Result<(), String> {
             "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",
             source, dest
         );
-        std::process::Command::new("powershell")
-            .args(["-NoProfile", "-Command", full.as_str()])
-            .status()
+        let mut c = std::process::Command::new("powershell");
+        c.args(["-NoProfile", "-Command", full.as_str()]);
+        no_console_window(&mut c); // 内部解压，恒不弹黑窗
+        c.status()
     } else {
         std::process::Command::new("unzip")
             .args(["-o", source, "-d", dest])
@@ -1620,6 +1676,31 @@ impl CmdOutput {
 ))]
 const WAIT_POLL_MS: u64 = 20;
 
+/// 让子进程**不弹控制台窗口**（Windows 专有）。
+///
+/// 咔哒是 GUI 子系统程序、自己没有控制台（`windows_subsystem = "windows"`），于是每次
+/// spawn `cmd` / `powershell` / `tasklist` 这类控制台程序，系统都会**新建一个控制台窗口**——
+/// 用户按一次快捷键就闪一下黑窗。`CREATE_NO_WINDOW` 让它干脆不要控制台（输出照旧走我们接管
+/// 的管道，捕获结果不受影响）。用户命令 / 脚本按 [`Action::Command::hide_window`] 开关决定，
+/// 咔哒自己的内部 helper（taskkill / tasklist / 压缩解压）一律隐藏——那些黑窗没人要看。
+///
+/// 非 Windows 无此概念（`sh -c` 不会开终端窗口），空实现。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn no_console_window(cmd: &mut std::process::Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`：不给子进程建控制台（缺省行为是「GUI 父进程 → 新建黑窗」）。
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = cmd;
+}
+
 /// 跑一个子进程并**限时**等它结束（超时或用户中止则连同子进程树一起杀掉），捕获 UTF-8 输出。
 ///
 /// 不用 `Command::output()`：它没有「等多久」，脚本挂住就永久占住本条触发的执行线程
@@ -1732,10 +1813,12 @@ fn fmt_secs(d: Duration) -> String {
 #[cfg(all(target_os = "windows", feature = "automation"))]
 fn kill_tree(child: &mut Child) {
     let pid = child.id();
-    let ok = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
+    let mut c = std::process::Command::new("taskkill");
+    c.args(["/PID", &pid.to_string(), "/T", "/F"])
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    no_console_window(&mut c); // 内部杀进程，恒不弹黑窗
+    let ok = c
         .status()
         .map(|s| s.success())
         .unwrap_or(false);
@@ -1790,6 +1873,7 @@ fn run_cmd(
     is_powershell: bool,
     command: &str,
     ctx: &Ctx,
+    hide_window: bool,
 ) -> Result<CmdOutput, String> {
     // Windows 的 CMD 走临时批处理文件（见下），跑完要删掉——被强杀时也得删。
     let mut temp_bat: Option<std::path::PathBuf> = None;
@@ -1820,6 +1904,9 @@ fn run_cmd(
         c.args(["-c", command]);
         c
     };
+    if hide_window {
+        no_console_window(&mut cmd);
+    }
     let out = run_with_limits(&mut cmd, label, ctx);
     if let Some(path) = temp_bat {
         let _ = std::fs::remove_file(path);
@@ -1838,6 +1925,7 @@ fn run_script(
     path: &str,
     ctx: &Ctx,
     vars: &Vars,
+    hide_window: bool,
 ) -> Result<CmdOutput, String> {
     let mut cmd = match interpreter {
         Some(i) => {
@@ -1850,6 +1938,9 @@ fn run_script(
     cmd.env("KADA_TRIGGER", ctx.t.trigger)
         .env("KADA_NAME", ctx.t.name)
         .env("KADA_VARS", vars_to_json(vars));
+    if hide_window {
+        no_console_window(&mut cmd);
+    }
     run_with_limits(&mut cmd, "脚本", ctx)
 }
 
@@ -1936,13 +2027,61 @@ mod tests {
     #[test]
     fn run_cmd_captures_output_of_normal_command() {
         let _g = abort::test_lock();
-        let out = run_cmd("CMD", false, "echo kada", &ctx(10_000)).expect("命令应能执行");
+        let out = run_cmd("CMD", false, "echo kada", &ctx(10_000), false).expect("命令应能执行");
         assert_eq!(out.killed, None, "正常结束不算被打断");
         assert_eq!(out.exit_code, Some(0));
         assert!(
             out.stdout.contains("kada"),
             "stdout 应捕获到输出：{:?}",
             out.stdout
+        );
+    }
+
+    /// 「隐式执行」要验的是**真的不建控制台**，不是「输出被藏起来」——所以拿真子进程问 Windows
+    /// 自己有没有控制台窗口（`GetConsoleWindow()`）。`creation_flags` 设了什么，从 Rust 侧读不回来，
+    /// 只有这条能作数：隐藏时子进程没有控制台（0），不隐藏时它有（本进程有控制台，子进程会继承）。
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn hide_window_really_removes_the_console() {
+        let _g = abort::test_lock();
+        let probe = std::env::temp_dir().join(format!("kada_console_probe_{}.ps1", std::process::id()));
+        std::fs::write(
+            &probe,
+            concat!(
+                "Add-Type -Namespace KadaProbe -Name Native -MemberDefinition ",
+                "'[DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow();'\n",
+                "[KadaProbe.Native]::GetConsoleWindow().ToInt64()\n",
+            ),
+        )
+        .expect("写探针脚本失败");
+        let vars: Vars = BTreeMap::new();
+        let run = |hide: bool| {
+            run_script(
+                Some("powershell"),
+                probe.to_str().unwrap(),
+                &ctx(60_000),
+                &vars,
+                hide,
+            )
+            .expect("探针脚本应能跑完")
+        };
+        let hidden = run(true);
+        let visible = run(false);
+        let _ = std::fs::remove_file(&probe);
+
+        assert_eq!(
+            hidden.stdout.trim(),
+            "0",
+            "打开「隐式执行」后子进程不该有控制台窗口（stdout={:?} stderr={:?}）",
+            hidden.stdout,
+            hidden.stderr
+        );
+        assert_ne!(
+            visible.stdout.trim(),
+            "0",
+            "没打开开关时子进程该照旧有控制台（反向对照；stdout={:?} stderr={:?}）",
+            visible.stdout,
+            visible.stderr
         );
     }
 
@@ -2291,6 +2430,7 @@ mod tests {
             path: missing,
             interpreter: None,
             show_output: true,
+            hide_window: false,
             var: String::new(),
             description: None,
         }];
@@ -2390,6 +2530,26 @@ mod tests {
         };
         let summary = super::action_summary(&plain, &BTreeMap::new());
         assert!(summary.contains("hello"), "未隐藏的文本照旧展示：{summary}");
+    }
+
+    /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn switch_desktop_summary_names_direction() {
+        let _g = abort::test_lock();
+        let body = |direction| {
+            super::action_summary(
+                &Action::Os {
+                    operation: OsOperation::SwitchDesktop { direction },
+                    description: None,
+                },
+                &BTreeMap::new(),
+            )
+        };
+        let next = body(DesktopDirection::Next);
+        assert!(next.contains("下一个"), "摘要要写方向：{next}");
+        let prev = body(DesktopDirection::Prev);
+        assert!(prev.contains("上一个"), "摘要要写方向：{prev}");
     }
 
     // ---- 并行动作（规划 7.2-㉞） ----
