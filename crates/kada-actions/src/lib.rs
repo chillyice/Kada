@@ -1183,11 +1183,21 @@ fn run_os(
     feature = "automation"
 ))]
 fn switch_desktop(direction: DesktopDirection) -> Result<(), String> {
+    simulate::chord(desktop_keys(direction));
+    Ok(())
+}
+
+/// 「切换虚拟桌面」在某平台上要注入的键（纯函数，好让单测钉住这张平台映射表）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn desktop_keys(direction: DesktopDirection) -> &'static [Key] {
     use DesktopDirection::*;
     // Windows：`Win+Ctrl+←/→`（Win10 / Win11 默认，Meta 在 Windows 侧映射到 VK_LWIN）。
     // macOS：Mission Control 的「向左/右移动一个空间」默认 `⌃←/→`（系统设置里可改）。
     // Linux：GNOME 默认 `Super+PageUp/PageDown`；KDE / XFCE 默认键位不同，届时用「按键组合」动作自排。
-    let keys: &[Key] = if cfg!(target_os = "windows") {
+    if cfg!(target_os = "windows") {
         match direction {
             Prev => &[Key::Meta, Key::Control, Key::ArrowLeft],
             Next => &[Key::Meta, Key::Control, Key::ArrowRight],
@@ -1202,9 +1212,7 @@ fn switch_desktop(direction: DesktopDirection) -> Result<(), String> {
             Prev => &[Key::Meta, Key::PageUp],
             Next => &[Key::Meta, Key::PageDown],
         }
-    };
-    simulate::chord(keys);
-    Ok(())
+    }
 }
 
 /// 按配置的注入方式发文本（规划 7.3-㉒）：默认剪贴板粘贴；目标程序吞粘贴
@@ -2550,6 +2558,30 @@ mod tests {
         assert!(next.contains("下一个"), "摘要要写方向：{next}");
         let prev = body(DesktopDirection::Prev);
         assert!(prev.contains("上一个"), "摘要要写方向：{prev}");
+    }
+
+    /// 切桌面的平台键位映射：Windows `Win+Ctrl+←/→`、macOS `⌃←/→`、Linux `Super+PageUp/Down`。
+    /// 三个平台各跑各自那一支（CI 的 windows / ubuntu / macos 矩阵合起来覆盖全表）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn desktop_keys_follow_each_platforms_defaults() {
+        let next = super::desktop_keys(DesktopDirection::Next);
+        let prev = super::desktop_keys(DesktopDirection::Prev);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(next, [Key::Meta, Key::Control, Key::ArrowRight]);
+            assert_eq!(prev, [Key::Meta, Key::Control, Key::ArrowLeft]);
+        } else if cfg!(target_os = "macos") {
+            assert_eq!(next, [Key::Control, Key::ArrowRight], "macOS 是 ⌃←/→，不是 ⌘");
+            assert_eq!(prev, [Key::Control, Key::ArrowLeft]);
+        } else {
+            assert_eq!(next, [Key::Meta, Key::PageDown]);
+            assert_eq!(prev, [Key::Meta, Key::PageUp]);
+        }
+
+        // 两个方向必须是不同的键——写反了「上一个 / 下一个」就只是互为反向，单测抓不到行为，
+        // 但至少别是同一串。
+        assert_ne!(next, prev);
     }
 
     // ---- 并行动作（规划 7.2-㉞） ----

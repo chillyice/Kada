@@ -1277,7 +1277,8 @@ fn finish_run(
     set_tray_unread(app, true);
 }
 
-/// 这串动作里有没有「往目标程序注入按键」的动作（Text / Keys / Mouse，含 If / Parallel 分支内的）。
+/// 这串动作里有没有「往目标程序注入输入」的动作（Text / Keys / Mouse，以及注入切换键的
+/// `Os::SwitchDesktop`，含 If / Parallel 分支内的）。
 ///
 /// 修饰键没松时只有这类动作会被污染（见 [`fire`]），命令 / 文件 / 应用类照常执行；
 /// 静态过一遍链足够准，If / Parallel 的嵌套两路都算「可能有」。
@@ -1285,6 +1286,13 @@ fn finish_run(
 fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
+        // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
+        // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
+        #[cfg(feature = "automation")]
+        Action::Os {
+            operation: kada_core::OsOperation::SwitchDesktop { .. },
+            ..
+        } => true,
         #[cfg(feature = "automation")]
         Action::If {
             then, otherwise, ..
@@ -2435,6 +2443,27 @@ mod tests {
                 description: None,
             }];
             assert!(!injects_keys(&empty_branch));
+        }
+
+        // 切换虚拟桌面也注入组合键，同样要等物理修饰键松开。
+        #[cfg(feature = "automation")]
+        {
+            let desktop = vec![Action::Os {
+                operation: kada_core::OsOperation::SwitchDesktop {
+                    direction: kada_core::DesktopDirection::Next,
+                },
+                description: None,
+            }];
+            assert!(injects_keys(&desktop));
+
+            // 文件类操作不注入，别为它们白等 300ms。
+            let file = vec![Action::Os {
+                operation: kada_core::OsOperation::Delete {
+                    path: "C:\\tmp\\a.txt".into(),
+                },
+                description: None,
+            }];
+            assert!(!injects_keys(&file));
         }
     }
 
