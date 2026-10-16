@@ -5,7 +5,11 @@
 //!   短暂占用并恢复剪贴板。
 //! - [`type_text_unicode`]：`KEYEVENTF_UNICODE` 逐字符直发，不经过剪贴板——目标程序
 //!   吞粘贴（游戏 / 终端）时的兜底。
+//!
+//! 所有注入都先变成一串 [`Op`] 再交给 [`deliver`]：前台是**提权窗口**时由提权伴随进程
+//! 重放（UIPI 挡得住本进程的 `SendInput`），详见 [`deliver`] 与 `win/agent.rs`。
 
+use std::cell::Cell;
 use std::io;
 use std::time::Duration;
 
@@ -14,27 +18,85 @@ use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThre
 
 use kada_core::{Key, MouseButton, MouseOp};
 
+use crate::win::agent::{forward, Op};
 use crate::win::key_to_vk;
 
+// 钩子线程标记（thread-local）：**回调里一律本地注入**。
+//
+// 低层钩子回调不能做耗时操作（超时会被系统静默摘钩，见 `win` 模块头），而走提权通道是一次
+// 带等待的 IPC（最坏 2 秒）——`Replace`（改键）就在回调里就地注入目标键，这条路径绝不能
+// 路由。代价是「改键的目标键」注入不进提权窗口（与现状一致，见 [`deliver`]）。
+thread_local! {
+    static LOCAL_ONLY: Cell<bool> = const { Cell::new(false) };
+}
+
+/// 把当前线程标成「只许本地注入」（钩子线程启动时调一次）。
+pub fn mark_local_only() {
+    LOCAL_ONLY.with(|f| f.set(true));
+}
+
+fn local_only() -> bool {
+    LOCAL_ONLY.with(|f| f.get())
+}
+
+/// 组合键按下与松开之间的停顿（毫秒）：太快目标程序收不到这一串。
+const CHORD_HOLD_MS: u64 = 30;
+
+/// 按下某个键（鼠标键走鼠标事件）。注入进不进得了前台窗口由 [`deliver`] 定夺。
 pub fn down(k: Key) {
-    if is_mouse_button(k) {
-        mouse_button(k, false);
-    } else {
-        send_one(k, KEYBD_EVENT_FLAGS(0));
-    }
+    let _ = deliver(&[Op::Down(k)]);
 }
 
+/// 抬起某个键。
 pub fn up(k: Key) {
-    if is_mouse_button(k) {
-        mouse_button(k, true);
-    } else {
-        send_one(k, KEYEVENTF_KEYUP);
-    }
+    let _ = deliver(&[Op::Up(k)]);
 }
 
+/// 点一下某个键（按下 + 抬起）。
 pub fn tap(k: Key) {
-    down(k);
-    up(k);
+    let _ = deliver(&[Op::Down(k), Op::Up(k)]);
+}
+
+/// 注入一批 op。
+///
+/// **前台窗口属提权进程**时才交给提权进程重放——UIPI 挡的是「低完整性级别往高级别发输入」，
+/// 同级之间是通的（见 `win/agent.rs`）。其余情况一律本地送：
+/// - 前台不是提权窗口（绝大多数时候，`forward` 返回 `None`）；
+/// - 通道没起来 / 这一批没送成（`forward` 顺带留一条提示给消息中心）；
+/// - 当前在钩子线程（[`LOCAL_ONLY`]，那里不许有带等待的 IPC）。
+///
+/// 「失败一律回落本地」是硬要求：本档只增能力、不做依赖——没装 / 被策略禁 / 启动失败，
+/// 行为都必须退化成没有这个功能时的样子。
+fn deliver(ops: &[Op]) -> io::Result<()> {
+    if !ops.is_empty() && !local_only() {
+        if let Some(Ok(())) = forward(ops) {
+            return Ok(());
+        }
+    }
+    play_local(ops)
+}
+
+/// 本地重放一批 op（提权进程那侧也走它——两侧重放的是同一份意图）。
+pub(crate) fn play_local(ops: &[Op]) -> io::Result<()> {
+    for op in ops {
+        match op {
+            Op::Down(k) => send_key(*k, false),
+            Op::Up(k) => send_key(*k, true),
+            Op::Mouse(op) => mouse_local(op)?,
+            Op::Text(text) => type_text_unicode_local(text)?,
+            Op::Pause(ms) => std::thread::sleep(Duration::from_millis(*ms)),
+        }
+    }
+    Ok(())
+}
+
+/// 一个键的按下 / 抬起：鼠标键（中键 / 侧键）不是虚拟键码，走鼠标事件。
+fn send_key(k: Key, up: bool) {
+    if is_mouse_button(k) {
+        mouse_button(k, up);
+    } else {
+        send_one(k, if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) });
+    }
 }
 
 fn send_one(k: Key, flags: KEYBD_EVENT_FLAGS) {
@@ -180,20 +242,31 @@ fn mouse_button(k: Key, up: bool) {
     }
 }
 
+/// 组合键：全部按下 → 稍停 → 逆序松开。
 pub fn chord(keys: &[Key]) {
-    for k in keys {
-        down(*k);
+    let _ = deliver(&chord_ops(keys));
+}
+
+/// 组合键的 op 序列（纯函数，可单测）。
+fn chord_ops(keys: &[Key]) -> Vec<Op> {
+    if keys.is_empty() {
+        return Vec::new();
     }
+    let mut ops: Vec<Op> = keys.iter().map(|k| Op::Down(*k)).collect();
     // 全部按下后稍停再逆序松开，避免组合键太快导致目标程序收不到。
-    std::thread::sleep(Duration::from_millis(30));
-    for k in keys.iter().rev() {
-        up(*k);
-    }
+    ops.push(Op::Pause(CHORD_HOLD_MS));
+    ops.extend(keys.iter().rev().map(|k| Op::Up(*k)));
+    ops
 }
 
 /// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱）。
 /// 移动与滚轮都是**相对**量；点击作用在当前光标位置。
 pub fn mouse(op: &MouseOp) -> io::Result<()> {
+    deliver(&[Op::Mouse(op.clone())])
+}
+
+/// 本地送一个鼠标操作（提权进程那侧也走它）。
+fn mouse_local(op: &MouseOp) -> io::Result<()> {
     match op {
         MouseOp::Move { dx, dy } => send_mouse(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE))?,
         MouseOp::Scroll { dx, dy } => {
@@ -259,7 +332,8 @@ pub fn type_text(text: &str) -> io::Result<()> {
     let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
     let prev = cb.get_text().ok();
     cb.set_text(text.to_string()).map_err(io::Error::other)?;
-    chord(&[Key::Control, Key::V]);
+    // 粘贴的按键也走 [`deliver`]：目标可能是提权窗口，那一下 Ctrl+V 同样得由提权进程发。
+    let _ = deliver(&chord_ops(&[Key::Control, Key::V]));
     // 等目标程序处理完粘贴再恢复剪贴板：否则恢复太快，目标读到的是旧剪贴板
     // 内容（竞态），导致「按下快捷键却输不出文本」。
     std::thread::sleep(Duration::from_millis(80));
@@ -277,7 +351,18 @@ pub fn type_text(text: &str) -> io::Result<()> {
 /// 的代理对按两个码元连发，由目标程序自行拼回。全部事件一次 `SendInput` 送入；被安全
 /// 桌面 / UIPI 拦下（返回数不足）按失败上报——粘贴路径遇拦截只会「贴不出」，这里能
 /// 把失败讲出来。
+///
+/// 它也是「往提权窗口打字」最稳的一条：整段文本不碰剪贴板，提权进程重放一次就能打进
+/// 目标（剪贴板方式还要依赖提权目标读得到中等完整性级别的剪贴板内容，见 §5.7）。
 pub fn type_text_unicode(text: &str) -> io::Result<()> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    deliver(&[Op::Text(text.to_string())])
+}
+
+/// 本地逐字符直发（提权进程那侧也走它）。
+fn type_text_unicode_local(text: &str) -> io::Result<()> {
     let events = unicode_key_events(text);
     if events.is_empty() {
         return Ok(());
@@ -467,6 +552,25 @@ mod tests {
             let scan = key_to_vk(k).and_then(|vk| scan_for_key(k, vk));
             println!("{k:?} -> vk={:?} scan={scan:?}", key_to_vk(k));
         }
+    }
+
+    /// 组合键的 op 序列：全部按下 → 停一下 → **逆序**松开（顺序错了目标程序收到的是别的
+    /// 组合键）。这一串是本地重放与提权进程重放共用的意图，所以形状是硬约束。
+    #[test]
+    fn chord_ops_hold_then_release_in_reverse() {
+        let ops = chord_ops(&[Key::Control, Key::Alt, Key::K]);
+        assert_eq!(
+            format!("{ops:?}"),
+            "[Down(Ctrl), Down(Alt), Down(K), Pause(30ms), Up(K), Up(Alt), Up(Ctrl)]"
+        );
+        // 空组合键 = 没有组合键：一个事件都不发（别发一个没意义的停顿）。
+        assert!(chord_ops(&[]).is_empty());
+    }
+
+    /// 单键点按是一对「按下 + 抬起」（提权通道上也是这两个 op）。
+    #[test]
+    fn tap_is_down_then_up() {
+        assert_eq!(format!("{:?}", [Op::Down(Key::F5), Op::Up(Key::F5)]), "[Down(F5), Up(F5)]");
     }
 
     /// 鼠标事件构造（7.1-㊱）：移动带 `MOUSEEVENTF_MOVE` + 相对位移；滚轮 `mouseData`

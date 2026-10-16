@@ -204,6 +204,9 @@ export function installBrowserMock() {
   let paused = false;
   const results = structuredClone(DEMO_RESULTS);
   const runs = structuredClone(DEMO_RUNS);
+  // 提权窗口注入开关的演示态：`set_config` 存进来的设置里带上它，卡片状态跟着走
+  // （浏览器里没有真提权进程，`connected` 恒 false）。
+  let demoElevatedEnabled = false;
   const w = window as unknown as {
     __TAURI_INTERNALS__: unknown;
     [key: string]: unknown;
@@ -229,6 +232,9 @@ export function installBrowserMock() {
         case "get_config":
           return structuredClone(DEMO_CONFIG);
         case "set_config":
+          demoElevatedEnabled =
+            (args as { config?: { settings?: { elevated_inject?: boolean } } })?.config?.settings
+              ?.elevated_inject === true;
           return [];
         case "get_command_results":
           return structuredClone(results);
@@ -262,6 +268,14 @@ export function installBrowserMock() {
             checked: 8,
             hvci: true,
           };
+        case "elevated_status":
+          // 演示数据：按「Windows + 跟随设置开关」的样子给，设置页那张卡片的启用/未启用
+          // 两态渲染路径才验得到（浏览器里没有真提权进程，start 也不会真的弹 UAC）。
+          return { supported: true, enabled: demoElevatedEnabled, connected: false };
+        case "elevated_start":
+          return "演示模式：不会真的拉起提权进程";
+        case "elevated_stop":
+          return null;
         case "get_update_status":
           return { current: "0.6.0", phase: "idle" };
         case "check_update":

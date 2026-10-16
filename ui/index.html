@@ -395,6 +395,34 @@
                 </details>
               </section>
 
+              <!-- 提权窗口注入：前台是提权进程时，把注入交给一个按需拉起的提权进程去做
+                   （规划 7.2-㉑a / docs/底层输入能力规划.md 档位 B）。开关进配置，拉起/断开是
+                   一次性动作（会弹 UAC），所以两者分开：一个 toggle + 一个按钮 + 结论区。 -->
+              <section class="set-card">
+                <div class="set-card-head">
+                  <span>提权窗口注入</span>
+                  <button id="elevated-toggle-run" class="ghost">启动提权进程</button>
+                </div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">提权窗口也生效</span>
+                      <span class="set-sub">管理员身份运行的窗口里也能注入文本 / 按键 / 鼠标（首次会弹一次 UAC）</span>
+                    </span>
+                    <input type="checkbox" id="set-elevated" class="toggle" />
+                  </label>
+                </div>
+                <div class="set-body">
+                  <div id="elevated-report" class="set-status">正在检测…</div>
+                </div>
+                <details class="hint-fold">
+                  <summary>这是干什么的</summary>
+                  <p class="hint">Windows 有一条规则（UIPI）：低权限程序不能往<strong>更高权限</strong>的窗口发输入。所以 Kada 在「以管理员身份运行」的程序里注入会被系统拦掉——表现是「快捷键触发了，那个窗口里却没反应」（抓取没问题，是<strong>注入</strong>进不去）。</p>
+                  <p class="hint">打开这个开关后，点「启动提权进程」会拉起一个<strong>提权运行的 Kada</strong>（同一个程序、另一个模式，不建窗口也不读配置），注入改由它重放。首次会弹一次 UAC 授权；它平时不运行——你关掉开关或退出 Kada，它就跟着退出，不留在系统里。</p>
+                  <p class="hint">边界（如实说）：「安全桌面」——UAC 授权框本身、锁屏、登录界面——<strong>这套东西也进不去</strong>，这是系统设计如此。另外剪贴板方式输文本时，读回剪贴板的「转大小写」动作在提权窗口里仍不工作（读得到、写不回去）；改用「逐字符直发」注入方式即可。</p>
+                </details>
+              </section>
+
               <!-- 配置与数据 -->
               <section class="set-card">
                 <div class="set-card-head"><span>配置与数据</span></div>
@@ -540,7 +568,7 @@
 
             <h3>其它两种「没反应」</h3>
             <ul>
-              <li><strong>提权窗口里注入不进去</strong>：钩子看得见按键，但 Windows 不让普通权限的进程往管理员窗口注入（UIPI）。表现是「按了，动作执行了，但目标窗口里没有文字 / 按键」。这是另一件事，规划见档位 B。</li>
+              <li><strong>提权窗口里注入不进去</strong>：钩子看得见按键，但 Windows 不让普通权限的进程往管理员窗口注入（UIPI）。表现是「按了，动作执行了，但目标窗口里没有文字 / 按键」。<strong>处置</strong>：设置 → 提权窗口注入 → 打开「提权窗口也生效」并点「启动提权进程」（会弹一次 UAC）。之后 Kada 会把注入交给那个提权进程重放，这类窗口里就能生效了；不想用了就关掉开关，它会跟着退出，不留在系统里。UAC 授权框本身、锁屏、登录界面（安全桌面）仍然进不去——那是系统设计如此。若你在提权窗口里按快捷键时没打开这个开关，Kada 会在「消息」里给一条提示告诉你怎么开。</li>
               <li><strong>Linux 上被别的改键工具抢了设备</strong>：<code>keyd</code> / <code>input-remapper</code> 这类工具会独占抓取 <code>/dev/input</code>，与 Kada 互相抢占——谁先抓到谁说了算。两者只能留一个。</li>
             </ul>
 

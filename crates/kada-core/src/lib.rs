@@ -1819,6 +1819,15 @@ pub struct Settings {
     /// 余地，这个开关就是给那种情况留的——关掉即整条链路静默（探测也不再做）。
     #[serde(default = "default_true")]
     pub input_env_diag: bool,
+    /// 提权窗口注入（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：前台是提权窗口时，
+    /// 把注入交给一个**按需拉起的提权进程**去做（UIPI 只拦「低完整性级别往高级别」的输入，
+    /// 同级之间是通的），补上「按了快捷键，提权窗口里没反应」。
+    ///
+    /// 缺字段取 `false`（`#[serde(default)]` 的零值）：它是**默认关**的可选能力——打开意味着
+    /// 要弹一次 UAC、多一个提权进程在跑，这种事不该替用户决定；关着时行为与没有这个功能
+    /// 完全一致（见 `docs/底层输入能力规划.md` §1 的「只增能力，不做依赖」）。
+    #[serde(default)]
+    pub elevated_inject: bool,
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1861,6 +1870,7 @@ impl Default for Settings {
             snippet_index_url: default_snippet_index_url(),
             sync_dir: None,
             input_env_diag: true,
+            elevated_inject: false,
         }
     }
 }

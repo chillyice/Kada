@@ -143,6 +143,12 @@ type Settings = {
    * 缺字段按后端默认「开」（老配置也拿到这个能力——它只在真探测到东西且配置用到鼠标键时才出声）。
    */
   input_env_diag?: boolean;
+  /**
+   * 提权窗口注入（规划 7.2-㉑a）：前台是提权窗口时，把注入交给一个按需拉起的提权进程去做
+   * （UIPI 只拦「低往高」的输入）。缺字段 = 关（后端 `#[serde(default)]` 的零值）——
+   * 它是默认关的可选能力：打开要弹一次 UAC，不替用户决定。
+   */
+  elevated_inject?: boolean;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -177,6 +183,16 @@ type InputEnvReport = {
   checked: number;
   hvci: boolean | null;
 };
+
+/**
+ * 提权窗口注入的现状（后端 `ElevatedStatus`，规划 7.2-㉑a）：
+ * `supported` = 本平台有没有这套能力（Windows 专属，其余平台恒 false）；
+ * `enabled` = 配置里的开关；`connected` = 提权进程是不是已经在跑并且连上了。
+ *
+ * 三种结论要分开说：「本平台不支持」是能力缺口、「开关没开」是用户的决定、「开关开着但没连上」
+ * 才是「点了启动但没成功 / 提权进程已退出」——把前两种说成最后一种，用户会以为坏了。
+ */
+type ElevatedStatus = { supported: boolean; enabled: boolean; connected: boolean };
 
 /** 冲突三组：硬冲突（需处理）/ 软冲突（遮蔽·重叠）/ 平台能力·环境限制（仅提示，不阻止保存）。 */
 function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict[]; caps: Conflict[] } {
@@ -4654,6 +4670,56 @@ function syncSettings() {
   (document.getElementById("set-input-env") as HTMLInputElement).checked =
     cfg.settings.input_env_diag !== false;
   void renderInputEnvReport();
+  // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
+  // 问一遍后端（提权进程可能已经退出，这个值会变）。
+  (document.getElementById("set-elevated") as HTMLInputElement).checked =
+    cfg.settings.elevated_inject === true;
+  void renderElevatedReport();
+}
+
+/**
+ * 重画「提权窗口注入」卡片的结论区（后端 `elevated_status`，规划 7.2-㉑a）。
+ *
+ * 三种结论分开说（见 [`ElevatedStatus`]）：本平台不支持 / 开关没开 / 开关开着但提权进程
+ * 没连上。按钮跟着状态走——没起来时是「启动提权进程」（点了会弹 UAC），连上后是「断开」。
+ */
+async function renderElevatedReport() {
+  const box = document.getElementById("elevated-report")!;
+  const run = document.getElementById("elevated-toggle-run") as HTMLButtonElement;
+  let s: ElevatedStatus;
+  try {
+    s = await invoke<ElevatedStatus>("elevated_status");
+  } catch (e) {
+    box.textContent = `状态读取失败：${e}`;
+    run.hidden = true;
+    return;
+  }
+  box.replaceChildren();
+  const line = (text: string) => box.append(el("div", "env-line", text));
+  if (!s.supported) {
+    run.hidden = true;
+    line("当前平台不支持（这是 Windows 专属能力：它的对手是 UIPI）。");
+    return;
+  }
+  const enabled = cfg.settings.elevated_inject === true;
+  run.hidden = false;
+  run.textContent = s.connected ? "断开提权进程" : "启动提权进程";
+  if (!enabled) {
+    // 开关关着时按钮没有意义（就算拉起来，注入也不会走它）——禁用而不是隐藏，
+    // 让「先开开关」这件事看得见。
+    run.disabled = true;
+    run.title = "先打开上面的「提权窗口也生效」";
+    line("未启用。打开上面的开关后点「启动提权进程」（会弹一次 UAC 授权）。");
+    return;
+  }
+  run.disabled = false;
+  run.title = "";
+  if (s.connected) {
+    line("已连接：提权进程在运行，提权窗口里的注入会交给它。");
+  } else {
+    line("开关已打开，但提权进程没在运行——点右上角「启动提权进程」拉起它。");
+  }
+  line("它平时不运行：关掉开关、或退出 Kada，它就跟着退出，不会留在系统里。");
 }
 
 /**
@@ -4780,6 +4846,32 @@ function bindSettings() {
   document
     .getElementById("input-env-refresh")!
     .addEventListener("click", () => void renderInputEnvReport());
+  // 提权窗口注入（规划 7.2-㉑a）：**开关只写配置**，拉起 / 断开是按钮的动作——开关本身
+  // 不弹 UAC（用户点「启动」才弹），关掉时后端会顺带断开通道，提权进程随之退出。
+  const elevated = document.getElementById("set-elevated") as HTMLInputElement;
+  elevated.addEventListener("change", () => {
+    cfg.settings.elevated_inject = elevated.checked;
+    void save();
+    void renderElevatedReport();
+  });
+  // 启动 / 断开：这一下会弹 UAC（用户在等授权，界面上要说清楚），且后端在等提权进程把通道
+  // 建起来（最长 30 秒）。所以按键就地禁用 + 写一句进度，别让人以为界面卡死了。
+  const elevatedRun = document.getElementById("elevated-toggle-run") as HTMLButtonElement;
+  elevatedRun.addEventListener("click", async () => {
+    const box = document.getElementById("elevated-report")!;
+    const wasConnected = elevatedRun.textContent?.includes("断开") === true;
+    elevatedRun.disabled = true;
+    box.textContent = wasConnected ? "正在断开…" : "正在请求管理员授权（会弹 UAC，请在弹出的窗口里确认）…";
+    try {
+      if (wasConnected) await invoke("elevated_stop");
+      else await invoke<string>("elevated_start");
+    } catch (e) {
+      box.textContent = `${wasConnected ? "断开" : "启动"}失败：${e}`;
+      elevatedRun.disabled = false;
+      return;
+    }
+    await renderElevatedReport();
+  });
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("sync-choose")!.addEventListener("click", () => void chooseSyncDir());
   document.getElementById("sync-clear")!.addEventListener("click", () => {

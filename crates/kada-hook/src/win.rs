@@ -62,6 +62,7 @@ use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
 
 use crate::{MouseRecord, MouseRecordKind};
 
+pub mod agent;
 pub mod simulate;
 
 /// 一次键盘事件。
@@ -188,6 +189,9 @@ where
 }
 
 fn hook_loop(ready_tx: &mpsc::Sender<u32>) -> io::Result<()> {
+    // 本线程（含回调与重装复位）只许本地注入：回调里不能有带等待的 IPC（超时会被系统
+    // 静默摘钩，见模块头），而走提权通道最坏要等一次回复。见 `simulate::mark_local_only`。
+    simulate::mark_local_only();
     let tid = unsafe { GetCurrentThreadId() };
     install_hooks()?;
     // 设备识别旁路（Raw Input，见 [`install_raw_input`]）：尽力而为，起不来只留痕，

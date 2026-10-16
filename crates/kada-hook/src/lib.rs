@@ -50,6 +50,155 @@ pub fn platform_input_env() -> kada_core::InputEnv {
     }
 }
 
+/// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
+/// 「往提权窗口注入」。
+///
+/// 只有 Windows 有这套东西（提权辅助进程 + 命名管道，见 `win::agent`）；其余平台是**同一个
+/// 接口的空实现**，壳层因此不必按平台分叉——`supported()` 恒 false，界面据此说「本平台不
+/// 支持」而不是「未启用」。
+///
+/// 五条不变量（见该文档 §1）在这个模块里的落点：开关默认关（`Settings.elevated_inject`）、
+/// 只在设置页点「启动」时才弹 UAC、提权进程「客户端断开 / 父进程退出」即退（不留常驻与
+/// 孤儿）、通道失败一律回落本地注入、失败必留一条可见提示（[`elevated::take_notice`]）。
+pub mod elevated {
+    /// 拉起提权进程后最多等它把通道建起来多久（UAC 弹窗要人点，给足时间）。
+    /// 非 Windows 平台没有 [`start`] 的实现，这个值也随之闲置（挂 cfg 免掉一条死代码警告）。
+    #[cfg(windows)]
+    use std::time::Duration;
+
+    /// 代理模式的命令行标志：`kada.exe --kada-agent <父进程 pid>`（壳层 `main` 据此分派）。
+    pub const AGENT_ARG: &str = "--kada-agent";
+
+    /// 拉起提权进程后最多等它把通道建起来多久（UAC 弹窗要人点，给足时间）。
+    #[cfg(windows)]
+    const START_WAIT: Duration = Duration::from_secs(30);
+
+    /// 本平台有没有这套能力（只有 Windows 有）。
+    pub fn supported() -> bool {
+        cfg!(windows)
+    }
+
+    /// 通道现状（设置页卡片显示它）。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct Status {
+        /// 本平台是否支持。
+        pub supported: bool,
+        /// 开关（`settings.elevated_inject`）是否打开。
+        pub enabled: bool,
+        /// 提权进程是否已连上。
+        pub connected: bool,
+    }
+
+    /// 「需要提权、但通道没用上」的原因。平台侧只报 id、不出文案，措辞交给壳层。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum NoticeReason {
+        /// 开关没开。
+        Disabled,
+        /// 开关开着，但提权进程没在跑。
+        NotRunning,
+        /// 通道在，但这一批没送成。
+        Failed,
+    }
+
+    /// 一次「该走提权通道却没走成」的记录（壳层取走它推消息中心）。
+    #[derive(Clone, Debug)]
+    pub struct Notice {
+        /// 前台那个提权窗口的进程名（如 `notepad.exe`）；取不到时为空串。
+        pub app: String,
+        /// 为什么没用上。
+        pub reason: NoticeReason,
+    }
+
+    /// 通道现状。
+    pub fn status() -> Status {
+        #[cfg(windows)]
+        {
+            let s = super::win::agent::status();
+            Status { supported: true, enabled: s.enabled, connected: s.connected }
+        }
+        #[cfg(not(windows))]
+        {
+            Status { supported: false, enabled: false, connected: false }
+        }
+    }
+
+    /// 配置里这个开关现在是什么（壳层每次配置变动都同步一次）。关掉时顺带断开通道——
+    /// 提权进程随之退出。
+    pub fn set_enabled(on: bool) {
+        #[cfg(windows)]
+        super::win::agent::set_enabled(on);
+        #[cfg(not(windows))]
+        let _ = on;
+    }
+
+    /// 拉起提权进程并连上通道（**唯一会弹 UAC 的入口**，只由设置页的动作调用）。
+    pub fn start() -> Result<String, String> {
+        #[cfg(windows)]
+        {
+            super::win::agent::start(START_WAIT).map_err(|e| e.to_string())
+        }
+        #[cfg(not(windows))]
+        {
+            Err("本平台暂不支持提权窗口注入".into())
+        }
+    }
+
+    /// 断开通道（提权进程随即自行退出）。
+    pub fn stop() {
+        #[cfg(windows)]
+        super::win::agent::stop();
+    }
+
+    /// 取走一条待报提示（壳层定时器线程每拍看一眼）。
+    pub fn take_notice() -> Option<Notice> {
+        #[cfg(windows)]
+        {
+            super::win::agent::take_notice().map(|n| Notice {
+                app: n.app,
+                reason: match n.reason {
+                    super::win::agent::Reason::Disabled => NoticeReason::Disabled,
+                    super::win::agent::Reason::NotRunning => NoticeReason::NotRunning,
+                    super::win::agent::Reason::Failed => NoticeReason::Failed,
+                },
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            None
+        }
+    }
+
+    /// 以代理模式运行（`main` 在 `--kada-agent` 时调用）并返回进程退出码。
+    ///
+    /// 它**不碰** Tauri 壳、配置、窗口：提权进程的能力面只到这里为止。参数是拉起自己的
+    /// Kada 进程 pid（`None` = 手工运行，不守望父进程）。
+    pub fn serve(parent: Option<u32>) -> i32 {
+        #[cfg(windows)]
+        {
+            let name = match super::win::agent::default_pipe_name() {
+                Ok(name) => name,
+                Err(e) => {
+                    eprintln!("kada-agent: 取通道名失败：{e}");
+                    return 3;
+                }
+            };
+            match super::win::agent::serve(&name, parent) {
+                Ok(()) => 0,
+                Err(e) => {
+                    eprintln!("kada-agent: {e}");
+                    3
+                }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = parent;
+            eprintln!("kada-agent: 本平台不支持提权伴随进程");
+            3
+        }
+    }
+}
+
 /// 鼠标录制事件（鼠标操作录制的输入源，见壳体 `MouseRecorder`）：一次触发（点击 / 滚轮），
 /// 附「自上一次触发以来的光标位移」。
 ///

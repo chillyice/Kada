@@ -21,7 +21,7 @@
 | `docs/变量提取与引用指南.md` | 变量怎么提取、怎么用占位符引用（含「移动硬盘盘符不定」实战） | 想用变量串联多个动作、做自动化时 |
 | `docs/竞品分析与优化规划.md` | 竞品横向对比 + 差距清单 + 分阶段优化路线图（P0~P3） | 规划下一步功能方向、排优先级时 |
 | `docs/触摸板手势可行性调研.md` | 规划 7.2-㊻ 的可行性调研：三平台（Linux libinput / macOS 私有 API / Windows Raw Input）能拿到什么手势事件、怎么接进现有 `Key` 模型、成本与落地顺序 | 评估「触摸板手势作触发源」是否立项 / 怎么落地时 |
-| `docs/底层输入能力规划.md` | 输入层下探的分档规划：三平台各站在哪一层、两个真实缺口（厂商 divert 按键 / 提权窗口注入）、四个档位（A 环境诊断 / B 提权伴随进程 / C HID++ 解锁侧键 / D 内核驱动评估后不做）、签名与信任成本、轻盈五条不变量、落地顺序 | 想「再往底层走」时先读它；判断某条限制该不该用驱动 / HID++ 解决时 |
+| `docs/底层输入能力规划.md` | 输入层下探的分档规划：三平台各站在哪一层、两个真实缺口（厂商 divert 按键 / 提权窗口注入）、四个档位（A 环境诊断 / B 提权伴随进程——**两档均已落地** / C HID++ 解锁侧键——下一个 / D 内核驱动评估后不做）、签名与信任成本、轻盈五条不变量、落地顺序 | 想「再往底层走」时先读它；判断某条限制该不该用驱动 / HID++ 解决时 |
 | `docs/人工验证清单.md` | 只能真机 + 真人操作才能确认的验收项：可照做的步骤 + 预期现象 + 判失败（锁屏/唤醒/切窗复位、动作超时与中止、动作失败上报、未保存改动守卫、删除确认与导入合并 / 替换、配置外部修改监听、更新端到端含产物自检）；**顶部有逐条验证状态**（最近一轮 2026-10-10：§1~§3、§5~§8 通过，§4 休眠唤醒未执行，§9~§14 与附录待真人复跑） | 验收相关改动、发版前 |
 | `docs/变更归档.md` | 已实现变更归档：按里程碑的文件-改动表、设计决策、冒烟结论 | 检索历史实现时 |
 
@@ -36,11 +36,15 @@ crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/�
   src/snippet.rs            # 配置片段（分享用）：按「类别+下标」摘出条目 + 被引用的层；片段市场的索引模型/解析，见 AGENTS「铁律」
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
-  src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本
+  src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本；注入统一拆 Op 走 deliver（前台是提权窗口时交代理，见 架构设计.md §3.23）
+  src/win/agent.rs          # Windows: 提权伴随进程（命名管道 + 行协议 + DACL/双向身份校验 + runas 拉起 + 父进程守望）
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
   src/macos.rs              # macOS: CGEventTap 钩子 + key↔虚拟键码 + AX 前台查询 + simulate（需「辅助功能」权限）
+  src/lib.rs                # 平台中性入口：platform_input_env / elevated（提权窗口注入，非 Windows 为空实现）
   examples/demo.rs          # M1 冒烟 demo（三平台，真人按键验证）
-  examples/mouse_probe.rs   # 鼠标侧键分诊探针（Windows）：自检「按需挂钩子」+ 看侧键事件有没有到得了钩子（分诊厂商软件接管，见 docs/底层输入能力规划.md §5）
+  examples/mouse_probe.rs   # 鼠标侧键分诊探针（Windows）：自检「按需挂钩子」+ 看侧键事件有没有到得了钩子（分诊厂商软件接管，见 docs/底层输入能力规划.md 档位 C）
+  examples/input_env_probe.rs   # 输入层环境诊断探针：印「认出了谁 + HVCI 状态」，真机核对入口（见 人工验证清单.md §30）
+  examples/elevated_probe.rs    # 提权通道探针（Windows）：验 DACL / 双向身份校验 / 行协议往返 / 分片 / 坏 op 整批拒 / 断开即退（UAC 那段见 人工验证清单.md §31）
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）

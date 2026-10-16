@@ -73,6 +73,10 @@ mod input {
         KeyEvent,
     };
 
+    /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
+    /// 见 `kada_hook::elevated`；`supported()` 在其它平台恒 false。
+    pub use kada_hook::elevated;
+
     pub fn hooks_supported() -> bool {
         true
     }
@@ -98,6 +102,10 @@ mod input {
         current_device, frontmost_context, set_mouse_recorder, simulate, start, Action as HookAction,
         HookHandle, KeyEvent,
     };
+
+    /// 提权窗口注入（规划 7.2-㉑a）：这套东西是 Windows 专属（UIPI 的补丁），Linux 上
+    /// `supported()` 恒 false——界面据此说「本平台暂不支持」。
+    pub use kada_hook::elevated;
 
     /// 输入层是否已启动：无权限（没进 input 组 / udev 没放行 /dev/uinput）时
     /// `start` 会失败，这里如实报 false——录制入口据此给解释，而不是录到一片空白。
@@ -142,6 +150,10 @@ mod input {
         simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
+    /// 提权窗口注入（规划 7.2-㉑a）：macOS 没有 UIPI 这一层（它的问题是「辅助功能」授权与
+    /// 安全输入），本档不做，`supported()` 恒 false。
+    pub use kada_hook::elevated;
+
     /// 输入层是否可用 = 有没有「辅助功能」权限。
     ///
     /// 与另两个平台不同：macOS 的能力是**运行时授权**的，没权限时 `CGEventTapCreate` 必失败，
@@ -183,6 +195,9 @@ mod input {
 
     /// 无输入层实现：没有鼠标录制。
     pub fn set_mouse_recorder(_f: Option<crate::MouseRecordCallback>) {}
+
+    /// 提权窗口注入（规划 7.2-㉑a）：本平台没有，`supported()` 恒 false。
+    pub use kada_hook::elevated;
 
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
@@ -855,6 +870,9 @@ fn spawn_engine_ticker(
         // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
         // 外部改配置都能改它，这里是唯一一处常驻且拿得到最新配置的地方）。
         let mut last_paused: Option<bool> = None;
+        // 上一次「提权窗口注入开关」：变了才通知钩子层（关掉时钩子层会顺带断开通道，
+        // 提权进程随之退出——「平时不运行」，见 `kada_hook::elevated`）。
+        let mut last_elevated: Option<bool> = None;
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
             let reset_reason = watch.poll();
@@ -870,7 +888,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse, user_paused) = {
+            let (payload, hud_enabled, use_mouse, user_paused, elevated) = {
                 let guard = cfg.read().unwrap();
                 let frozen = rec.lock().unwrap().is_some()
                     || pause_active(&paused_until)
@@ -896,6 +914,7 @@ fn spawn_engine_ticker(
                     guard.settings.show_status_hud,
                     config_uses_mouse(&guard),
                     guard.settings.paused,
+                    guard.settings.elevated_inject,
                 )
             };
             // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
@@ -920,8 +939,106 @@ fn spawn_engine_ticker(
                 }
                 last_paused = Some(user_paused);
             }
+            // 提权窗口注入的开关（规划 7.2-㉑a）：只在这里同步给钩子层——注入路径每一批都要
+            // 读它，放配置锁里现读会拖慢热路径。关掉时钩子层会断开通道，提权进程随之退出。
+            if last_elevated != Some(elevated) {
+                input::elevated::set_enabled(elevated);
+                last_elevated = Some(elevated);
+            }
+            // 「需要提权、但通道没用上」的提示（开关没开 / 提权进程没在跑 / 通道出错）：
+            // 平台层带冷却、取走即报，不会连按刷屏。**失败必须可见**——否则用户看到的仍然
+            // 是「按了没反应」，本档就白做了（见 `docs/底层输入能力规划.md` §1 第 5 条）。
+            if let Some(notice) = input::elevated::take_notice() {
+                report_elevated_notice(&app, notice);
+            }
         }
     });
+}
+
+/// 提权窗口注入的现状（设置页卡片的数据源，规划 7.2-㉑a）。
+#[derive(Serialize)]
+struct ElevatedStatus {
+    /// 本平台有没有这套能力（只有 Windows 有）。
+    supported: bool,
+    /// 开关（`settings.elevated_inject`）是否打开。
+    enabled: bool,
+    /// 提权进程是否已连上。
+    connected: bool,
+}
+
+/// 提权窗口注入的现状。
+#[tauri::command]
+fn elevated_status() -> ElevatedStatus {
+    let s = input::elevated::status();
+    ElevatedStatus { supported: s.supported, enabled: s.enabled, connected: s.connected }
+}
+
+/// 拉起提权进程并连上通道（**唯一会弹 UAC 的地方**，只由设置页的按钮触发；连接有超时，
+/// 用户不点 UAC 也不会把界面挂住）。
+#[tauri::command]
+fn elevated_start() -> Result<String, String> {
+    input::elevated::start()
+}
+
+/// 断开提权通道（提权进程随之退出；开关状态不动，下次点「启动」或重启应用即可再来）。
+#[tauri::command]
+fn elevated_stop() -> Result<(), String> {
+    input::elevated::stop();
+    Ok(())
+}
+
+/// 「需要提权、但通道没用上」时进消息中心的一条提示。
+///
+/// 三种原因分开说，且都要给出**下一步怎么做**：本档的前提是「用户先知道发生了什么事」
+/// （档位 A 立的规矩），到这里再补上「怎么让它通」。安全桌面的边界也在这里如实讲一句——
+/// 那是这套东西**也做不到**的部分（见 `docs/底层输入能力规划.md` 档位 B 的边界）。
+fn report_elevated_notice(app: &tauri::AppHandle, notice: input::elevated::Notice) {
+    let state = app.state::<KadaState>();
+    let target = if notice.app.is_empty() {
+        "一个提权窗口".to_string()
+    } else {
+        format!("提权窗口（{}）", notice.app)
+    };
+    let (headline, detail) = match notice.reason {
+        input::elevated::NoticeReason::Disabled => (
+            format!("{target}里注入没生效：提权窗口注入还没打开"),
+            "前台这个程序是**以管理员身份运行**的，UIPI 不允许 Kada 往里注入（这也是它设计上的\
+             用途）。打开 设置 → 提权窗口注入 的「提权窗口也生效」，会弹一次 UAC 授权，之后\
+             这类窗口里的文本 / 按键 / 鼠标动作就能生效。"
+                .to_string(),
+        ),
+        input::elevated::NoticeReason::NotRunning => (
+            format!("{target}里注入没生效：提权进程没在运行"),
+            "开关是开着的，但提权进程没跑（没启动过、或者已经退出）。去 设置 → 提权窗口注入 \
+             点「启动提权进程」（会弹一次 UAC）。"
+                .to_string(),
+        ),
+        input::elevated::NoticeReason::Failed => (
+            format!("{target}里注入没生效：提权通道出错"),
+            "已经回落成普通注入，所以提权窗口里不会有反应。可在 设置 → 提权窗口注入 里重启\
+             提权进程；持续失败请把这条消息连同复现步骤一起记下来反馈。"
+                .to_string(),
+        ),
+    };
+    commit_result(
+        app,
+        &state.results,
+        &state.unread,
+        CommandResult {
+            kind: "elevated".into(),
+            label: "提权窗口注入".into(),
+            trigger: "提权窗口".into(),
+            name: String::new(),
+            command: headline,
+            stdout: detail,
+            stderr: String::new(),
+            exit_code: None,
+            // 不弹窗：这条随时可能因为用户正好在提权窗口里按快捷键而出现，弹窗会抢焦点。
+            show_output: false,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            run_id: None,
+        },
+    );
 }
 
 /// 配置外部修改监听的巡检线程（见 [`config_watch`] 与规划 7.2-⑩）。
@@ -4236,6 +4353,9 @@ pub fn run() {
             set_config,
             get_conflicts,
             input_env_report,
+            elevated_status,
+            elevated_start,
+            elevated_stop,
             export_config,
             sync_now,
             sync_import_path,
