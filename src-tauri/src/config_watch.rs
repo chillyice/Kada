@@ -147,6 +147,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: name.into(),
                     mode: TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,

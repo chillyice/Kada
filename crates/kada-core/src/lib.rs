@@ -1026,12 +1026,21 @@ pub enum MouseOp {
     Scroll { dx: i32, dy: i32 },
 }
 
+/// `serde` 的 `skip_serializing_if` 帮手：`false` 的布尔字段不落盘——默认值写进 JSON 只是噪音
+/// （配置、导出片段、分享出去的片段都会带上）。
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
     /// 文本动作：原样输入文本，或把当前选中/剪贴板文本转大小写后粘贴。
-    Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    ///
+    /// `masked` 只影响**界面展示**（编辑器里这段文本以 `***` 代替，动作摘要与执行记录同款掩掉），
+    /// 不改实际注入的内容——给密码 / 口令这类不该被人一眼看到的文本用。
+    Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "is_false")] masked: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行命令（CMD 或 PowerShell），结果进消息中心；`var` 非空时把标准输出（去首尾空白）写入该变量。
     #[cfg(feature = "automation")]
     Command { shell: Shell, command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1207,7 +1216,7 @@ impl Action {
 
 impl Default for Action {
     fn default() -> Self {
-        Action::Text { text: String::new(), mode: TextMode::Input, description: None }
+        Action::Text { text: String::new(), mode: TextMode::Input, masked: false, description: None }
     }
 }
 
@@ -3087,7 +3096,7 @@ mod config_tests {
                 name: Some("地址".into()),
                 description: Some("常用收货地址".into()),
                 triggers: vec!["Ctrl+Alt+K".into(), "Alt+K".into()],
-                actions: vec![Action::Text { text: "上海市徐汇区……".into(), mode: TextMode::Input, description: None }],
+                actions: vec![Action::Text { text: "上海市徐汇区……".into(), mode: TextMode::Input, masked: false, description: None }],
                 folder: None,
                 layer: None,
                 enabled: true,
@@ -3113,7 +3122,7 @@ mod config_tests {
         assert_eq!(cfg.shortcuts[0].enabled, false);
         assert_eq!(
             cfg.shortcuts[0].actions,
-            vec![Action::Text { text: "hi".into(), mode: TextMode::Input, description: None }]
+            vec![Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None }]
         );
     }
 
@@ -3121,7 +3130,7 @@ mod config_tests {
     #[test]
     fn actions_json_roundtrip_and_validate() {
         let actions = vec![
-            Action::Text { text: "你好".into(), mode: TextMode::Input, description: None },
+            Action::Text { text: "你好".into(), mode: TextMode::Input, masked: false, description: None },
             Action::Cmd { command: "echo hi".into(), show_output: false, var: "".into(), description: None },
             Action::Powershell { command: "Get-Date".into(), show_output: true, var: "".into(), description: None },
             Action::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()], description: None },
@@ -3181,7 +3190,7 @@ mod conflict_tests {
     fn item(trigger: &str) -> ShortcutItem {
         ShortcutItem {
             triggers: vec![trigger.into()],
-            actions: vec![Action::Text { text: String::new(), mode: TextMode::Input, description: None }],
+            actions: vec![Action::Text { text: String::new(), mode: TextMode::Input, masked: false, description: None }],
             enabled: true,
             ..Default::default()
         }
@@ -3503,13 +3512,13 @@ mod os_and_sanitize_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+K".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["Bad+Key".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
@@ -3725,7 +3734,7 @@ mod os_and_sanitize_tests {
     fn if_action_validate_recurses() {
         assert!(Action::If {
             condition: Condition::Exists { path: ".".into() },
-            then: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+            then: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
             otherwise: vec![],
             description: None,
         }
@@ -3757,7 +3766,7 @@ mod os_and_sanitize_tests {
         // 递归嵌套的 If 也能完整往返（校验 serde tag 与 field 默认值）。
         let a = Action::If {
             condition: Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() },
-            then: vec![Action::Text { text: "yes".into(), mode: TextMode::Input, description: None }],
+            then: vec![Action::Text { text: "yes".into(), mode: TextMode::Input, masked: false, description: None }],
             otherwise: vec![Action::If {
                 condition: Condition::Exists { path: "{f}".into() },
                 then: vec![],
@@ -3798,7 +3807,7 @@ mod os_and_sanitize_tests {
             actions: vec![
                 Action::Cmd { command: "echo a".into(), show_output: false, var: "".into(), description: None },
                 Action::Parallel {
-                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
                     description: None,
                 },
             ],
@@ -3963,7 +3972,7 @@ mod os_and_sanitize_tests {
                 // 组合 / 序列 / 和弦三种触发都合法。
                 triggers: vec!["Ctrl+K".into(), "F9 J".into(), "F&J".into()],
                 actions: vec![
-                    Action::Text { text: "hi".into(), mode: TextMode::Input, description: None },
+                    Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
                     Action::Keys { keys: vec!["Ctrl".into(), "S".into()], description: None },
                     Action::PauseMs { ms: 100, description: None },
                 ],
@@ -4009,9 +4018,9 @@ mod new_action_and_folder_tests {
     #[test]
     fn text_mode_and_shell_json_roundtrip() {
         let actions = vec![
-            Action::Text { text: "hi".into(), mode: TextMode::Input, description: None },
-            Action::Text { text: "".into(), mode: TextMode::ToUpper, description: None },
-            Action::Text { text: "".into(), mode: TextMode::ToLower, description: None },
+            Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
+            Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
+            Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
             Action::Command { shell: Shell::Cmd, command: "echo hi".into(), show_output: false, var: "".into(), description: None },
             Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), show_output: true, var: "".into(), description: None },
         ];
@@ -4024,10 +4033,32 @@ mod new_action_and_folder_tests {
 
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
-        assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, description: None });
+        assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
         assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), show_output: false, var: "".into(), description: None }
             .validate()
             .is_err());
+    }
+
+    /// `masked` 只影响展示，但它是配置字段，得守住三件事：老配置（没这个键）读成「不隐藏」、
+    /// 标记了隐藏的能落盘并原样读回、默认值 `false` 不落盘（配置与导出片段里不留噪音）。
+    /// 不断言「注入行为」，因为 `masked` 本就不参与执行（见 `Action::Text` 的字段注释）。
+    #[test]
+    fn text_action_masked_roundtrip() {
+        let old: Action = serde_json::from_str(r#"{"type":"text","text":"pw"}"#).unwrap();
+        assert!(matches!(old, Action::Text { masked: false, .. }), "{old:?}");
+
+        let hidden = Action::Text {
+            text: "pw".into(),
+            mode: TextMode::Input,
+            masked: true,
+            description: None,
+        };
+        let json = serde_json::to_string(&hidden).unwrap();
+        assert!(json.contains(r#""masked":true"#), "隐藏标记该落盘: {json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), hidden);
+
+        let plain = Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None };
+        assert!(!serde_json::to_string(&plain).unwrap().contains("masked"), "默认值不该落盘");
     }
 
     #[cfg(feature = "automation")]
@@ -4122,14 +4153,14 @@ mod new_action_and_folder_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+K".into()],
-                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
                     folder: Some("a".into()),
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["Ctrl+J".into()],
-                    actions: vec![Action::Text { text: "y".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "y".into(), mode: TextMode::Input, masked: false, description: None }],
                     folder: Some("missing".into()), // 引用不存在目录
                     enabled: true,
                     ..Default::default()
@@ -4571,7 +4602,7 @@ mod layer_tests {
             shortcuts: vec![ShortcutItem {
                 layer: Some("symbols".into()),
                 triggers: vec!["1".into()],
-                actions: vec![Action::Text { text: "F1".into(), mode: TextMode::Input, description: None }],
+                actions: vec![Action::Text { text: "F1".into(), mode: TextMode::Input, masked: false, description: None }],
                 enabled: true,
                 ..Default::default()
             }, ShortcutItem {
@@ -4712,13 +4743,13 @@ mod sequence_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["F9 J K".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["F9 BadStep".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
@@ -4876,13 +4907,13 @@ mod chord_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+F&J".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["F&F".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, description: None }],
+                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
                     enabled: true,
                     ..Default::default()
                 },
@@ -5328,7 +5359,7 @@ mod platform_caps_tests {
                 "Ctrl+K",
                 vec![Action::If {
                     condition: Condition::FrontmostApp { app: "firefox".into() },
-                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), description: None }],
+                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), masked: false, description: None }],
                     otherwise: vec![],
                     description: None,
                 }],
@@ -5352,7 +5383,7 @@ mod platform_caps_tests {
                 "Ctrl+K",
                 vec![Action::If {
                     condition: Condition::DeviceIs { id: "keyboard".into() },
-                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), description: None }],
+                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), masked: false, description: None }],
                     otherwise: vec![],
                     description: None,
                 }],

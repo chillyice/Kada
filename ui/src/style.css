@@ -1694,6 +1694,16 @@ body {
   resize: vertical;
 }
 
+/* 「隐藏内容」开关打开时顶掉文本编辑框的那块 *** 占位：形状照抄编辑框（开关来开关去
+   卡片高度不跳），但不渲染真文本——连长度都不露。 */
+.action-masked {
+  resize: none;
+  color: var(--muted);
+  letter-spacing: 3px;
+  cursor: default;
+  user-select: none;
+}
+
 .action-input:focus,
 .action-textarea:focus {
   outline: none;

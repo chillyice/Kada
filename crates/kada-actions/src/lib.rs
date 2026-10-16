@@ -673,8 +673,16 @@ fn action_summary(action: &Action, vars: &Vars) -> String {
 fn action_body(action: &Action, vars: &Vars) -> String {
     let sub = |s: &str| substitute_vars(s, vars);
     match action {
-        Action::Text { text, mode, .. } => match mode {
-            TextMode::Input => format!("输入文本 {}", preview(&sub(text))),
+        Action::Text { text, mode, masked, .. } => match mode {
+            // 标记了隐藏的文本连执行记录里也不露出（否则「消息」页一开就看到原文，
+            // 界面上的隐藏等于白做）；代价是这条记录看不出注入了什么。
+            TextMode::Input => {
+                if *masked {
+                    "输入文本 ***".into()
+                } else {
+                    format!("输入文本 {}", preview(&sub(text)))
+                }
+            }
             TextMode::ToUpper => "把选中/剪贴板文本转为大写".into(),
             TextMode::ToLower => "把选中/剪贴板文本转为小写".into(),
         },
@@ -2345,6 +2353,7 @@ mod tests {
         let actions = vec![Action::Text {
             text: format!("第一行\n{}", "长".repeat(500)),
             mode: TextMode::Input,
+            masked: false,
             description: None,
         }];
         // 文本注入通常成功，这里只验摘要渲染本身：换行压平 + 截断。
@@ -2355,6 +2364,32 @@ mod tests {
             summary.chars().count() <= PREVIEW_MAX_CHARS + 8,
             "截断后不该还很长：{summary}"
         );
+    }
+
+    /// 标记了「隐藏内容」的文本动作，执行记录里的摘要也只能是 `***`——否则触发一次之后
+    /// 「消息」页就把原文摊在屏幕上，界面上的隐藏等于白做。
+    #[test]
+    fn masked_text_action_hides_body_in_summary() {
+        let _g = abort::test_lock();
+        let hidden = Action::Text {
+            text: "hunter2".into(),
+            mode: TextMode::Input,
+            masked: true,
+            description: None,
+        };
+        let summary = super::action_summary(&hidden, &BTreeMap::new());
+        assert!(summary.contains("***"), "隐藏的文本要看得出被隐藏了：{summary}");
+        assert!(!summary.contains("hunter2"), "隐藏的文本不该出现在摘要里：{summary}");
+
+        // 没标记隐藏的照旧展示原文（隐藏是显式选择，不是默认）。
+        let plain = Action::Text {
+            text: "hello".into(),
+            mode: TextMode::Input,
+            masked: false,
+            description: None,
+        };
+        let summary = super::action_summary(&plain, &BTreeMap::new());
+        assert!(summary.contains("hello"), "未隐藏的文本照旧展示：{summary}");
     }
 
     // ---- 并行动作（规划 7.2-㉞） ----

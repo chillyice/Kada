@@ -1094,6 +1094,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: "x".into(),
                     mode: TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,
@@ -2301,6 +2302,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: "x".into(),
                     mode: TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,
@@ -2365,6 +2367,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: "Y5jYS!uK".into(),
                     mode: TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,

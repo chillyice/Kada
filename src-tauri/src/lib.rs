@@ -2381,6 +2381,7 @@ mod tests {
         let text = vec![Action::Text {
             text: "x".into(),
             mode: kada_core::TextMode::Input,
+            masked: false,
             description: None,
         }];
         let keys = vec![Action::Keys {
@@ -2513,6 +2514,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: "x".into(),
                     mode: kada_core::TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,
@@ -2586,6 +2588,7 @@ mod tests {
                 actions: vec![Action::Text {
                     text: "pw".into(),
                     mode: kada_core::TextMode::Input,
+                    masked: false,
                     description: None,
                 }],
                 enabled: true,
@@ -2720,6 +2723,7 @@ mod tests {
                     actions: vec![Action::Text {
                         text: "pw".into(),
                         mode: kada_core::TextMode::Input,
+                        masked: false,
                         description: None,
                     }],
                     enabled: true,

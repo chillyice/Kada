@@ -156,6 +156,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: "咔哒 Kada：文本注入演示".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
     ));
@@ -173,11 +174,11 @@ pub fn sample_config() -> Config {
         "快捷键可以串一串动作：打字 → 停 0.5 秒 → 再打字（还有按键组合 / 命令 / 鼠标等）",
         &["Ctrl+Alt+P"],
         vec![
-            Action::Text { text: "3… ".into(), mode: Default::default(), description: None },
+            Action::Text { text: "3… ".into(), mode: Default::default(), masked: false, description: None },
             Action::PauseMs { ms: 500, description: None },
-            Action::Text { text: "2… ".into(), mode: Default::default(), description: None },
+            Action::Text { text: "2… ".into(), mode: Default::default(), masked: false, description: None },
             Action::PauseMs { ms: 500, description: None },
-            Action::Text { text: "1！".into(), mode: Default::default(), description: None },
+            Action::Text { text: "1！".into(), mode: Default::default(), masked: false, description: None },
         ],
     ));
     cfg.shortcuts.push(sc(
@@ -187,6 +188,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: "序列触发成功（F9 → J → K）".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
     ));
@@ -203,6 +205,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: "和弦触发成功（Y + Z 同按）".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
     ));
@@ -215,6 +218,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: String::new(),
             mode: TextMode::ToUpper,
+            masked: false,
             description: None,
         }],
     ));
@@ -225,6 +229,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: String::new(),
             mode: TextMode::ToLower,
+            masked: false,
             description: None,
         }],
     ));
@@ -244,6 +249,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: "层内快捷键生效：现在是「示例层」".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
     ));
@@ -273,6 +279,7 @@ pub fn sample_config() -> Config {
         vec![Action::Text {
             text: "鼠标侧键触发成功（MouseBack）".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
     ));
@@ -343,6 +350,7 @@ pub fn sample_config() -> Config {
         actions: vec![Action::Text {
             text: "条件快捷键生效：只在记事本里触发".into(),
             mode: Default::default(),
+            masked: false,
             description: None,
         }],
         enabled: true,
@@ -374,6 +382,7 @@ pub fn sample_config() -> Config {
             Action::Text {
                 text: "你好，{user}！".into(),
                 mode: Default::default(),
+                masked: false,
                 description: None,
             },
         ],
@@ -392,11 +401,13 @@ pub fn sample_config() -> Config {
             then: vec![Action::Text {
                 text: "条件成立：当前前台是记事本".into(),
                 mode: Default::default(),
+                masked: false,
                 description: None,
             }],
             otherwise: vec![Action::Text {
                 text: "条件不成立：当前前台不是记事本".into(),
                 mode: Default::default(),
+                masked: false,
                 description: None,
             }],
             description: None,

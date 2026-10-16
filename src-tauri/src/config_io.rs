@@ -336,7 +336,7 @@ mod tests {
             shortcuts: vec![ShortcutItem {
                 name: Some(name.into()),
                 triggers: vec!["Ctrl+Alt+K".into()],
-                actions: vec![Action::Text { text: name.into(), mode: TextMode::Input, description: None }],
+                actions: vec![Action::Text { text: name.into(), mode: TextMode::Input, masked: false, description: None }],
                 enabled: true,
                 ..Default::default()
             }],

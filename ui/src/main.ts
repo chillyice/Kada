@@ -39,7 +39,7 @@ type MouseOp =
   | { op: "click"; button: MouseButton }
   | { op: "scroll"; dx: number; dy: number };
 type Action =
-  | { type: "text"; text: string; mode: TextMode; description?: string }
+  | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
   | { type: "command"; shell: Shell; command: string; show_output: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
@@ -462,7 +462,7 @@ function newMouseOp(op: MouseOp["op"]): MouseOp {
 function newAction(type: Action["type"]): Action {
   switch (type) {
     case "text":
-      return { type: "text", text: "", mode: "input" };
+      return { type: "text", text: "", mode: "input", masked: false };
     case "command":
       return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
     case "script":
@@ -659,6 +659,9 @@ function actionSummary(a: Action): string {
     case "text":
       if (a.mode === "to_upper") return "文本转大写（选中/剪贴板）";
       if (a.mode === "to_lower") return "文本转小写（选中/剪贴板）";
+      // 隐藏的文本在摘要里也只留 ***：收起态的卡片头部就这一行（列表搜索、片段预览也用这份），
+      // 摘要里照样露出原文等于没隐藏。
+      if (a.masked) return "输入文本：***";
       return a.text ? `输入文本：${a.text}` : "输入文本";
     case "command": {
       const v = a.var ? ` → ${a.var}` : "";
@@ -3888,13 +3891,31 @@ function actionFields(
   const body = el("div", "action-body");
   if (a.type === "text") {
     if (a.mode === "input") {
-      const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
-      ta.value = a.text;
-      ta.placeholder = "要输入的文本（支持 {变量名} 占位符）……";
-      ta.addEventListener("input", () => {
-        a.text = ta.value;
+      // 隐藏态不渲染真文本（连长度都不露），编辑框位置换成一块 *** 占位；要改内容先关掉开关。
+      if (a.masked) {
+        const masked = el("div", "action-textarea action-masked", "***");
+        masked.title = "文本已隐藏（关掉下面的开关即可查看与编辑）";
+        body.append(masked);
+      } else {
+        const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
+        ta.value = a.text;
+        ta.placeholder = "要输入的文本（支持 {变量名} 占位符）……";
+        ta.addEventListener("input", () => {
+          a.text = ta.value;
+        });
+        body.append(ta);
+      }
+      const hide = el("label", "action-check") as HTMLLabelElement;
+      const hb = el("input", "toggle") as HTMLInputElement;
+      hb.type = "checkbox";
+      hb.checked = !!a.masked;
+      hide.title = "勾上后这段文本在界面上以 *** 显示（执行记录里也掩掉），注入的内容不受影响";
+      hb.addEventListener("change", () => {
+        a.masked = hb.checked;
+        rerender();
       });
-      body.append(ta);
+      hide.append(hb, el("span", undefined, "隐藏内容（显示为 ***）"));
+      body.append(hide);
     } else {
       body.append(
         el(

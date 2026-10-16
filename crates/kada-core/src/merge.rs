@@ -124,7 +124,7 @@ mod tests {
     use crate::{Action, Folder, Layer, Remap, Settings, TextExpansion, TextMode};
 
     fn text(t: &str) -> Action {
-        Action::Text { text: t.into(), mode: TextMode::Input, description: None }
+        Action::Text { text: t.into(), mode: TextMode::Input, masked: false, description: None }
     }
 
     fn shortcut(name: &str, trigger: &str) -> ShortcutItem {

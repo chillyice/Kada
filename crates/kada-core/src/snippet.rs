@@ -159,7 +159,7 @@ mod tests {
             shortcuts: vec![ShortcutItem {
                 name: Some("备份".into()),
                 triggers: vec!["Ctrl+Alt+B".into()],
-                actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, description: None }],
+                actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
                 enabled: true,
                 ..Default::default()
             }],
