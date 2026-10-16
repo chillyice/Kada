@@ -3234,6 +3234,14 @@ pre.msg-v {
   gap: 10px;
 }
 
+/* 同一行的多个勾选项（如「弹窗显示结果」+「隐藏控制台窗口」） */
+.action-checks {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
 .action-check {
   display: flex;
   align-items: center;

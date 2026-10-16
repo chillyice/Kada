@@ -3997,6 +3997,7 @@ function actionFields(
     });
     body.append(ta);
 
+    const flags = el("div", "action-checks");
     const popup = el("label", "action-check") as HTMLLabelElement;
     const cb = el("input", "toggle") as HTMLInputElement;
     cb.type = "checkbox";
@@ -4005,7 +4006,6 @@ function actionFields(
       a.show_output = cb.checked;
     });
     popup.append(cb, el("span", undefined, "弹窗显示结果"));
-    body.append(popup);
 
     const hidden = el("label", "action-check") as HTMLLabelElement;
     const hcb = el("input", "toggle") as HTMLInputElement;
@@ -4016,7 +4016,8 @@ function actionFields(
       a.hide_window = hcb.checked;
     });
     hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
-    body.append(hidden);
+    flags.append(popup, hidden);
+    body.append(flags);
 
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
@@ -4049,6 +4050,7 @@ function actionFields(
     iline.append(el("span", "unit-hint", "解释器"), interp);
     body.append(iline);
 
+    const flags = el("div", "action-checks");
     const popup = el("label", "action-check") as HTMLLabelElement;
     const cb = el("input", "toggle") as HTMLInputElement;
     cb.type = "checkbox";
@@ -4057,7 +4059,6 @@ function actionFields(
       a.show_output = cb.checked;
     });
     popup.append(cb, el("span", undefined, "弹窗显示结果"));
-    body.append(popup);
 
     const hidden = el("label", "action-check") as HTMLLabelElement;
     const hcb = el("input", "toggle") as HTMLInputElement;
@@ -4068,7 +4069,8 @@ function actionFields(
       a.hide_window = hcb.checked;
     });
     hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
-    body.append(hidden);
+    flags.append(popup, hidden);
+    body.append(flags);
 
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
