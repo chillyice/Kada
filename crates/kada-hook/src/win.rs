@@ -38,6 +38,10 @@ use std::time::Duration;
 
 use windows::core::{w, PWSTR};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
+};
+use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
 use windows::Win32::System::RemoteDesktop::{
     WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
     WTSSessionInfoEx, WTSINFOEXW,
@@ -834,8 +838,89 @@ pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
     }
 }
 
-/// 当前前台窗口句柄（`None` = 当前没有前台窗口，**或前台是本进程自己的窗口**）。
+/// 本机输入环境探测（规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）。
 ///
+/// 回答两件事：**有哪些已知接管者在跑**（把按键 divert 给自己的厂商代理——事件在到达任何
+/// 软件之前就不存在了，只能靠「谁在跑」反查）、**内存完整性（HVCI）开没开**（环境信息）。
+///
+/// 全部只读，失败一律当作「不知道」（空表 / `None`）：诊断是锦上添花，绝不能因为它坏了
+/// 影响应用本身（规划里的「轻盈五条不变量」第 1 条）。**调用方自己带缓存**——一次
+/// Toolhelp 快照要遍历几百个进程，不该在每次编辑配置时重扫（壳层 `input_env_cached`）。
+///
+/// 平台侧只报 id、不出文案：提示怎么措辞是 [`kada_core::diagnose_input_env`] 的事，
+/// 三平台口径一致。
+pub fn input_env() -> kada_core::InputEnv {
+    kada_core::InputEnv {
+        diverters: running_diverters(),
+        hvci: hvci_enabled(),
+    }
+}
+
+/// 正在运行的已知接管者 id：进程可执行文件名与 [`kada_core::DIVERTERS`] 的匹配片段做
+/// **小写子串**比对（见该结构体 `processes` 的说明）。
+fn running_diverters() -> Vec<String> {
+    let names = process_names();
+    kada_core::DIVERTERS
+        .iter()
+        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|d| d.id.to_string())
+        .collect()
+}
+
+/// 当前所有进程的可执行文件名（小写，带 `.exe`）。取不到就返回空表。
+///
+/// 只读快照里的 `szExeFile`，不逐个 `OpenProcess` 查镜像路径：基本名足够匹配，而逐个打开
+/// 会撞上权限（保护进程）与几百次系统调用的开销。
+fn process_names() -> Vec<String> {
+    let mut out = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return out;
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        let mut more = Process32FirstW(snap, &mut entry).is_ok();
+        while more {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|c| *c == 0)
+                .unwrap_or(entry.szExeFile.len());
+            out.push(String::from_utf16_lossy(&entry.szExeFile[..end]).to_lowercase());
+            more = Process32NextW(snap, &mut entry).is_ok();
+        }
+        let _ = CloseHandle(snap);
+    }
+    out
+}
+
+/// 内存完整性（HVCI）是否开启：读 DeviceGuard 场景键（只读，不需要管理员）。
+/// `None` = 读不到（旧系统没这个键，或权限不足）——「不知道」比猜一个值好。
+fn hvci_enabled() -> Option<bool> {
+    let mut data: u32 = 0;
+    let mut cb = size_of::<u32>() as u32;
+    let status = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            w!(r"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"),
+            w!("Enabled"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some(&mut data as *mut u32 as *mut c_void),
+            Some(&mut cb),
+        )
+    };
+    // WIN32_ERROR(0) = ERROR_SUCCESS；其余（含键不存在）一律当「读不到」。
+    if status.0 == 0 {
+        Some(data != 0)
+    } else {
+        None
+    }
+}
+
+/// 当前前台窗口句柄（`None` = 当前没有前台窗口，**或前台是本进程自己的窗口**）。
 /// 壳层用它做「前台切换 → 输入状态复位」的变化检测（见规划 7.2-④）：**只看句柄变没变**，
 /// 不查标题与进程名——[`frontmost_context`] 要 `OpenProcess` 拿镜像路径，那是判定条件时
 /// 才值得付的代价，而这里每 60ms 轮询一次，必须便宜（`GetForegroundWindow` 只读一个全局）。

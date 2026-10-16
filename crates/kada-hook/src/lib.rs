@@ -24,6 +24,32 @@ pub use kada_core::{
     format_shortcut, key_name, matches, Key, Modifier, MouseButton, RawEvent, Shortcut,
 };
 
+/// 本机输入环境探测（三平台同一入口，规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）：
+/// 有哪些已知的「按键接管者」正在运行（厂商代理 divert 走按键 / evdev 抢占者），以及
+/// Windows 的内存完整性（HVCI）状态。只读探测，失败一律当作「不知道」（空表 / `None`）。
+///
+/// 三个平台各自的实现在自己后端里（`win` / `linux` / `macos` 的 `input_env`）；macOS 尚未
+/// 实现、恒空——**「这个平台没做」与「探测过了没发现」在界面上是两句话**，别混
+/// （见 `macos::input_env`）。
+pub fn platform_input_env() -> kada_core::InputEnv {
+    #[cfg(windows)]
+    {
+        win::input_env()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::input_env()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::input_env()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        kada_core::InputEnv::default()
+    }
+}
+
 /// 鼠标录制事件（鼠标操作录制的输入源，见壳体 `MouseRecorder`）：一次触发（点击 / 滚轮），
 /// 附「自上一次触发以来的光标位移」。
 ///

@@ -25,10 +25,10 @@ use kada_actions::{
     RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
-    detect_conflicts, matches, parse_snippet_index, sanitize_config, snippet, snippet_title, Action,
-    Config, Conflict, IndexEntry, Key, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
-    ShortcutItem, SnippetPick, TextExpansion, TextInjectMode, Trigger, TriggerContext, Vars,
-    DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
+    config_uses_mouse, detect_conflicts, diagnose_input_env, matches, parse_snippet_index,
+    sanitize_config, snippet, snippet_title, Action, Config, Conflict, IndexEntry, Key, Modifier,
+    RawEvent, Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetPick, TextExpansion,
+    TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -76,6 +76,16 @@ mod input {
     pub fn hooks_supported() -> bool {
         true
     }
+
+    /// 输入环境探测（接管者 + HVCI）：Windows 侧实现完整，见 `kada_hook::win::input_env`。
+    pub fn input_env() -> kada_core::InputEnv {
+        kada_hook::platform_input_env()
+    }
+
+    /// 本平台是否**做了**输入环境诊断。Windows 做了。
+    pub fn input_env_supported() -> bool {
+        true
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -111,6 +121,17 @@ mod input {
     pub fn foreground_window() -> Option<isize> {
         None
     }
+
+    /// 输入环境探测（接管者 + HVCI）：Linux 读 `/proc` 找抢占输入设备的改键守护进程，
+    /// 见 `kada_hook::linux::input_env`（HVCI 恒 `None`）。
+    pub fn input_env() -> kada_core::InputEnv {
+        kada_hook::platform_input_env()
+    }
+
+    /// 本平台是否**做了**输入环境诊断。Linux 做了（进程名口径）。
+    pub fn input_env_supported() -> bool {
+        true
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -132,6 +153,17 @@ mod input {
     /// 鼠标钩子按需安装是 Windows 低层钩子的优化；macOS 的 `CGEventTap` 本就一把抓全部
     /// 事件，无此开关，这里是空实现。
     pub fn set_mouse_enabled(_on: bool) {}
+
+    /// 输入环境探测：**macOS 恒空**（尚未实现，见 `kada_hook::macos::input_env`）。
+    pub fn input_env() -> kada_core::InputEnv {
+        kada_hook::platform_input_env()
+    }
+
+    /// 本平台是否**做了**输入环境诊断。macOS 没做——界面据此说「当前平台暂不支持」，
+    /// 而不是「未检测到接管软件」（后者会被读成「查过了、你机器没问题」）。
+    pub fn input_env_supported() -> bool {
+        false
+    }
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -155,6 +187,16 @@ mod input {
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
         None
+    }
+
+    /// 无输入层实现：不做输入环境探测。
+    pub fn input_env() -> kada_core::InputEnv {
+        kada_core::InputEnv::default()
+    }
+
+    /// 无输入层实现：没做诊断。
+    pub fn input_env_supported() -> bool {
+        false
     }
 }
 
@@ -3463,31 +3505,35 @@ fn launched_by_autostart() -> bool {
     std::env::args().any(|a| a == "--autostart")
 }
 
-/// 配置里是否引用了鼠标键（中键 / 侧键）作为**触发侧**：快捷键触发键（组合 / 序列 /
-/// 和弦成员）或改键来源（`from`）。仅作注入目标（`Action::Keys` 成员 / 改键的 `to` 等）不算——
-/// 注入不需要监听，无需鼠标钩子。用于 Windows 按需安装鼠标低层钩子（见规划 7.4-㉛）。
-fn config_uses_mouse(cfg: &Config) -> bool {
-    fn is_mouse(k: Key) -> bool {
-        matches!(k, Key::MouseMiddle | Key::MouseBack | Key::MouseForward)
+/// 本机输入环境探测（接管者 + HVCI）的短时缓存。
+///
+/// [`get_conflicts`] 在**每次编辑配置**时都会被调（实时显示警告），而探测要走一次
+/// Toolhelp 快照 / 扫一遍 `/proc`——几百个进程，单次几毫秒，不该每敲一个字重来一遍。
+/// 缓存 3 秒：够覆盖连续编辑，也能在「退出厂商软件后回到界面」时及时翻篇（界面刷新
+/// 走 [`input_env_report`]，那里也读同一份缓存）。
+///
+/// 与看门狗 / 定时器线程无锁关系：这是独立的一把锁，不参与「配置读锁必须先于 Engine 锁」
+/// 那个顺序约束（见 `spawn_engine_ticker`）。
+fn input_env_cached() -> kada_core::InputEnv {
+    use std::sync::OnceLock;
+
+    const TTL: Duration = Duration::from_secs(3);
+    static CACHE: OnceLock<Mutex<Option<(Instant, kada_core::InputEnv)>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    // 中毒（某次探测 panic）不该让诊断功能连带失效：拿回内层值继续用。返回的是**拷贝**，
+    // 不把锁带出去（探测结果很小：几个 id + 一个 `Option<bool>`）。
+    let mut guard = cache.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, env)) = guard.as_ref() {
+        if at.elapsed() < TTL {
+            return env.clone();
+        }
     }
-    fn trigger_uses_mouse(t: &str) -> bool {
-        Trigger::parse(t)
-            .map(|t| t.steps().iter().any(|s| is_mouse(s.key)))
-            .unwrap_or(false)
-    }
-    cfg.shortcuts
-        .iter()
-        .any(|s| s.enabled && s.triggers.iter().any(|t| trigger_uses_mouse(t)))
-        || cfg.remaps.iter().any(|r| {
-            r.enabled
-                && r.from
-                    .parse::<Shortcut>()
-                    .map(|s| is_mouse(s.key))
-                    .unwrap_or(false)
-        })
+    let env = input::input_env();
+    *guard = Some((Instant::now(), env.clone()));
+    env
 }
 
-/// 当前平台的输入能力声明（[`get_conflicts`] 第④段用，见规划 7.3-⑲）。
+/// 计算给定配置的冲突列表（前端把当前正在编辑的配置传入，实时展示警告）。
 ///
 /// 各平台口径（与钩子层的实际能力一一对应，改钩子时同步这里）：
 /// - **Windows**：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -3550,10 +3596,18 @@ fn platform_caps() -> kada_core::PlatformCaps {
 /// ③ Windows 下 RegisterHotKey 探测「其他应用/系统已注册」的真实占用；
 /// ④ 平台能力缺失（`PlatformCaps`：本平台监听不到的触发键、注入不了的目标键、
 ///   恒不成立的前台条件——从 Windows 同步过来的配置在 Linux/macOS 上会静默失效，
-///   在这里点出来，别让用户自己猜，见规划 7.3-⑲）。
+///   在这里点出来，别让用户自己猜，见规划 7.3-⑲）；
+/// ⑤ 输入层环境（`diagnose_input_env`，规划 7.2-㊽：探测到会 divert 按键的厂商代理且
+///   配置用到了鼠标键时给一条「为什么按了没反应」——与 ④ 同一口径，归在同一组里）。
 #[tauri::command]
 fn get_conflicts(config: Config) -> Vec<Conflict> {
     let mut out = detect_conflicts(&config, &platform_caps());
+
+    // ⑤ 输入层环境诊断（可关：设置页「识别厂商接管的按键」）。关掉后探测整条不跑，
+    //    不只是不显示——这类提示的误报余地在那儿摆着，用户关它就该是真静默。
+    if config.settings.input_env_diag {
+        out.extend(diagnose_input_env(&config, &input_env_cached()));
+    }
 
     // ② 系统快捷键清单（跨平台）：精确匹配；命中的触发键记下，供③跳过避免重复提示。
     let mut sys_hits: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -3605,6 +3659,57 @@ fn get_conflicts(config: Config) -> Vec<Conflict> {
     }
 
     out
+}
+
+/// 输入层环境诊断的明细报告（设置页「输入层环境」卡片 / 帮助页用，规划 7.2-㊽）。
+///
+/// 与 [`get_conflicts`] 第⑤段的区别是**口径**：那边只在「探测到接管者**且**配置用到鼠标键」
+/// 时才出声（避免噪音），这边是用户主动来看的，所以把探测到的接管者、以及「有没有扫过」
+/// 一并交代清楚——包括「本平台还没做」和「查过了没问题」这两种截然不同的结论。
+#[derive(Serialize)]
+struct InputEnvReport {
+    /// 本平台**是否实现了**探测。false = 「这个平台没做」，不是「清理干净了」。
+    supported: bool,
+    /// 此次探测的结论（接管者）。
+    diverters: Vec<InputEnvHit>,
+    /// 扫过的接管者类别数（让「未检测到」有分量：不是没查，是查了 N 类都没中）。
+    checked: usize,
+    /// Windows 内存完整性（HVCI）：`Some(true/false)` = 已开启/已关闭；`None` = 读不到。
+    hvci: Option<bool>,
+}
+
+/// 一个命中的接管者（展示名 + 处置办法都从 [`kada_core::DIVERTERS`] 来，前端不再抄一份）。
+#[derive(Serialize)]
+struct InputEnvHit {
+    id: String,
+    name: String,
+    advice: String,
+}
+
+#[tauri::command]
+fn input_env_report(config: Config) -> InputEnvReport {
+    let supported = input::input_env_supported();
+    // 不开诊断就不探测：前端据此显示「已关闭」，也省下这次进程表扫描。
+    let env = if supported && config.settings.input_env_diag {
+        input_env_cached()
+    } else {
+        kada_core::InputEnv::default()
+    };
+    let diverters = kada_core::DIVERTERS
+        .iter()
+        .filter(|d| env.diverters.iter().any(|id| id == d.id))
+        .map(|d| InputEnvHit {
+            id: d.id.to_string(),
+            name: d.name.to_string(),
+            advice: d.advice.to_string(),
+        })
+        .collect();
+    InputEnvReport {
+        supported,
+        diverters,
+        checked: kada_core::DIVERTERS.len(),
+        hvci: env.hvci,
+    }
 }
 
 /// 立即把当前配置同步写一份到「同步存档」目录，返回写入的文件路径（前端据此给明确反馈）。
@@ -4130,6 +4235,7 @@ pub fn run() {
             get_config,
             set_config,
             get_conflicts,
+            input_env_report,
             export_config,
             sync_now,
             sync_import_path,

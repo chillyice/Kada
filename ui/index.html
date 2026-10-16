@@ -368,6 +368,33 @@
                 </details>
               </section>
 
+              <!-- 输入层环境：厂商软件把按键 divert 走后，钩子看不到这次按下（规划 7.2-㊽）。
+                   探测在后台 Rust 侧做（进程表 / 注册表），这里只显示结论 + 一个总开关。 -->
+              <section class="set-card">
+                <div class="set-card-head">
+                  <span>输入层环境</span>
+                  <button id="input-env-refresh" class="ghost">重新检测</button>
+                </div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">识别厂商接管的按键</span>
+                      <span class="set-sub">探测有没有会「抢走按键」的厂商软件；配置用到鼠标键时给一条提示</span>
+                    </span>
+                    <input type="checkbox" id="set-input-env" class="toggle" />
+                  </label>
+                </div>
+                <div class="set-body">
+                  <div id="input-env-report" class="set-status">正在检测…</div>
+                </div>
+                <details class="hint-fold">
+                  <summary>这是干什么的</summary>
+                  <p class="hint">有些厂商软件（Logi Options+ / G HUB / 雷云 等）会把某个按键<strong>转交给它自己</strong>：设备从此不再把这个键放进标准报文，系统的输入栈里根本没有这次按下——Kada 的钩子收不到，任何底层工具都收不到。这类接管只影响<strong>被转交的键</strong>（常见是鼠标侧键 / 额外键），键盘快捷键不受影响。</p>
+                  <p class="hint">认出这类软件后，Kada 会在「消息 → 冲突」里给一条提示（只在你的配置<strong>真用到鼠标键</strong>时才提示，避免打扰）。要让它放行：在厂商软件里把该按键设为「无操作 / 默认功能」，或直接退出它。详见「帮助 → 为什么按了没反应」。</p>
+                  <p class="hint">这个开关关掉后<strong>完全不再探测</strong>（提示与检测都停）；「重新检测」用于退出厂商软件后立刻刷新结论（结论本身有 3 秒缓存）。</p>
+                </details>
+              </section>
+
               <!-- 配置与数据 -->
               <section class="set-card">
                 <div class="set-card-head"><span>配置与数据</span></div>
@@ -492,6 +519,31 @@
         <!-- 帮助详情 -->
         <section id="detail-help" class="detail hidden">
           <div class="help-body">
+            <h2>为什么按了没反应</h2>
+            <p>「配置看着没问题，按下去就是没反应」有几种完全不同的成因。按这个顺序排查，每一步都能自己确认：</p>
+            <ol>
+              <li><strong>先看「消息 → 冲突」页</strong>：触发键重复、被系统快捷键占用、本平台监听不到的键，都会在那里列出来（这些是配置层面的问题，改配置就能解决）。</li>
+              <li><strong>再确认这一层是不是生效的</strong>：归属某层的条目，只在那个层被激活时生效；按住式切层键要按住才管用。屏幕下方的状态指示会告诉你「当前有没有东西生效」。</li>
+              <li><strong>最后看输入环境</strong>：设置页的「输入层环境」会探测有没有<em>会抢走按键</em>的厂商软件在跑。见下。</li>
+            </ol>
+
+            <h3>厂商软件把按键「转交」走了（最常见的一种）</h3>
+            <p>罗技这类设备支持把某个按键<strong>转交（divert）</strong>给厂商代理：代理设置过之后，设备固件不再把这个键放进标准报文，改用私有协议只发给代理。结果是——<strong>这次的按下在系统里根本不存在</strong>，Kada 的低层钩子看不到，内核驱动同样看不到，任何底层工具都无能为力。（本文档不涉及对抗：没有可拦截的事件。）</p>
+            <p class="hint">怎么认出来：这类接管通常只吃掉<strong>部分</strong>键。典型指纹是「<strong>中键能用、侧键不能用</strong>」——因为中键在厂商软件里常是直通（默认行为），而侧键被指派成了厂商自己的动作（如「浏览器后退」）。</p>
+            <p>三种处置，任选：</p>
+            <ol>
+              <li><strong>在厂商软件里让位（推荐）</strong>：把那个按键的指派改成「无操作 / 默认功能 / 未指派」。它就会回到标准报文，Kada 立刻能收到，厂商软件也不用退出。</li>
+              <li><strong>退出厂商软件</strong>：退出即放弃接管，按键立刻回到标准报文。代价是它提供的其它功能（手势、设备切换等）也没了。</li>
+              <li><strong>让 Kada 当那个客户端</strong>（规划中，见 <code>docs/底层输入能力规划.md</code> 档位 C）：由 Kada 直接告诉设备「别转交这个键」。尚未实现。</li>
+            </ol>
+            <p class="hint">设置页「输入层环境」的「重新检测」可以立刻复核结论：退出厂商软件后再点一次，探测结果应随之变化。</p>
+
+            <h3>其它两种「没反应」</h3>
+            <ul>
+              <li><strong>提权窗口里注入不进去</strong>：钩子看得见按键，但 Windows 不让普通权限的进程往管理员窗口注入（UIPI）。表现是「按了，动作执行了，但目标窗口里没有文字 / 按键」。这是另一件事，规划见档位 B。</li>
+              <li><strong>Linux 上被别的改键工具抢了设备</strong>：<code>keyd</code> / <code>input-remapper</code> 这类工具会独占抓取 <code>/dev/input</code>，与 Kada 互相抢占——谁先抓到谁说了算。两者只能留一个。</li>
+            </ul>
+
             <h2>变量：提取与引用</h2>
             <p>一条快捷键可挂多个动作，<strong>按顺序执行</strong>。有的动作会把结果「存成变量」，后面的动作用 <code>{变量名}</code> 或 <code>{变量名.字段}</code> 引用。变量只在本次触发内有效，触发结束即清空，不落盘、不跨触发。</p>
             <p class="hint">本节讲通用语法；某个动作具体产出什么、字段怎么命名，鼠标悬在那个动作「存为变量」右侧的 <strong>?</strong> 上就能看到。</p>

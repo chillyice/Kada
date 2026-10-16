@@ -138,6 +138,11 @@ type Settings = {
    * （如 OneDrive 文件夹）；空 / 缺字段 = 关闭。
    */
   sync_dir?: string | null;
+  /**
+   * 输入层环境诊断（规划 7.2-㊽）：探测有没有会「抢走按键」的厂商软件在跑。
+   * 缺字段按后端默认「开」（老配置也拿到这个能力——它只在真探测到东西且配置用到鼠标键时才出声）。
+   */
+  input_env_diag?: boolean;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -159,7 +164,21 @@ type HintsState = { visible: boolean; scale: number; opacity: number; x: number;
 // `platform: true` = 平台能力缺失（配置合法、当前平台支持不了，见后端 `Conflict::platform`）。
 type Conflict = { severity: "error" | "warn"; message: string; name: string; platform?: boolean };
 
-/** 冲突三组：硬冲突（需处理）/ 软冲突（遮蔽·重叠）/ 平台能力缺失（仅提示，不阻止保存）。 */
+/**
+ * 输入层环境诊断报告（后端 `InputEnvReport`，规划 7.2-㊽）：探测到的接管者（厂商软件把按键
+ * 转交给自己，钩子看不到）、扫过的类别数、Windows 内存完整性状态。
+ *
+ * `supported: false` = **本平台还没做这项探测**（目前 macOS），与「查过了、很干净」是两句话，
+ * 界面上必须分开说——把能力缺口说成「没问题」是最糟的一种谎。
+ */
+type InputEnvReport = {
+  supported: boolean;
+  diverters: { id: string; name: string; advice: string }[];
+  checked: number;
+  hvci: boolean | null;
+};
+
+/** 冲突三组：硬冲突（需处理）/ 软冲突（遮蔽·重叠）/ 平台能力·环境限制（仅提示，不阻止保存）。 */
 function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict[]; caps: Conflict[] } {
   return {
     errors: list.filter((c) => c.severity === "error"),
@@ -4500,7 +4519,7 @@ function renderConflictBubble() {
     bits.push(
       `${errors.length + warns.length} 处冲突${errors.length ? `（${errors.length} 处需处理）` : ""}`,
     );
-  if (caps.length) bits.push(`${caps.length} 条当前平台用不了`);
+  if (caps.length) bits.push(`${caps.length} 条当前环境用不了`);
   const bubble = el("div", "conflict-bubble");
   bubble.addEventListener("click", openConflictView);
   bubble.append(
@@ -4559,7 +4578,7 @@ function renderConflictList() {
   const groups: [string, Conflict[], string][] = [
     ["需处理", errors, "error"],
     ["软冲突（遮蔽 / 重叠）", warns, "warn"],
-    ["平台能力缺失（配置合法，当前平台支持不了）", caps, "platform"],
+    ["平台 / 环境限制（配置合法，当前环境支持不了）", caps, "platform"],
   ];
   for (const [title, items, kind] of groups) {
     if (!items.length) continue;
@@ -4630,6 +4649,53 @@ function syncSettings() {
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
     cfg.settings.sync_dir?.trim() || "未设置 —— 选一个目录（如 OneDrive）即可自动存一份";
+  // 输入层环境诊断：缺字段的老配置按「开」显示，与后端 `default_true` 一致；
+  // 结论每次进设置页重算（探测在后端，有 3 秒缓存，不构成负担）。
+  (document.getElementById("set-input-env") as HTMLInputElement).checked =
+    cfg.settings.input_env_diag !== false;
+  void renderInputEnvReport();
+}
+
+/**
+ * 重画「输入层环境」卡片的结论区（后端 `input_env_report`，规划 7.2-㊽）。
+ *
+ * 三种结论必须分开说，不能含糊成一句「没问题」：本平台没做这项探测 / 已关掉探测 /
+ * 探测了 N 类但都没发现；只有第一种是能力缺口，后两种才是真的「干净」。
+ */
+async function renderInputEnvReport() {
+  const box = document.getElementById("input-env-report")!;
+  let r: InputEnvReport;
+  try {
+    r = await invoke<InputEnvReport>("input_env_report", { config: cfg });
+  } catch (e) {
+    box.textContent = `检测失败：${e}`;
+    return;
+  }
+  box.replaceChildren();
+  const line = (text: string) => box.append(el("div", "env-line", text));
+  if (!r.supported) {
+    line("当前平台暂不支持这项检测（Windows / Linux 已支持）。");
+    return;
+  }
+  if (cfg.settings.input_env_diag === false) {
+    line("已关闭。开启后 Kada 才会检测会接管按键的厂商软件。");
+    return;
+  }
+  if (r.diverters.length === 0) {
+    line(`未检测到会接管按键的厂商软件（已查 ${r.checked} 类）。`);
+  } else {
+    line(`检测到 ${r.diverters.length} 个可能接管按键的软件：`);
+    for (const d of r.diverters) {
+      const item = el("div", "env-hit");
+      item.append(el("div", "env-hit-name", d.name));
+      item.append(el("div", "env-hit-advice", d.advice));
+      box.append(item);
+    }
+  }
+  // 内存完整性：只报状态、不当问题说——它拦的是内核驱动，不影响 Kada 现在的用户态钩子。
+  if (r.hvci === true) line("系统「内存完整性」已开启（不影响 Kada 当前的工作方式，仅作记录）。");
+  else if (r.hvci === false) line("系统「内存完整性」未开启。");
+  else line("系统「内存完整性」状态读不到（该功能未配置，或系统未提供）。");
 }
 
 function bindSettings() {
@@ -4701,6 +4767,19 @@ function bindSettings() {
     cfg.settings.snippet_index_url = snippetIndex.value.trim();
     void save();
   });
+  // 输入层环境诊断（规划 7.2-㊽）：关掉即「整条链路静默」——后端连探测都不做
+  // （`get_conflicts` / `input_env_report` 都先看这个开关），所以改完要重画结论区。
+  const inputEnv = document.getElementById("set-input-env") as HTMLInputElement;
+  inputEnv.addEventListener("change", () => {
+    cfg.settings.input_env_diag = inputEnv.checked;
+    void save();
+    void renderInputEnvReport();
+  });
+  // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
+  // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
+  document
+    .getElementById("input-env-refresh")!
+    .addEventListener("click", () => void renderInputEnvReport());
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("sync-choose")!.addEventListener("click", () => void chooseSyncDir());
   document.getElementById("sync-clear")!.addEventListener("click", () => {

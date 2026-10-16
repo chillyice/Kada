@@ -2132,6 +2132,24 @@ button:disabled:hover {
   gap: 6px;
 }
 
+/* 输入层环境诊断的结论区（规划 7.2-㊽）：一行结论 + 每个命中项一个小块。
+   命中项用左侧竖线标出，和上面的「结论句」区分开——这一块是要照着做的处置办法。 */
+.env-line {
+  font-size: var(--fs-md);
+}
+.env-hit {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}
+.env-hit-name {
+  font-size: var(--fs-md);
+}
+.env-hit-advice {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
 .layer-row {
   display: flex;
   align-items: center;

@@ -146,6 +146,66 @@ pub fn hooks_supported() -> bool {
     STARTED.load(Ordering::Relaxed)
 }
 
+/// 本机输入环境探测（规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）。
+///
+/// Linux 侧要比 Windows 多认一类：**抢占 `EVIOCGRAB` 的改键守护进程**（`keyd` /
+/// `input-remapper`）。它们和 Kada 抢同一个输入设备，谁先抓到谁说了算——另一方什么也收不到，
+/// 症状与「按键被 divert」一样（配置没错、就是没反应），所以归进同一份诊断。
+///
+/// 内存完整性（HVCI）是 Windows 概念，恒 `None`。探测只读 `/proc`，不求权限、不改状态。
+pub fn input_env() -> kada_core::InputEnv {
+    kada_core::InputEnv {
+        diverters: running_diverters(),
+        hvci: None,
+    }
+}
+
+/// 正在运行的已知接管者 id（与 [`kada_core::DIVERTERS`] 的匹配片段做小写子串比对）。
+fn running_diverters() -> Vec<String> {
+    let names = process_names();
+    kada_core::DIVERTERS
+        .iter()
+        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|d| d.id.to_string())
+        .collect()
+}
+
+/// `/proc` 里所有进程的可执行名（小写）。
+///
+/// 三处都收：`comm`（内核记的进程名）、`cmdline` 的**前两个参数**的基名。后两个是给
+/// Python 包一层的那些准备的——`solaar` / `input-remapper` 的发行版入口常是
+/// `python3 /usr/bin/solaar`，此时 `comm` 是 `python3`，只有参数里还留着真名。
+/// 刻意只取前两个参数：再多就要靠「整条命令行里含 keyd」去匹配，`grep keyd`、`man keyd`
+/// 这类都会中招——诊断宁可漏报也不能误报（规划档位 A 的主要风险）。
+///
+/// **已知局限**：以别的方式改名的 Python 入口认不出来。读不到 `/proc` 就返回空表。
+fn process_names() -> Vec<String> {
+    let mut out = Vec::new();
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return out;
+    };
+    for entry in dir.flatten() {
+        // 只认纯数字的 pid 目录（/proc 下还有 cpuinfo、self 等非进程项）。
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if name.is_empty() || !name.bytes().all(|b| b.is_ascii_digit()) {
+            continue;
+        }
+        let base = entry.path();
+        if let Ok(comm) = std::fs::read_to_string(base.join("comm")) {
+            out.push(comm.trim().to_lowercase());
+        }
+        if let Ok(cmd) = std::fs::read(base.join("cmdline")) {
+            for arg in cmd.split(|b| *b == 0).take(2).filter(|a| !a.is_empty()) {
+                let arg = String::from_utf8_lossy(arg);
+                let file = arg.rsplit(['/', '\\']).next().unwrap_or(&arg);
+                out.push(file.to_lowercase());
+            }
+        }
+    }
+    out
+}
+
 /// 「设备线断过」计数：设备拔出等导致事件丢失时 +1。壳层 `ResetWatch` 轮询本计数
 /// 跟着复位 `Engine` 状态——拔掉的设备上还按着的键永远等不到抬起，状态机会一直以为
 /// 「Ctrl 还按着」。与 Windows 的钩子重装计数同一通道、同一语义。

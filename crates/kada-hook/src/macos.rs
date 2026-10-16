@@ -929,6 +929,18 @@ pub fn current_device() -> Option<String> {
     None
 }
 
+/// 本机输入环境探测（规划 7.2-㊽）。**macOS 尚未实现，恒返回空。**
+///
+/// 注意口径：这不是「这台机器没问题」，而是「这个平台还没做」——壳层据此把环境诊断
+/// 标成「当前平台暂不支持」而不是「未检测到接管软件」。两者不能混：前者是能力缺口，
+/// 后者是探测过了的结论（见 `docs/底层输入能力规划.md` 的「失败可见」不变量）。
+///
+/// 要做的话：进程表读 `NSWorkspace.runningApplications` 或 libproc，要认的接管者与
+/// Windows 同类（罗技 Options+ / G HUB 等在 macOS 上同样会 divert）。
+pub fn input_env() -> kada_core::InputEnv {
+    kada_core::InputEnv::default()
+}
+
 /// 「辅助功能」权限是否已授予（CGEventTap 监听与注入的前置条件）。
 pub fn accessibility_granted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }

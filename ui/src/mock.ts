@@ -246,6 +246,22 @@ export function installBrowserMock() {
         case "get_conflicts":
           // 演示冲突见 DEMO_CONFLICTS（与演示配置一致），不再恒返回空。
           return structuredClone(DEMO_CONFLICTS);
+        case "input_env_report":
+          // 演示数据（与 DEMO_CONFLICTS 同一个理由）：浏览器里根本没有进程表可查，但设置页
+          // 那张卡片的「检测到接管者」渲染路径得能在纯浏览器里验收，所以给一条假的命中项。
+          return {
+            supported: true,
+            diverters: [
+              {
+                id: "logi-options-plus",
+                name: "Logi Options+",
+                advice:
+                  "在 Options+ 里把该按键改成「无操作 / 默认功能」，它就会回到标准报文本；不想改设置就直接退出 Options+。",
+              },
+            ],
+            checked: 8,
+            hvci: true,
+          };
         case "get_update_status":
           return { current: "0.6.0", phase: "idle" };
         case "check_update":

@@ -1811,6 +1811,14 @@ pub struct Settings {
     /// = 关闭同步（口径同 `wake_key`：`None` 且不把字段写进 JSON）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_dir: Option<String>,
+    /// 输入层环境诊断（规划 7.2-㊽）：探测有没有会「抢走按键」的厂商软件在跑，有就在
+    /// 配置用到鼠标键时给一条「为什么按了没反应」的提示（见 [`diagnose_input_env`]）。
+    ///
+    /// 缺字段取 `true`（[`default_true`]）：它只在**探测到接管者且配置真用到鼠标键**时才出声，
+    /// 没装这类软件的机器上一条都不显示；而这类提示本来就有「检测到了但没真影响我」的误报
+    /// 余地，这个开关就是给那种情况留的——关掉即整条链路静默（探测也不再做）。
+    #[serde(default = "default_true")]
+    pub input_env_diag: bool,
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1852,6 +1860,7 @@ impl Default for Settings {
             hints: HintsWindow::default(),
             snippet_index_url: default_snippet_index_url(),
             sync_dir: None,
+            input_env_diag: true,
         }
     }
 }
@@ -2483,6 +2492,156 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
     }
     out
+}
+
+// ---- 输入层环境诊断（规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）----
+//
+// 「按了没反应」里有一类根本不是配置问题：厂商代理软件把某个按键 divert 走，设备固件
+// 从此不再把它放进标准 HID 报文——Windows 输入栈里没有这次按下，低层钩子拿不到，
+// 内核过滤驱动同样拿不到（详见 `docs/底层输入能力规划.md` §3.1）。这里只做两件事：
+// 把平台侧探测到的「谁在跑」翻成能照做的提示、并把处置办法一起给出。
+//
+// 刻意不做：内存完整性（HVCI）只当环境信息（[`InputEnv::hvci`]），不报成冲突——它拦的是
+// 内核驱动，本项目的用户态低层钩子不受影响，报出来就是纯误报。
+
+/// 一个已知的「按键接管者」条目。
+///
+/// 判定只能靠「这个软件在不在跑」：按键被 divert 之后，事件在到达任何软件（含内核）之前
+/// 就已经不存在了，没法从事件侧反查是谁干的。
+#[derive(Clone, Copy, Debug)]
+pub struct DiverterInfo {
+    /// 稳定 id（探测结果用它对齐，前端也拿它当 key）。
+    pub id: &'static str,
+    /// 展示名（写进提示文案）。
+    pub name: &'static str,
+    /// 进程名匹配片段：与进程名（小写、带 `.exe`）做**子串**匹配。
+    ///
+    /// 用片段而非全名，是因为同一软件各版本 / 各平台的可执行文件名会变
+    /// （`logioptionsplus_agent.exe` / `logioptionsplus.exe`）；片段取得够独特就不会误伤。
+    pub processes: &'static [&'static str],
+    /// 处置办法（提示文案的第二段，要能照着做）。
+    pub advice: &'static str,
+}
+
+/// 已知接管者目录。
+///
+/// 只收**真会抢按键**的两类：把按键 divert 给自己的（罗技系 HID++ 客户端）与独占抓取
+/// 输入设备的（Linux 侧的 evdev 抢占者）——这两类都会让 Kada 彻底看不到按键。
+/// 纯粹在应用层改键 / 注入的工具不在其列：它们不动设备报文，Kada 照样看得见。
+/// **加条目前先确认真有 divert / 独占行为**，否则就是误报来源。
+pub const DIVERTERS: &[DiverterInfo] = &[
+    DiverterInfo {
+        id: "logi-options-plus",
+        name: "Logi Options+",
+        processes: &["logioptionsplus"],
+        advice: "在 Options+ 里把该按键改成「无操作 / 默认功能」，它就会回到标准报文本；不想改设置就直接退出 Options+。",
+    },
+    DiverterInfo {
+        id: "logi-ghub",
+        name: "罗技 G HUB",
+        processes: &["lghub"],
+        advice: "在 G HUB 里把该按键的指派清掉（设为「无操作」），或退出 G HUB。",
+    },
+    DiverterInfo {
+        id: "logi-hidpp-client",
+        name: "logiops / Solaar（罗技 HID++ 客户端）",
+        processes: &["logid", "solaar"],
+        advice: "在它的配置里把这个控件设回「不转交（divert off）」，或退出它。",
+    },
+    DiverterInfo {
+        id: "razer-synapse",
+        name: "Razer Synapse（雷云）",
+        processes: &["razersynapse", "razer synapse"],
+        advice: "在 Synapse 里把该按键的指派清掉（设为「默认 / 无操作」），或退出 Synapse。",
+    },
+    DiverterInfo {
+        id: "steelseries-gg",
+        name: "SteelSeries GG / Engine",
+        processes: &["steelseries"],
+        advice: "在 SteelSeries GG 里把该按键的指派清掉，或退出 GG。",
+    },
+    DiverterInfo {
+        id: "corsair-icue",
+        name: "Corsair iCUE",
+        processes: &["icue"],
+        advice: "在 iCUE 里把该按键的指派清掉，或退出 iCUE。",
+    },
+    DiverterInfo {
+        id: "input-remapper",
+        name: "input-remapper",
+        processes: &["input-remapper"],
+        advice: "它会独占抓取输入设备，和 Kada 互相抢：要用 Kada 就退出它。",
+    },
+    DiverterInfo {
+        id: "keyd",
+        name: "keyd",
+        processes: &["keyd"],
+        advice: "它会在更底层接管键盘，和 Kada 互相抢：要用 Kada 就退出它。",
+    },
+];
+
+/// 本机输入环境探测结果（平台层填，[`diagnose_input_env`] 消费）。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InputEnv {
+    /// 命中的接管者 id（[`DIVERTERS`] 的 `id`；认不出来的一律丢弃）。
+    pub diverters: Vec<String>,
+    /// Windows「内存完整性（HVCI）」是否开启；`None` = 读不到该状态或非 Windows。
+    ///
+    /// **只作环境信息**，不进 [`diagnose_input_env`] 的冲突列表：它拦的是内核驱动，
+    /// 不拦本项目的用户态低层钩子，报成「能力缺失」就是误报。
+    pub hvci: Option<bool>,
+}
+
+/// 配置里是否引用了鼠标键（中键 / 侧键）作为**触发侧**：快捷键触发键（组合 / 序列 /
+/// 和弦成员）或改键来源（`from`）。仅作注入目标（`Action::Keys` 成员 / 改键的 `to` 等）不算——
+/// 注入不需要监听。
+///
+/// 两个用途：Windows 按需安装鼠标低层钩子（见规划 7.4-㉛）、输入层环境诊断只在用到
+/// 鼠标键时才提醒接管者（见 [`diagnose_input_env`]）。
+pub fn config_uses_mouse(cfg: &Config) -> bool {
+    fn is_mouse(k: Key) -> bool {
+        matches!(k, Key::MouseMiddle | Key::MouseBack | Key::MouseForward)
+    }
+    cfg.shortcuts.iter().any(|s| {
+        s.enabled
+            && s.triggers.iter().any(|t| {
+                Trigger::parse(t)
+                    .map(|t| t.steps().iter().any(|s| is_mouse(s.key)))
+                    .unwrap_or(false)
+            })
+    }) || cfg.remaps.iter().any(|r| {
+        r.enabled
+            && r.from
+                .parse::<Shortcut>()
+                .map(|s| is_mouse(s.key))
+                .unwrap_or(false)
+    })
+}
+
+/// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
+/// （[`Severity::Warn`] + `platform: true`，只提示、不阻止保存，UI 也归在同一组里）。
+///
+/// **只在配置真用到鼠标键时才报**：这类接管拿走的典型是侧键 / 额外键，配置里没用到鼠标键时
+/// 它不影响任何一条快捷键，报出来就是纯噪音。这是「误报可关闭」的第一道闸；第二道是
+/// [`Settings::input_env_diag`] 总开关（关掉后这条链路整个不跑）。
+pub fn diagnose_input_env(cfg: &Config, env: &InputEnv) -> Vec<Conflict> {
+    if !config_uses_mouse(cfg) {
+        return Vec::new();
+    }
+    // 按目录顺序遍历（而不是按探测结果顺序）：天然去重，且 id 认不出来的一律丢弃。
+    DIVERTERS
+        .iter()
+        .filter(|d| env.diverters.iter().any(|id| id == d.id))
+        .map(|d| Conflict {
+            severity: Severity::Warn,
+            platform: true,
+            message: format!(
+                "检测到「{}」正在运行：它可能把鼠标侧键 / 额外键转交给自己，Kada 收不到这次按下（配置里用到了鼠标键）。{}",
+                d.name, d.advice
+            ),
+            name: String::new(),
+        })
+        .collect()
 }
 
 /// 一个 [`Shortcut`]（组合键）用到的全部键：主键 + 修饰键。
@@ -5784,5 +5943,100 @@ mod platform_caps_tests {
             "{hits:?}"
         );
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod input_env_tests {
+    use super::*;
+
+    fn mouse_cfg() -> Config {
+        Config {
+            shortcuts: vec![ShortcutItem {
+                name: Some("后退".into()),
+                triggers: vec!["MouseForward".into()],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// 没探测到接管者 → 一条都不报（「不影响未装接管软件的机器」）。
+    #[test]
+    fn empty_env_reports_nothing() {
+        let cfg = mouse_cfg();
+        assert!(diagnose_input_env(&cfg, &InputEnv::default()).is_empty());
+    }
+
+    /// 探到了接管者、但配置根本没用鼠标键 → 不报：那东西不影响任何一条快捷键，报了是噪音。
+    #[test]
+    fn diverter_ignored_when_config_has_no_mouse_key() {
+        let cfg = Config {
+            shortcuts: vec![ShortcutItem {
+                name: Some("终端".into()),
+                triggers: vec!["Ctrl+Alt+T".into()],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let env = InputEnv { diverters: vec!["logi-options-plus".into()], hvci: None };
+        assert!(diagnose_input_env(&cfg, &env).is_empty());
+        // 改键来源是鼠标键同样算「用到鼠标键」（`from` 侧要监听）。
+        let mut r = Remap { from: "MouseBack".into(), to: "Escape".into(), enabled: true, ..Default::default() };
+        r.enabled = true;
+        let cfg = Config { remaps: vec![r], ..Default::default() };
+        assert_eq!(diagnose_input_env(&cfg, &env).len(), 1);
+    }
+
+    /// 探到接管者 + 配置用到鼠标键 → 一条，带展示名与处置办法，且归在「平台能力缺失」口径
+    /// （`platform: true` + `Warn`），不阻止保存。
+    #[test]
+    fn diverter_reported_with_advice() {
+        let env = InputEnv { diverters: vec!["logi-options-plus".into()], hvci: None };
+        let hits = diagnose_input_env(&mouse_cfg(), &env);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].severity, Severity::Warn);
+        assert!(hits[0].platform);
+        assert!(hits[0].message.contains("Logi Options+"), "{}", hits[0].message);
+        // 处置办法要真的在里面（能照做），不是只有一句「可能有问题」。
+        assert!(hits[0].message.contains("无操作"), "{}", hits[0].message);
+    }
+
+    /// 认不出的 id 丢弃、重复 id 只报一条（探测结果来自平台层，这里别被它带偏）。
+    #[test]
+    fn unknown_and_duplicate_ids_are_normalized() {
+        let env = InputEnv {
+            diverters: vec!["不存在的接管者".into(), "logi-ghub".into(), "logi-ghub".into()],
+            hvci: None,
+        };
+        let hits = diagnose_input_env(&mouse_cfg(), &env);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].message.contains("G HUB"), "{}", hits[0].message);
+    }
+
+    /// HVCI 只作环境信息：即便开着也不产出冲突（它拦内核驱动，不影响用户态钩子）。
+    #[test]
+    fn hvci_is_info_not_conflict() {
+        let env = InputEnv { diverters: vec![], hvci: Some(true) };
+        assert!(diagnose_input_env(&mouse_cfg(), &env).is_empty());
+    }
+
+    /// 目录本身的体检：id 唯一、匹配片段非空且都是小写（探测侧按小写进程名比）。
+    #[test]
+    fn catalog_is_well_formed() {
+        let mut ids: Vec<&str> = DIVERTERS.iter().map(|d| d.id).collect();
+        ids.sort_unstable();
+        let n = ids.len();
+        ids.dedup();
+        assert_eq!(ids.len(), n, "接管者目录里有重复 id");
+        for d in DIVERTERS {
+            assert!(!d.processes.is_empty(), "{} 没有匹配片段", d.id);
+            assert!(!d.advice.is_empty(), "{} 没有处置办法", d.id);
+            for p in d.processes {
+                assert_eq!(*p, p.to_lowercase(), "{} 的片段 {p} 必须是小写", d.id);
+            }
+        }
     }
 }
