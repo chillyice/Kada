@@ -34,7 +34,7 @@ use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, 
 use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
-use kada_core::{AppOperation, DesktopDirection, FileObject, OsOperation, Shell, TextValue, Value};
+use kada_core::{AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, TextValue, Value};
 
 #[cfg(target_os = "linux")]
 use kada_hook::linux::simulate;
@@ -312,6 +312,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Launch { .. } | Action::App { .. } | Action::CloseProgram { .. } => "app",
         #[cfg(feature = "automation")]
         Action::OpenFolder { .. } | Action::Os { .. } => "os",
+        #[cfg(feature = "automation")]
+        Action::System { .. } => "system",
         #[cfg(feature = "automation")]
         Action::OpenUrl { .. } => "open_url",
         #[cfg(feature = "automation")]
@@ -634,6 +636,8 @@ fn action_label(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Os { .. } => "文件操作失败",
         #[cfg(feature = "automation")]
+        Action::System { .. } => "系统操作失败",
+        #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断失败",
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "并行执行失败",
@@ -704,6 +708,8 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         #[cfg(feature = "automation")]
         Action::Os { operation, .. } => os_body(operation, vars),
         #[cfg(feature = "automation")]
+        Action::System { operation, .. } => system_body(operation),
+        #[cfg(feature = "automation")]
         Action::App { operation, .. } => app_body(operation, vars),
         #[cfg(feature = "automation")]
         Action::OpenUrl { url, .. } => format!("打开网址 {}", sub(url)),
@@ -759,7 +765,17 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
         OsOperation::GetFileProps { path, var } => {
             format!("读取 {} 的属性写入变量 {var}", sub(path))
         }
-        OsOperation::SwitchDesktop { direction } => {
+    }
+}
+
+/// 系统操作摘要（不含变量：系统操作目前不读占位符）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn system_body(op: &SystemOperation) -> String {
+    match op {
+        SystemOperation::SwitchDesktop { direction } => {
             format!("切换到{}虚拟桌面", direction.label())
         }
     }
@@ -813,6 +829,7 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::OpenFolder { description, .. }
         | Action::CloseProgram { description, .. }
         | Action::Os { description, .. }
+        | Action::System { description, .. }
         | Action::App { description, .. }
         | Action::OpenUrl { description, .. }
         | Action::Script { description, .. }
@@ -1014,12 +1031,15 @@ fn run_action(
                 &OsOperation::OpenFolder { path: path.clone() },
                 vars,
                 last_copied,
-                ctx,
             )?;
         }
         #[cfg(feature = "automation")]
         Action::Os { operation, .. } => {
-            run_os(operation, vars, last_copied, ctx)?;
+            run_os(operation, vars, last_copied)?;
+        }
+        #[cfg(feature = "automation")]
+        Action::System { operation, .. } => {
+            run_system(operation, ctx)?;
         }
         #[cfg(feature = "automation")]
         Action::App { operation, .. } => {
@@ -1076,8 +1096,7 @@ fn run_action(
     Ok(None)
 }
 
-/// 执行一个操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性，或切换虚拟桌面）。
-/// `ctx` 只为「切换虚拟桌面」的链内注入锁而传（文件操作不注入，用不上）。
+/// 执行一个文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -1086,7 +1105,6 @@ fn run_os(
     op: &OsOperation,
     vars: &mut Vars,
     last_copied: &mut Option<String>,
-    ctx: &Ctx<'_>,
 ) -> Result<(), String> {
     match op {
         OsOperation::Copy { source, dest } => {
@@ -1160,14 +1178,24 @@ fn run_os(
             };
             vars.insert(name, Value::File(obj));
         }
-        OsOperation::SwitchDesktop { direction } => {
+    }
+    Ok(())
+}
+
+/// 执行一个系统操作（[`Action::System`]）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn run_system(op: &SystemOperation, ctx: &Ctx<'_>) -> Result<(), String> {
+    match op {
+        SystemOperation::SwitchDesktop { direction } => {
             // 持链内注入锁：`Win+Ctrl+←` 这种组合被别的并行成员插进半截，目标系统收到的是
             // 一个混合组合键（切桌面就成了别的东西）。与 `Keys` 同款理由。
             let _inj = lock_inject(ctx);
-            switch_desktop(*direction)?;
+            switch_desktop(*direction)
         }
     }
-    Ok(())
 }
 
 /// 切换虚拟桌面：注入**系统默认**的切换快捷键（等价于用户手按一遍）。
@@ -2541,23 +2569,30 @@ mod tests {
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。
+    /// 顺带钉住它归「操作系统」动作（`Action::System`）而不是文件动作。
     #[cfg(feature = "automation")]
     #[test]
     fn switch_desktop_summary_names_direction() {
         let _g = abort::test_lock();
         let body = |direction| {
-            super::action_summary(
-                &Action::Os {
-                    operation: OsOperation::SwitchDesktop { direction },
-                    description: None,
-                },
-                &BTreeMap::new(),
-            )
+            let action = Action::System {
+                operation: SystemOperation::SwitchDesktop { direction },
+                description: None,
+            };
+            assert_eq!(super::action_kind(&action), "system", "该归操作系统动作");
+            super::action_summary(&action, &BTreeMap::new())
         };
         let next = body(DesktopDirection::Next);
         assert!(next.contains("下一个"), "摘要要写方向：{next}");
         let prev = body(DesktopDirection::Prev);
         assert!(prev.contains("上一个"), "摘要要写方向：{prev}");
+
+        // 文件动作仍归 os——两类不许混（用户点名的分类拆分）。
+        let file = Action::Os {
+            operation: OsOperation::Delete { path: "C:\\tmp\\x".into() },
+            description: None,
+        };
+        assert_eq!(super::action_kind(&file), "os");
     }
 
     /// 切桌面的平台键位映射：Windows `Win+Ctrl+←/→`、macOS `⌃←/→`、Linux `Super+PageUp/Down`。

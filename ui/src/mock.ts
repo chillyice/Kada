@@ -52,6 +52,15 @@ const DEMO_CONFIG = {
       actions: [{ type: "os", operation: { op: "open_folder", path: "D:\\工作" } }],
     },
     {
+      name: "切到下一个桌面",
+      description: null,
+      folder: null,
+      layer: null,
+      triggers: ["Ctrl+Alt+D"],
+      enabled: true,
+      actions: [{ type: "system", operation: { op: "switch_desktop", direction: "next" } }],
+    },
+    {
       name: "搜索选中内容",
       description: null,
       folder: null,

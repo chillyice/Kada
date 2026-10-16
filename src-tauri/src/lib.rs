@@ -1278,7 +1278,7 @@ fn finish_run(
 }
 
 /// 这串动作里有没有「往目标程序注入输入」的动作（Text / Keys / Mouse，以及注入切换键的
-/// `Os::SwitchDesktop`，含 If / Parallel 分支内的）。
+/// `System::SwitchDesktop`，含 If / Parallel 分支内的）。
 ///
 /// 修饰键没松时只有这类动作会被污染（见 [`fire`]），命令 / 文件 / 应用类照常执行；
 /// 静态过一遍链足够准，If / Parallel 的嵌套两路都算「可能有」。
@@ -1289,8 +1289,8 @@ fn injects_keys(actions: &[Action]) -> bool {
         // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
         // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
         #[cfg(feature = "automation")]
-        Action::Os {
-            operation: kada_core::OsOperation::SwitchDesktop { .. },
+        Action::System {
+            operation: kada_core::SystemOperation::SwitchDesktop { .. },
             ..
         } => true,
         #[cfg(feature = "automation")]
@@ -2448,8 +2448,8 @@ mod tests {
         // 切换虚拟桌面也注入组合键，同样要等物理修饰键松开。
         #[cfg(feature = "automation")]
         {
-            let desktop = vec![Action::Os {
-                operation: kada_core::OsOperation::SwitchDesktop {
+            let desktop = vec![Action::System {
+                operation: kada_core::SystemOperation::SwitchDesktop {
                     direction: kada_core::DesktopDirection::Next,
                 },
                 description: None,

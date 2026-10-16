@@ -1306,6 +1306,7 @@ body {
 .flow-step.type-mouse { --type-color: #9aa7ff; }
 .flow-step.type-pause_ms { --type-color: #98a0b3; }
 .flow-step.type-os { --type-color: #d9a441; }
+.flow-step.type-system { --type-color: #8fbf6f; }
 .flow-step.type-app { --type-color: #38c7d8; }
 .flow-step.type-open_url { --type-color: #e879b9; }
 .flow-step.type-if { --type-color: #ffd166; }

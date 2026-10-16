@@ -4,6 +4,7 @@ import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dial
 import { installBrowserMock } from "./mock";
 
 type DesktopDirection = "prev" | "next";
+/** 文件/目录动作的子操作（动作类型 `os`）。 */
 type OsOperation =
   | { op: "copy"; source: string; dest: string }
   | { op: "cut"; source: string; dest: string }
@@ -14,8 +15,9 @@ type OsOperation =
   | { op: "open_folder"; path: string }
   | { op: "zip"; source: string; dest: string }
   | { op: "unzip"; source: string; dest: string }
-  | { op: "get_file_props"; path: string; var: string }
-  | { op: "switch_desktop"; direction: DesktopDirection };
+  | { op: "get_file_props"; path: string; var: string };
+/** 操作系统动作的子操作（动作类型 `system`）——与文件/目录操作是两类，别混。 */
+type SystemOperation = { op: "switch_desktop"; direction: DesktopDirection };
 type Condition =
   | { kind: "exists"; path: string }
   | { kind: "not_exists"; path: string }
@@ -47,6 +49,7 @@ type Action =
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
+  | { type: "system"; operation: SystemOperation; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
@@ -234,6 +237,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "app", label: "应用操作" },
   { value: "open_url", label: "打开网址" },
   { value: "os", label: "文件/目录操作" },
+  { value: "system", label: "操作系统" },
   { value: "keys", label: "按键组合" },
   { value: "mouse", label: "鼠标操作" },
   { value: "pause_ms", label: "延迟" },
@@ -250,6 +254,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   mouse: "🖱️",
   pause_ms: "⏱️",
   os: "📁",
+  system: "🖥️",
   app: "🚀",
   open_url: "🌐",
   if: "🔀",
@@ -381,7 +386,7 @@ function newCondition(kind: Condition["kind"]): Condition {
   return { kind: "exists", path: "" };
 }
 
-// ---- 操作系统动作的子操作 ----
+// ---- 文件/目录动作的子操作 ----
 const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
   { value: "copy", label: "复制（文件/目录）" },
   { value: "cut", label: "剪切（移动）" },
@@ -393,6 +398,10 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
   { value: "zip", label: "压缩为 zip" },
   { value: "unzip", label: "解压 zip" },
   { value: "get_file_props", label: "获取文件属性" },
+];
+
+// ---- 操作系统动作的子操作（与文件/目录操作是两类） ----
+const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "switch_desktop", label: "切换虚拟桌面" },
 ];
 
@@ -401,6 +410,14 @@ const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
   { value: "prev", label: "上一个（左）" },
   { value: "next", label: "下一个（右）" },
 ];
+
+function newSystemOp(op: SystemOperation["op"]): SystemOperation {
+  switch (op) {
+    case "switch_desktop":
+      return { op, direction: "next" };
+  }
+  return { op: "switch_desktop", direction: "next" };
+}
 
 function newOsOp(op: OsOperation["op"]): OsOperation {
   switch (op) {
@@ -423,8 +440,6 @@ function newOsOp(op: OsOperation["op"]): OsOperation {
       return { op, source: "", dest: "" };
     case "get_file_props":
       return { op, path: "", var: "file" };
-    case "switch_desktop":
-      return { op, direction: "next" };
   }
   return { op: "copy", source: "", dest: "" };
 }
@@ -486,6 +501,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "pause_ms", ms: 0 };
     case "os":
       return { type: "os", operation: newOsOp("copy") };
+    case "system":
+      return { type: "system", operation: newSystemOp("switch_desktop") };
     case "app":
       return { type: "app", operation: newAppOp("launch") };
     case "open_url":
@@ -513,9 +530,6 @@ function osHasContent(o: OsOperation): boolean {
     case "open_folder":
     case "get_file_props":
       return o.path.trim().length > 0;
-    // 没有要填的字段（方向有默认值），新建出来就是可执行的。
-    case "switch_desktop":
-      return true;
   }
   return false;
 }
@@ -569,6 +583,9 @@ function actionHasContent(a: Action): boolean {
       return a.ms > 0;
     case "os":
       return osHasContent(a.operation);
+    // 没有要填的字段（方向有默认值），新建出来就是可执行的。
+    case "system":
+      return true;
     case "app":
       return appHasContent(a.operation);
     case "open_url":
@@ -603,6 +620,13 @@ function osSummary(o: OsOperation): string {
       return `解压：${o.source} → ${o.dest}`;
     case "get_file_props":
       return `取属性：${o.path} → ${o.var}`;
+  }
+  return "";
+}
+
+/** 操作系统动作的摘要。 */
+function systemSummary(o: SystemOperation): string {
+  switch (o.op) {
     case "switch_desktop":
       return `切换虚拟桌面：${o.direction === "prev" ? "上一个" : "下一个"}`;
   }
@@ -696,6 +720,8 @@ function actionSummary(a: Action): string {
       return `延迟 ${a.ms}ms`;
     case "os":
       return osSummary(a.operation);
+    case "system":
+      return systemSummary(a.operation);
     case "app":
       return appSummary(a.operation);
     case "open_url":
@@ -3666,6 +3692,22 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "system") {
+    const op = a.operation;
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of SYSTEM_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = op.op;
+    sel.addEventListener("change", () => {
+      a.operation = newSystemOp(sel.value as SystemOperation["op"]);
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "app") {
     const op = a.operation;
     const sel = el("select", "action-type") as HTMLSelectElement;
@@ -4176,7 +4218,10 @@ function actionFields(
         ),
       );
       body.append(line);
-    } else if (op.op === "switch_desktop") {
+    }
+  } else if (a.type === "system") {
+    const op = a.operation;
+    if (op.op === "switch_desktop") {
       const line = el("div", "action-line");
       const sel = el("select", "action-input") as HTMLSelectElement;
       for (const d of DESKTOP_DIRECTIONS) {

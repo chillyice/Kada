@@ -500,7 +500,7 @@
             <table>
               <tr><th>动作</th><th>存成什么</th><th>怎么引用</th></tr>
               <tr><td>执行命令（填「存为变量」）</td><td>文本：标准输出 + 退出码</td><td><code>{变量名}</code> 得输出全文、<code>{变量名.exit_code}</code> 得退出码</td></tr>
-              <tr><td>操作系统 → 获取文件属性</td><td>文件对象（多个字段）</td><td><code>{变量名}</code> 得完整路径、<code>{变量名.字段}</code> 得字段</td></tr>
+              <tr><td>文件/目录 → 获取文件属性</td><td>文件对象（多个字段）</td><td><code>{变量名}</code> 得完整路径、<code>{变量名.字段}</code> 得字段</td></tr>
               <tr><td>应用 → 查询运行状态</td><td>布尔 true / false</td><td><code>{变量名}</code></td></tr>
             </table>
 
@@ -525,7 +525,7 @@
             <p>「存为变量」填 <code>drive</code>。卷标 <code>'我的硬盘'</code> 换成你硬盘的实际卷标（资源管理器里看到的名字）。这句只输出一个字母，如 <code>E</code>。</p>
 
             <h3>第 2 步：复制文件，用变量拼目标路径</h3>
-            <p>动作类型「操作系统 → 复制」：原始路径 <code>C:\工作\待备份</code>，目标路径 <code>{drive}:\备份\</code>。</p>
+            <p>动作类型「文件/目录操作 → 复制」：原始路径 <code>C:\工作\待备份</code>，目标路径 <code>{drive}:\备份\</code>。</p>
             <p>触发后 <code>{drive}</code> 被替换成当天盘符，实际执行 <code>E:\备份\</code>。</p>
 
             <h3>更稳的写法：先确认硬盘在，再复制</h3>

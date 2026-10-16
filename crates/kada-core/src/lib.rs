@@ -700,7 +700,7 @@ type WhenKey = Option<Condition>;
 #[cfg(not(feature = "automation"))]
 type WhenKey = Option<()>;
 
-/// 虚拟桌面切换方向（[`OsOperation::SwitchDesktop`]）：只有「上一个 / 下一个」。
+/// 虚拟桌面切换方向（[`SystemOperation::SwitchDesktop`]）：只有「上一个 / 下一个」。
 /// 缺省 [`Next`](DesktopDirection::Next)——手工配置只写 `{"op":"switch_desktop"}` 时也能用。
 #[cfg(feature = "automation")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -724,7 +724,11 @@ impl DesktopDirection {
     }
 }
 
-/// 操作系统动作：对文件/目录执行复制、剪切、粘贴、删除、新建、压缩、取属性，或切换虚拟桌面。
+/// 文件/目录动作：对文件与目录做复制、剪切、粘贴、删除、新建、压缩、取属性。
+///
+/// 与 [`SystemOperation`]（操作系统动作）是**两类独立的动作**：界面下拉里一个叫「文件/目录操作」、
+/// 一个叫「操作系统」。分类依据是「作用对象」——动的是文件系统就归这里，动的是操作系统本身
+/// （虚拟桌面这类）就归 [`SystemOperation`]。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -749,6 +753,14 @@ pub enum OsOperation {
     Unzip { source: String, dest: String },
     /// 取文件属性，存入变量 `var`（默认 "file"），供后续动作用占位符引用。
     GetFileProps { path: String, #[serde(default = "default_var")] var: String },
+}
+
+/// 操作系统动作：对操作系统本身做的动作（目前只有切换虚拟桌面）。
+/// 与 [`OsOperation`]（文件/目录动作）分开，见那里的分类依据。
+#[cfg(feature = "automation")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum SystemOperation {
     /// 切换虚拟桌面：注入**系统默认**的切换快捷键（Windows `Win+Ctrl+←/→`、macOS `⌃←/→`、
     /// Linux GNOME `Super+PageUp/PageDown`）。不改系统键位设置，也不读当前桌面序号——
     /// 「切到第 3 个桌面」这种要按次数的需求请用「按键组合」动作自排。
@@ -1101,9 +1113,12 @@ pub enum Action {
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
     CloseProgram { program: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
-    /// 操作系统动作（文件复制/剪切/粘贴/删除/新建/压缩/取属性，以及切换虚拟桌面）。
+    /// 文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
     #[cfg(feature = "automation")]
     Os { operation: OsOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 操作系统动作（切换虚拟桌面）。与 [`Action::Os`]（文件/目录）是两类，见 [`SystemOperation`]。
+    #[cfg(feature = "automation")]
+    System { operation: SystemOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 应用动作（打开/关闭/查询状态/重启）。
     #[cfg(feature = "automation")]
     App { operation: AppOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1217,10 +1232,11 @@ impl Action {
                     }
                     // 变量名允许为空（执行时回退到 "file"），只要求路径非空。
                     GetFileProps { path, .. } => non_empty("路径", path),
-                    // 无字段可填（方向有缺省值），恒可执行。
-                    SwitchDesktop { .. } => Ok(()),
                 }
             }
+            // 系统操作目前只有切换虚拟桌面：没有必填字段（方向有缺省值），恒可执行。
+            #[cfg(feature = "automation")]
+            Action::System { .. } => Ok(()),
             #[cfg(feature = "automation")]
             Action::App { operation, .. } => {
                 use AppOperation::*;
@@ -4181,33 +4197,39 @@ mod new_action_and_folder_tests {
             .is_err());
     }
 
-    /// 切换虚拟桌面：没有必填字段（方向有缺省）；手工只写 `{"op":"switch_desktop"}` 也能读，
-    /// 且方向缺省为「下一个」。
+    /// 切换虚拟桌面（操作系统动作）：没有必填字段（方向有缺省）；手工只写
+    /// `{"op":"switch_desktop"}` 也能读，且方向缺省为「下一个」。
     #[cfg(feature = "automation")]
     #[test]
     fn switch_desktop_validate_and_default_direction() {
         for direction in [DesktopDirection::Prev, DesktopDirection::Next] {
-            assert!(Action::Os { operation: OsOperation::SwitchDesktop { direction }, description: None }
+            assert!(Action::System { operation: SystemOperation::SwitchDesktop { direction }, description: None }
                 .validate()
                 .is_ok());
         }
 
-        let bare: Action = serde_json::from_str(r#"{"type":"os","operation":{"op":"switch_desktop"}}"#).unwrap();
+        let bare: Action =
+            serde_json::from_str(r#"{"type":"system","operation":{"op":"switch_desktop"}}"#).unwrap();
         assert!(
             matches!(
                 bare,
-                Action::Os { operation: OsOperation::SwitchDesktop { direction: DesktopDirection::Next }, .. }
+                Action::System { operation: SystemOperation::SwitchDesktop { direction: DesktopDirection::Next }, .. }
             ),
             "缺省方向该是下一个: {bare:?}"
         );
 
-        let prev = Action::Os {
-            operation: OsOperation::SwitchDesktop { direction: DesktopDirection::Prev },
+        let prev = Action::System {
+            operation: SystemOperation::SwitchDesktop { direction: DesktopDirection::Prev },
             description: None,
         };
         let json = serde_json::to_string(&prev).unwrap();
+        assert!(json.contains(r#""type":"system""#), "类型该是 system: {json}");
         assert!(json.contains(r#""direction":"prev""#), "方向该落盘: {json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), prev);
+
+        // 文件/目录动作里不该再有切桌面这项（两类已分开）。
+        let file_only: Action = serde_json::from_str(r#"{"type":"os","operation":{"op":"delete","path":"x"}}"#).unwrap();
+        assert!(matches!(file_only, Action::Os { .. }), "文件动作照旧读成 Os");
     }
 
     #[cfg(feature = "automation")]
