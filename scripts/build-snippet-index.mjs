@@ -62,7 +62,9 @@ const text = JSON.stringify({ version: 1, snippets }, null, 2) + '\n';
 if (process.argv.includes('--check')) {
   let current = '';
   try {
-    current = readFileSync(OUT, 'utf8');
+    // 按 LF 比较：Windows 的 core.autocrlf=true 会把检出后的文件变成 CRLF，而本脚本
+    // 写出的永远是 LF——直接比字符串会让 Windows CI 误报「索引不同步」。
+    current = readFileSync(OUT, 'utf8').replace(/\r\n/g, '\n');
   } catch {
     problems.push('snippets/index.json 不存在，先跑 node scripts/build-snippet-index.mjs');
   }

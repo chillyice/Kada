@@ -20,7 +20,11 @@ reqwest = { version = "0.13", default-features = false, features = ["rustls-no-p
 # reqwest 选的 TLS 后端由「进程级 crypto provider」决定，而 provider 要有人显式装
 # （updater 是自己在建 client 前才装的，没检查过更新的进程里没人装过）——见 `http_get_text`。
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
-tauri = { version = "2", features = ["tray-icon"] }
+# `macos-private-api` 是 macOS 上 `transparent()` 的编译门控（tauri 源码里
+# `#[cfg(any(not(target_os = "macos"), feature = "macos-private-api"))]`）：气泡 / HUD /
+# 提示框三个浮窗都要透明，缺了它 macOS 构建直接 E0599。与 `tauri.conf.json` 的
+# `app.macOSPrivateApi` 成对设置，两者不一致时 `tauri build` 会按 config 改写这里。
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
