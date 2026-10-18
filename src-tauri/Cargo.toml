@@ -29,6 +29,12 @@ tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 
+# 更新器判定「当前是安装版还是免安装版」要读 NSIS 安装器写的安装目录
+# （`HKCU/HKLM\Software\kada\Kada` 的默认值）。这个 crate 本来就在依赖树里
+# （reqwest 的 hyper-util 用），不新增编译单元。
+[target.'cfg(windows)'.dependencies]
+windows-registry = "0.6"
+
 [features]
 default = ["automation"]
 custom-protocol = ["tauri/custom-protocol"]

@@ -1942,6 +1942,7 @@ dependencies = [
  "tauri-plugin-autostart",
  "tauri-plugin-dialog",
  "tauri-plugin-updater",
+ "windows-registry",
 ]
 
 [[package]]

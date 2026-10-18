@@ -16,6 +16,9 @@
 //!   （也来不及）再由本进程做收尾，更不该在启动时自动走到安装——那会把用户正在用的
 //!   应用突然关掉。启动检查因此只提示、不安装。
 
+use std::path::Path;
+#[cfg(windows)]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -78,11 +81,87 @@ fn should_emit_progress(last: &AtomicU64, percent: u64) -> bool {
     last.swap(percent, Ordering::Relaxed) != percent
 }
 
+/// 当前程序的安装形态。更新这一步**不允许改变形态**：安装版只能原地（注册表记录的
+/// 原目录）更新，免安装版只能下载新包手动替换 exe，两者不能互相转换。
+///
+/// 判据是「当前 exe 所在目录 == NSIS 安装器写在注册表里的安装目录」，而不是
+/// 「注册表里有没有值」：同一台机器上既装了安装版、又解压了一份便携 exe 时，
+/// 两个副本必须各按自己的形态工作——只查注册表会把便携 exe 误判成安装版，
+/// 一点更新就被装成安装版，还多出一份副本。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InstallKind {
+    /// NSIS 安装版：更新走安装器，装回注册表记录的原目录。
+    Installed,
+    /// 免安装版（裸 exe）：不参与自动安装更新，只能手动替换。
+    Portable,
+}
+
+/// 注册表里 NSIS 安装器写下的安装目录（`HKCU` = 当前用户安装，`HKLM` = 全机安装）。
+#[cfg(windows)]
+fn registered_install_dir() -> Option<PathBuf> {
+    use windows_registry::{CURRENT_USER, LOCAL_MACHINE};
+
+    // NSIS 模板的 `${MANUPRODUCTKEY}`：`Software\{MANUFACTURER}\{PRODUCTNAME}`，
+    // 默认值就是安装时的 `$INSTDIR`（见打包模板的 `WriteRegStr SHCTX ...`）。
+    const KEY: &str = r"Software\kada\Kada";
+    for root in [CURRENT_USER, LOCAL_MACHINE] {
+        let Ok(key) = root.open(KEY) else { continue };
+        let Ok(dir) = key.get_string("") else { continue };
+        // 防御：卸载项的 `InstallLocation` 是带引号的，个别安装器来源也可能照搬过来。
+        let dir = dir.trim().trim_matches('"');
+        if !dir.is_empty() {
+            return Some(PathBuf::from(dir));
+        }
+    }
+    None
+}
+
+/// 目录比较（本函数只服务 Windows 判定）：大小写不敏感、尾部分隔符可有可无。
+/// 不做 `canonicalize`——那要求目录存在，还要处理 `\\?\` 前缀。
+fn same_dir(a: &Path, b: &Path) -> bool {
+    fn norm(p: &Path) -> String {
+        p.to_string_lossy()
+            .replace('/', "\\")
+            .trim_end_matches('\\')
+            .to_lowercase()
+    }
+    norm(a) == norm(b)
+}
+
+/// 纯判定（便于单测）：exe 目录与注册表记录的安装目录一致才算安装版。
+/// 取不到自身目录或注册表没有记录时按免安装处理——**宁可只提示手动替换，
+/// 也不擅自跑安装器**。
+fn classify_install(exe_dir: Option<&Path>, registered: Option<&Path>) -> InstallKind {
+    match (exe_dir, registered) {
+        (Some(dir), Some(installed)) if same_dir(dir, installed) => InstallKind::Installed,
+        _ => InstallKind::Portable,
+    }
+}
+
+/// 当前进程的安装形态。非 Windows 只有安装版一种分发形态
+/// （macOS dmg / Linux deb、AppImage），不存在「免安装」分支。
+pub fn install_kind() -> InstallKind {
+    #[cfg(windows)]
+    {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(Path::to_path_buf));
+        classify_install(exe_dir.as_deref(), registered_install_dir().as_deref())
+    }
+    #[cfg(not(windows))]
+    {
+        InstallKind::Installed
+    }
+}
+
 /// 更新状态快照：设置页 `get_update_status` 读取，也随 `update-status` 事件推送。
 #[derive(Clone, Debug, Serialize)]
 pub struct UpdateStatus {
     /// 当前版本（取自 `tauri.conf.json` 的 `version`）。
     pub current: String,
+    /// 安装形态：前端据此隐藏「下载并安装」（免安装版只能手动替换）。
+    pub kind: InstallKind,
     #[serde(flatten)]
     pub phase: UpdatePhase,
 }
@@ -94,7 +173,13 @@ pub struct UpdateState {
 
 impl UpdateState {
     pub fn new(current: String) -> Self {
-        Self { status: Mutex::new(UpdateStatus { current, phase: UpdatePhase::Idle }) }
+        Self {
+            status: Mutex::new(UpdateStatus {
+                current,
+                kind: install_kind(),
+                phase: UpdatePhase::Idle,
+            }),
+        }
     }
 
     /// 当前状态快照（UI 打开晚于检查时靠它兜底，事件只推增量）。
@@ -145,16 +230,27 @@ pub fn spawn(app: &tauri::AppHandle, mode: Mode) {
     tauri::async_runtime::spawn(async move { run(app, mode).await });
 }
 
+/// 当前选择的更新源。拿不到状态（极早的定时器线程）时按默认源（ihomy）走。
+fn current_source(app: &tauri::AppHandle) -> UpdateSource {
+    app.try_state::<crate::KadaState>()
+        .and_then(|state| state.config.read().ok().map(|cfg| cfg.settings.update_source))
+        .unwrap_or_default()
+}
+
 /// 当前选择更新源的 `latest.json` 地址。
 ///
 /// 每次检查都重新读配置：设置页切换后，下一次检查（含手动「检查更新」）立即生效，
-/// 不需要重启。拿不到状态（极早的定时器线程）时按默认源（ihomy）走。
+/// 不需要重启。
 fn endpoint(app: &tauri::AppHandle) -> Url {
-    let source: UpdateSource = app
-        .try_state::<crate::KadaState>()
-        .and_then(|state| state.config.read().ok().map(|cfg| cfg.settings.update_source))
-        .unwrap_or_default();
-    Url::parse(source.endpoint()).expect("内置更新源地址必须是合法 URL")
+    Url::parse(current_source(app).endpoint()).expect("内置更新源地址必须是合法 URL")
+}
+
+/// 当前更新源对应的发布页：免安装版只能手动更新，提示框里的「打开发布页」用它。
+fn download_page(app: &tauri::AppHandle) -> &'static str {
+    match current_source(app) {
+        UpdateSource::Ihomy => "https://ihomy.top/kada",
+        UpdateSource::Github => "https://github.com/chillyice/Kada/releases/latest",
+    }
 }
 
 /// 按当前设置装配更新器：`endpoints` 覆盖 `tauri.conf.json` 里的静态默认。
@@ -212,6 +308,47 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
     let version = update.version.clone();
     set_phase(&app, UpdatePhase::Available { version: version.clone(), notes: update.body.clone() });
 
+    // 免安装版不能走「下载并安装」：Windows 上 updater 装的是 NSIS 安装包，一点就把
+    // 便携 exe 变成安装版（还会在安装目录多出一份副本）。免安装版的更新方式只有一种：
+    // 下载新的免安装包、退出应用后替换 exe。
+    if install_kind() == InstallKind::Portable {
+        match mode {
+            Mode::Auto => crate::show_toast_note(
+                &app,
+                &format!("发现新版本 {version}"),
+                "免安装版请手动下载替换 kada.exe",
+            ),
+            Mode::Manual => {
+                let notes = update.body.clone().unwrap_or_default();
+                let current = app.package_info().version.to_string();
+                let base = format!(
+                    "发现新版本 v{version}（当前 v{current}）。\n\n\
+                     当前运行的是免安装版（裸 exe），不参与自动安装更新：\
+                     请到下载页获取新的免安装包，退出咔哒后替换 kada.exe。"
+                );
+                let message = if notes.trim().is_empty() {
+                    base
+                } else {
+                    format!("{base}\n\n更新说明：\n{notes}")
+                };
+                let url = download_page(&app);
+                app.dialog()
+                    .message(message)
+                    .title("发现新版本（免安装版）")
+                    .buttons(MessageDialogButtons::OkCancelCustom(
+                        "打开发布页".into(),
+                        "稍后".into(),
+                    ))
+                    .show(move |confirmed| {
+                        if confirmed {
+                            let _ = kada_actions::open_url(url);
+                        }
+                    });
+            }
+        }
+        return;
+    }
+
     match mode {
         // 启动时静默发现：只提示，安装交给用户手动触发（安装会退出应用，不能替用户决定）。
         Mode::Auto => {
@@ -248,6 +385,28 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
 /// 这里**重新拉一次清单**而不是把上次查到的 [`Update`] 存在状态里：换来的是一句
 /// 「点安装时以最新清单为准」，也避免把一个可能过期的句柄长期驻留在状态中。
 pub fn spawn_install(app: tauri::AppHandle) {
+    // 兜底闸门：免安装版（裸 exe）绝不调用 updater 的安装器——那是「交叉改变安装方式」
+    // 的唯一来源（装完会在安装目录多一份安装版，便携副本还留在原处）。
+    // 前端对免安装版已经隐藏了「下载并安装」，这里防的是旧界面 / 直接调命令。
+    if install_kind() == InstallKind::Portable {
+        let url = download_page(&app);
+        app.dialog()
+            .message(
+                "当前是免安装版（裸 exe），不能自动安装更新（那会把它变成安装版）。\n\n\
+                 请到下载页获取新的免安装包，退出咔哒后替换 kada.exe。",
+            )
+            .title("免安装版更新")
+            .buttons(MessageDialogButtons::OkCancelCustom(
+                "打开发布页".into(),
+                "知道了".into(),
+            ))
+            .show(move |confirmed| {
+                if confirmed {
+                    let _ = kada_actions::open_url(url);
+                }
+            });
+        return;
+    }
     if app.state::<UpdateState>().snapshot().phase.busy() {
         return;
     }
@@ -346,16 +505,52 @@ mod tests {
     fn status_serialization_shape() {
         let status = UpdateStatus {
             current: "0.1.0".into(),
+            kind: InstallKind::Portable,
             phase: UpdatePhase::Available { version: "0.2.0".into(), notes: Some("修了些东西".into()) },
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["phase"], "available");
         assert_eq!(json["current"], "0.1.0");
+        assert_eq!(json["kind"], "portable");
         assert_eq!(json["version"], "0.2.0");
         assert_eq!(json["notes"], "修了些东西");
 
-        let idle = serde_json::to_value(UpdateStatus { current: "0.1.0".into(), phase: UpdatePhase::Idle }).unwrap();
+        let idle = serde_json::to_value(UpdateStatus {
+            current: "0.1.0".into(),
+            kind: InstallKind::Installed,
+            phase: UpdatePhase::Idle,
+        })
+        .unwrap();
         assert_eq!(idle["phase"], "idle");
+        assert_eq!(idle["kind"], "installed");
+    }
+
+    /// 安装形态判定的铁律：**只有 exe 目录与注册表记录的安装目录一致才算安装版**。
+    /// 便携 exe 即便跑在「装过安装版」的机器上，也绝不能被判成安装版（否则一次更新
+    /// 就会把它装成安装版，安装方式被交叉改变）。
+    #[test]
+    fn install_kind_requires_exe_dir_to_match_registered_dir() {
+        let installed = Path::new(r"C:\Users\me\AppData\Local\Kada");
+        // 一致（含大小写 / 尾部分隔符差异）→ 安装版。
+        assert_eq!(
+            classify_install(Some(installed), Some(installed)),
+            InstallKind::Installed
+        );
+        assert_eq!(
+            classify_install(
+                Some(Path::new(r"c:\users\ME\appdata\local\Kada\")),
+                Some(installed)
+            ),
+            InstallKind::Installed
+        );
+        // 目录对不上（便携 exe，哪怕机器上有安装记录）→ 免安装版。
+        assert_eq!(
+            classify_install(Some(Path::new(r"D:\Tools\Kada")), Some(installed)),
+            InstallKind::Portable
+        );
+        // 没有注册表记录 / 取不到自身目录 → 按免安装处理（不擅自跑安装器）。
+        assert_eq!(classify_install(Some(installed), None), InstallKind::Portable);
+        assert_eq!(classify_install(None, Some(installed)), InstallKind::Portable);
     }
 
     #[test]

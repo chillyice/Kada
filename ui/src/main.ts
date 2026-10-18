@@ -5047,7 +5047,9 @@ function hideImportResult() {
 // ---- 软件更新 ----
 // 状态源在后端（src-tauri/src/update.rs）：检查/下载/安装各阶段由 Rust 推进并 emit
 // `update-status`，前端只渲染，不自己维护「正在检查」这类瞬时状态（否则窗口重开就丢）。
-type UpdateStatus = { current: string } & (
+// `kind` 是运行时的安装形态：免安装版（裸 exe）不能走安装器，只能手动替换，故不显示
+// 「下载并安装」按钮（后端也会拒）。
+type UpdateStatus = { current: string; kind: "installed" | "portable" } & (
   | { phase: "idle" }
   | { phase: "checking" }
   | { phase: "up-to-date" }
@@ -5069,12 +5071,14 @@ function syncUpdate() {
     return;
   }
   const current = `v${updateStatus.current}`;
+  const portable = updateStatus.kind === "portable";
   const busy =
     updateStatus.phase === "checking" ||
     updateStatus.phase === "downloading" ||
     updateStatus.phase === "installing";
   checkBtn.disabled = busy;
-  actions.classList.toggle("hidden", updateStatus.phase !== "available");
+  // 免安装版不走安装器（后端会拒），不显示「下载并安装」，只提示手动替换。
+  actions.classList.toggle("hidden", updateStatus.phase !== "available" || portable);
 
   switch (updateStatus.phase) {
     case "idle":
@@ -5087,7 +5091,9 @@ function syncUpdate() {
       line.textContent = `当前版本 ${current}，已是最新版本`;
       break;
     case "available":
-      line.textContent = `发现新版本 v${updateStatus.version}（当前 ${current}），可下载安装`;
+      line.textContent = portable
+        ? `发现新版本 v${updateStatus.version}（当前 ${current}），免安装版请手动下载替换`
+        : `发现新版本 v${updateStatus.version}（当前 ${current}），可下载安装`;
       break;
     case "downloading": {
       const pct =

@@ -40,7 +40,7 @@
 - **执行记录（消息页「执行记录」标签，规格见说明书 §5.4）**：一次触发 = 一条 `RunRecord`（`fire` 先落 `running`、收尾定 `ok`/`error`/`abort`），**每个动作**都上报一步 `ActionStep`——文本/按键/延迟这类不产命令结果的动作也必须有，否则「按了没反应」查不到是哪一步。逐步 `emit("run-update")` 推整张卡（`get_run_records` 兜底）；两种展示与上限见 §5.4。
 - **普通消息**（`run_id === null` 才进列表；内存态，重启清空）：命令/脚本结果、**中止/超时**（`abort`）、**动作失败**（`error`）、**配置事件**（`config`）都记入；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
 - **动作执行有界**（`kada-actions/`，见 `架构设计.md` §3.17 / 说明书 §5.7）：命令/脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**（平台手法见 §3.17）；中止 = **代数计数器** `abort::request()`。**并行动作** `Parallel`（7.1-㉞）= 成员各起一线程、全部结束才进下一步，用**链内注入锁**维持「注入串行」（注入类动作持锁，只并发非注入步骤），成员 `vars` 私有快照、按下标顺序合并与提交。
-- **配置片段（分享）铁律**（`snippet.rs` + `export_fragment`）：片段**必须仍是合法的 `Config` JSON**（顶层多个被忽略的 `kada_snippet` 键）——对方靠现成的「导入 → 合并」吃下，**不要为片段另立一套导入格式 / 解析器**。摘取时**剥掉 `folder`**（本机 UUID，只指向不存在的目录）、**带上被引用的层**（否则层引用被清成基础层 = 静默改行为）、**不带 `settings`**（合并本就不碰它）。**片段市场没有服务端**：索引就是一份能下载到的静态 JSON（默认仓库 `snippets/index.json`，设置里可改 URL），浏览与搜索在本地；**装之前必须先预览**（片段能带命令 / 脚本动作 = 装进来就会跑），装走的是「导入 → 合并」同一条路径。
+- **配置片段（分享）铁律**（`snippet.rs` + `export_fragment`）：片段**必须仍是合法的 `Config` JSON**（顶层多个被忽略的 `kada_snippet` 键）——对方靠现成的「导入 → 合并」吃下，**不要为片段另立一套导入格式 / 解析器**。摘取时**剥掉 `folder`**、**带上被引用的层**、**不带 `settings`**（理由见 §5.6）。**片段市场没有服务端**：索引就是一份能下载到的静态 JSON（默认仓库 `snippets/index.json`，设置里可改 URL），浏览与搜索在本地；**装之前必须先预览**（片段能带命令 / 脚本动作 = 装进来就会跑），装走的是「导入 → 合并」同一条路径。
 - **feature 门控**（三个 crate 均 `default` 开启的 `automation` feature）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / System / App / OpenUrl / If / Script / Condition / Vars。手工配置允许缺字段/未知字段（`#[serde(default)]`）。**门控要覆盖测试目标**：用到 `Condition` / `Action::If` / `Parallel` 的测试与辅助函数（如 `linux_caps()`）必须自己也 `#[cfg(feature = "automation")]`，否则 `cargo test -p kada-core --no-default-features` 编译失败（`cargo check` 抓不到这类漏网）。
 - **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 守着，Rust 增键而前端漏改即红）。
 
@@ -60,13 +60,13 @@
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
 - **自愈看门狗**（`win.rs`/`macos.rs` 各一套；判据见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**，`start` 另起 1s 巡检线程 + 指数退避。Windows **只投递 `WM_APP_REINSTALL`**（`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用）、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**（没鼠标钩子时归因不到键盘，硬判会无限重装）。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。触发通道：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置 `cfg_stale` 旗标（均在定时器线程）。
-- **前台 / 设备上下文**（`frontmost_context` / `current_device`，取法与限制见 `架构设计.md` §3.22）：**Linux 恒 `None`**（Wayland：前台与设备条件都不成立）、macOS 设备恒 `None`（设备条件恒走「否则」）。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。**输入层环境诊断**（7.1-㊽，见 §4.6）同属软冲突，但**只在配置用到鼠标键时才出**、`settings.input_env_diag` 关掉**连探测都不跑**；`DIVERTERS` 只收真会 divert / 独占抓取的软件，乱加即误报。
+- **前台 / 设备上下文**（`frontmost_context` / `current_device`，取法与限制见 `架构设计.md` §3.22）：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。**输入层环境诊断**（7.1-㊽，见 §4.6）同属软冲突，但**只在配置用到鼠标键时才出**、`settings.input_env_diag` 关掉**连探测都不跑**；`DIVERTERS` 只收真会 divert / 独占抓取的软件，乱加即误报。
 - **已知天花板（升级路径）**：清单与升级项见 `需求设计说明书.md` §4.5 / §7.2（UAC 提权 / Linux 热插拔 / macOS 安全输入 / **厂商 divert 走的按键**等）。
 
 ## 软件更新
 
 - **软件更新红线**（§5.5 / `release.yml` 顶部）：**私钥绝不入库**——公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret；`latest.json` 由 `tauri-action` 生成，**不手写、不入库**；端点只认**已发布** Release。**前端碰不到更新**：全在 Rust，capabilities **不开** `updater:*`。**Windows 安装会退出应用**，故启动检查只提示；其它平台装完 `app.restart()`。
-- **更新源默认 ihomy 镜像**（`Settings.update_source` 可切 `github`）：`scripts/ihomy-mirror/` 每天同步 GitHub 已发布版到 `/files/kada/updates/`（只改 URL，`.sig` 原样）；检查走 `update.rs` 的 `build_updater`，别用 `app.updater()`；启动后每 24h 复查。
+- **更新源与形态**（`Settings.update_source` 可切 `github`）：`scripts/ihomy-mirror/` 每天同步 GitHub 已发布版到 `/files/kada/updates/`（只改 URL，`.sig` 原样）；检查走 `update.rs` 的 `build_updater`，别用 `app.updater()`；每 24h 复查。**更新不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 记录值才是安装版（原地更新），否则算免安装版，**拒绝调安装器**、只提示手动替换（§5.5）。
 
 ## 构建与验证命令
 
@@ -90,5 +90,5 @@ cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS �
 
 - `README.md`；`docs/README.md`（索引 + 阅读顺序 + 全清单）。
 - **落点分工**：规则/约定/命名 → 本文件；功能需求与规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`。代码事实以源码为准，先 `grep` 再动手。本机已装 Rust / Node / Tauri CLI；前端依赖 `npm --prefix ui ci`。
-- **`需求设计说明书.md` 按功能模块组织，不按版本**：顶部是 16 模块导航表（非版本时间线）；**版本号只写进 `变更归档.md`**，正文提功能引**模块小节号**（如 `§5.7 动作执行边界`）而非版本号。§N 是跨文档稳定 ID，**只增不改**。新功能写进所属模块小节，不新开「XX 版本改动」章节。
+- **`需求设计说明书.md` 按功能模块组织，不按版本**：顶部 16 模块导航表；**版本号只写进 `变更归档.md`**，正文引**模块小节号**（如 §5.7）而非版本号。§N 是稳定 ID，**只增不改**，新功能写进所属模块小节。
 
