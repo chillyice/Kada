@@ -4764,8 +4764,8 @@ pub fn run() {
                 }
             }
 
-            // 启动后台检查更新：延迟几秒、仅 release 构建、查不到就静默（见 update::spawn_startup_check）。
-            update::spawn_startup_check(app.handle());
+            // 启动后台检查更新 + 每日复查：延迟几秒、仅 release 构建、查不到就静默（见 update::spawn_periodic_check）。
+            update::spawn_periodic_check(app.handle());
 
             Ok(())
         })

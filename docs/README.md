@@ -59,7 +59,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
   src/style.css             # 深色 UI 样式
 snippets/                   # 片段市场的内置索引托管：*.json 片段 + index.json（脚本生成，客户端只 GET）
-scripts/                    # build-snippet-index.mjs（片段→索引，CI 用 --check 查同步）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）
+scripts/                    # build-snippet-index.mjs（片段→索引，CI 用 --check 查同步）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）/ ihomy-mirror（更新源每日镜像 + systemd 单元）
 .github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
 ```
 

@@ -1,13 +1,15 @@
-//! 软件更新：Tauri updater + GitHub Releases + Ed25519 签名。
+//! 软件更新：Tauri updater + 可切换更新源 + Ed25519 签名。
 //!
-//! 更新源是仓库 Releases 上的 `latest.json`（见 `src-tauri/tauri.conf.json` 的
-//! `plugins.updater`）。**公钥内嵌在配置里（随仓库），发布包由私钥签名**，客户端只认
-//! 签名——私钥只在 CI Secret 里，泄露才需轮换公钥并随新版客户端下发。
+//! 更新源由 `Settings.update_source` 决定（见 `kada_core::UpdateSource`）：
+//! **默认 ihomy 镜像**（服务器每天从 GitHub Releases 同步最新版与安装包，国内可直连），
+//! 能直连 GitHub 的人可在设置页切到官方 Releases。两边的清单格式相同、签名原样保留，
+//! 客户端只认签名——镜像换 URL 不影响校验。
 //!
 //! 三种触发方式见 [`Mode`]。要点：
 //!
 //! - 启动检查（`Auto`）完全静默——网络不通、还没发过 Release、清单里没有本平台条目
-//!   都不该打扰用户，只有**真发现新版本**才提示一次。
+//!   都不该打扰用户，只有**真发现新版本**才提示一次；之后每 24 小时再查一次
+//!   （应用常驻时也能收到新版本，见 [`spawn_periodic_check`]）。
 //! - 手动检查（`Manual`）一定给反馈：无更新、出错都弹窗，发现新版本先确认再装。
 //! - **Windows 上「安装」这一步会退出应用**（安装器限制，见 Tauri updater 文档）：
 //!   `download_and_install` 走到安装时进程退出，由安装器拉起新版本。所以安装后不需要
@@ -18,13 +20,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use kada_core::UpdateSource;
 use serde::Serialize;
-use tauri::Manager;
+use tauri::{Manager, Url};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::UpdaterExt;
 
 /// 启动后台检查的延迟（秒）：避开启动瞬间的钩子安装与窗口初始化。
 const STARTUP_CHECK_DELAY_SECS: u64 = 8;
+
+/// 启动检查之后的自动检查间隔：应用常驻（托盘常开）时也要能在一天内看到新版本。
+const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
 
 /// 更新阶段（连同该阶段的字段一起序列化给前端，前端按 `phase` 分支渲染）。
 #[derive(Clone, Debug, Serialize)]
@@ -139,26 +145,51 @@ pub fn spawn(app: &tauri::AppHandle, mode: Mode) {
     tauri::async_runtime::spawn(async move { run(app, mode).await });
 }
 
-/// 启动后台检查：延迟 [`STARTUP_CHECK_DELAY_SECS`] 秒再查，且**只在 release 构建里跑**。
+/// 当前选择更新源的 `latest.json` 地址。
 ///
-/// dev 构建查的是同一个 Releases，而版本号还是开发中的号，「每次 `tauri dev` 都发一次
-/// 网络请求」没有意义；调试更新流程请用托盘「检查更新」。
-pub fn spawn_startup_check(app: &tauri::AppHandle) {
+/// 每次检查都重新读配置：设置页切换后，下一次检查（含手动「检查更新」）立即生效，
+/// 不需要重启。拿不到状态（极早的定时器线程）时按默认源（ihomy）走。
+fn endpoint(app: &tauri::AppHandle) -> Url {
+    let source: UpdateSource = app
+        .try_state::<crate::KadaState>()
+        .and_then(|state| state.config.read().ok().map(|cfg| cfg.settings.update_source))
+        .unwrap_or_default();
+    Url::parse(source.endpoint()).expect("内置更新源地址必须是合法 URL")
+}
+
+/// 按当前设置装配更新器：`endpoints` 覆盖 `tauri.conf.json` 里的静态默认。
+fn build_updater(app: &tauri::AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
+    app.updater_builder()
+        .endpoints(vec![endpoint(app)])
+        .map_err(|e| format!("更新源地址无效：{e}"))?
+        .build()
+        .map_err(|e| format!("更新器初始化失败：{e}"))
+}
+
+/// 启动后台检查 + 每日复查：延迟 [`STARTUP_CHECK_DELAY_SECS`] 秒先查一次，之后每
+/// [`CHECK_INTERVAL_SECS`] 再查一次（应用常驻时也能在新版本发布后一天内看到）。
+///
+/// **只在 release 构建里跑**：dev 查的是线上清单，而版本号还是开发中的号，
+/// 「每次 `tauri dev` 都发一次网络请求」没有意义；调试更新流程请用托盘「检查更新」。
+pub fn spawn_periodic_check(app: &tauri::AppHandle) {
     if cfg!(debug_assertions) {
         return;
     }
     let app = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(STARTUP_CHECK_DELAY_SECS));
-        spawn(&app, Mode::Auto);
+        loop {
+            spawn(&app, Mode::Auto);
+            std::thread::sleep(Duration::from_secs(CHECK_INTERVAL_SECS));
+        }
     });
 }
 
 /// 检查 + 按模式决定后续动作。
 async fn run(app: tauri::AppHandle, mode: Mode) {
-    let updater = match app.updater() {
+    let updater = match build_updater(&app) {
         Ok(updater) => updater,
-        Err(e) => return fail(&app, mode, format!("更新器初始化失败：{e}")),
+        Err(e) => return fail(&app, mode, e),
     };
 
     let found = match updater.check().await {
@@ -221,9 +252,9 @@ pub fn spawn_install(app: tauri::AppHandle) {
         return;
     }
     tauri::async_runtime::spawn(async move {
-        let updater = match app.updater() {
+        let updater = match build_updater(&app) {
             Ok(updater) => updater,
-            Err(e) => return fail(&app, Mode::Manual, format!("更新器初始化失败：{e}")),
+            Err(e) => return fail(&app, Mode::Manual, e),
         };
         let update = match updater.check().await {
             Ok(Some(update)) => update,

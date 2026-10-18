@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily Kada release mirror
+
+[Timer]
+# 04:17 触发并随机错开 20 分钟：避开整点任务，也避免每天同一秒打 GitHub。
+OnCalendar=*-*-* 04:17:00
+RandomizedDelaySec=20m
+# 停机错过的那次开机后补跑。
+Persistent=true
+
+[Install]
+WantedBy=timers.target

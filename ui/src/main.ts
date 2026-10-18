@@ -149,6 +149,11 @@ type Settings = {
    * 它是默认关的可选能力：打开要弹一次 UAC，不替用户决定。
    */
   elevated_inject?: boolean;
+  /**
+   * 软件更新源（后端 `UpdateSource`）：`ihomy` 国内镜像（默认，服务器每天从 GitHub 同步）
+   * / `github` 官方 Releases。缺字段按 ihomy（与后端 serde default 一致）。
+   */
+  update_source?: "ihomy" | "github";
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -4675,6 +4680,9 @@ function syncSettings() {
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
     cfg.settings.elevated_inject === true;
   void renderElevatedReport();
+  // 软件更新源：缺字段按默认 ihomy 显示（后端 serde default 一致）。
+  (document.getElementById("set-update-source") as HTMLSelectElement).value =
+    cfg.settings.update_source ?? "ihomy";
 }
 
 /**
@@ -4891,6 +4899,12 @@ function bindSettings() {
   document.getElementById("snippet-install")!.addEventListener("click", () => void confirmSnippetInstall());
   document.getElementById("snippet-cancel")!.addEventListener("click", hideSnippetPreview);
   document.getElementById("snippet-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideSnippetPreview);
+  // 更新源：写进配置后下一次检查（含手动「检查更新」）立即生效，后端每次检查都重读设置。
+  const updateSource = document.getElementById("set-update-source") as HTMLSelectElement;
+  updateSource.addEventListener("change", () => {
+    cfg.settings.update_source = updateSource.value as "ihomy" | "github";
+    void save();
+  });
   document.getElementById("check-update")!.addEventListener("click", () => {
     void invoke("check_update");
   });

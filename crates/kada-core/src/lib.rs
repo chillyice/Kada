@@ -1744,6 +1744,32 @@ pub fn default_hints_opacity() -> u8 {
     HintsWindow::DEFAULT_OPACITY
 }
 
+/// 软件更新源（见 `docs/需求设计说明书.md` §5.5）。
+///
+/// 国内网络到 GitHub 不稳定，默认走 ihomy 服务器上的每日镜像；镜像里的安装包与清单
+/// 仍是 GitHub 发布时签好的那一份（`.sig` 原样保留），客户端照旧做 Ed25519 校验。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum UpdateSource {
+    /// ihomy 镜像（默认）：服务器每天从 GitHub Releases 同步最新版与安装包。
+    #[default]
+    Ihomy,
+    /// 官方 GitHub Releases：能直连的用户可切过去（镜像还没同步到新版时也走它）。
+    Github,
+}
+
+impl UpdateSource {
+    /// 该更新源的 `latest.json` 地址。
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            UpdateSource::Ihomy => "https://ihomy.top/files/kada/updates/latest.json",
+            UpdateSource::Github => {
+                "https://github.com/chillyice/Kada/releases/latest/download/latest.json"
+            }
+        }
+    }
+}
+
 /// 应用设置（配置的一部分，随 JSON 一起落盘/跨平台同步）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Settings {
@@ -1828,6 +1854,13 @@ pub struct Settings {
     /// 完全一致（见 `docs/底层输入能力规划.md` §1 的「只增能力，不做依赖」）。
     #[serde(default)]
     pub elevated_inject: bool,
+    /// 软件更新源（见 `docs/需求设计说明书.md` §5.5）：`ihomy`（默认，国内可直连的每日镜像）
+    /// / `github`（官方 Releases）。
+    ///
+    /// 缺字段取 [`UpdateSource::Ihomy`]：老配置与国内用户初次安装都落在能连通的源上；
+    /// 能直连 GitHub 的人在设置页切一次即可。
+    #[serde(default)]
+    pub update_source: UpdateSource,
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1871,6 +1904,7 @@ impl Default for Settings {
             sync_dir: None,
             input_env_diag: true,
             elevated_inject: false,
+            update_source: UpdateSource::Ihomy,
         }
     }
 }
@@ -5319,6 +5353,40 @@ mod settings_timeout_tests {
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.settings, cfg.settings);
         assert_eq!(back.settings.sequence_timeout_ms, 0, "0（不限时）不能被缺省值盖回 1000");
+    }
+}
+
+/// 软件更新源：老配置必须落在 ihomy 镜像上（国内默认能连通的源），切换后要能原样往返。
+#[cfg(test)]
+mod update_source_tests {
+    use super::*;
+
+    #[test]
+    fn old_config_defaults_to_ihomy_mirror() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert_eq!(old.settings.update_source, UpdateSource::Ihomy);
+    }
+
+    #[test]
+    fn source_roundtrips_with_kebab_case_values() {
+        let cfg = Config {
+            settings: Settings { update_source: UpdateSource::Github, ..Default::default() },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""update_source":"github""#), "{json}");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.settings, cfg.settings);
+    }
+
+    /// 两个地址都是编译期常量：写错一个字符客户端会永远「检查更新失败」，这里先兜住。
+    #[test]
+    fn endpoints_are_https_and_distinct() {
+        for source in [UpdateSource::Ihomy, UpdateSource::Github] {
+            assert!(source.endpoint().starts_with("https://"), "{}", source.endpoint());
+            assert!(source.endpoint().ends_with("latest.json"), "{}", source.endpoint());
+        }
+        assert_ne!(UpdateSource::Ihomy.endpoint(), UpdateSource::Github.endpoint());
     }
 }
 

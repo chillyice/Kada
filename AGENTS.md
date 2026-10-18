@@ -63,9 +63,10 @@
 - **前台 / 设备上下文**（`frontmost_context` / `current_device`，取法与限制见 `架构设计.md` §3.22）：**Linux 恒 `None`**（Wayland：前台与设备条件都不成立）、macOS 设备恒 `None`（设备条件恒走「否则」）。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。**输入层环境诊断**（7.1-㊽，见 §4.6）同属软冲突，但**只在配置用到鼠标键时才出**、`settings.input_env_diag` 关掉**连探测都不跑**；`DIVERTERS` 只收真会 divert / 独占抓取的软件，乱加即误报。
 - **已知天花板（升级路径）**：清单与升级项见 `需求设计说明书.md` §4.5 / §7.2（UAC 提权 / Linux 热插拔 / macOS 安全输入 / **厂商 divert 走的按键**等）。
 
-## 软件更新（Windows + Linux 已落地）
+## 软件更新
 
-- **软件更新红线**（见 `需求设计说明书.md` §5.5 与 `release.yml` 顶部注释）：**私钥绝不入库**——公钥内嵌 `plugins.updater.pubkey` 随仓库，私钥只在本机 `%USERPROFILE%\.tauri\kada.key` 与 CI Secret（`TAURI_SIGNING_PRIVATE_KEY`）；`latest.json` 由 `tauri-action` 生成，**不要手写、不要入库**；端点只解析**已发布**的 Release。**前端碰不到更新**：更新逻辑全在 Rust（`UpdaterExt`）→ capabilities **不开** `updater:*`（不是漏配，是最小权限）。**Windows 上「安装」会退出应用**，故启动检查只提示不自动装；其它平台装完 `app.restart()` 自己重启。
+- **软件更新红线**（§5.5 / `release.yml` 顶部）：**私钥绝不入库**——公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret；`latest.json` 由 `tauri-action` 生成，**不手写、不入库**；端点只认**已发布** Release。**前端碰不到更新**：全在 Rust，capabilities **不开** `updater:*`。**Windows 安装会退出应用**，故启动检查只提示；其它平台装完 `app.restart()`。
+- **更新源默认 ihomy 镜像**（`Settings.update_source` 可切 `github`）：`scripts/ihomy-mirror/` 每天同步 GitHub 已发布版到 `/files/kada/updates/`（只改 URL，`.sig` 原样）；检查走 `update.rs` 的 `build_updater`，别用 `app.updater()`；启动后每 24h 复查。
 
 ## 构建与验证命令
 
@@ -80,7 +81,7 @@ cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS �
 
 - **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**三条渠道（GitHub / ihomy 直链 / macOS dmg）各有清单，发什么文件与放行口径见 §5.5**。**Linux 包只能靠容器出**（`scripts/linux-package/`）、**macOS 包只能靠 CI**。
 - **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本/版本号/打包 targets 后必跑 `node scripts/verify-release.mjs`**（流水线最后一步也跑）。
-- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**、产物目录自适应 `target/<triple>/release/bundle` 与 `target/release/bundle`，其余见顶部注释）。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
+- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**、产物目录自适应，其余见顶部注释）。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 ## 里程碑与规划
 
 - **未实现规划唯一清单 + 已落地事项编号索引见 `docs/需求设计说明书.md` §7**（M0–M5 已完成）——立项、排期一律以那里为准（已落地项收拢为编号索引，功能闭环写在 §1~§6，勿重复立项）；实现历史见 `docs/变更归档.md`。

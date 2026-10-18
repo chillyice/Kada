@@ -1,0 +1,15 @@
+[Unit]
+Description=Kada release mirror (GitHub Releases -> ihomy)
+Documentation=https://github.com/chillyice/Kada
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# 与服务端后端同用户：/opt/ihomy/uploads 归 ihomy 所有，写文件不需要提权。
+User=ihomy
+Group=ihomy
+ExecStart=/usr/local/bin/kada-mirror
+# 备份类任务的同款低优先级设置：每日一次，不跟后端争磁盘与网络。
+Nice=10
+IOSchedulingClass=idle
