@@ -375,6 +375,17 @@ fn last_input_tick() -> u32 {
     }
 }
 
+/// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
+/// `None` = 查询失败（调用方按「不空闲」处理，绝不据此安装）。
+pub fn idle_seconds() -> Option<u64> {
+    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
+        return None;
+    }
+    let now = unsafe { GetTickCount() };
+    Some(tick_diff(now, info.dwTime).max(0) as u64 / 1000)
+}
+
 /// 本会话是否已锁屏；`None` = 查不出来（当作「不知道」，不据此重装）。
 ///
 /// `WTSSessionInfoEx` 的 `SessionFlags` 是**反直觉**字段：0 = 锁定、1 = 未锁定，

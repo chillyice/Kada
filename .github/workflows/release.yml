@@ -129,13 +129,13 @@ jobs:
         with:
           tagName: v__VERSION__
           releaseName: "咔哒 Kada v__VERSION__"
-          releaseBody: "各平台安装包见下方 Assets：Windows 是 `Kada___VERSION___x64-setup.exe`（便携版 `Kada___VERSION___x64-portable.zip`，解压即用）；Linux 是 `Kada___VERSION___amd64.deb` 与 `.AppImage`；macOS 是 `Kada___VERSION___universal.dmg`（未签名 / 未公证，首次打开请右键「打开」）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级（macOS 需签名后才走得通）。"
+          releaseBody: "各平台安装包见下方 Assets：Windows 是 `Kada___VERSION___x64-setup.exe`（便携版 `Kada___VERSION___x64-portable.zip`，解压即用；`Kada___VERSION___x64-portable.exe` 是免安装版的自动更新包，不用手动下）；Linux 是 `Kada___VERSION___amd64.deb` 与 `.AppImage`；macOS 是 `Kada___VERSION___universal.dmg`（未签名 / 未公证，首次打开请右键「打开」）。应用内「托盘右键 → 检查更新」或设置页「检查更新」会自动升级（macOS 需签名后才走得通）。"
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
 
       # 便携版：裸 exe 打个 zip（不含安装器、不写注册表）。前提是系统有 WebView2 Runtime
-      # （Win10 21H2 / Win11 自带）。给「不想装东西」的人用，不参与自动更新。
+      # （Win10 21H2 / Win11 自带）。给「不想装东西」的人用。
       - name: Portable zip
         if: runner.os == 'Windows'
         shell: pwsh
@@ -149,6 +149,49 @@ jobs:
           $zip = "Kada_${version}_x64-portable.zip"
           Compress-Archive -Path $exe -DestinationPath $zip
           gh release upload "v$version" $zip --clobber
+
+      # 免安装版的自动更新包：同一个裸 exe，单独存一份并签名，清单里用
+      # `windows-x86_64-portable` 条目指向它（客户端按安装形态选条目，见 update.rs 的
+      # manifest_target）。签名必须带版本号（requireSignedVersion），所以给 `--app-version`
+      # ——tauri-cli 会把 version: 写进 trusted comment。放在 bundle 目录里，最后一步
+      # verify-release.mjs 会按 .exe 通配自动认领（要求同名 .sig，这里签完就有）。
+      - name: Portable update payload (bare exe + signature)
+        if: runner.os == 'Windows'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          bundle="target/x86_64-pc-windows-msvc/release/bundle"
+          mkdir -p "$bundle"
+          portable="$bundle/Kada_${version}_x64-portable.exe"
+          cp "target/x86_64-pc-windows-msvc/release/kada.exe" "$portable"
+          npm run tauri -- signer sign --app-version "$version" "$portable"
+          test -f "$portable.sig"
+          gh release upload "v$version" "$portable" "$portable.sig" --clobber
+
+          # 往 tauri-action 生成的 latest.json 里加免安装版条目。用 node 改 JSON：
+          # PowerShell 5.1 的 ConvertTo-Json 会把中文转成 \uXXXX、-Encoding utf8 还带 BOM
+          # （serde_json 不认 BOM）；[IO.File] 手写又容易把编码弄错。
+          tmp="$RUNNER_TEMP/portable-latest"
+          mkdir -p "$tmp"
+          gh release download "v$version" --pattern latest.json --dir "$tmp"
+          node - "$tmp/latest.json" "$portable.sig" <<'EOF'
+          const fs = require('node:fs');
+          const [latestPath, sigPath] = process.argv.slice(2);
+          const version = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8')).version;
+          const latest = JSON.parse(fs.readFileSync(latestPath, 'utf8'));
+          latest.platforms = latest.platforms || {};
+          latest.platforms['windows-x86_64-portable'] = {
+            signature: fs.readFileSync(sigPath, 'utf8').trim(),
+            url: `https://github.com/${process.env.GITHUB_REPOSITORY}/releases/download/v${version}/Kada_${version}_x64-portable.exe`,
+          };
+          fs.writeFileSync(latestPath, `${JSON.stringify(latest, null, 2)}\n`);
+          EOF
+          gh release upload "v$version" "$tmp/latest.json" --clobber
 
       # 最后一道闸：版本号三处一致、每个安装包有签名、签名 key id 与内嵌公钥对得上、
       # 签名里带版本号、清单与产物一一对应——对不上就别 Publish 这个 draft 了。

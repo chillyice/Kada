@@ -4389,6 +4389,7 @@ pub fn run() {
             clear_command_results,
             update::get_update_status,
             update::check_update,
+            update::download_update,
             update::install_update
         ])
         .setup(|app| {
@@ -4609,9 +4610,14 @@ pub fn run() {
             // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
             spawn_config_watcher(app.handle().clone());
             // 更新状态单独托管：设置页/托盘都要读，与配置无关（不进 config.json）。
+            // 已下载的更新包落在 `app_data_dir()/updates/`，重启后据此恢复「待安装」状态。
             app.manage(update::UpdateState::new(
                 app.package_info().version.to_string(),
+                dir.join("updates"),
             ));
+            // 自动更新（`Settings.auto_update`）：下载好的包在长时间空闲时装；免安装版
+            // 另在下次启动时装。没勾时这条线程只是每 30 秒看一眼，什么都不做。
+            update::spawn_auto_installer(app.handle());
 
             // 确保开机自启注册项带 `--autostart` 参数（旧版注册的是裸 exe 路径，无法区分启动来源）。
             let autostart_enabled = app

@@ -1,18 +1,18 @@
 # AGENTS.md — Kada 项目规则
 
-> 本文件供 ZCode 跨会话加载：**只留规则 + 导航索引**，目标 **≤20KB** 保证完整注入上下文（超出会被截断且尾部最先丢失）。
-> 完整功能需求见 `docs/需求设计说明书.md`（活文档，未实现规划在 §7）；实现历史归档见 `docs/变更归档.md`（新归档只追加到该文件，不写回本文件）。
+> 本文件供 ZCode 跨会话加载：**只留规则 + 导航索引**，目标 **≤20KB**（超出会被截断，尾部先丢）。
+> 完整功能需求见 `docs/需求设计说明书.md`（活文档，未实现规划在 §7）；实现历史归档见 `docs/变更归档.md`（只追加，不写回本文件）。
 
-> **⚠ Git 规定（必须遵守）**：非人工指令，不得主动提交代码（`git commit`/`git push` 一律禁止）；`git add` 只能指定具体文件路径（禁 `git add -A` / `git add .`）。归档文档走 `/archive` 技能。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`（不必再等指令）；`git add` 仍只给具体路径。
+> **⚠ Git 规定**：非人工指令，不得主动提交代码（`git commit`/`git push` 一律禁止）；`git add` 只能指定具体文件路径（禁 `git add -A` / `git add .`）。归档文档走 `/archive` 技能。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`（不必再等指令）；`git add` 仍只给具体路径。
 
-> **⚠ 编码/路径警示（遵守以防误写）**：工作目录为本仓库根目录。含中文的源码/配置/文档一律走本工具的 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content`/`Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo/npm 构建与运行 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
+> **⚠ 编码/路径警示（遵守以防误写）**：含中文的源码/配置/文档一律走本工具的 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content`/`Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo/npm 构建与运行 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
 
 ## 项目概述
 
 - **咔哒 Kada**：轻快跨平台快捷键 / 改键 / 宏工具，托盘常驻（关窗不退出），配置 JSON 落盘、可跨平台同步。
-- **技术栈**：Rust workspace（`kada-core` 纯逻辑 + `kada-hook` 平台钩子 + `kada-actions` 动作引擎）+ Tauri 2 桌面壳（crate `kada`）+ Vite/TypeScript UI（`kada-ui`）。配置落盘在 `app_data_dir()/config.json`（`%APPDATA%\com.kada\`，不在仓库内）。
+- **技术栈**：Rust workspace（`kada-core` 纯逻辑 + `kada-hook` 平台钩子 + `kada-actions` 动作引擎）+ Tauri 2 桌面壳（crate `kada`）+ Vite/TypeScript UI（`kada-ui`）。配置落盘 `app_data_dir()/config.json`（`%APPDATA%\com.kada\`）。
 
-## 命名约定（务必遵守）
+## 命名约定
 
 | 项 | 值 |
 |----|----|
@@ -26,11 +26,11 @@
 
 ## 代码结构
 
-代码地图（目录 / 关键文件职责一览）见 `docs/README.md`「代码地图」；结构规则只留：workspace members / crate 名见「命名约定」，平台代码 `#[cfg]` 门控、三后端同一套接口。
+代码地图见 `docs/README.md`「代码地图」；结构规则：members / crate 名见「命名约定」，平台代码 `#[cfg]` 门控、三后端同一套接口。
 
 ## 核心概念与铁律
 
-> 模型逐字段定义见 `docs/需求设计说明书.md` §2（键模型）/ §3（配置模型）/ §4（钩子）/ §5（壳层）；下面只列**动手时必须遵守的约束**。
+> 逐字段定义见 `docs/需求设计说明书.md` §2~§5；下面只列**动手必须遵守的约束**。
 
 - **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`；逐字段定义见 §2 / §3，只留易踩的约束。`Layer` 可选 `mark`（色值或 emoji，纯展示；颜色本机各层唯一）。`Remap` = to / tap-hold（`tap`+`hold`）/ 切层键（`hold_layer` 长按进入、`lock_layer` 长按锁定，**互斥、同设保留 lock**）/ 进阶修饰（`oneshot`/`sticky`/`tap2`/`tap3`，形态互斥，优先级 `sticky > oneshot > tap-hold > to`，单次/粘滞值域任意键）。`ShortcutItem`/`Remap` 均可带触发侧条件门控 `when`——不成立等价于「该条不存在」（落到同触发键下一条、不吞键），判重指纹含 `when`（不同条件不算重复）。
 - **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。反例与机制见 `架构设计.md` §3.1。
@@ -61,12 +61,13 @@
 - **自愈看门狗**（`win.rs`/`macos.rs` 各一套；判据见 `架构设计.md` §3.15）：低层钩子/tap 会**静默失效**，`start` 另起 1s 巡检线程 + 指数退避。Windows **只投递 `WM_APP_REINSTALL`**（`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用）、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**（没鼠标钩子时归因不到键盘，硬判会无限重装）。
 - **输入状态复位**（`Engine::reset`，三平台，机制见 `架构设计.md` §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。触发通道：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置 `cfg_stale` 旗标（均在定时器线程）。
 - **前台 / 设备上下文**（`frontmost_context` / `current_device`，取法与限制见 `架构设计.md` §3.22）：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。**输入层环境诊断**（7.1-㊽，见 §4.6）同属软冲突，但**只在配置用到鼠标键时才出**、`settings.input_env_diag` 关掉**连探测都不跑**；`DIVERTERS` 只收真会 divert / 独占抓取的软件，乱加即误报。
-- **已知天花板（升级路径）**：清单与升级项见 `需求设计说明书.md` §4.5 / §7.2（UAC 提权 / Linux 热插拔 / macOS 安全输入 / **厂商 divert 走的按键**等）。
+- **已知天花板（升级路径）**：见 `需求设计说明书.md` §4.5 / §7.2。
 
 ## 软件更新
 
-- **软件更新红线**（§5.5 / `release.yml` 顶部）：**私钥绝不入库**——公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret；`latest.json` 由 `tauri-action` 生成，**不手写、不入库**；端点只认**已发布** Release。**前端碰不到更新**：全在 Rust，capabilities **不开** `updater:*`。**Windows 安装会退出应用**，故启动检查只提示；其它平台装完 `app.restart()`。
-- **更新源与形态**（`Settings.update_source` 可切 `github`）：`scripts/ihomy-mirror/` 每天同步 GitHub 已发布版到 `/files/kada/updates/`（只改 URL，`.sig` 原样）；检查走 `update.rs` 的 `build_updater`，别用 `app.updater()`；每 24h 复查。**更新不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 记录值才是安装版（原地更新），否则算免安装版，**拒绝调安装器**、只提示手动替换（§5.5）。
+- **软件更新红线**（§5.5 / `release.yml` 顶部）：**私钥绝不入库**（公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；`latest.json` 由 `tauri-action` 生成，**不手写、不入库**；端点只认**已发布** Release。**前端碰不到更新**（全在 Rust，capabilities 不开 `updater:*`）。**安装会退出应用**；其它平台装完 `app.restart()`。
+- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载/安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装，没勾只能手动「下载」→「安装」。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本。
+- **更新源与形态**（§5.5）：`Settings.update_source` 可切 `github`；镜像只改 URL、`.sig` 原样；检查走 `build_updater`，别用 `app.updater()`。**不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版（`installMode: quiet` = NSIS `/S /R`）；否则便携版读清单 `windows-x86_64-portable` 裸 exe 原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；CI 用 `signer sign --app-version` 签便携包。
 
 ## 构建与验证命令
 
@@ -84,7 +85,7 @@ cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS �
 - **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**、产物目录自适应，其余见顶部注释）。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
 ## 里程碑与规划
 
-- **未实现规划唯一清单 + 已落地事项编号索引见 `docs/需求设计说明书.md` §7**（M0–M5 已完成）——立项、排期一律以那里为准（已落地项收拢为编号索引，功能闭环写在 §1~§6，勿重复立项）；实现历史见 `docs/变更归档.md`。
+- **未实现规划唯一清单 + 已落地事项编号索引见 `docs/需求设计说明书.md` §7**（M0–M5 已完成）——立项、排期一律以那里为准（勿重复立项）；实现历史见 `docs/变更归档.md`。
 
 ## 文档清单
 

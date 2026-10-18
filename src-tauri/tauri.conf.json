@@ -36,7 +36,7 @@
         "https://ihomy.top/files/kada/updates/latest.json"
       ],
       "windows": {
-        "installMode": "passive"
+        "installMode": "quiet"
       }
     }
   }

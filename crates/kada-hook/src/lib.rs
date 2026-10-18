@@ -50,6 +50,25 @@ pub fn platform_input_env() -> kada_core::InputEnv {
     }
 }
 
+/// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
+///
+/// `None` = 本平台查不出来（Linux：X11 / Wayland 没有统一且免提升权的接口），调用方按
+/// 「不空闲」处理——**绝不因为查不出来就安装**。
+pub fn idle_seconds() -> Option<u64> {
+    #[cfg(windows)]
+    {
+        win::idle_seconds()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::idle_seconds()
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        None
+    }
+}
+
 /// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
 /// 「往提权窗口注入」。
 ///

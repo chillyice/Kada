@@ -154,6 +154,12 @@ type Settings = {
    * / `github` 官方 Releases。缺字段按 ihomy（与后端 serde default 一致）。
    */
   update_source?: "ihomy" | "github";
+  /**
+   * 自动更新：发现新版本后自动下载，电脑长时间空闲时自动安装（免安装版另在下次启动时装）。
+   * 缺字段 = 关（后端 `#[serde(default)]` 的零值）——自动下载 + 空闲安装会退出并重启应用，
+   * 不替用户决定。
+   */
+  auto_update?: boolean;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -4683,6 +4689,8 @@ function syncSettings() {
   // 软件更新源：缺字段按默认 ihomy 显示（后端 serde default 一致）。
   (document.getElementById("set-update-source") as HTMLSelectElement).value =
     cfg.settings.update_source ?? "ihomy";
+  (document.getElementById("set-auto-update") as HTMLInputElement).checked =
+    cfg.settings.auto_update === true;
 }
 
 /**
@@ -4908,6 +4916,19 @@ function bindSettings() {
   document.getElementById("check-update")!.addEventListener("click", () => {
     void invoke("check_update");
   });
+  const autoUpdate = document.getElementById("set-auto-update") as HTMLInputElement;
+  autoUpdate.addEventListener("change", () => {
+    cfg.settings.auto_update = autoUpdate.checked;
+    void save();
+    // 已经发现新版本时勾上就立刻开始下载：否则要等下一次检查（可能一天后）才动，
+    // 用户会以为开关没生效。
+    if (autoUpdate.checked && updateStatus?.phase === "available") {
+      void invoke("download_update");
+    }
+  });
+  document.getElementById("download-update")!.addEventListener("click", () => {
+    void invoke("download_update");
+  });
   document.getElementById("install-update")!.addEventListener("click", () => {
     void invoke("install_update");
   });
@@ -5047,14 +5068,14 @@ function hideImportResult() {
 // ---- 软件更新 ----
 // 状态源在后端（src-tauri/src/update.rs）：检查/下载/安装各阶段由 Rust 推进并 emit
 // `update-status`，前端只渲染，不自己维护「正在检查」这类瞬时状态（否则窗口重开就丢）。
-// `kind` 是运行时的安装形态：免安装版（裸 exe）不能走安装器，只能手动替换，故不显示
-// 「下载并安装」按钮（后端也会拒）。
+// 下载与安装是两步：`available` 给「下载」，下载完进 `ready` 才给「安装」。
 type UpdateStatus = { current: string; kind: "installed" | "portable" } & (
   | { phase: "idle" }
   | { phase: "checking" }
   | { phase: "up-to-date" }
   | { phase: "available"; version: string; notes?: string | null }
   | { phase: "downloading"; version: string; percent?: number | null }
+  | { phase: "ready"; version: string }
   | { phase: "installing"; version: string }
   | { phase: "error"; message: string }
 );
@@ -5064,6 +5085,8 @@ let updateStatus: UpdateStatus | null = null;
 function syncUpdate() {
   const line = document.getElementById("update-status")!;
   const actions = document.getElementById("update-actions")!;
+  const downloadBtn = document.getElementById("download-update")!;
+  const installBtn = document.getElementById("install-update")!;
   const checkBtn = document.getElementById("check-update") as HTMLButtonElement;
   if (!updateStatus) {
     line.textContent = "正在读取版本…";
@@ -5077,8 +5100,12 @@ function syncUpdate() {
     updateStatus.phase === "downloading" ||
     updateStatus.phase === "installing";
   checkBtn.disabled = busy;
-  // 免安装版不走安装器（后端会拒），不显示「下载并安装」，只提示手动替换。
-  actions.classList.toggle("hidden", updateStatus.phase !== "available" || portable);
+  // 下载与安装是两步：`available` 只给「下载」；`ready`（已下载）才给「安装」。
+  const canDownload = updateStatus.phase === "available";
+  const canInstall = updateStatus.phase === "ready";
+  actions.classList.toggle("hidden", !canDownload && !canInstall);
+  downloadBtn.classList.toggle("hidden", !canDownload);
+  installBtn.classList.toggle("hidden", !canInstall);
 
   switch (updateStatus.phase) {
     case "idle":
@@ -5092,8 +5119,8 @@ function syncUpdate() {
       break;
     case "available":
       line.textContent = portable
-        ? `发现新版本 v${updateStatus.version}（当前 ${current}），免安装版请手动下载替换`
-        : `发现新版本 v${updateStatus.version}（当前 ${current}），可下载安装`;
+        ? `发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取更新包`
+        : `发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取安装包`;
       break;
     case "downloading": {
       const pct =
@@ -5103,11 +5130,26 @@ function syncUpdate() {
       line.textContent = `正在下载 v${updateStatus.version}…${pct}`;
       break;
     }
+    case "ready": {
+      // 安装会退出并重启：安装版交给安装器静默装完重启，免安装版原位替换 exe 后重启。
+      const how = portable
+        ? "点「安装」将替换 kada.exe 并重启应用"
+        : "点「安装」将退出应用、由安装器静默安装后重启";
+      const auto = cfg.settings.auto_update
+        ? portable
+          ? "；已开启自动更新，也会在长时间空闲或下次启动时自动安装"
+          : "；已开启自动更新，也会在长时间空闲时自动安装"
+        : "";
+      line.textContent = `已下载 v${updateStatus.version}，${how}${auto}`;
+      break;
+    }
     case "installing":
-      line.textContent = `正在安装 v${updateStatus.version}，应用即将退出…`;
+      line.textContent = portable
+        ? `正在替换程序到 v${updateStatus.version}，应用即将重启…`
+        : `正在安装 v${updateStatus.version}，应用即将退出…`;
       break;
     case "error":
-      line.textContent = `检查更新失败：${updateStatus.message}`;
+      line.textContent = `更新失败：${updateStatus.message}`;
       break;
   }
 }

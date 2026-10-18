@@ -608,6 +608,26 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
     }
 }
 
+/// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
+///
+/// `kCGAnyInputEventType` 在 CoreGraphics 里就是 `~0`，与 `kCGEventTapDisabledByUserInput`
+/// 数值相同（core-graphics 只给后者起了名），这里借它表达「任意输入事件」；状态取
+/// 会话合并态（含鼠标、键盘与其它输入设备），与看门狗只看 KeyDown 的取舍不同——那里是
+/// 为了不被鼠标点击误判成「tap 失效」，这里正需要把鼠标算进「用户还在用电脑」。
+pub fn idle_seconds() -> Option<u64> {
+    let secs = unsafe {
+        CGEventSourceSecondsSinceLastEventType(
+            CGEventSourceStateID::CombinedSessionState,
+            CGEventType::TapDisabledByUserInput,
+        )
+    };
+    if secs.is_finite() && secs >= 0.0 {
+        Some(secs as u64)
+    } else {
+        None
+    }
+}
+
 /// tap 是不是已经收不到事件了（判据见 [`watchdog_loop`]）。
 ///
 /// 只看键盘事件（[`CGEventType::KeyDown`]）：`CGEventSourceSecondsSinceLastEventType` 一次

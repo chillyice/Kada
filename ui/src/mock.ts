@@ -277,14 +277,15 @@ export function installBrowserMock() {
         case "elevated_stop":
           return null;
         case "get_update_status":
-          return { current: "0.6.0", phase: "idle" };
+          return { current: "0.6.0", kind: "installed", phase: "idle" };
         case "check_update":
           // 推事件让设置页看到「检查中 → 发现新版本」；否则按钮点了没反应像坏了。
-          emit("update-status", { current: "0.6.0", phase: "checking" });
+          emit("update-status", { current: "0.6.0", kind: "installed", phase: "checking" });
           setTimeout(
             () =>
               emit("update-status", {
                 current: "0.6.0",
+                kind: "installed",
                 phase: "available",
                 version: "0.6.1",
                 notes: "演示模式：这是一条模拟的更新说明。",
@@ -292,13 +293,20 @@ export function installBrowserMock() {
             600,
           );
           return null;
-        case "install_update":
-          // 模拟下载进度 → 安装中（真实安装会退出应用，演示模式只推状态）。
-          emit("update-status", { current: "0.6.0", phase: "downloading", version: "0.6.1", percent: 0 });
+        case "download_update":
+          // 下载与安装是两步：先走到 `ready`，演示模式不自动装。
+          emit("update-status", {
+            current: "0.6.0",
+            kind: "installed",
+            phase: "downloading",
+            version: "0.6.1",
+            percent: 0,
+          });
           setTimeout(
             () =>
               emit("update-status", {
                 current: "0.6.0",
+                kind: "installed",
                 phase: "downloading",
                 version: "0.6.1",
                 percent: 100,
@@ -306,9 +314,19 @@ export function installBrowserMock() {
             800,
           );
           setTimeout(
-            () => emit("update-status", { current: "0.6.0", phase: "installing", version: "0.6.1" }),
+            () =>
+              emit("update-status", {
+                current: "0.6.0",
+                kind: "installed",
+                phase: "ready",
+                version: "0.6.1",
+              }),
             1200,
           );
+          return null;
+        case "install_update":
+          // 真实安装会退出应用，演示模式只推「安装中」。
+          emit("update-status", { current: "0.6.0", kind: "installed", phase: "installing", version: "0.6.1" });
           return null;
         case "set_paused":
           paused = !!args?.paused;

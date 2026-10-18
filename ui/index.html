@@ -505,11 +505,19 @@
                       <option value="github">GitHub Releases</option>
                     </select>
                   </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">自动更新</span>
+                      <span class="set-sub">发现新版本后自动下载；电脑长时间空闲时自动安装（免安装版还会在下次启动时安装）</span>
+                    </span>
+                    <input type="checkbox" id="set-auto-update" class="toggle" />
+                  </label>
                   <p id="update-status" class="set-status">正在读取版本…</p>
                   <div id="update-actions" class="set-actions hidden">
-                    <button id="install-update" class="primary">下载并安装</button>
+                    <button id="download-update" class="primary">下载</button>
+                    <button id="install-update" class="primary hidden">安装</button>
                   </div>
-                  <p class="set-note">更新包从所选更新源获取（签名原样保留），装上之前会校验 Ed25519 签名；应用每天自动检查一次，安装时应用会退出，装完自动打开新版本。</p>
+                  <p class="set-note">检查版本是自动的（启动后与每 24 小时各一次）；更新包从所选源获取并校验签名。勾了「自动更新」才会自动下载，并在电脑长时间空闲时自动安装（免安装版另在下次启动时安装）；没勾则只能在这里手动点「下载」「安装」——安装会退出并重启应用。</p>
                 </div>
               </section>
             </div>

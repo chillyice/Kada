@@ -1861,6 +1861,15 @@ pub struct Settings {
     /// 能直连 GitHub 的人在设置页切一次即可。
     #[serde(default)]
     pub update_source: UpdateSource,
+    /// 自动更新（见 `docs/需求设计说明书.md` §5.5）：发现新版本后**自动下载**，并在
+    /// 「长时间空闲」时自动安装（免安装版另在下次启动时安装）；不勾选则只能在设置页
+    /// 手动点「下载」「安装」两步。
+    ///
+    /// 缺字段取 `false`：下载与安装都会打断使用（安装还会退出并重启应用），替用户决定
+    /// 「什么时候动我的程序」关乎信任，必须显式勾选才做。检查版本本身不受这个开关影响
+    /// （启动后 8 秒 + 每 24 小时照常检查）。
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1905,6 +1914,7 @@ impl Default for Settings {
             input_env_diag: true,
             elevated_inject: false,
             update_source: UpdateSource::Ihomy,
+            auto_update: false,
         }
     }
 }
@@ -5365,6 +5375,22 @@ mod update_source_tests {
     fn old_config_defaults_to_ihomy_mirror() {
         let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
         assert_eq!(old.settings.update_source, UpdateSource::Ihomy);
+    }
+
+    /// 自动更新必须**显式勾选**：老配置缺字段时默认关（自动下载 + 空闲安装会重启应用，
+    /// 不能给已有用户静默打开），勾上后要能原样往返。
+    #[test]
+    fn auto_update_is_opt_in_and_roundtrips() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert!(!old.settings.auto_update);
+        let cfg = Config {
+            settings: Settings { auto_update: true, ..Default::default() },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""auto_update":true"#), "{json}");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(back.settings.auto_update);
     }
 
     #[test]
