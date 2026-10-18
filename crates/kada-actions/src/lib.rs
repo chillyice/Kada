@@ -2073,6 +2073,18 @@ mod tests {
         );
     }
 
+    /// 测试进程本身有没有控制台窗口。CI 的 Windows runner 跑在**没有交互控制台**的会话里，
+    /// `GetConsoleWindow()` 对任何进程都返回 0——包括没设 `CREATE_NO_WINDOW` 的子进程，
+    /// 那种环境下「不隐藏就该有控制台」的反向对照天然不成立（不是开关失效）。
+    #[cfg(target_os = "windows")]
+    fn test_process_has_console() -> bool {
+        extern "system" {
+            fn GetConsoleWindow() -> *mut std::ffi::c_void;
+        }
+        // SAFETY: 纯查询当前进程的控制台句柄，不改变任何状态。
+        unsafe { !GetConsoleWindow().is_null() }
+    }
+
     /// 「隐式执行」要验的是**真的不建控制台**，不是「输出被藏起来」——所以拿真子进程问 Windows
     /// 自己有没有控制台窗口（`GetConsoleWindow()`）。`creation_flags` 设了什么，从 Rust 侧读不回来，
     /// 只有这条能作数：隐藏时子进程没有控制台（0），不隐藏时它有（本进程有控制台，子进程会继承）。
@@ -2112,13 +2124,22 @@ mod tests {
             hidden.stdout,
             hidden.stderr
         );
-        assert_ne!(
-            visible.stdout.trim(),
-            "0",
-            "没打开开关时子进程该照旧有控制台（反向对照；stdout={:?} stderr={:?}）",
-            visible.stdout,
-            visible.stderr
-        );
+        // 反向对照只在「测试进程自己真有控制台」时成立：无控制台的会话里子进程继承不到，
+        // 不设 CREATE_NO_WINDOW 也是 0。跳过它、把观测值打出来，别在 CI 上误报回归。
+        if test_process_has_console() {
+            assert_ne!(
+                visible.stdout.trim(),
+                "0",
+                "没打开开关时子进程该照旧有控制台（反向对照；stdout={:?} stderr={:?}）",
+                visible.stdout,
+                visible.stderr
+            );
+        } else {
+            eprintln!(
+                "跳过反向对照：测试进程本身没有控制台窗口（visible stdout={:?}）",
+                visible.stdout
+            );
+        }
     }
 
     #[test]
