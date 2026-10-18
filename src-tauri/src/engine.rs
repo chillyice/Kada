@@ -82,13 +82,46 @@ impl Engine {
     /// 壳层在状态机定时器线程上每 [`crate::ENGINE_TICK_MS`] 比一次：变了才推给界面。
     /// 状态机那条热路径（钩子回调）一行都不改——**在回调里推 UI 等于把钩子挂在界面上**。
     pub fn status(&self) -> EngineStatus {
+        // 按住式切层键刚按下、还没按下一个键（roll）时，层在判定上**还没真正进入**，但用户
+        // 此刻已经按住切层键、想确认自己按的是哪一层——指示先亮出这个「待进入」的层，否则
+        // 要等第二个键按下才出现（用户看到的是「按住切层键没反应」）。
+        //
+        // 只有**纯切层键**立即亮；带单击/双击/三击输出的键要按住超过判定阈值才亮——轻点一下
+        // 输出的是那个键、根本不进层，提前亮就成了每点一下闪一下。
+        let (layer, layer_locked) = match self.pending_layer() {
+            Some(id) => (Some(id.to_string()), false),
+            None => (self.layer.active.clone(), self.layer.locked),
+        };
         EngineStatus {
-            layer: self.layer.active.clone(),
-            layer_locked: self.layer.locked,
+            layer,
+            layer_locked,
             hold: self.mods.hold.iter().copied().collect(),
             sticky: self.mods.sticky.iter().copied().collect(),
             oneshot: self.mods.oneshot.iter().copied().collect(),
         }
+    }
+
+    /// 待定中的 momentary 切层键**将要进入**的层（仅供 [`Engine::status`] 显示，不改判定）。
+    ///
+    /// 不预览的情况：已经 roll 判定为长按（那时 `LayerState` 才是真值）、与切层键互斥的
+    /// 其它形态也配了（手改 JSON，按 `activate_hold` 的优先级它们会赢）、带短按输出且还没
+    /// 按住过判定阈值（可能只是一次轻点）。
+    fn pending_layer(&self) -> Option<&str> {
+        let p = self.taphold.as_ref()?;
+        if p.hold_active
+            || p.hold.is_some()
+            || p.lock_layer.is_some()
+            || p.oneshot.is_some()
+            || p.sticky.is_some()
+        {
+            return None;
+        }
+        let id = p.hold_layer.as_deref()?;
+        let has_tap_output = p.tap.is_some() || p.tap2.is_some() || p.tap3.is_some();
+        if has_tap_output && p.down_at.elapsed() < p.timeout {
+            return None;
+        }
+        Some(id)
     }
 
     /// 前置状态机：tap-hold（含连击/单次/粘滞/切层）→ 和弦 → 键序列。
@@ -1573,6 +1606,57 @@ mod tests {
     }
 
     #[test]
+    fn status_previews_momentary_layer_while_layer_key_is_held() {
+        // 按住切层键、还没按第二个键：指示就要先亮出「按住的是哪一层」。判定上这一层还没
+        // 真正进入（roll 才进），但用户此刻要的正是这条反馈——否则看起来像按了没反应。
+        let mut r = remap("CapsLock", "");
+        r.hold_layer = Some("layer-1".into());
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        let st = engine.status();
+        assert_eq!(st.layer.as_deref(), Some("layer-1"), "按下切层键就亮层（不等第二个键）");
+        assert!(!st.layer_locked, "按住式切层不是锁定层");
+        assert_eq!(engine.active_layer(), None, "指示是预览：判定仍等 roll，不提前进层");
+        assert!(inj.take().is_empty(), "预览不注入任何键");
+
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(engine.status().idle(), "松开切层键后指示熄掉");
+        assert_eq!(
+            inj.take(),
+            vec!["down CapsLock", "up CapsLock"],
+            "没按第二个键：原键照常回放（吞键铁律）"
+        );
+    }
+
+    #[test]
+    fn status_waits_for_hold_threshold_on_dual_function_layer_key() {
+        // 带单击输出的切层键：轻点一下输出的是单击键、并不进层，所以按下的瞬间不亮层
+        // （否则每点一下都闪一下）；按住过阈值——确定不是轻点了——才亮。
+        let mut r = remap("CapsLock", "");
+        r.tap = Some("Escape".into());
+        r.hold_layer = Some("layer-1".into());
+        r.tap_timeout_ms = 20;
+        let cfg = cfg_with_remap(r);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.status().layer, None, "刚按下可能只是轻点，先不亮");
+        std::thread::sleep(Duration::from_millis(30));
+        assert_eq!(
+            engine.status().layer.as_deref(),
+            Some("layer-1"),
+            "按住过判定阈值 → 亮出待进入的层"
+        );
+
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(engine.status().idle(), "松开后指示熄掉");
+    }
+
+    #[test]
     fn status_marks_locked_layer() {
         let cfg = cfg_with_locked_layer("K");
         let mut engine = Engine::new();
@@ -2405,5 +2489,142 @@ mod tests {
         assert_eq!(engine.active_layer(), None, "松开切层键退回基础层");
         assert!(inj.log.is_empty(), "整个过程一个字符都不该漏出");
         assert_eq!(fired.log, vec!["U&Y"]);
+    }
+
+    /// 穷举「按下 / 抬起（含自动重复）」的事件序列，找有没有「层已激活、两个成员键
+    /// 都在层内按下且都还按着，却没触发和弦」的可达状态——momentary 层内和弦
+    /// 「有时能触发、有时不能」若来自状态机，就必须在这里现形。
+    #[test]
+    fn momentary_layer_chord_never_lost_while_members_overlap() {
+        let cfg = cfg_layer_chord("hold");
+        let layer_key = Key::CapsLock;
+        let members = [Key::U, Key::Y];
+        let other = Key::A;
+        // 事件字母表：每个键的「按下」/「抬起」。
+        let mut alphabet: Vec<(bool, Key)> = Vec::new();
+        for k in [layer_key, Key::U, Key::Y, other] {
+            alphabet.push((true, k));
+            alphabet.push((false, k));
+        }
+
+        let n = alphabet.len();
+        let depth = 6;
+        for code in 0..n.pow(depth as u32) {
+            let mut seq = Vec::with_capacity(depth);
+            let mut c = code;
+            for _ in 0..depth {
+                seq.push(c % n);
+                c /= n;
+            }
+
+            let mut engine = Engine::new();
+            let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+            let mut phys: BTreeSet<Key> = BTreeSet::new();
+            // 「在层已激活时被吞成成员」的记账：层激活之前按下的成员键已经漏给目标程序，
+            // 那时它就凑不成和弦（这是语义，不是缺陷）。
+            let mut member_in_layer: BTreeSet<Key> = BTreeSet::new();
+
+            for i in &seq {
+                let (down, k) = alphabet[*i];
+                let mut fresh = false;
+                let ev = if down {
+                    let repeat = !phys.insert(k);
+                    fresh = !repeat;
+                    Ev::Down { key: k, mods: BTreeSet::new(), repeat }
+                } else {
+                    if !phys.remove(&k) {
+                        continue; // 物理上不成立：没按着就抬起
+                    }
+                    Ev::Up { key: k }
+                };
+                let layer_before = engine.active_layer().is_some();
+                let swallowed = step(&mut engine, &ev, &cfg, &mut inj, &mut fired).is_none();
+                let layer_after = engine.active_layer().is_some();
+                if fresh && members.contains(&k) && (layer_before || (swallowed && layer_after)) {
+                    member_in_layer.insert(k);
+                }
+                // 不变量：层激活 + 两个成员都在层内被吞成成员 + 都还按着 → 必须已触发。
+                if layer_after
+                    && members.iter().all(|m| phys.contains(m) && member_in_layer.contains(m))
+                {
+                    let trace: Vec<String> = seq
+                        .iter()
+                        .map(|i| {
+                            format!(
+                                "{}{}",
+                                if alphabet[*i].0 { "↓" } else { "↑" },
+                                key_name(alphabet[*i].1)
+                            )
+                        })
+                        .collect();
+                    assert!(
+                        !fired.log.is_empty(),
+                        "层已激活、U 与 Y 都在层内被吞成成员且都还按着，和弦却没触发：{}",
+                        trace.join(" ")
+                    );
+                }
+            }
+        }
+    }
+
+    /// **momentary 层内和弦的成立前提之一：切层键先落下。**
+    ///
+    /// 三个键几乎同时落下时，手指顺序不保证「切层键先」；若某个成员键早于切层键按下，
+    /// 那一刻它只是一次普通按键（层还没生效 → 压根没有和弦成员这回事），**它的字符已经
+    /// 打给目标程序**，此后按住不放也没用——后续的自动重复按下只会被当成 `repeat` 吞掉。
+    /// 于是「层已激活、U/Y 都按着」却凑不成和弦。锁定层不存在这个前提（层早已生效）。
+    #[test]
+    fn member_pressed_before_layer_key_cannot_join_the_chord() {
+        let cfg = cfg_layer_chord("hold");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        // ① U 先落：没进层，它是一次普通按键（放行给目标程序，字符会打出来）。
+        assert!(step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_some());
+        // ② 切层键落下 → 待定；③ Y 落下 → roll 进层，Y 被吞成成员。
+        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(engine.active_layer(), Some("sym"), "roll 进层");
+        assert!(fired.log.is_empty(), "此时只有一个成员，不该触发");
+
+        // ④ U 还按着（自动重复）：被当成 repeat 吞掉，**不会补登记成成员** → 永远凑不齐。
+        let repeat_u = Ev::Down { key: Key::U, mods: BTreeSet::new(), repeat: true };
+        assert!(step(&mut engine, &repeat_u, &cfg, &mut inj, &mut fired).is_none());
+        assert!(fired.log.is_empty(), "层已生效、U 与 Y 都按着，但 U 早于层生效 → 凑不成");
+
+        // ⑤ 抬起照吞键铁律回放（用户看到的就是「打了 u、y，没触发」）。
+        step(&mut engine, &up(Key::Y), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::U), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert!(fired.log.is_empty());
+    }
+
+    /// **momentary 层内和弦的成立前提之二：切层键按到和弦凑齐为止。**
+    ///
+    /// 切层键中途抬起（手指滑掉）→ 层当场退出：已吞下的那个成员键不再属于任何和弦，
+    /// 之后按下的第二个成员键在基础层里也不是成员（只是被借道吞进待定缓冲），最后两个键
+    /// 都按原样回放成字符。「按住切层键 + 和弦」之所以别扭，一半就来自这里。
+    #[test]
+    fn layer_key_release_mid_chord_replays_members_without_firing() {
+        let cfg = cfg_layer_chord("hold");
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none());
+        assert_eq!(engine.active_layer(), Some("sym"), "按住切层键 + 按 U → 进层，U 被吞");
+        // 切层键中途抬起（没凑齐）：层立刻退出。
+        step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), None, "松开切层键即退层");
+        // 第二个成员键此时在基础层里不是成员：被借道吞进待定缓冲。
+        assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
+        // 第一个成员键抬起 → 定论「不是和弦」→ 原样回放两个键（用户会看到 u、y）。
+        step(&mut engine, &up(Key::U), &cfg, &mut inj, &mut fired);
+        assert_eq!(
+            inj.take(),
+            vec!["down U", "up U", "down Y", "up Y"],
+            "没凑成和弦 → 按输入顺序原样补回"
+        );
+        assert!(fired.log.is_empty(), "层已退出，和弦不该触发");
     }
 }
