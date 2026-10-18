@@ -25,9 +25,11 @@ import { fileURLToPath } from 'node:url';
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // updater 支持的安装包格式：每一种都应当有同名 .sig（bundle.createUpdaterArtifacts 产出）。
-// macOS 的更新产物是 `.app.tar.gz`、Linux 的是 `.AppImage.tar.gz`，所以 tar.gz 也在名单里；
-// dmg / 裸 exe（便携版）不参与自动更新、没有 .sig，故不列（列了会误报）。
+// macOS 的更新产物是 `.app.tar.gz`、Linux 的是 `.AppImage`（v2 直接签 AppImage 本体），所以
+// tar.gz 也在名单里；dmg / 裸 exe（便携版）不参与自动更新、没有 .sig，故不列（列了会误报）。
+// deb 打包过程的中间产物（control/data.tar.gz 会留在 bundle 目录里）不是发布产物，一并排除。
 const ARTIFACT_RE = /\.(exe|msi|deb|rpm|appimage|tar\.gz)$/i;
+const IGNORED = new Set(['control.tar.gz', 'data.tar.gz']);
 
 const problems = [];
 const fail = (msg) => problems.push(msg);
@@ -154,6 +156,7 @@ if (exists(bundleDir)) {
 let checked = 0;
 for (const artifact of artifacts) {
   const name = basename(artifact);
+  if (IGNORED.has(name)) continue;
   if (!ARTIFACT_RE.test(name)) continue;
   const sigPath = `${artifact}.sig`;
   if (!exists(sigPath)) {
