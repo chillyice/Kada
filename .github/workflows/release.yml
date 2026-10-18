@@ -143,8 +143,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $version = (Get-Content src-tauri\tauri.conf.json -Raw | ConvertFrom-Json).version
+          # 矩阵里带了 --target（见上方 args），cargo 的产物在 target/<triple>/release，
+          # 不在 target\release——写错路径会在 upload 时才发现（zip 根本没生成）。
+          $exe = "target\x86_64-pc-windows-msvc\release\kada.exe"
           $zip = "Kada_${version}_x64-portable.zip"
-          Compress-Archive -Path target\release\kada.exe -DestinationPath $zip
+          Compress-Archive -Path $exe -DestinationPath $zip
           gh release upload "v$version" $zip --clobber
 
       # 最后一道闸：版本号三处一致、每个安装包有签名、签名 key id 与内嵌公钥对得上、
