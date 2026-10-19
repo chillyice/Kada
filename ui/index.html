@@ -451,8 +451,8 @@
                   </div>
                   <div class="set-row set-row-merged">
                     <span class="set-main">
-                      <span class="set-name">锦囊市场</span>
-                      <span class="set-sub">浏览索引里的锦囊，一键合并进配置（装之前先给你看清里面是什么）</span>
+                      <span class="set-name">卡带市场</span>
+                      <span class="set-sub">浏览索引里的卡带，一键合并进配置（装之前先给你看清里面是什么）</span>
                     </span>
                     <div class="set-controls">
                       <input
@@ -460,7 +460,7 @@
                         id="set-snippet-index"
                         spellcheck="false"
                         placeholder="索引地址（留空 = 内置）"
-                        title="锦囊索引地址：一份能下载到的 JSON 索引；留空 = 用内置地址，自建索引就填自己的"
+                        title="卡带索引地址：一份能下载到的 JSON 索引；留空 = 用内置地址，自建索引就填自己的"
                       />
                       <button id="open-market">打开…</button>
                     </div>
@@ -481,8 +481,8 @@
                 <details class="hint-fold">
                   <summary>导入与分享的规则</summary>
                   <p class="hint">改动即时保存并生效。导入可选「合并」（只新增，触发键撞车的条目跳过、本机设置不动）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
-                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为锦囊</strong>），或目录行 ⋯ → <strong>导出该目录为锦囊</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。<strong>锦囊</strong>就是一小组可分享的配置条目（快捷键 / 改键 / 文本扩展，连带它们用到的层），不含设置、也不含目录分组（目录是本机的）。</p>
-                  <p class="hint">锦囊市场没有服务端：索引就是一个放在网上、能下载到的 JSON 文件，索引里每条再指向一个锦囊文件。想收录自己的锦囊，把导出的锦囊文件按索引格式加进索引即可（内置索引在本仓库 <code>snippets/</code>，由 <code>scripts/build-snippet-index.mjs</code> 生成）。</p>
+                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为卡带</strong>），或目录行 ⋯ → <strong>导出该目录为卡带</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。<strong>卡带</strong>就是一小组可分享的配置条目（快捷键 / 改键 / 文本扩展，连带它们用到的层），不含设置、也不含目录分组（目录是本机的）。</p>
+                  <p class="hint">卡带市场没有服务端：索引就是一个放在网上、能下载到的 JSON 文件，索引里每条再指向一个卡带文件。想收录自己的卡带，把导出的卡带文件按索引格式加进索引即可（内置索引在本仓库 <code>snippets/</code>，由 <code>scripts/build-snippet-index.mjs</code> 生成）。</p>
                   <p class="hint"><strong>同步存档</strong>：选一个目录（如你的 OneDrive 文件夹），之后每次配置落盘都会在那目录里自动存一份 <code>kada-config.json</code>（保留一份 <code>.bak</code>）。换机器时在新机器的设置里选<strong>同一个目录</strong>，点「从存档恢复」即可把配置搬过去（可选合并或替换）。走的是本地文件夹、不登录任何账号——云端上传下载由 OneDrive 客户端自己负责。</p>
                 </details>
               </section>
@@ -745,13 +745,13 @@
       </div>
     </div>
 
-    <!-- 锦囊市场（规划 7.2-㉕）：没有服务端，索引就是一份能下载到的 JSON；
+    <!-- 卡带市场（规划 7.2-㉕）：没有服务端，索引就是一份能下载到的 JSON；
          搜索在本地做（索引一次性拿全，几百条以内不值得为它加服务端）。 -->
     <div id="market-modal" class="modal hidden">
       <div class="modal-mask"></div>
       <div class="modal-box">
         <header class="modal-head">
-          <span class="modal-title">锦囊市场</span>
+          <span class="modal-title">卡带市场</span>
           <button id="market-close" class="detail-close" title="关闭">×</button>
         </header>
         <div class="modal-body">
@@ -765,12 +765,12 @@
       </div>
     </div>
 
-    <!-- 锦囊预览：锦囊能带命令 / 脚本动作（装进来就会跑），所以装之前逐条摊开给用户看。 -->
+    <!-- 卡带预览：卡带能带命令 / 脚本动作（装进来就会跑），所以装之前逐条摊开给用户看。 -->
     <div id="snippet-modal" class="modal hidden">
       <div class="modal-mask"></div>
       <div class="modal-box confirm-box">
         <header class="modal-head">
-          <span class="modal-title">安装这个锦囊？</span>
+          <span class="modal-title">安装这个卡带？</span>
         </header>
         <div class="modal-body">
           <p id="snippet-name" class="confirm-text"></p>

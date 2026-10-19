@@ -2400,7 +2400,7 @@ mod tests {
         }
     }
 
-    /// 锦囊市场（7.2-㉕）：索引 / 锦囊的地址只收 http(s)。设置里那个字符串不该变成读本地
+    /// 卡带市场（7.2-㉕）：索引 / 卡带的地址只收 http(s)。设置里那个字符串不该变成读本地
     /// 文件的口子（`file://`、`\\?\C:\...` 之类一律拒在下载之前）。
     #[test]
     fn snippet_download_only_accepts_http_urls() {
@@ -2415,8 +2415,8 @@ mod tests {
         }
     }
 
-    /// 锦囊市场（7.2-㉕）端到端：真起一个本地 HTTP 服务，把仓库里的 `snippets/` 当托管端，
-    /// 走一遍「下载 → 解析索引 → 下载锦囊 → 清洗 → 预览」——顺带钉住「仓库里那几份锦囊
+    /// 卡带市场（7.2-㉕）端到端：真起一个本地 HTTP 服务，把仓库里的 `snippets/` 当托管端，
+    /// 走一遍「下载 → 解析索引 → 下载卡带 → 清洗 → 预览」——顺带钉住「仓库里那几份卡带
     /// 文件本身就是合法的 `Config`」（字段名写错的话 serde 会静默忽略，装出来是空壳）。
     #[test]
     fn snippet_market_serves_repo_snippets_over_http() {
@@ -2428,14 +2428,14 @@ mod tests {
         assert!(!entries.is_empty(), "仓库里的索引没有条目");
 
         // 索引里的 url 指向 GitHub raw（上线才是那个地址），这里换成同一个本地服务：逐条下载，
-        // 钉住「仓库里每份锦囊都是合法且非空的 `Config`」（字段名写错 serde 会静默忽略，
-        // 装出来是个空壳，而用户只会觉得「锦囊市场是坏的」）。
+        // 钉住「仓库里每份卡带都是合法且非空的 `Config`」（字段名写错 serde 会静默忽略，
+        // 装出来是个空壳，而用户只会觉得「卡带市场是坏的」）。
         for e in &entries {
             let file = e.url.rsplit('/').next().unwrap();
             let got = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/{file}")))
-                .unwrap_or_else(|err| panic!("锦囊 {file} 下载/解析失败：{err}"));
+                .unwrap_or_else(|err| panic!("卡带 {file} 下载/解析失败：{err}"));
             let n = got.preview.shortcuts.len() + got.preview.remaps.len() + got.preview.expansions.len();
-            assert!(n > 0, "锦囊 {file} 清洗后一条条目都不剩");
+            assert!(n > 0, "卡带 {file} 清洗后一条条目都不剩");
         }
 
         let fetched =
@@ -2446,7 +2446,7 @@ mod tests {
         assert_eq!(remap.hold.as_deref(), Some("Ctrl"));
         assert!(fetched.preview.shortcuts.is_empty());
 
-        // 带层的锦囊：被引用的层必须一起带过来（否则装进去层引用被清成基础层 = 静默改行为）。
+        // 带层的卡带：被引用的层必须一起带过来（否则装进去层引用被清成基础层 = 静默改行为）。
         let vim = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/vim-keys.json"))).unwrap();
         assert_eq!(vim.preview.remaps.len(), 6);
         assert!(fetched.text.len() > 0 && !vim.text.is_empty());
@@ -3890,7 +3890,7 @@ struct ImportOutcome {
 }
 
 /// 把一份「来路不同的子集配置」合并进当前配置并落盘——「导入配置 → 合并」「载入示例配置」
-/// 「从锦囊市场安装锦囊」三条路共用这一条：只增不删、不碰本机设置、坏条目清洗后逐条报出
+/// 「从卡带市场安装卡带」三条路共用这一条：只增不删、不碰本机设置、坏条目清洗后逐条报出
 /// （口径见 [`kada_core::merge_configs`]）。
 ///
 /// 落盘口径与 [`set_config`] 一致：写盘 + 改内存 + 给外部修改监听销账同持 `cfg_watch` 锁。
@@ -3948,7 +3948,7 @@ fn import_config(
     let s = std::fs::read_to_string(&path).map_err(|e| format!("读取失败：{e}"))?;
     let imported: Config = serde_json::from_str(&s).map_err(|e| format!("解析失败：{e}"))?;
     if !replace {
-        // 合并交给共用的落地路径（导入 / 载入示例 / 安装锦囊同一条）：它自己清洗、自己落盘。
+        // 合并交给共用的落地路径（导入 / 载入示例 / 安装卡带同一条）：它自己清洗、自己落盘。
         return merge_into_config(&app, &state, imported);
     }
 
@@ -4006,10 +4006,10 @@ fn load_sample_config(
     merge_into_config(&app, &state, kada_core::sample::sample_config())
 }
 
-/// 导出配置锦囊（规划 7.2-㉕，配置分享 / 锦囊市场）：把点名的那几条（单条、多选、或某个
+/// 导出配置卡带（规划 7.2-㉕，配置分享 / 卡带市场）：把点名的那几条（单条、多选、或某个
 /// 目录下的全部）写成一个可分享的 JSON 文件。
 ///
-/// 锦囊就是一份**子集 `Config`** + 一个顶层 `kada_snippet` 元信息键，所以接收方走现有的
+/// 卡带就是一份**子集 `Config`** + 一个顶层 `kada_snippet` 元信息键，所以接收方走现有的
 /// 「导入配置 → 合并」原样就能吃下，导入侧无需改动、也不会碰本机设置。目录引用在摘取时剥掉
 /// （id 是本机 UUID，带过去只会指向不存在的目录）。
 ///
@@ -4031,7 +4031,7 @@ fn export_fragment(
     if let Some(obj) = val.as_object_mut() {
         // 设置不带（合并导入压根不碰设置，带着走只会让分享出来的文件看着像整份配置）。
         obj.remove("settings");
-        // 元信息键：`Config` 反序列化忽略未知字段，故锦囊与整份配置同一套解析。
+        // 元信息键：`Config` 反序列化忽略未知字段，故卡带与整份配置同一套解析。
         // `version` 给将来的在线索引/格式演进留位置。
         obj.insert(
             "kada_snippet".into(),
@@ -4043,17 +4043,17 @@ fn export_fragment(
     Ok(n)
 }
 
-// ---- 锦囊市场（规划 7.2-㉕ 在线索引） ----
+// ---- 卡带市场（规划 7.2-㉕ 在线索引） ----
 //
 // 没有服务端：索引就是一份能 GET 到的静态 JSON（默认指向本仓库 `snippets/index.json`，
-// 设置里可改），里面的每条指向一个锦囊文件——锦囊文件本身仍是「子集 Config + kada_snippet」，
+// 设置里可改），里面的每条指向一个卡带文件——卡带文件本身仍是「子集 Config + kada_snippet」，
 // 安装走的是和「导入配置 → 合并」同一条落地路径。
 
-/// 锦囊下载的时限与体积上限：一份索引 / 一个锦囊都是几百 KB 量级，超了当坏文件处理。
+/// 卡带下载的时限与体积上限：一份索引 / 一个卡带都是几百 KB 量级，超了当坏文件处理。
 const SNIPPET_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const SNIPPET_MAX_BYTES: usize = 4 * 1024 * 1024;
 
-/// 下载一段文本（索引 / 锦囊本体）。
+/// 下载一段文本（索引 / 卡带本体）。
 ///
 /// 只收 http(s)：设置里的这个字符串不该变成读本地文件的口子（`file://` 之类一律拒）。
 /// 体积上限是「下完再判」——几百 KB 的上限下没必要为流式计数多写一层。
@@ -4082,7 +4082,7 @@ async fn http_get_text(url: &str) -> Result<String, String> {
     }
     let body = resp.bytes().await.map_err(|e| format!("下载中断：{e}"))?;
     if body.len() > SNIPPET_MAX_BYTES {
-        return Err(format!("内容太大（{} MB），不像是索引或锦囊", body.len() / 1024 / 1024));
+        return Err(format!("内容太大（{} MB），不像是索引或卡带", body.len() / 1024 / 1024));
     }
     String::from_utf8(body.to_vec()).map_err(|_| "下载内容不是 UTF-8 文本".to_string())
 }
@@ -4097,7 +4097,7 @@ fn snippet_index_url(state: &KadaState) -> String {
     }
 }
 
-/// 拉取锦囊索引（浏览 / 搜索 / 一键安装都从它出发）。地址取设置里的索引地址。
+/// 拉取卡带索引（浏览 / 搜索 / 一键安装都从它出发）。地址取设置里的索引地址。
 #[tauri::command]
 async fn fetch_snippet_index(
     state: tauri::State<'_, KadaState>,
@@ -4106,22 +4106,22 @@ async fn fetch_snippet_index(
     let text = http_get_text(&url).await?;
     let entries = parse_snippet_index(&text)?;
     if entries.is_empty() {
-        return Err(format!("索引里一条锦囊也没有（{url}）"));
+        return Err(format!("索引里一条卡带也没有（{url}）"));
     }
     Ok(entries)
 }
 
-/// 一个锦囊的下载结果：原文 + 清洗后的条目。
+/// 一个卡带的下载结果：原文 + 清洗后的条目。
 ///
 /// 装的时候回传 `text` 而不是重新下载：用户确认时看到的正是要装进去的那份字节，
-/// 中间不会换成另一份内容（锦囊是别人托管的文件，改内容是常事）。
+/// 中间不会换成另一份内容（卡带是别人托管的文件，改内容是常事）。
 #[derive(Serialize)]
 struct SnippetFetch {
     text: String,
     preview: SnippetPreview,
 }
 
-/// 锦囊预览：条目原样交给前端渲染（前端已有各条类的展示与动作摘要，后端不重复造一遍）。
+/// 卡带预览：条目原样交给前端渲染（前端已有各条类的展示与动作摘要，后端不重复造一遍）。
 #[derive(Serialize)]
 struct SnippetPreview {
     shortcuts: Vec<ShortcutItem>,
@@ -4129,16 +4129,16 @@ struct SnippetPreview {
     expansions: Vec<TextExpansion>,
 }
 
-/// 下载一个锦囊并给出预览，**不落盘**。
+/// 下载一个卡带并给出预览，**不落盘**。
 ///
-/// 预览这步不能省：锦囊能带命令 / 脚本动作，等于「装进来就会跑」，必须让人先看清里面是什么。
+/// 预览这步不能省：卡带能带命令 / 脚本动作，等于「装进来就会跑」，必须让人先看清里面是什么。
 #[tauri::command]
 async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
     let text = http_get_text(&url).await?;
-    let part: Config = serde_json::from_str(&text).map_err(|e| format!("锦囊解析失败：{e}"))?;
+    let part: Config = serde_json::from_str(&text).map_err(|e| format!("卡带解析失败：{e}"))?;
     let (part, _ignored) = sanitize_config(&part);
     if part.shortcuts.is_empty() && part.remaps.is_empty() && part.expansions.is_empty() {
-        return Err("锦囊里没有可用的条目（全是坏条目或本来就是空的）".into());
+        return Err("卡带里没有可用的条目（全是坏条目或本来就是空的）".into());
     }
     Ok(SnippetFetch {
         text,
@@ -4150,14 +4150,14 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
     })
 }
 
-/// 把预览时拿到的锦囊文本合并进配置：与「导入配置 → 合并」同一口径（只增不删、不碰设置）。
+/// 把预览时拿到的卡带文本合并进配置：与「导入配置 → 合并」同一口径（只增不删、不碰设置）。
 #[tauri::command]
 fn install_snippet(
     app: tauri::AppHandle,
     state: tauri::State<'_, KadaState>,
     text: String,
 ) -> Result<ImportOutcome, String> {
-    let part: Config = serde_json::from_str(&text).map_err(|e| format!("锦囊解析失败：{e}"))?;
+    let part: Config = serde_json::from_str(&text).map_err(|e| format!("卡带解析失败：{e}"))?;
     merge_into_config(&app, &state, part)
 }
 

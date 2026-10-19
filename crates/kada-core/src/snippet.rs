@@ -1,7 +1,7 @@
-//! 配置锦囊（规划 7.2-㉕）：从整份配置里摘出「被点名的那几条」组成一份可分享的 JSON。
+//! 配置卡带（规划 7.2-㉕）：从整份配置里摘出「被点名的那几条」组成一份可分享的 JSON。
 //!
-//! 锦囊就是一份**子集 `Config`**——所以接收方走现有的「导入配置 → 合并」原样就能吃下，
-//! 导入侧一行都不用改。锦囊额外带一个顶层 `kada_snippet` 元信息键（`Config` 反序列化时
+//! 卡带就是一份**子集 `Config`**——所以接收方走现有的「导入配置 → 合并」原样就能吃下，
+//! 导入侧一行都不用改。卡带额外带一个顶层 `kada_snippet` 元信息键（`Config` 反序列化时
 //! 忽略未知字段），将来真做在线索引时它就是索引条目的来源。
 //!
 //! 摘取时的两条口径：
@@ -29,12 +29,12 @@ pub const SNIPPET_INDEX_VERSION: u32 = 1;
 pub const DEFAULT_SNIPPET_INDEX_URL: &str =
     "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/index.json";
 
-/// 索引里的一条锦囊（展示用；锦囊本体是另一个 JSON，走现有「导入 → 合并」）。
+/// 索引里的一条卡带（展示用；卡带本体是另一个 JSON，走现有「导入 → 合并」）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IndexEntry {
     /// 展示名（列表 / 搜索都靠它）。
     pub name: String,
-    /// 锦囊 JSON 的地址（绝对 URL）。
+    /// 卡带 JSON 的地址（绝对 URL）。
     pub url: String,
     /// 一句话说明，可空。
     #[serde(default)]
@@ -78,7 +78,7 @@ pub fn parse_snippet_index(text: &str) -> Result<Vec<IndexEntry>, String> {
         .collect())
 }
 
-/// 锦囊里点名的是哪一类条目。
+/// 卡带里点名的是哪一类条目。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PickKind {
@@ -127,8 +127,8 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
     out
 }
 
-/// 锦囊标题（写进 `kada_snippet.name`，也给分享者一个人看的名字）：单条取它的名字 / 触发键，
-/// 多条报条数，空锦囊空串。
+/// 卡带标题（写进 `kada_snippet.name`，也给分享者一个人看的名字）：单条取它的名字 / 触发键，
+/// 多条报条数，空卡带空串。
 pub fn snippet_title(part: &Config) -> String {
     let one = if let Some(s) = part.shortcuts.first() {
         s.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| s.triggers.join(" / "))
@@ -143,7 +143,7 @@ pub fn snippet_title(part: &Config) -> String {
     if n <= 1 {
         one
     } else {
-        format!("锦囊（{n} 项）")
+        format!("卡带（{n} 项）")
     }
 }
 
@@ -178,8 +178,8 @@ mod tests {
         let part = snippet(&base(), &[pick(PickKind::Shortcut, 0)]);
         assert_eq!(part.shortcuts.len(), 1);
         assert!(part.remaps.is_empty() && part.expansions.is_empty());
-        assert_eq!(part.folders.len(), 0, "目录 id 是本机的，不进锦囊");
-        assert!(part.settings == crate::Settings::default(), "锦囊不带设置");
+        assert_eq!(part.folders.len(), 0, "目录 id 是本机的，不进卡带");
+        assert!(part.settings == crate::Settings::default(), "卡带不带设置");
     }
 
     #[test]
@@ -217,12 +217,12 @@ mod tests {
                 &base(),
                 &[pick(PickKind::Shortcut, 0), pick(PickKind::Remap, 0)]
             )),
-            "锦囊（2 项）"
+            "卡带（2 项）"
         );
         assert_eq!(snippet_title(&Config::default()), "");
     }
 
-    /// 关键不变式：写出去的锦囊文件必须能被 `import_config` 原样解析——
+    /// 关键不变式：写出去的卡带文件必须能被 `import_config` 原样解析——
     /// 「顶层多一个 `kada_snippet` 键」既不该让解析失败，也不该把设置带进去。
     #[test]
     fn exported_fragment_parses_back_as_config() {

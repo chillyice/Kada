@@ -134,7 +134,7 @@ type Settings = {
     opacity: number;
   };
   /**
-   * 锦囊市场的索引地址（规划 7.2-㉕）：一份能下载到的静态 JSON；缺字段 / 空串 = 用后端内置默认。
+   * 卡带市场的索引地址（规划 7.2-㉕）：一份能下载到的静态 JSON；缺字段 / 空串 = 用后端内置默认。
    */
   snippet_index_url?: string;
   /**
@@ -775,7 +775,7 @@ function actionSummary(a: Action): string {
     case "text":
       if (a.mode === "to_upper") return "文本转大写（选中/剪贴板）";
       if (a.mode === "to_lower") return "文本转小写（选中/剪贴板）";
-      // 隐藏的文本在摘要里也只留 ***：收起态的卡片头部就这一行（列表搜索、锦囊预览也用这份），
+      // 隐藏的文本在摘要里也只留 ***：收起态的卡片头部就这一行（列表搜索、卡带预览也用这份），
       // 摘要里照样露出原文等于没隐藏。
       if (a.masked) return "输入文本：***";
       return a.text ? `输入文本：${a.text}` : "输入文本";
@@ -1733,7 +1733,7 @@ function folderMenuItems(f: Folder): MenuItem[] {
   const inFolder = picksInFolder(f.id);
   if (inFolder.length)
     items.push({
-      label: `导出该目录为锦囊（${inFolder.length} 项）`,
+      label: `导出该目录为卡带（${inFolder.length} 项）`,
       run: () => void exportFragment(inFolder),
     });
   // 目录级启停：一次作用到该目录（含子目录）里的全部条目。
@@ -1746,9 +1746,9 @@ function folderMenuItems(f: Folder): MenuItem[] {
   return items;
 }
 
-// ---- 配置锦囊（规划 7.2-㉕）：把若干条目导出成一个可分享的 JSON 文件 ----
+// ---- 配置卡带（规划 7.2-㉕）：把若干条目导出成一个可分享的 JSON 文件 ----
 
-// 锦囊点名表（后端 `export_fragment` 按「类别 + 下标」取条目）。
+// 卡带点名表（后端 `export_fragment` 按「类别 + 下标」取条目）。
 type SnippetPick = { kind: ListKind; idx: number };
 
 // 当前选中集的点名表（对象引用 → 各自数组里的下标；不在任何数组里的略过）。
@@ -1763,7 +1763,7 @@ function picksOfSelection(): SnippetPick[] {
   return picks;
 }
 
-// 某个目录（含全部子目录）里所有条目的点名表——「导出该目录为锦囊」用。
+// 某个目录（含全部子目录）里所有条目的点名表——「导出该目录为卡带」用。
 function picksInFolder(rootId: string): SnippetPick[] {
   const ids = new Set<string>([rootId]);
   // 目录树可嵌套，扫到不再新增为止（目录数量级很小，一趟轮询足够）。
@@ -1787,12 +1787,12 @@ function picksInFolder(rootId: string): SnippetPick[] {
   return picks;
 }
 
-// 导出锦囊：选路径 → 后端摘出这些条目写成 JSON。
-// 锦囊是「只含这几条的子集配置」，对方用「导入配置 → 合并」原样吃下，不会碰本机设置。
+// 导出卡带：选路径 → 后端摘出这些条目写成 JSON。
+// 卡带是「只含这几条的子集配置」，对方用「导入配置 → 合并」原样吃下，不会碰本机设置。
 async function exportFragment(picks: SnippetPick[]) {
   if (!picks.length) return toast("没有可导出的条目");
   const path = await saveFile({
-    defaultPath: "kada-锦囊.json",
+    defaultPath: "kada-卡带.json",
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (!path) return;
@@ -1804,7 +1804,7 @@ async function exportFragment(picks: SnippetPick[]) {
   }
 }
 
-// ---- 锦囊市场（规划 7.2-㉕）：浏览索引 / 搜索 / 一键安装 ----
+// ---- 卡带市场（规划 7.2-㉕）：浏览索引 / 搜索 / 一键安装 ----
 //
 // 没有服务端：索引是一份能下载到的 JSON（地址在设置里，默认指向仓库的 snippets/index.json），
 // 搜索在本地做——几百条以内不值得为它加一个服务端。
@@ -1817,7 +1817,7 @@ type IndexEntry = {
   tags?: string[];
 };
 
-// 锦囊下载结果（后端 `fetch_snippet`）：清洗后的条目 + 原文（装的时候回传原文，
+// 卡带下载结果（后端 `fetch_snippet`）：清洗后的条目 + 原文（装的时候回传原文，
 // 保证「看到什么装什么」）。
 type SnippetFetch = {
   text: string;
@@ -1825,7 +1825,7 @@ type SnippetFetch = {
 };
 
 let marketEntries: IndexEntry[] = [];
-// 预览框点「安装」时要用：null = 没待装的锦囊。
+// 预览框点「安装」时要用：null = 没待装的卡带。
 let snippetPending: { text: string; name: string } | null = null;
 
 async function openMarket() {
@@ -1840,7 +1840,7 @@ async function openMarket() {
     note.textContent = `共 ${marketEntries.length} 条 · 索引：${set || "内置地址"}`;
   } catch (e) {
     marketEntries = [];
-    note.textContent = `拉取失败：${e}（可在「锦囊索引地址」里换一个）`;
+    note.textContent = `拉取失败：${e}（可在「卡带索引地址」里换一个）`;
   }
   renderMarket();
 }
@@ -1858,7 +1858,7 @@ function renderMarket() {
     !q || [e.name, e.description ?? "", e.author ?? "", ...(e.tags ?? [])].join(" ").toLowerCase().includes(q),
   );
   if (!hit.length) {
-    list.replaceChildren(el("p", "market-empty", q ? "没有匹配的锦囊" : "索引里一条锦囊也没有"));
+    list.replaceChildren(el("p", "market-empty", q ? "没有匹配的卡带" : "索引里一条卡带也没有"));
     return;
   }
   list.replaceChildren(...hit.map(marketCard));
@@ -1877,7 +1877,7 @@ function marketCard(e: IndexEntry): HTMLElement {
   return card;
 }
 
-// 锦囊装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
+// 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
 function actionCanRun(a: Action): boolean {
   if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url")
     return true;
@@ -1913,10 +1913,10 @@ async function previewSnippet(e: IndexEntry) {
     const warn = document.getElementById("snippet-warn")!;
     const risky = p.shortcuts.some((s) => s.actions.some(actionCanRun));
     warn.classList.toggle("hidden", !risky);
-    if (risky) warn.textContent = "⚠ 这个锦囊含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。";
+    if (risky) warn.textContent = "⚠ 这个卡带含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。";
     document.getElementById("snippet-modal")!.classList.remove("hidden");
   } catch (err) {
-    toast(`锦囊下载失败：${err}`);
+    toast(`卡带下载失败：${err}`);
   }
 }
 
@@ -1957,7 +1957,7 @@ function selectionMenuItems(): MenuItem[] {
     { label: n > 1 ? `各复制一份（${n} 项）` : "复制一份", run: duplicateSelection },
     { label: "复制", run: () => copySelection(false) },
     { label: "剪切", run: () => copySelection(true) },
-    { label: n > 1 ? `导出为锦囊（${n} 项）` : "导出为锦囊", run: () => void exportFragment(picksOfSelection()) },
+    { label: n > 1 ? `导出为卡带（${n} 项）` : "导出为卡带", run: () => void exportFragment(picksOfSelection()) },
     { label: n > 1 ? `删除（${n} 项）` : "删除", run: () => void deleteSelection() },
     { label: "启用", run: () => void setPickedEnabled(true) },
     { label: "禁用", run: () => void setPickedEnabled(false) },
@@ -5127,7 +5127,7 @@ function bindSettings() {
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
   document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
   document.getElementById("open-market")!.addEventListener("click", () => void openMarket());
-  // 锦囊市场：搜索是本地过滤（索引已全量拿在手上），改输入框就重画列表。
+  // 卡带市场：搜索是本地过滤（索引已全量拿在手上），改输入框就重画列表。
   document.getElementById("market-search")!.addEventListener("input", renderMarket);
   document.getElementById("market-reload")!.addEventListener("click", () => void openMarket());
   document.getElementById("market-close")!.addEventListener("click", hideMarket);

@@ -30,10 +30,10 @@
 > 目录与关键文件职责一览；AGENTS.md 只留规则，动代码前按这张图定位。
 
 ```
-crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、锦囊摘取
+crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、卡带摘取
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
-  src/snippet.rs            # 配置锦囊（分享用）：按「类别+下标」摘出条目 + 被引用的层；锦囊市场的索引模型/解析，见 AGENTS「铁律」
+  src/snippet.rs            # 配置卡带（分享用）：按「类别+下标」摘出条目 + 被引用的层；卡带市场的索引模型/解析，见 AGENTS「铁律」
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
   src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本；注入统一拆 Op 走 deliver（前台是提权窗口时交代理，见 架构设计.md §3.23）
@@ -55,11 +55,11 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页/锦囊市场；草稿隔离 + 未保存守卫
+  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页/卡带市场；草稿隔离 + 未保存守卫
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
   src/style.css             # 深色 UI 样式
-snippets/                   # 锦囊市场的内置索引托管：*.json 锦囊 + index.json（脚本生成，客户端只 GET）
-scripts/                    # build-snippet-index.mjs（锦囊→索引，CI 用 --check 查同步）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）/ ihomy-mirror（更新源每日镜像 + systemd 单元）
+snippets/                   # 卡带市场的内置索引托管：*.json 卡带 + index.json（脚本生成，客户端只 GET）
+scripts/                    # build-snippet-index.mjs（卡带→索引，CI 用 --check 查同步）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）/ ihomy-mirror（更新源每日镜像 + systemd 单元）
 .github/workflows/          # ci.yml（三平台构建+测试）；release.yml（打 v* tag 签名发版）
 ```
 
