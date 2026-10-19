@@ -3596,3 +3596,372 @@ textarea.invalid {
   font-size: var(--fs-xs);
   line-height: 1.4;
 }
+
+/* ==========================================================================
+   像素 CRT 主题（data-theme="crt"）
+   --------------------------------------------------------------------------
+   只在这一层里做覆盖：深色 / 浅色两套主题的规则与变量一行不动。
+   风格来源：像素游戏的方块感 + 复古显示终端的绿色荧光、扫描线、暗角。
+   字体内嵌在本仓库（OFL 1.1，见 assets/fonts/LICENSE-OFL.txt），只在 CRT
+   主题下被引用，所以深色 / 浅色不会多下载这 595KB。
+   四个窗口（主界面 / 触发气泡 / 状态 HUD / 快捷键提示框）共用同一份 CSS，
+   所以浮窗的扫描线单独画在面板自己身上——画在 body 上会连透明窗口的留白
+   一起糊掉，浮窗就变成一个实心矩形。
+   ========================================================================== */
+
+@font-face {
+  font-family: "Kada Pixel";
+  src: url("./assets/fonts/kada-pixel-sc.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+[data-theme="crt"] {
+  --bg: #040906;
+  --panel: #07130c;
+  --line: #1e4a2e;
+  --text: #baffd2;
+  --muted: #5f9f78;
+  --accent: #54ff9c;
+  --accent-dim: #0e3520;
+  --hover-bg: rgba(84, 255, 156, 0.08);
+  --float-bg: rgba(3, 10, 6, 0.96);
+  --line-soft: rgba(84, 255, 156, 0.16);
+  --scroll-thumb: rgba(84, 255, 156, 0.22);
+  --scroll-thumb-hi: rgba(84, 255, 156, 0.45);
+  --key-bg: #0a2416;
+  --key-line: #2f6b44;
+  /* 像素字号：12 的整数档最锐，正文仍留 14 一档做层级。 */
+  --fs-xs: 12px;
+  --fs-sm: 12px;
+  --fs-md: 12px;
+  --fs-lg: 14px;
+  --fs-xl: 16px;
+  --fs-2xl: 24px;
+  --font-pixel: "Kada Pixel", "MS Gothic", "SimSun", monospace;
+  --crt-cyan: #63e8ff;
+  --crt-yellow: #ffd75e;
+  --crt-red: #ff6b6b;
+  --crt-green: #54ff9c;
+}
+
+/* ---- 字体：正文 + 所有显式写了 Consolas / 系统字栈的地方 ---- */
+[data-theme="crt"] body,
+[data-theme="crt"] button,
+[data-theme="crt"] input,
+[data-theme="crt"] select,
+[data-theme="crt"] textarea,
+[data-theme="crt"] code,
+[data-theme="crt"] kbd,
+[data-theme="crt"] .row-trigger,
+[data-theme="crt"] .detail-title,
+[data-theme="crt"] .chip,
+[data-theme="crt"] .key-item,
+[data-theme="crt"] .flow-dot,
+[data-theme="crt"] .flow-term-label b,
+[data-theme="crt"] .var-tag,
+[data-theme="crt"] .msg-tab,
+[data-theme="crt"] .tl-tick,
+[data-theme="crt"] pre.msg-v,
+[data-theme="crt"] .toast-sub,
+[data-theme="crt"] .hints-key,
+[data-theme="crt"] .tl-block-ms,
+[data-theme="crt"] .pipe-ms,
+[data-theme="crt"] .help-body code,
+[data-theme="crt"] .set-sub code {
+  font-family: var(--font-pixel);
+}
+
+/* 荧光文本：一圈贴边的实影 + 一圈外扩的余晖。text-shadow 会继承，
+   所以不必逐个元素写；输入框 / 下拉里的字同样吃得到。 */
+[data-theme="crt"] body {
+  text-shadow:
+    0 0 1px currentColor,
+    0 0 5px color-mix(in srgb, currentColor 45%, transparent);
+}
+
+/* 主界面的屏幕：中间微微亮、四周压暗，模拟球面显像管的亮度衰减。 */
+[data-theme="crt"] .detail-pane {
+  background: radial-gradient(ellipse at 50% 30%, #071a10 0%, var(--bg) 78%);
+}
+
+/* ---- 像素方块：全站去圆角（含伪元素与滚动条） ---- */
+[data-theme="crt"] *,
+[data-theme="crt"] *::before,
+[data-theme="crt"] *::after {
+  border-radius: 0 !important;
+}
+
+/* ---- 图标：关掉抗锯齿、端头切成直角，再补一点荧光 ---- */
+[data-theme="crt"] svg {
+  shape-rendering: crispEdges;
+  filter: drop-shadow(0 0 1.5px currentColor);
+}
+
+[data-theme="crt"] svg * {
+  stroke-linecap: square;
+  stroke-linejoin: miter;
+}
+
+/* 线框图标统一加粗到 2.4px：细线条在荧光 + 扫描线下会虚，加粗后才有像素块面感。 */
+[data-theme="crt"] svg[stroke-width],
+[data-theme="crt"] svg [stroke-width] {
+  stroke-width: 2.4px;
+}
+
+/* ---- 扫描线：主界面铺满整屏；两个动画都只碰合成层，不触发布局 ---- */
+[data-theme="crt"] body:has(.layout)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  pointer-events: none;
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.18) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(ellipse at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.5) 100%);
+  animation: crt-flicker 3.4s ease-in-out infinite;
+}
+
+/* 一道很淡的亮带自上而下扫过（老显示器的场同步拖影）。 */
+[data-theme="crt"] body:has(.layout)::before {
+  content: "";
+  position: fixed;
+  left: 0;
+  right: 0;
+  top: -220px;
+  height: 220px;
+  z-index: 9989;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(110, 255, 170, 0.05),
+    transparent
+  );
+  animation: crt-sweep 7.5s linear infinite;
+}
+
+@keyframes crt-sweep {
+  to {
+    transform: translateY(calc(100vh + 440px));
+  }
+}
+
+@keyframes crt-flicker {
+  0%,
+  100% {
+    opacity: 0.92;
+  }
+  46% {
+    opacity: 0.88;
+  }
+  47% {
+    opacity: 1;
+  }
+  49% {
+    opacity: 0.9;
+  }
+}
+
+/* 浮窗自己的扫描线：严格裁在面板内，不碰窗口那圈透明留白。 */
+[data-theme="crt"] .toast-bubble::after,
+[data-theme="crt"] .hud-row::after,
+[data-theme="crt"] .hints-panel::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0.2) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+[data-theme="crt"] .hud-row {
+  position: relative;
+  overflow: hidden;
+}
+
+/* ---- 硬边投影：像素游戏那种没有模糊的方块影 ---- */
+[data-theme="crt"] .set-card,
+[data-theme="crt"] .modal-box,
+[data-theme="crt"] .row-menu,
+[data-theme="crt"] .mode-menu,
+[data-theme="crt"] .key-menu,
+[data-theme="crt"] .msg-card,
+[data-theme="crt"] .action-row,
+[data-theme="crt"] .msg-step-detail,
+[data-theme="crt"] .toast {
+  box-shadow:
+    4px 4px 0 rgba(0, 0, 0, 0.6),
+    0 0 18px rgba(84, 255, 156, 0.07);
+}
+
+/* 浮窗的投影必须留在窗口那圈透明边里（气泡 12px / HUD 7px / 提示框 10px），
+   所以只给硬影、不加模糊光晕。 */
+[data-theme="crt"] .toast-bubble,
+[data-theme="crt"] .hud-row,
+[data-theme="crt"] .hints-panel {
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.66);
+}
+
+/* ---- 主按钮：亮绿实底 + 深色字，避免白字在荧光绿上糊掉 ---- */
+[data-theme="crt"] button.primary,
+[data-theme="crt"] .icon-btn.primary,
+[data-theme="crt"] .list-toolbar .tool-btn.primary {
+  color: #04120a;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 2px 2px 0 #032313;
+  text-shadow: none;
+}
+
+[data-theme="crt"] button.primary:hover,
+[data-theme="crt"] .icon-btn.primary:hover {
+  background: #8affc0;
+  filter: none;
+}
+
+[data-theme="crt"] .icon-btn.primary:disabled {
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  text-shadow: inherit;
+}
+
+/* 开关：方旋钮、方轨道；打开时旋钮压深色，和主按钮同一套对比关系。 */
+[data-theme="crt"] .toggle:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+[data-theme="crt"] .toggle:checked::after {
+  background: #04120a;
+}
+
+/* ---- 类型色：K 青 / a 黄 / a 绿（与图标配色呼应） ---- */
+[data-theme="crt"] .row-kind.kind-shortcut {
+  color: var(--crt-green);
+}
+
+[data-theme="crt"] .row-kind.kind-remap {
+  color: var(--crt-yellow);
+}
+
+[data-theme="crt"] .row-kind.kind-expansion {
+  color: var(--crt-cyan);
+}
+
+/* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标
+   （K 青 / a 黄 / d 红 / a 绿，末字右上角一点星芒 = 咔哒那声轻响）。 */
+.brand-word {
+  display: none;
+}
+
+[data-theme="crt"] .brand-glyph {
+  display: none;
+}
+
+[data-theme="crt"] .rail-brand {
+  color: var(--accent);
+  border-color: var(--accent);
+  text-shadow:
+    0 0 2px var(--accent),
+    0 0 12px rgba(84, 255, 156, 0.6);
+}
+
+[data-theme="crt"] .brand-word {
+  display: inline-flex;
+  align-items: baseline;
+  font-size: 12px;
+  line-height: 1;
+  /* 设计稿里「字体可以稍微倾斜一点」：整个字标斜切几度。 */
+  transform: skewX(-6deg);
+}
+
+[data-theme="crt"] .brand-word > span {
+  position: relative;
+  text-shadow: 0 0 4px currentColor;
+}
+
+[data-theme="crt"] .bw-cyan {
+  color: var(--crt-cyan);
+}
+
+[data-theme="crt"] .bw-yellow {
+  color: var(--crt-yellow);
+}
+
+[data-theme="crt"] .bw-red {
+  color: var(--crt-red);
+}
+
+[data-theme="crt"] .bw-green {
+  color: var(--crt-green);
+}
+
+[data-theme="crt"] .brand-zap {
+  position: absolute;
+  top: -6px;
+  right: -7px;
+  font-size: 8px;
+  font-style: normal;
+  color: var(--crt-yellow);
+  text-shadow: 0 0 6px currentColor;
+  animation: crt-twinkle 2.4s ease-in-out infinite;
+}
+
+/* 三根短射线：一根 1px 短杠 + 两枚错位投影，斜指向右上（与星芒一起读作「清脆一声」）。 */
+[data-theme="crt"] .brand-zap::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 2px;
+  width: 3px;
+  height: 1px;
+  background: currentColor;
+  transform: rotate(-35deg);
+  box-shadow:
+    2px -3px 0 0 currentColor,
+    4px -6px 0 0 currentColor;
+}
+
+@keyframes crt-twinkle {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* 选中文字反白成荧光底。 */
+[data-theme="crt"] ::selection {
+  background: rgba(84, 255, 156, 0.35);
+  color: var(--text);
+}
+
+/* 光标也走荧光绿。 */
+[data-theme="crt"] input,
+[data-theme="crt"] textarea {
+  caret-color: var(--accent);
+}
+
+/* 老显像管的跳动感对部分人不友好：系统开了「减少动态效果」就只留静止扫描线。 */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme="crt"] body:has(.layout)::after,
+  [data-theme="crt"] body:has(.layout)::before,
+  [data-theme="crt"] .brand-zap {
+    animation: none;
+  }
+  [data-theme="crt"] body:has(.layout)::before {
+    display: none;
+  }
+}
