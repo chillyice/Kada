@@ -3718,6 +3718,7 @@ textarea.invalid {
    显像管的背景不发光，发光的只有文字 / 图标这些荧光粉。所以这里不再给整屏
    做提亮，而是把 1px 亮线用 color-dodge 混到画面里：混合结果跟底色亮度走——
    暗底几乎不变（+1~2 个亮度），越亮的内容被抬得越多（亮字 / 图标 +20 以上）。
+   每条线是「1px 实亮 + 1px 半强度余晖」，在笔画上留下荧光拖影。
    扫描线于是只出现在字和图标上，空背景保持干净。 */
 [data-theme="crt"] body:has(.layout)::after {
   content: "";
@@ -3728,7 +3729,8 @@ textarea.invalid {
   background: repeating-linear-gradient(
     to bottom,
     #171717 0 1px,
-    transparent 1px 4px
+    rgba(23, 23, 23, 0.5) 1px 2px,
+    transparent 2px 4px
   );
   mix-blend-mode: color-dodge;
   animation: crt-flicker 3.4s ease-in-out infinite;
@@ -3797,7 +3799,8 @@ html[data-theme="crt"]:has(.layout)::after {
   background: repeating-linear-gradient(
     to bottom,
     #171717 0 1px,
-    transparent 1px 4px
+    rgba(23, 23, 23, 0.5) 1px 2px,
+    transparent 2px 4px
   );
   mix-blend-mode: color-dodge;
 }
@@ -4029,7 +4032,8 @@ html[data-theme="crt"]:has(.layout)::after {
   background: repeating-linear-gradient(
     to bottom,
     rgba(115, 115, 115, 0.25) 0 1px,
-    transparent 1px 4px
+    rgba(115, 115, 115, 0.12) 1px 2px,
+    transparent 2px 4px
   );
   mix-blend-mode: lighten;
 }
@@ -4044,7 +4048,8 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
   background: repeating-linear-gradient(
     to bottom,
     rgba(115, 115, 115, 0.25) 0 1px,
-    transparent 1px 4px
+    rgba(115, 115, 115, 0.12) 1px 2px,
+    transparent 2px 4px
   );
   mix-blend-mode: lighten;
 }
