@@ -3715,7 +3715,10 @@ textarea.invalid {
   stroke-width: 2.4px;
 }
 
-/* ---- 扫描线：主界面铺满整屏；两个动画都只碰合成层，不触发布局 ---- */
+/* ---- 扫描线：细、淡、静止 ----
+   1px 线 / 4px 周期、暗色档 3.5%、浅色档 2%；不做闪烁也不做扫过的亮带——
+   这两样在静态界面上最显脏，去掉后设备感还在，画面干净得多。
+   暗角也只留一点点，负责压住屏幕边缘，不参与「变脏」。 */
 [data-theme="crt"] body:has(.layout)::after {
   content: "";
   position: fixed;
@@ -3725,52 +3728,10 @@ textarea.invalid {
   background:
     repeating-linear-gradient(
       to bottom,
-      rgba(0, 0, 0, 0.14) 0 1px,
-      transparent 1px 3px
+      rgba(0, 0, 0, 0.035) 0 1px,
+      transparent 1px 4px
     ),
-    radial-gradient(ellipse at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.38) 100%);
-  animation: crt-flicker 3.4s ease-in-out infinite;
-}
-
-/* 一道很淡的亮带自上而下扫过（老显示器的场同步拖影）。 */
-[data-theme="crt"] body:has(.layout)::before {
-  content: "";
-  position: fixed;
-  left: 0;
-  right: 0;
-  top: -220px;
-  height: 220px;
-  z-index: 9989;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    rgba(255, 255, 255, 0.045),
-    transparent
-  );
-  animation: crt-sweep 7.5s linear infinite;
-}
-
-@keyframes crt-sweep {
-  to {
-    transform: translateY(calc(100vh + 440px));
-  }
-}
-
-@keyframes crt-flicker {
-  0%,
-  100% {
-    opacity: 0.92;
-  }
-  46% {
-    opacity: 0.88;
-  }
-  47% {
-    opacity: 1;
-  }
-  49% {
-    opacity: 0.9;
-  }
+    radial-gradient(ellipse at 50% 50%, transparent 70%, rgba(0, 0, 0, 0.14) 100%);
 }
 
 /* 浮窗自己的扫描线：严格裁在面板内，不碰窗口那圈透明留白。 */
@@ -3783,8 +3744,8 @@ textarea.invalid {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.16) 0 1px,
-    transparent 1px 3px
+    rgba(0, 0, 0, 0.035) 0 1px,
+    transparent 1px 4px
   );
 }
 
@@ -3954,15 +3915,10 @@ textarea.invalid {
   caret-color: var(--accent);
 }
 
-/* 老显像管的跳动感对部分人不友好：系统开了「减少动态效果」就只留静止扫描线。 */
+/* 字标星芒的呼吸动画对部分人不友好：系统开了「减少动态效果」就停掉。 */
 @media (prefers-reduced-motion: reduce) {
-  [data-theme="crt"] body:has(.layout)::after,
-  [data-theme="crt"] body:has(.layout)::before,
   [data-theme="crt"] .brand-zap {
     animation: none;
-  }
-  [data-theme="crt"] body:has(.layout)::before {
-    display: none;
   }
 }
 
@@ -4010,24 +3966,15 @@ textarea.invalid {
   filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 45%, transparent));
 }
 
-/* 扫描线 / 暗角只用中性灰，很淡；亮带同样换成灰色。 */
+/* 扫描线 / 暗角只用中性灰，比深色档更淡。 */
 [data-theme="crt"][data-crt="light"] body:has(.layout)::after {
   background:
     repeating-linear-gradient(
       to bottom,
-      rgba(0, 0, 0, 0.06) 0 1px,
-      transparent 1px 3px
+      rgba(0, 0, 0, 0.02) 0 1px,
+      transparent 1px 4px
     ),
-    radial-gradient(ellipse at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.1) 100%);
-}
-
-[data-theme="crt"][data-crt="light"] body:has(.layout)::before {
-  background: linear-gradient(
-    to bottom,
-    transparent,
-    rgba(0, 0, 0, 0.03),
-    transparent
-  );
+    radial-gradient(ellipse at 50% 50%, transparent 74%, rgba(0, 0, 0, 0.03) 100%);
 }
 
 [data-theme="crt"][data-crt="light"] .toast-bubble::after,
@@ -4035,8 +3982,8 @@ textarea.invalid {
 [data-theme="crt"][data-crt="light"] .hints-panel::after {
   background: repeating-linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.06) 0 1px,
-    transparent 1px 3px
+    rgba(0, 0, 0, 0.02) 0 1px,
+    transparent 1px 4px
   );
 }
 
