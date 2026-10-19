@@ -1064,6 +1064,13 @@ function codeToKey(code: string): string | null {
   return CODE_PUNCT[code] ?? CODE_TABLE[code] ?? null;
 }
 
+// 小键盘键的物理键名（`code` 才是物理位置，`key` 受 NumLock 影响：关掉时数字键打出
+// Home/End、运算符打出 `+` 之类）。「原键」框里直接按小键盘键时用它落键名，而不是
+// 把字符打进过滤框（`+` 还不是合法键名，保存时才报错）。
+function numpadKeyFromEvent(e: KeyboardEvent): string | null {
+  return e.code.startsWith("Numpad") ? CODE_TABLE[e.code] ?? null : null;
+}
+
 function comboFromEvent(e: KeyboardEvent): string | null {
   const main = codeToKey(e.code);
   if (!main) return null;
@@ -3519,7 +3526,21 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   ico.title = actionTypeLabel(a.type);
   head.append(ico);
 
-  head.append(el("span", "action-type-name", actionTypeLabel(a.type)));
+  // 类型名本身就是切换入口：点它弹出动作类型列表（收起态也能直接换）。
+  const typePick = el("select", "action-type-name") as HTMLSelectElement;
+  typePick.title = "点击切换动作类型";
+  typePick.setAttribute("aria-label", "动作类型");
+  for (const t of ACTION_TYPES) {
+    const o = el("option") as HTMLOptionElement;
+    o.value = t.value;
+    o.textContent = t.label;
+    typePick.append(o);
+  }
+  typePick.value = a.type;
+  typePick.addEventListener("change", () => {
+    switchActionType(a, actions, i, typePick.value as Action["type"], rerender);
+  });
+  head.append(typePick);
 
   // 拖拽 + 点击展开/收起：脊柱圆点、手柄、图标都可触发（扩大命中范围）。
   for (const handle of [dot, grip, ico]) {
@@ -3574,12 +3595,13 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   row.append(head);
 
   if (!collapsed) {
-    // 第二行：动作类型 + 子类型
-    const typeRow = el("div", "action-type-row");
-    typeRow.append(makeActionTypeSelect(a, actions, i, rerender));
+    // 第二行：子类型（类型本身由标题行的类型名切换，不再重复占一行）
     const sub = actionSubtypeSelect(a, rerender);
-    if (sub) typeRow.append(sub);
-    row.append(typeRow);
+    if (sub) {
+      const typeRow = el("div", "action-type-row");
+      typeRow.append(sub);
+      row.append(typeRow);
+    }
     // 第三行：其他输入内容
     row.append(actionFields(a, rerender, { actions, idx: i }));
   }
@@ -3591,7 +3613,7 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
 // 把一个动作列表渲染成流程管线进 container；任何结构变化（增删/移动/改类型/拖拽）都通过
 // rerender() 触发整体重绘。嵌套的「条件判断」动作同样用它递归渲染 then/otherwise 分支
 //（不带起止端点）。opts.start 传入触发摘要时在管线头部加 ⚡ 端点、尾部加 ✓ 端点。
-// 收起态只显示 类型名 + 描述 + 变量标签；展开态为三行：标题行 / 类型筛选行 / 输入行。
+// 收起态只显示 类型名 + 描述 + 变量标签；展开态为 标题行（类型名可点切换）/ 子类型行 / 输入行。
 function renderActionList(
   container: HTMLElement,
   actions: Action[],
@@ -3627,29 +3649,21 @@ function toggleActionCollapsed(a: Action) {
   else collapsedActions.add(a);
 }
 
-function makeActionTypeSelect(
+// 换动作类型 = 换一个同位置的新动作；标题（description）能带就带。
+function switchActionType(
   a: Action,
   actions: Action[],
   i: number,
+  type: Action["type"],
   rerender: () => void,
-): HTMLElement {
-  const sel = el("select", "action-type") as HTMLSelectElement;
-  for (const t of ACTION_TYPES) {
-    const o = el("option") as HTMLOptionElement;
-    o.value = t.value;
-    o.textContent = t.label;
-    sel.append(o);
-  }
-  sel.value = a.type;
-  sel.addEventListener("change", () => {
-    const next = newAction(sel.value as Action["type"]);
-    // 分组没有 description；两种形态互转时能带就带，带不了就落回默认。
-    if (a.type !== "group" && next.type !== "group") next.description = a.description;
-    actions[i] = next;
-    collapsedActions.delete(a);
-    rerender();
-  });
-  return sel;
+) {
+  if (type === a.type) return;
+  const next = newAction(type);
+  // 分组没有 description；两种形态互转时能带就带，带不了就落回默认。
+  if (a.type !== "group" && next.type !== "group") next.description = a.description;
+  actions[i] = next;
+  collapsedActions.delete(a);
+  rerender();
 }
 
 // 给动作的「摘要区」绑定拖拽启动：pointerdown 记录起点，移动越过阈值后进入拖拽。
@@ -5923,6 +5937,13 @@ function bind() {
   });
   fromInput.addEventListener("blur", closeKeyMenu);
   fromInput.addEventListener("keydown", (e) => {
+    // 按到小键盘键 = 直接选这个键（NumLock 关着时它打出来的不是键名，而是导航/字符）。
+    const numpad = numpadKeyFromEvent(e);
+    if (numpad) {
+      e.preventDefault();
+      pickRemapKey(numpad);
+      return;
+    }
     if (e.key === "Escape") {
       e.stopPropagation(); // 只收下拉，别顺手把弹窗/菜单也关了
       closeKeyMenu();

@@ -559,7 +559,7 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
 
 fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
     let extended = kb.flags.0 & LLKHF_EXTENDED.0 != 0;
-    let Some(key) = vk_to_key(VIRTUAL_KEY(kb.vkCode as u16), extended) else {
+    let Some(key) = hook_key(kb, extended) else {
         return false;
     };
     let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
@@ -1229,6 +1229,48 @@ fn force_foreground(hwnd: HWND) {
     }
 }
 
+/// 钩子结构 → [`Key`]：先按小键盘的扫描码还原，再走常规虚拟键码表。
+///
+/// NumLock 关闭时，小键盘数字键报的是**导航类虚拟键码**（1 → `VK_END`、4 → `VK_LEFT`、
+/// 5 → `VK_CLEAR`、小数点 → `VK_DELETE`），只看 VK 会被当成方向/编辑键，用户配的
+/// `Numpad1` 永远对不上。这些物理键的扫描码是唯一的（真方向/编辑键带扩展位），
+/// 故在 NumLock 关时按扫描码还原。
+fn hook_key(kb: &KBDLLHOOKSTRUCT, extended: bool) -> Option<Key> {
+    let vk = VIRTUAL_KEY(kb.vkCode as u16);
+    let numlock_on = (unsafe { GetKeyState(VK_NUMLOCK.0 as i32) }) & 1 != 0;
+    numpad_from_nav(vk, extended, kb.scanCode, numlock_on).or_else(|| vk_to_key(vk, extended))
+}
+
+/// NumLock 关 + 非扩展位 + 扫描码落在小键盘数字区 → 还原成 `Numpad*`。
+/// 只对导航类 VK 生效：NumLock 开着时这些 VK 就是真正的导航键，不能抢。
+fn numpad_from_nav(vk: VIRTUAL_KEY, extended: bool, scan: u32, numlock_on: bool) -> Option<Key> {
+    if extended || numlock_on {
+        return None;
+    }
+    let nav = matches!(
+        vk,
+        VK_HOME | VK_END | VK_PRIOR | VK_NEXT | VK_INSERT | VK_DELETE | VK_CLEAR
+            | VK_UP | VK_DOWN | VK_LEFT | VK_RIGHT
+    );
+    if !nav {
+        return None;
+    }
+    Some(match scan as u8 {
+        0x52 => Key::Numpad0,
+        0x4F => Key::Numpad1,
+        0x50 => Key::Numpad2,
+        0x51 => Key::Numpad3,
+        0x4B => Key::Numpad4,
+        0x4C => Key::Numpad5,
+        0x4D => Key::Numpad6,
+        0x47 => Key::Numpad7,
+        0x48 => Key::Numpad8,
+        0x49 => Key::Numpad9,
+        0x53 => Key::NumpadDecimal,
+        _ => return None,
+    })
+}
+
 /// 取 [`Key`] 名的可打印形式，未知键码返回 None（放行）。
 /// `extended` 为钩子结构里的 `LLKHF_EXTENDED`：Windows 上主键区 Enter 与小键盘
 /// Enter 共用 `VK_RETURN`，靠扩展位区分。
@@ -1318,6 +1360,26 @@ mod tests {
         // 鼠标键不是虚拟键码。
         assert_eq!(key_to_vk(Key::MouseBack), None);
         assert_eq!(key_to_vk(Key::MouseMiddle), None);
+    }
+
+    /// NumLock 关时小键盘数字键报导航类 VK：按扫描码还原，别让 `Numpad7` 配了不生效。
+    #[test]
+    fn numpad_restored_from_scan_when_numlock_off() {
+        // 1 / 5 / 小数点 / 7：NumLock 关 → END / CLEAR / DELETE / HOME。
+        assert_eq!(numpad_from_nav(VK_END, false, 0x4F, false), Some(Key::Numpad1));
+        assert_eq!(numpad_from_nav(VK_CLEAR, false, 0x4C, false), Some(Key::Numpad5));
+        assert_eq!(
+            numpad_from_nav(VK_DELETE, false, 0x53, false),
+            Some(Key::NumpadDecimal)
+        );
+        assert_eq!(numpad_from_nav(VK_HOME, false, 0x47, false), Some(Key::Numpad7));
+        assert_eq!(numpad_from_nav(VK_LEFT, false, 0x4B, false), Some(Key::Numpad4));
+        // 真方向键带扩展位 → 不还原。
+        assert_eq!(numpad_from_nav(VK_LEFT, true, 0x4B, false), None);
+        // NumLock 开：这些 VK 就是真导航键，不能抢。
+        assert_eq!(numpad_from_nav(VK_END, false, 0x4F, true), None);
+        // 非导航 VK 一律不碰。
+        assert_eq!(numpad_from_nav(VK_A, false, 0x4F, false), None);
     }
 
     /// `device_name` 的两段式 `GetRawInputDeviceInfoW`（先问长度、再取名字）在真设备上

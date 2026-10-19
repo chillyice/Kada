@@ -1983,6 +1983,34 @@ mod tests {
     }
 
     #[test]
+    fn numpad_keys_can_switch_layers() {
+        // 小键盘键与普通键在状态机里同权（配置层 parse 出来都是 Key）：锁定层与
+        // momentary 层都要能用 Numpad 键切过去。
+        let mut lock = remap("Numpad1", "");
+        lock.lock_layer = Some("L1".into());
+        lock.tap_timeout_ms = 20;
+        let cfg = cfg_with_remap(lock);
+        let mut engine = Engine::new();
+        let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
+
+        step(&mut engine, &down(Key::Numpad1), &cfg, &mut inj, &mut fired);
+        std::thread::sleep(Duration::from_millis(30));
+        step(&mut engine, &up(Key::Numpad1), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), Some("L1"), "长按 Numpad1 锁定层");
+        assert!(inj.log.is_empty(), "切层键本身不回放");
+
+        let mut hold = remap("NumpadAdd", "");
+        hold.hold_layer = Some("L2".into());
+        let cfg = cfg_with_remap(hold);
+        let mut engine = Engine::new();
+        step(&mut engine, &down(Key::NumpadAdd), &cfg, &mut inj, &mut fired);
+        step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 进层
+        assert_eq!(engine.active_layer(), Some("L2"), "按住 NumpadAdd 期间进入 momentary 层");
+        step(&mut engine, &up(Key::NumpadAdd), &cfg, &mut inj, &mut fired);
+        assert_eq!(engine.active_layer(), None, "松开退回基础层");
+    }
+
+    #[test]
     fn locked_layer_roll_toggles_layer() {
         // 切层键与别的键一起（roll）：同样算长按 → 切换层，且切换发生在该键判定之前
         //（层内条目要能命中这个刚按下的键）。

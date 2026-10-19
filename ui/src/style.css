@@ -1453,7 +1453,7 @@ body {
   margin-bottom: 8px;
 }
 
-/* 动作组件：收起态只显示 类型名 + 描述 + 变量标签；展开态为三行（标题行 / 类型筛选行 / 输入行） */
+/* 动作组件：收起态只显示 类型名 + 描述 + 变量标签；展开态为 标题行（类型名可点切换）/ 子类型行 / 输入行 */
 .action-grip {
   flex-shrink: 0;
   color: var(--muted);
@@ -1488,6 +1488,28 @@ body {
   color: var(--type-color, var(--muted));
   font-size: var(--fs-sm);
   font-weight: 600;
+}
+
+/* 类型名兼作切换入口（select）：平时像文字，悬停/聚焦才显出可点，避免多一行类型下拉。 */
+select.action-type-name {
+  height: 24px;
+  max-width: 10em;
+  padding: 0 4px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-family: inherit;
+  cursor: pointer;
+}
+
+select.action-type-name:hover {
+  border-color: var(--line);
+  background: var(--bg);
+}
+
+select.action-type-name:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
 }
 
 /* 变量流向标签：⇒ var 写出（绿）/ {var} 引用（灰）。 */
