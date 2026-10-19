@@ -449,35 +449,33 @@
                     </span>
                     <button id="load-sample" title="示例都放在「示例」目录下，删掉该目录即可整体清除">载入示例</button>
                   </div>
-                  <div class="set-row">
+                  <div class="set-row set-row-merged">
                     <span class="set-main">
                       <span class="set-name">片段市场</span>
                       <span class="set-sub">浏览索引里的片段，一键合并进配置（装之前先给你看清里面是什么）</span>
                     </span>
-                    <button id="open-market">打开…</button>
+                    <div class="set-controls">
+                      <input
+                        type="text"
+                        id="set-snippet-index"
+                        spellcheck="false"
+                        placeholder="索引地址（留空 = 内置）"
+                        title="片段索引地址：一份能下载到的 JSON 索引；留空 = 用内置地址，自建索引就填自己的"
+                      />
+                      <button id="open-market">打开…</button>
+                    </div>
                   </div>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">片段索引地址</span>
-                      <span class="set-sub">一份能下载到的 JSON 索引；留空 = 用内置地址，自建索引就填自己的</span>
-                    </span>
-                    <input type="text" id="set-snippet-index" spellcheck="false" />
-                  </label>
-                  <div class="set-row">
+                  <div class="set-row set-row-merged">
                     <span class="set-main">
                       <span class="set-name">同步存档</span>
                       <span class="set-sub" id="sync-dir">未设置 —— 选一个目录（如 OneDrive）即可自动存一份</span>
                     </span>
-                    <button id="sync-choose">选择目录…</button>
-                    <button id="sync-clear">清除</button>
-                  </div>
-                  <div class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">手动同步</span>
-                      <span class="set-sub">立即同步 = 把当前配置再写一份过去；从存档恢复 = 用目录里的那份合并 / 覆盖回来</span>
-                    </span>
-                    <button id="sync-now">立即同步</button>
-                    <button id="sync-restore">从存档恢复…</button>
+                    <div class="set-controls">
+                      <button id="sync-choose" title="选一个目录（如 OneDrive 文件夹）；之后每次配置落盘都会自动存一份到那里">选择目录…</button>
+                      <button id="sync-clear">清除</button>
+                      <button id="sync-now" title="立即同步：把当前配置马上再写一份到同步存档目录">立即同步</button>
+                      <button id="sync-restore" title="从存档恢复…：用目录里的那份配置合并或覆盖回来（覆盖前会自动留档）">从存档恢复…</button>
+                    </div>
                   </div>
                 </div>
                 <details class="hint-fold">

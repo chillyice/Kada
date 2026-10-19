@@ -2194,6 +2194,27 @@ button:disabled:hover {
   width: 96px;
 }
 
+/* 合并行（片段市场带索引地址、同步存档带多个动作）：说明占第一行、控件统一放第二行右对齐。
+   宽窗口下设置卡片是两列（每列约 520px），控件和说明硬挤一行会把说明挤成窄条。 */
+.set-row-merged {
+  flex-wrap: wrap;
+  row-gap: 6px;
+}
+
+.set-row-merged .set-main,
+.set-row-merged .set-controls {
+  flex: 1 0 100%;
+}
+
+.set-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
 /* 卡片内的折叠说明：贴着卡片底边，与上面的设置行用一条分隔线断开。 */
 .set-card > .hint-fold {
   padding: 8px 14px 10px;
@@ -3500,9 +3521,9 @@ pre.msg-v {
 }
 
 /* 索引地址是很长的 URL：给它有限宽度，别把左边的说明挤没了 */
-.set-row > input[type="text"] {
+.set-controls > input[type="text"] {
   flex: 0 1 340px;
-  margin-left: auto;
+  min-width: 170px;
   font-size: var(--fs-sm);
 }
 
