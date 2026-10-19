@@ -26,17 +26,25 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
 
+use kada_actions::CommandResult;
 use kada_core::UpdateSource;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, Url};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
-use tauri_plugin_updater::{Update, Updater, UpdaterExt};
+use tauri_plugin_updater::{Error as UpdateError, Update, Updater, UpdaterExt};
 
 /// 启动后台检查的延迟（秒）：避开启动瞬间的钩子安装与窗口初始化。
 const STARTUP_CHECK_DELAY_SECS: u64 = 8;
 
 /// 启动检查之后的自动检查间隔：应用常驻（托盘常开）时也要能在一天内看到新版本。
 const CHECK_INTERVAL_SECS: u64 = 24 * 60 * 60;
+
+/// 清单检查的时限（秒）：`latest.json` 只有几 KB，这么久还没回来就是网络或更新源不可达。
+/// 没有时限时「正在检查更新…」会无限转下去，用户既看不到结果也看不到失败原因。
+///
+/// **只作用于清单请求**：插件的 `Update` 句柄不带这个时限（`check()` 里 `timeout: None`），
+/// 所以下载更新包不会被这 20 秒掐断（镜像带宽低时大包需要更久）。
+const CHECK_TIMEOUT_SECS: u64 = 20;
 
 /// 勾了「自动更新」时，「长时间不使用电脑」的判定门槛（秒）：最后一次键鼠输入至今超过
 /// 它才装机。10 分钟足够区分「人在旁边」与「人走了」，又不至于让更新拖到第二天。
@@ -208,6 +216,9 @@ pub struct UpdateState {
     /// 下载目录（`app_data_dir()/updates`）。
     dir: PathBuf,
     pending: Mutex<Option<PendingUpdate>>,
+    /// 上一次已记进消息中心的自动更新错误：自动安装每 10 分钟重试一次，
+    /// 同样的错误只记一条，免得把「消息」页刷满。
+    last_auto_error: Mutex<Option<String>>,
 }
 
 impl UpdateState {
@@ -223,6 +234,7 @@ impl UpdateState {
             status: Mutex::new(UpdateStatus { current, kind, phase }),
             dir,
             pending: Mutex::new(pending),
+            last_auto_error: Mutex::new(None),
         }
     }
 
@@ -247,8 +259,17 @@ pub enum Mode {
 
 /// 写入阶段并推给前端（`update-status` 事件；主窗口不存在时事件自然落空，无副作用）。
 fn set_phase(app: &tauri::AppHandle, phase: UpdatePhase) {
+    // 一次成功的检查/下载说明自动更新链路是通的：允许下一次同类错误重新记一条消息
+    // （否则恢复后再坏，用户在新会话里也看不到提示——去重只针对「连续同错」）。
+    let recovered = matches!(
+        phase,
+        UpdatePhase::UpToDate | UpdatePhase::Available { .. } | UpdatePhase::Ready { .. }
+    );
     let status = {
         let state = app.state::<UpdateState>();
+        if recovered {
+            *state.last_auto_error.lock().unwrap() = None;
+        }
         let mut status = state.status.lock().unwrap();
         status.phase = phase;
         status.clone()
@@ -256,15 +277,143 @@ fn set_phase(app: &tauri::AppHandle, phase: UpdatePhase) {
     let _ = tauri::Emitter::emit(app, "update-status", status);
 }
 
-/// 记失败：写状态；非静默模式额外弹窗（静默模式只更新设置页状态，不打扰使用）。
+/// 更新源的中文名：提示里要说清楚「查的是哪个源」，否则用户不知道该换哪一个。
+fn source_label(source: UpdateSource) -> &'static str {
+    match source {
+        UpdateSource::Ihomy => "ihomy 镜像",
+        UpdateSource::Github => "GitHub Releases",
+    }
+}
+
+/// 把检查清单时的错误翻成「哪个源、什么原因、怎么办」。
+///
+/// `tauri-plugin-updater` 的错误是英文的，而且把好几种情况压成同一句：HTTP 非 2xx
+/// 只写日志、最后统一报 `ReleaseNotFound`；免安装版缺清单条目则报一句英文的
+/// `TargetNotFound`。原样抛给用户等于没提示，所以在这里分类翻译。
+fn check_error_text(err: &UpdateError, source: UpdateSource) -> String {
+    let src = source_label(source);
+    match err {
+        UpdateError::Reqwest(e) if e.is_timeout() => format!(
+            "检查更新超时：{CHECK_TIMEOUT_SECS} 秒内没能连上{src}。请检查网络 / 代理，\
+             或在「设置 → 软件更新」里换一个更新源后重试。"
+        ),
+        UpdateError::Reqwest(e) if e.is_connect() => format!(
+            "连不上{src}：{e}。请检查网络 / 代理，或在「设置 → 软件更新」里换一个更新源后重试。"
+        ),
+        UpdateError::Reqwest(e) => format!("检查更新时网络请求失败（{src}）：{e}"),
+        UpdateError::ReleaseNotFound => format!(
+            "{src}没有返回可用的更新清单（latest.json）：地址可能不对、该源还没同步到这个版本，\
+             或服务器暂时不可用。请稍后重试，或在「设置 → 软件更新」里换一个更新源。"
+        ),
+        UpdateError::TargetNotFound(target) => {
+            let what = if target == "windows-x86_64-portable" {
+                "免安装版（windows-x86_64-portable）".to_string()
+            } else {
+                format!("当前平台（{target}）")
+            };
+            format!(
+                "{src}的更新清单里没有{what}条目，无法判断新版本。发布端可能漏发了这个文件；\
+                 请稍后重试或换一个更新源。"
+            )
+        }
+        UpdateError::TargetsNotFound(targets) => format!(
+            "{src}的更新清单里没有当前平台的条目（找过：{}），无法判断新版本。\
+             请稍后重试或换一个更新源。",
+            targets.join("、")
+        ),
+        UpdateError::Serialization(e) => format!(
+            "{src}的更新清单格式不正确，无法解析（{e}）。这份 latest.json 可能损坏；\
+             请稍后重试或换一个更新源。"
+        ),
+        UpdateError::Semver(e) => format!(
+            "{src}的更新清单里版本号不合法（{e}），无法比较版本。请稍后重试或换一个更新源。"
+        ),
+        UpdateError::EmptyEndpoints => {
+            "没有配置更新源地址：请到「设置 → 软件更新」选一个更新源。".to_string()
+        }
+        UpdateError::InsecureTransportProtocol => {
+            "更新源地址必须使用 https：请到「设置 → 软件更新」换回默认更新源。".to_string()
+        }
+        other => format!("检查更新失败（{src}）：{other}"),
+    }
+}
+
+/// 下载/校验更新包时的错误翻译（签名不符、清单与包的版本对不上都属于「更新数据出错」）。
+fn download_error_text(err: &UpdateError) -> String {
+    match err {
+        UpdateError::Minisign(_) => "更新包校验失败：签名与包内容不匹配（可能下载损坏，或更新源被篡改）。\
+             已丢弃这个包，请重试；若反复失败请换一个更新源。"
+            .to_string(),
+        UpdateError::SignatureUtf8(_) | UpdateError::Base64(_) => {
+            "更新清单里的签名数据格式不正确，无法校验更新包。请稍后重试或换一个更新源。".to_string()
+        }
+        UpdateError::MissingSignedVersion => "更新包的签名里没有版本号（发布端签名工具版本过低），\
+             已拒绝安装。请等发布方重新打包后再试。"
+            .to_string(),
+        UpdateError::SignedVersionMismatch { signed, announced } => format!(
+            "更新包签名的版本（v{signed}）与清单声明的版本（v{announced}）不一致，已阻止安装。\
+             请换一个更新源或稍后重试。"
+        ),
+        UpdateError::Network(msg) => format!(
+            "下载更新包失败：{msg}。更新源上的文件可能还没同步好，请稍后重试。"
+        ),
+        UpdateError::Reqwest(e) if e.is_timeout() => {
+            "下载更新包超时：网络太慢或更新源不可用，请检查网络后重试。".to_string()
+        }
+        UpdateError::Reqwest(e) => format!("下载更新包时网络中断：{e}。请检查网络后重试。"),
+        other => format!("下载失败：{other}"),
+    }
+}
+
+/// 后台自动检查/下载/安装失败时记一条消息（**不弹窗**）。
+///
+/// 后台流程没有用户在场：如果失败只写进设置页状态，用户不打开设置就永远不知道
+/// 「更新其实一直坏着」。记进消息中心（亮未读红点）既不抢焦点，又留得下原因。
+/// 同一个错误只记一次——自动安装失败每 10 分钟重试一次，不做去重会刷满消息页。
+fn record_auto_failure(app: &tauri::AppHandle, message: &str) {
+    let update_state = app.state::<UpdateState>();
+    {
+        let mut last = update_state.last_auto_error.lock().unwrap();
+        if last.as_deref() == Some(message) {
+            return;
+        }
+        *last = Some(message.to_string());
+    }
+    let Some(state) = app.try_state::<crate::KadaState>() else { return };
+    crate::commit_result(
+        app,
+        &state.results,
+        &state.unread,
+        CommandResult {
+            kind: "error".into(),
+            label: "更新".into(),
+            trigger: "后台更新".into(),
+            name: String::new(),
+            command: message.to_string(),
+            stdout: "后台检查 / 下载在启动后与每 24 小时各跑一次。可到「设置 → 软件更新」\
+                     换更新源，或点「检查更新」手动重试。"
+                .to_string(),
+            stderr: String::new(),
+            exit_code: None,
+            show_output: false,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            run_id: None,
+        },
+    );
+}
+
+/// 记失败：写状态；手动模式弹窗，自动模式记进消息中心（不打扰使用，但留得下痕迹）。
 fn fail(app: &tauri::AppHandle, mode: Mode, message: String) {
     set_phase(app, UpdatePhase::Error { message: message.clone() });
-    if mode != Mode::Auto {
-        app.dialog()
-            .message(message)
-            .title("更新失败")
-            .kind(MessageDialogKind::Error)
-            .show(|_| {});
+    match mode {
+        Mode::Manual => {
+            app.dialog()
+                .message(message)
+                .title("更新失败")
+                .kind(MessageDialogKind::Error)
+                .show(|_| {});
+        }
+        Mode::Auto => record_auto_failure(app, &message),
     }
 }
 
@@ -285,12 +434,12 @@ fn current_source(app: &tauri::AppHandle) -> UpdateSource {
         .unwrap_or_default()
 }
 
-/// 当前选择更新源的 `latest.json` 地址。
+/// 指定更新源的 `latest.json` 地址。
 ///
-/// 每次检查都重新读配置：设置页切换后，下一次检查（含手动「检查更新」）立即生效，
-/// 不需要重启。
-fn endpoint(app: &tauri::AppHandle) -> Url {
-    Url::parse(current_source(app).endpoint()).expect("内置更新源地址必须是合法 URL")
+/// 每次检查都重新读配置（[`current_source`]）：设置页切换后，下一次检查（含手动
+/// 「检查更新」）立即生效，不需要重启。
+fn endpoint(source: UpdateSource) -> Url {
+    Url::parse(source.endpoint()).expect("内置更新源地址必须是合法 URL")
 }
 
 /// 自动更新开关（每次判读都重读配置：用户勾掉后，空闲安装调度下一轮就停）。
@@ -302,14 +451,20 @@ fn auto_update_enabled(app: &tauri::AppHandle) -> bool {
 
 /// 按当前设置装配更新器：`endpoints` 覆盖 `tauri.conf.json` 里的静态默认；
 /// 免安装版换用清单里那个裸 exe 条目。
-fn build_updater(app: &tauri::AppHandle, kind: InstallKind) -> Result<Updater, String> {
+fn build_updater(
+    app: &tauri::AppHandle,
+    kind: InstallKind,
+    source: UpdateSource,
+) -> Result<Updater, String> {
     let mut builder = app
         .updater_builder()
-        .endpoints(vec![endpoint(app)])
+        .endpoints(vec![endpoint(source)])
         .map_err(|e| format!("更新源地址无效：{e}"))?;
     if let Some(target) = manifest_target(kind) {
         builder = builder.target(target);
     }
+    // 只限清单请求（见 [`CHECK_TIMEOUT_SECS`]）：不设时限时连不上更新源会一直转圈。
+    builder = builder.timeout(Duration::from_secs(CHECK_TIMEOUT_SECS));
     builder.build().map_err(|e| format!("更新器初始化失败：{e}"))
 }
 
@@ -373,14 +528,15 @@ pub fn spawn_auto_installer(app: &tauri::AppHandle) {
 /// 检查 + 按模式决定后续动作。
 async fn run(app: tauri::AppHandle, mode: Mode) {
     let kind = install_kind();
-    let updater = match build_updater(&app, kind) {
+    let source = current_source(&app);
+    let updater = match build_updater(&app, kind, source) {
         Ok(updater) => updater,
         Err(e) => return fail(&app, mode, e),
     };
 
     let found = match updater.check().await {
         Ok(found) => found,
-        Err(e) => return fail(&app, mode, format!("检查更新失败：{e}")),
+        Err(e) => return fail(&app, mode, check_error_text(&e, source)),
     };
 
     let Some(update) = found else {
@@ -388,7 +544,11 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
         if mode == Mode::Manual {
             let current = app.package_info().version.to_string();
             app.dialog()
-                .message(format!("当前版本 v{current}，已是最新版本。"))
+                .message(format!(
+                    "当前版本 v{current}，已是最新版本。\n\n更新源：{}（{}）",
+                    source_label(source),
+                    source.endpoint()
+                ))
                 .title("检查更新")
                 .show(|_| {});
         }
@@ -463,8 +623,9 @@ pub fn spawn_download(app: tauri::AppHandle) {
     }
     set_phase(&app, UpdatePhase::Checking);
     let kind = install_kind();
+    let source = current_source(&app);
     tauri::async_runtime::spawn(async move {
-        let updater = match build_updater(&app, kind) {
+        let updater = match build_updater(&app, kind, source) {
             Ok(updater) => updater,
             Err(e) => return fail(&app, Mode::Manual, e),
         };
@@ -472,10 +633,16 @@ pub fn spawn_download(app: tauri::AppHandle) {
             Ok(Some(update)) => update,
             Ok(None) => {
                 set_phase(&app, UpdatePhase::UpToDate);
-                app.dialog().message("已是最新版本，无需下载。").title("检查更新").show(|_| {});
+                app.dialog()
+                    .message(format!(
+                        "已是最新版本（更新源：{}），无需下载。",
+                        source_label(source)
+                    ))
+                    .title("检查更新")
+                    .show(|_| {});
                 return;
             }
-            Err(e) => return fail(&app, Mode::Manual, format!("检查更新失败：{e}")),
+            Err(e) => return fail(&app, Mode::Manual, check_error_text(&e, source)),
         };
         if app.state::<UpdateState>().pending().is_some_and(|p| p.version == update.version) {
             set_phase(&app, UpdatePhase::Ready { version: update.version.clone() });
@@ -517,7 +684,7 @@ async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), Str
             || {},
         )
         .await
-        .map_err(|e| format!("下载失败：{e}"))?;
+        .map_err(|e| download_error_text(&e))?;
 
     persist(app, &version, &bytes)?;
     set_phase(app, UpdatePhase::Ready { version });
@@ -648,7 +815,8 @@ fn install_pending(app: &tauri::AppHandle, pending: &PendingUpdate, quiet: bool)
 /// updater——Windows 上它会以 `/S /R` 跑 NSIS 并退出本进程，装完由安装器拉起新版本。
 async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quiet: bool) {
     let mode = if quiet { Mode::Auto } else { Mode::Manual };
-    let updater = match build_updater(&app, InstallKind::Installed) {
+    let source = current_source(&app);
+    let updater = match build_updater(&app, InstallKind::Installed, source) {
         Ok(updater) => updater,
         Err(e) => return fail(&app, mode, e),
     };
@@ -658,9 +826,18 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
             // 清单说已经是最新：这个包没用了（可能版本已被撤下）。
             clear_pending(&app);
             set_phase(&app, UpdatePhase::UpToDate);
+            if !quiet {
+                app.dialog()
+                    .message(format!(
+                        "更新清单显示已是最新版本（更新源：{}），已下载的更新包不再需要，已丢弃。",
+                        source_label(source)
+                    ))
+                    .title("安装更新")
+                    .show(|_| {});
+            }
             return;
         }
-        Err(e) => return fail(&app, mode, format!("安装前核对更新清单失败：{e}")),
+        Err(e) => return fail(&app, mode, check_error_text(&e, source)),
     };
     if update.version != pending.version {
         // 清单已经翻页：丢掉旧包，等下一轮检查按新版本重新下载。
@@ -669,6 +846,16 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
             &app,
             UpdatePhase::Available { version: update.version.clone(), notes: update.body.clone() },
         );
+        if !quiet {
+            app.dialog()
+                .message(format!(
+                    "更新清单上的版本已经变成 v{}（已下载的是 v{}），旧包已丢弃。\n\n\
+                     请在设置页重新点「下载」。",
+                    update.version, pending.version
+                ))
+                .title("安装更新")
+                .show(|_| {});
+        }
         return;
     }
     let path = app.state::<UpdateState>().dir.join(&pending.file);
@@ -891,5 +1078,54 @@ mod tests {
         assert!(!should_emit_progress(&last, 1));
         assert!(should_emit_progress(&last, 100));
         assert!(!should_emit_progress(&last, 100));
+    }
+
+    /// 失败提示必须说清「哪个源 + 什么原因 + 怎么办」，不能把插件英文原文甩给用户。
+    /// 这里钉住最容易碰到、也最容易被含糊掉的三类：清单没拿到、缺平台条目、清单格式坏。
+    #[test]
+    fn check_errors_are_translated_with_source_and_next_step() {
+        let msg = check_error_text(&UpdateError::ReleaseNotFound, UpdateSource::Ihomy);
+        assert!(msg.contains("ihomy 镜像"), "{msg}");
+        assert!(msg.contains("latest.json"), "{msg}");
+        assert!(msg.contains("换一个更新源"), "{msg}");
+
+        let msg = check_error_text(
+            &UpdateError::TargetNotFound("windows-x86_64-portable".into()),
+            UpdateSource::Github,
+        );
+        assert!(msg.contains("GitHub Releases"), "{msg}");
+        assert!(msg.contains("免安装版"), "{msg}");
+
+        let bad_json = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        let msg = check_error_text(&UpdateError::Serialization(bad_json), UpdateSource::Ihomy);
+        assert!(msg.contains("更新清单格式不正确"), "{msg}");
+
+        let msg = check_error_text(
+            &UpdateError::TargetsNotFound(vec!["windows-x86_64".into(), "windows-x86_64-portable".into()]),
+            UpdateSource::Ihomy,
+        );
+        assert!(msg.contains("windows-x86_64-portable"), "{msg}");
+    }
+
+    /// 「更新数据出错」里最危险的两类：签名缺版本号 / 签名版本与清单不一致。
+    /// 必须明确告诉用户「已拒绝安装」，而不是笼统的「下载失败」。
+    #[test]
+    fn download_errors_explain_signature_and_version_mismatch() {
+        let msg = download_error_text(&UpdateError::MissingSignedVersion);
+        assert!(msg.contains("没有版本号"), "{msg}");
+        assert!(msg.contains("拒绝安装"), "{msg}");
+
+        let msg = download_error_text(&UpdateError::SignedVersionMismatch {
+            signed: "1.0.0".into(),
+            announced: "1.1.0".into(),
+        });
+        assert!(msg.contains("v1.0.0") && msg.contains("v1.1.0"), "{msg}");
+        assert!(msg.contains("阻止安装"), "{msg}");
+
+        let msg = download_error_text(&UpdateError::Network(
+            "Download request failed with status: 404 Not Found".into(),
+        ));
+        assert!(msg.contains("404"), "{msg}");
+        assert!(msg.contains("稍后重试"), "{msg}");
     }
 }

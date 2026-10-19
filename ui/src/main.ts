@@ -16,7 +16,7 @@ type OsOperation =
   | { op: "zip"; source: string; dest: string }
   | { op: "unzip"; source: string; dest: string }
   | { op: "get_file_props"; path: string; var: string };
-/** 操作系统动作的子操作（动作类型 `system`）——与文件/目录操作是两类，别混。 */
+/** 操作系统动作的子操作（动作类型 `system`）——与文件/目录是两类，别混。 */
 type SystemOperation = { op: "switch_desktop"; direction: DesktopDirection };
 type Condition =
   | { kind: "exists"; path: string }
@@ -286,7 +286,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "script", label: "执行脚本" },
   { value: "app", label: "应用操作" },
   { value: "open_url", label: "打开网址" },
-  { value: "os", label: "文件/目录操作" },
+  { value: "os", label: "文件/目录" },
   { value: "system", label: "操作系统" },
   { value: "keys", label: "按键组合" },
   { value: "mouse", label: "鼠标操作" },
@@ -457,7 +457,7 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
   { value: "get_file_props", label: "获取文件属性" },
 ];
 
-// ---- 操作系统动作的子操作（与文件/目录操作是两类） ----
+// ---- 操作系统动作的子操作（与文件/目录是两类） ----
 const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "switch_desktop", label: "切换虚拟桌面" },
 ];
