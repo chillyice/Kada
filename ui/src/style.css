@@ -3736,6 +3736,25 @@ textarea.invalid {
   animation: crt-flicker 3.4s ease-in-out infinite;
 }
 
+/* 纯白文字 / 图标已经到顶，color-dodge 再加也还是 1.0（主按钮的白字就是这样
+   漏掉扫描线的）；灰色字也吃不满亮线。补一条 darken 暗缝：它只吃掉比线色更亮
+   的像素，所以从灰色字到纯白笔画都有扫描线，而暗底、面板完全不动。
+   只给深色档——浅色档的面板和白底本身就比线色亮，加了会把背景画脏。 */
+html[data-theme="crt"][data-crt="dark"]:has(.layout)::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9990;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0 2px,
+    rgba(140, 140, 140, 0.3) 2px 3px,
+    transparent 3px 4px
+  );
+  mix-blend-mode: darken;
+}
+
 /* 一道很淡的亮带自上而下扫过（老显示器的场同步拖影）。 */
 [data-theme="crt"] body:has(.layout)::before {
   content: "";
