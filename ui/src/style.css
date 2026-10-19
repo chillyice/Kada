@@ -3601,7 +3601,9 @@ textarea.invalid {
    像素 CRT 主题（data-theme="crt"）
    --------------------------------------------------------------------------
    只在这一层里做覆盖：深色 / 浅色两套主题的规则与变量一行不动。
-   风格来源：像素游戏的方块感 + 复古显示终端的绿色荧光、扫描线、暗角。
+   风格来源：像素游戏的方块感 + 现代显示终端的扫描线、暗角与轻辉光。
+   配色不另起一套：深色档沿用深色主题的黑灰 + 橙色强调，浅色档沿用浅色
+   主题的白 + 橙色强调——像素感只由字体、方角、扫描线、硬影承载。
    字体内嵌在本仓库（OFL 1.1，见 assets/fonts/LICENSE-OFL.txt），只在 CRT
    主题下被引用，所以深色 / 浅色不会多下载这 595KB。
    四个窗口（主界面 / 触发气泡 / 状态 HUD / 快捷键提示框）共用同一份 CSS，
@@ -3618,20 +3620,22 @@ textarea.invalid {
 }
 
 [data-theme="crt"] {
-  --bg: #040906;
-  --panel: #07130c;
-  --line: #1e4a2e;
-  --text: #baffd2;
-  --muted: #5f9f78;
-  --accent: #54ff9c;
-  --accent-dim: #0e3520;
-  --hover-bg: rgba(84, 255, 156, 0.08);
-  --float-bg: rgba(3, 10, 6, 0.96);
-  --line-soft: rgba(84, 255, 156, 0.16);
-  --scroll-thumb: rgba(84, 255, 156, 0.22);
-  --scroll-thumb-hi: rgba(84, 255, 156, 0.45);
-  --key-bg: #0a2416;
-  --key-line: #2f6b44;
+  /* 中性黑灰沿用深色主题的基准色，不再用荧光绿：像素感交给字体 / 方角 /
+     扫描线，颜色只保留原有的橙色强调。 */
+  --bg: #111318;
+  --panel: #191d24;
+  --line: #2a2f3a;
+  --text: #e8eaf0;
+  --muted: #8b93a3;
+  --accent: #e06040;
+  --accent-dim: #7a3a2a;
+  --hover-bg: rgba(255, 255, 255, 0.08);
+  --float-bg: rgba(22, 26, 34, 0.96);
+  --line-soft: rgba(255, 255, 255, 0.07);
+  --scroll-thumb: rgba(255, 255, 255, 0.14);
+  --scroll-thumb-hi: rgba(255, 255, 255, 0.3);
+  --key-bg: #262b35;
+  --key-line: #3a4150;
   /* 像素字号：12 的整数档最锐，正文仍留 14 一档做层级。 */
   --fs-xs: 12px;
   --fs-sm: 12px;
@@ -3641,9 +3645,10 @@ textarea.invalid {
   --fs-2xl: 24px;
   --font-pixel: "Kada Pixel", "MS Gothic", "SimSun", monospace;
   --crt-cyan: #63e8ff;
+  --crt-blue: #4f9cf9;
   --crt-yellow: #ffd75e;
   --crt-red: #ff6b6b;
-  --crt-green: #54ff9c;
+  --crt-indigo: #8b9dff;
 }
 
 /* ---- 字体：正文 + 所有显式写了 Consolas / 系统字栈的地方 ---- */
@@ -3678,12 +3683,12 @@ textarea.invalid {
 [data-theme="crt"] body {
   text-shadow:
     0 0 1px currentColor,
-    0 0 5px color-mix(in srgb, currentColor 45%, transparent);
+    0 0 4px color-mix(in srgb, currentColor 32%, transparent);
 }
 
 /* 主界面的屏幕：中间微微亮、四周压暗，模拟球面显像管的亮度衰减。 */
 [data-theme="crt"] .detail-pane {
-  background: radial-gradient(ellipse at 50% 30%, #071a10 0%, var(--bg) 78%);
+  background: radial-gradient(ellipse at 50% 30%, #1a1e26 0%, var(--bg) 78%);
 }
 
 /* ---- 像素方块：全站去圆角（含伪元素与滚动条） ---- */
@@ -3720,10 +3725,10 @@ textarea.invalid {
   background:
     repeating-linear-gradient(
       to bottom,
-      rgba(0, 0, 0, 0.18) 0 1px,
+      rgba(0, 0, 0, 0.14) 0 1px,
       transparent 1px 3px
     ),
-    radial-gradient(ellipse at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.5) 100%);
+    radial-gradient(ellipse at 50% 50%, transparent 58%, rgba(0, 0, 0, 0.38) 100%);
   animation: crt-flicker 3.4s ease-in-out infinite;
 }
 
@@ -3740,7 +3745,7 @@ textarea.invalid {
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(110, 255, 170, 0.05),
+    rgba(255, 255, 255, 0.045),
     transparent
   );
   animation: crt-sweep 7.5s linear infinite;
@@ -3778,7 +3783,7 @@ textarea.invalid {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    rgba(0, 0, 0, 0.2) 0 1px,
+    rgba(0, 0, 0, 0.16) 0 1px,
     transparent 1px 3px
   );
 }
@@ -3800,7 +3805,7 @@ textarea.invalid {
 [data-theme="crt"] .toast {
   box-shadow:
     4px 4px 0 rgba(0, 0, 0, 0.6),
-    0 0 18px rgba(84, 255, 156, 0.07);
+    0 0 18px rgba(224, 96, 64, 0.07);
 }
 
 /* 浮窗的投影必须留在窗口那圈透明边里（气泡 12px / HUD 7px / 提示框 10px），
@@ -3811,21 +3816,20 @@ textarea.invalid {
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.66);
 }
 
-/* ---- 主按钮：亮绿实底 + 深色字，避免白字在荧光绿上糊掉 ---- */
+/* ---- 主按钮：沿用深色 / 浅色主题的强调色实底 + 白字 ---- */
 [data-theme="crt"] button.primary,
 [data-theme="crt"] .icon-btn.primary,
 [data-theme="crt"] .list-toolbar .tool-btn.primary {
-  color: #04120a;
+  color: #fff;
   background: var(--accent);
   border-color: var(--accent);
-  box-shadow: 2px 2px 0 #032313;
+  box-shadow: 2px 2px 0 rgba(0, 0, 0, 0.45);
   text-shadow: none;
 }
 
 [data-theme="crt"] button.primary:hover,
 [data-theme="crt"] .icon-btn.primary:hover {
-  background: #8affc0;
-  filter: none;
+  filter: brightness(1.12);
 }
 
 [data-theme="crt"] .icon-btn.primary:disabled {
@@ -3835,23 +3839,19 @@ textarea.invalid {
   text-shadow: inherit;
 }
 
-/* 开关：方旋钮、方轨道；打开时旋钮压深色，和主按钮同一套对比关系。 */
+/* 开关：方旋钮、方轨道；打开时旋钮用白（全局那条规则）。 */
 [data-theme="crt"] .toggle:checked {
   background: var(--accent);
   border-color: var(--accent);
 }
 
-[data-theme="crt"] .toggle:checked::after {
-  background: #04120a;
-}
-
-/* ---- 类型色：K 青 / a 黄 / a 绿（与图标配色呼应） ---- */
+/* ---- 类型色：快捷键 橙 / 改键 蓝 / 文本扩展 青（与图标配色呼应，不用绿） ---- */
 [data-theme="crt"] .row-kind.kind-shortcut {
-  color: var(--crt-green);
+  color: var(--accent);
 }
 
 [data-theme="crt"] .row-kind.kind-remap {
-  color: var(--crt-yellow);
+  color: var(--crt-blue);
 }
 
 [data-theme="crt"] .row-kind.kind-expansion {
@@ -3859,7 +3859,7 @@ textarea.invalid {
 }
 
 /* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标
-   （K 青 / a 黄 / d 红 / a 绿，末字右上角一点星芒 = 咔哒那声轻响）。 */
+   （K 青 / a 黄 / d 红 / a 靛，末字右上角一点星芒 = 咔哒那声轻响）。 */
 .brand-word {
   display: none;
 }
@@ -3873,7 +3873,7 @@ textarea.invalid {
   border-color: var(--accent);
   text-shadow:
     0 0 2px var(--accent),
-    0 0 12px rgba(84, 255, 156, 0.6);
+    0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
 }
 
 [data-theme="crt"] .brand-word {
@@ -3887,7 +3887,7 @@ textarea.invalid {
 
 [data-theme="crt"] .brand-word > span {
   position: relative;
-  text-shadow: 0 0 4px currentColor;
+  text-shadow: 0 0 3px color-mix(in srgb, currentColor 70%, transparent);
 }
 
 [data-theme="crt"] .bw-cyan {
@@ -3902,8 +3902,8 @@ textarea.invalid {
   color: var(--crt-red);
 }
 
-[data-theme="crt"] .bw-green {
-  color: var(--crt-green);
+[data-theme="crt"] .bw-indigo {
+  color: var(--crt-indigo);
 }
 
 [data-theme="crt"] .brand-zap {
@@ -3942,13 +3942,13 @@ textarea.invalid {
   }
 }
 
-/* 选中文字反白成荧光底。 */
+/* 选中文字反白成强调色底。 */
 [data-theme="crt"] ::selection {
-  background: rgba(84, 255, 156, 0.35);
+  background: rgba(224, 96, 64, 0.35);
   color: var(--text);
 }
 
-/* 光标也走荧光绿。 */
+/* 光标跟着强调色。 */
 [data-theme="crt"] input,
 [data-theme="crt"] textarea {
   caret-color: var(--accent);
@@ -3970,61 +3970,62 @@ textarea.invalid {
    像素 CRT · 浅色档（data-theme="crt" + data-crt="light"）
    --------------------------------------------------------------------------
    复用深色档的全部结构规则（像素字体 / 方角 / 扫描线 / 硬影 / 图标处理），
-   这里只换调色板并收敛亮度：浅绿纸面 + 深绿字，扫描线与暗角降到原来的
-   一半左右；荧光在浅底上会糊粗字，外扩半径也从 5px 收到 4px、浓度减半。
+   配色直接沿用浅色主题的白底 + 橙色强调，只把扫描线 / 暗角 / 辉光调淡，
+   让像素感停留在字体与方角上，不再有荧光绿。
    ========================================================================== */
 
 [data-theme="crt"][data-crt="light"] {
-  --bg: #e9f0e4;
-  --panel: #f7fbf2;
-  --line: #b3c8ab;
-  --text: #123a24;
-  --muted: #4d7359;
-  --accent: #0d7a46;
-  --accent-dim: #cfe8d6;
-  --hover-bg: rgba(13, 122, 70, 0.07);
-  --float-bg: rgba(250, 253, 246, 0.97);
-  --line-soft: rgba(13, 122, 70, 0.14);
-  --scroll-thumb: rgba(13, 122, 70, 0.22);
-  --scroll-thumb-hi: rgba(13, 122, 70, 0.4);
-  --key-bg: #e1ece0;
-  --key-line: #b3c8ab;
-  --crt-cyan: #086b80;
-  --crt-yellow: #93660a;
+  --bg: #f2f3f5;
+  --panel: #ffffff;
+  --line: #d9dce2;
+  --text: #1c1f26;
+  --muted: #626b7a;
+  --accent: #d1553a;
+  --accent-dim: #f6ddd6;
+  --hover-bg: rgba(0, 0, 0, 0.05);
+  --float-bg: rgba(255, 255, 255, 0.97);
+  --line-soft: rgba(0, 0, 0, 0.08);
+  --scroll-thumb: rgba(0, 0, 0, 0.16);
+  --scroll-thumb-hi: rgba(0, 0, 0, 0.3);
+  --key-bg: #e6e9ee;
+  --key-line: #c3c9d3;
+  --crt-cyan: #0a7f96;
+  --crt-blue: #2d5fa8;
+  --crt-yellow: #8a6400;
   --crt-red: #b23a2e;
-  --crt-green: #0d7a46;
+  --crt-indigo: #4b57b8;
 }
 
 [data-theme="crt"][data-crt="light"] body {
   text-shadow:
     0 0 1px currentColor,
-    0 0 4px color-mix(in srgb, currentColor 20%, transparent);
+    0 0 3px color-mix(in srgb, currentColor 14%, transparent);
 }
 
 [data-theme="crt"][data-crt="light"] .detail-pane {
-  background: radial-gradient(ellipse at 50% 30%, #fbfdf8 0%, var(--bg) 78%);
+  background: radial-gradient(ellipse at 50% 30%, #ffffff 0%, var(--bg) 78%);
 }
 
 [data-theme="crt"][data-crt="light"] svg {
-  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 55%, transparent));
+  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 45%, transparent));
 }
 
-/* 扫描线换淡墨绿、暗角减半；亮带也换成很淡的绿色。 */
+/* 扫描线 / 暗角只用中性灰，很淡；亮带同样换成灰色。 */
 [data-theme="crt"][data-crt="light"] body:has(.layout)::after {
   background:
     repeating-linear-gradient(
       to bottom,
-      rgba(20, 70, 45, 0.1) 0 1px,
+      rgba(0, 0, 0, 0.06) 0 1px,
       transparent 1px 3px
     ),
-    radial-gradient(ellipse at 50% 50%, transparent 62%, rgba(20, 60, 40, 0.16) 100%);
+    radial-gradient(ellipse at 50% 50%, transparent 62%, rgba(0, 0, 0, 0.1) 100%);
 }
 
 [data-theme="crt"][data-crt="light"] body:has(.layout)::before {
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(13, 122, 70, 0.055),
+    rgba(0, 0, 0, 0.03),
     transparent
   );
 }
@@ -4034,12 +4035,12 @@ textarea.invalid {
 [data-theme="crt"][data-crt="light"] .hints-panel::after {
   background: repeating-linear-gradient(
     to bottom,
-    rgba(20, 70, 45, 0.1) 0 1px,
+    rgba(0, 0, 0, 0.06) 0 1px,
     transparent 1px 3px
   );
 }
 
-/* 硬影换成淡墨绿的方块影；浮窗仍只用无模糊硬影、留在透明边内。 */
+/* 硬影换成浅灰方块影；浮窗仍只用无模糊硬影、留在透明边内。 */
 [data-theme="crt"][data-crt="light"] .set-card,
 [data-theme="crt"][data-crt="light"] .modal-box,
 [data-theme="crt"][data-crt="light"] .row-menu,
@@ -4050,51 +4051,22 @@ textarea.invalid {
 [data-theme="crt"][data-crt="light"] .msg-step-detail,
 [data-theme="crt"][data-crt="light"] .toast {
   box-shadow:
-    4px 4px 0 rgba(20, 60, 38, 0.22),
-    0 0 18px rgba(13, 122, 70, 0.06);
+    4px 4px 0 rgba(0, 0, 0, 0.16),
+    0 0 18px rgba(209, 85, 58, 0.05);
 }
 
 [data-theme="crt"][data-crt="light"] .toast-bubble,
 [data-theme="crt"][data-crt="light"] .hud-row,
 [data-theme="crt"][data-crt="light"] .hints-panel {
-  box-shadow: 4px 4px 0 rgba(20, 60, 38, 0.26);
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.18);
 }
 
 [data-theme="crt"][data-crt="light"] .modal-mask {
-  background: rgba(18, 50, 30, 0.28);
-}
-
-/* 主按钮：深绿实底 + 浅字（浅色档的 accent 是深绿，不能再用深字）。 */
-[data-theme="crt"][data-crt="light"] button.primary,
-[data-theme="crt"][data-crt="light"] .icon-btn.primary,
-[data-theme="crt"][data-crt="light"] .list-toolbar .tool-btn.primary {
-  color: #f6fbf3;
-  background: var(--accent);
-  border-color: var(--accent);
-  box-shadow: 2px 2px 0 #0a3f26;
-}
-
-[data-theme="crt"][data-crt="light"] button.primary:hover,
-[data-theme="crt"][data-crt="light"] .icon-btn.primary:hover {
-  background: #0f9253;
-}
-
-/* 覆盖顺序提醒：上面那条浅色主按钮规则与深色档的 :disabled 规则同特异性，
-   同在后写就赢——这里必须补一条更具体的，否则「没有改动」时保存键仍是实底绿。 */
-[data-theme="crt"][data-crt="light"] .icon-btn.primary:disabled {
-  background: transparent;
-  border-color: var(--line);
-  color: var(--muted);
-  box-shadow: none;
-  text-shadow: inherit;
-}
-
-[data-theme="crt"][data-crt="light"] .toggle:checked::after {
-  background: #f6fbf3;
+  background: rgba(0, 0, 0, 0.22);
 }
 
 [data-theme="crt"][data-crt="light"] ::selection {
-  background: rgba(13, 122, 70, 0.2);
+  background: rgba(209, 85, 58, 0.2);
   color: var(--text);
 }
 
