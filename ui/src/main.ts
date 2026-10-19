@@ -5651,11 +5651,12 @@ function isFormTarget(t: EventTarget | null): boolean {
 type ThanksEntry = { name: string; homepage?: string; pool?: string[] };
 const THANKS_THANKS = [
   "🙏", "🙇", "🎉", "✨", "🌟", "💐", "🍻", "🎊", "谢谢", "感谢",
+  "💻", "🖥️", "⌨️", "🖱️", "🔧", "⚙️", "🛠️", "💾", "⚡", "🎧",
   "(◍•ᴗ•◍)", "m(_ _)m", "(*´▽`*)", "ヽ(•‿•)ノ",
 ];
 const THANKS_HEARTS = [
   "❤️", "🧡", "💛", "💚", "💙", "💜", "💗", "💖", "💕", "💞", "♥",
-  "(♡˙︶˙♡)", "(´▽`ʃ♡ƪ)",
+  "🥕", "(♡˙︶˙♡)", "(´▽`ʃ♡ƪ)",
 ];
 const THANKS_ART = [
   "🎨", "🖌️", "🖍️", "✏️", "🖼️", "🎭", "🌈", "🖊️", "✒️", "📐", "✨",
