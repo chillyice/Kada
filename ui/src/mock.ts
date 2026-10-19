@@ -357,11 +357,11 @@ case "run_entry":
           return "D:\\OneDrive\\kada-config.json";
         case "sync_import_path":
           return "D:\\OneDrive\\kada-config.json";
-        // 导出片段：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
+        // 导出锦囊：回一个条数（真实实现写文件，这里只让前端把「已导出 N 项」演出来）。
         case "export_fragment":
           return (args?.picks as unknown[] | undefined)?.length ?? 0;
-        // 片段市场：演示模式没有网络，给一份样例索引 + 样例片段，好让市场列表与安装预览能验收。
-        // 片段里特意放一条命令动作——安装预览的「会执行东西」警示就是给它看的。
+        // 锦囊市场：演示模式没有网络，给一份样例索引 + 样例锦囊，好让市场列表与安装预览能验收。
+        // 锦囊里特意放一条命令动作——安装预览的「会执行东西」警示就是给它看的。
         case "fetch_snippet_index":
           return [
             {
