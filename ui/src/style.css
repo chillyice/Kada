@@ -3678,11 +3678,14 @@ textarea.invalid {
   font-family: var(--font-pixel);
 }
 
-/* 荧光文本：只留一圈很轻的外扩余晖。
-   原来的 1px 贴边实影会把每个笔画整体加粗一格，12px 像素字因此发糊、难认；
-   去掉后笔画回到字体本来的粗细，设备感交给扫描线。 */
+/* 荧光文本：两圈外扩余晖——近圈收紧笔画边缘，远圈把光晕摊开。
+   仍然不加 1px 贴边实影：它会把每个笔画整体加粗一格，12px 像素字因此发糊。
+   远圈用更大的模糊半径、更低的浓度，把「荧光粉在玻璃里晕开」的余晖拉长，
+   又不让字心变粗（WebView2 的合成比浏览器更收敛，单圈 3px/14% 看着偏弱）。 */
 [data-theme="crt"] body {
-  text-shadow: 0 0 3px color-mix(in srgb, currentColor 14%, transparent);
+  text-shadow:
+    0 0 3px color-mix(in srgb, currentColor 22%, transparent),
+    0 0 9px color-mix(in srgb, currentColor 16%, transparent);
 }
 
 /* 主界面的屏幕：中间微微亮、四周压暗，模拟球面显像管的亮度衰减。 */
@@ -3700,7 +3703,10 @@ textarea.invalid {
 /* ---- 图标：关掉抗锯齿、端头切成直角，再补一点荧光 ---- */
 [data-theme="crt"] svg {
   shape-rendering: crispEdges;
-  filter: drop-shadow(0 0 1.5px currentColor);
+  /* 近圈贴住线条、远圈摊开 4px 光晕：图标和文字用同一套「双圈余晖」口径。 */
+  filter:
+    drop-shadow(0 0 1.5px currentColor)
+    drop-shadow(0 0 5px color-mix(in srgb, currentColor 55%, transparent));
 }
 
 [data-theme="crt"] svg * {
@@ -3718,8 +3724,10 @@ textarea.invalid {
    显像管的背景不发光，发光的只有文字 / 图标这些荧光粉。所以这里不再给整屏
    做提亮，而是把 1px 亮线用 color-dodge 混到画面里：混合结果跟底色亮度走——
    暗底几乎不变（+1~2 个亮度），越亮的内容被抬得越多（亮字 / 图标 +20 以上）。
-   每条线是「1px 实亮 + 1px 半强度余晖」，在笔画上留下荧光拖影。
-   扫描线于是只出现在字和图标上，空背景保持干净。 */
+   每条线是「1px 实亮 + 1px 约 2/3 强度余晖」，在笔画上留下荧光拖影。
+   扫描线于是只出现在字和图标上，空背景保持干净。
+   线色与余晖都比最初一版更亮一档：WebView2 里 color-dodge 的合成观感比
+   浏览器收敛，同样的数值在打包版里看着更淡（空背景仍只 +2~3 亮度）。 */
 [data-theme="crt"] body:has(.layout)::after {
   content: "";
   position: fixed;
@@ -3728,8 +3736,8 @@ textarea.invalid {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    #171717 0 1px,
-    rgba(23, 23, 23, 0.5) 1px 2px,
+    #232323 0 1px,
+    rgba(35, 35, 35, 0.62) 1px 2px,
     transparent 2px 4px
   );
   mix-blend-mode: color-dodge;
@@ -3749,7 +3757,7 @@ html[data-theme="crt"][data-crt="dark"]:has(.layout)::before {
   background: repeating-linear-gradient(
     to bottom,
     transparent 0 2px,
-    rgba(140, 140, 140, 0.3) 2px 3px,
+    rgba(140, 140, 140, 0.34) 2px 3px,
     transparent 3px 4px
   );
   mix-blend-mode: darken;
@@ -3768,7 +3776,7 @@ html[data-theme="crt"][data-crt="dark"]:has(.layout)::before {
   background: linear-gradient(
     to bottom,
     transparent,
-    rgba(255, 255, 255, 0.045),
+    rgba(255, 255, 255, 0.06),
     transparent
   );
   animation: crt-sweep 7.5s linear infinite;
@@ -3817,8 +3825,8 @@ html[data-theme="crt"]:has(.layout)::after {
   pointer-events: none;
   background: repeating-linear-gradient(
     to bottom,
-    #171717 0 1px,
-    rgba(23, 23, 23, 0.5) 1px 2px,
+    #232323 0 1px,
+    rgba(35, 35, 35, 0.62) 1px 2px,
     transparent 2px 4px
   );
   mix-blend-mode: color-dodge;
@@ -4033,7 +4041,11 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 [data-theme="crt"][data-crt="light"] body {
-  text-shadow: 0 0 2px color-mix(in srgb, currentColor 8%, transparent);
+  /* 浅底上的「墨」同样用双圈：近圈 2px 收边，远圈 7px 摊开，浓度比深色档低一档，
+     避免 12px 像素字在白底上糊成灰团。 */
+  text-shadow:
+    0 0 2px color-mix(in srgb, currentColor 14%, transparent),
+    0 0 7px color-mix(in srgb, currentColor 12%, transparent);
 }
 
 [data-theme="crt"][data-crt="light"] .detail-pane {
@@ -4041,7 +4053,9 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 [data-theme="crt"][data-crt="light"] svg {
-  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 45%, transparent));
+  filter:
+    drop-shadow(0 0 1px color-mix(in srgb, currentColor 55%, transparent))
+    drop-shadow(0 0 4px color-mix(in srgb, currentColor 32%, transparent));
 }
 
 /* 浅色档反过来：亮底本来就在发光，只有深色「墨」（文字 / 图标）需要被扫描线
@@ -4050,8 +4064,8 @@ html[data-theme="crt"]:has(.layout)::after {
 [data-theme="crt"][data-crt="light"] body:has(.layout)::after {
   background: repeating-linear-gradient(
     to bottom,
-    rgba(115, 115, 115, 0.25) 0 1px,
-    rgba(115, 115, 115, 0.12) 1px 2px,
+    rgba(115, 115, 115, 0.36) 0 1px,
+    rgba(115, 115, 115, 0.2) 1px 2px,
     transparent 2px 4px
   );
   mix-blend-mode: lighten;
@@ -4066,8 +4080,8 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 [data-theme="crt"][data-crt="light"] .hints-panel::after {
   background: repeating-linear-gradient(
     to bottom,
-    rgba(115, 115, 115, 0.25) 0 1px,
-    rgba(115, 115, 115, 0.12) 1px 2px,
+    rgba(115, 115, 115, 0.36) 0 1px,
+    rgba(115, 115, 115, 0.2) 1px 2px,
     transparent 2px 4px
   );
   mix-blend-mode: lighten;
