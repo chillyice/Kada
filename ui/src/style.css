@@ -3714,28 +3714,23 @@ textarea.invalid {
   stroke-width: 2.4px;
 }
 
-/* ---- 扫描线：屏幕自己的后处理，而不是盖上去的一层 ----
-   Windows Terminal「复古终端效果」的关键是「亮的地方才发光」：这里不画线，
-   而是用 backdrop-filter 对每条扫描线覆盖的那 1px 画面直接提亮（mask 只留
-   1px 亮行 / 3px 间隔）。于是暗底只是微微透光，亮字与浅色面板会自然烧出
-   更亮的横线——扫描线和内容互相影响，不再是一层固定网格贴在窗口上。 */
+/* ---- 扫描线：只长在「发光的内容」上 ----
+   显像管的背景不发光，发光的只有文字 / 图标这些荧光粉。所以这里不再给整屏
+   做提亮，而是把 1px 亮线用 color-dodge 混到画面里：混合结果跟底色亮度走——
+   暗底几乎不变（+1~2 个亮度），越亮的内容被抬得越多（亮字 / 图标 +20 以上）。
+   扫描线于是只出现在字和图标上，空背景保持干净。 */
 [data-theme="crt"] body:has(.layout)::after {
   content: "";
   position: fixed;
   inset: 0;
   z-index: 9990;
   pointer-events: none;
-  backdrop-filter: brightness(1.55) saturate(1.08);
-  -webkit-mask-image: repeating-linear-gradient(
+  background: repeating-linear-gradient(
     to bottom,
-    #000 0 1px,
+    #171717 0 1px,
     transparent 1px 4px
   );
-  mask-image: repeating-linear-gradient(
-    to bottom,
-    #000 0 1px,
-    transparent 1px 4px
-  );
+  mix-blend-mode: color-dodge;
   animation: crt-flicker 3.4s ease-in-out infinite;
 }
 
@@ -3758,7 +3753,7 @@ textarea.invalid {
   animation: crt-sweep 7.5s linear infinite;
 }
 
-/* 暗角单独一层：扫描线那层被 mask 裁成条纹了，压不住四角。 */
+/* 暗角单独一层，负责压住屏幕边缘；它跟扫描线无关，所以不参与混合。 */
 html[data-theme="crt"]:has(.layout)::after {
   content: "";
   position: fixed;
@@ -3791,7 +3786,7 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 /* 浮窗自己的扫描线：严格裁在面板内，不碰窗口那圈透明留白。
-   同样走 backdrop-filter，提亮的是面板里的字，而不是盖一层白线。 */
+   同样只叠在面板里的字上，面板底色几乎不动。 */
 [data-theme="crt"] .toast-bubble::after,
 [data-theme="crt"] .hud-row::after,
 [data-theme="crt"] .hints-panel::after {
@@ -3799,17 +3794,12 @@ html[data-theme="crt"]:has(.layout)::after {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  backdrop-filter: brightness(1.55) saturate(1.08);
-  -webkit-mask-image: repeating-linear-gradient(
+  background: repeating-linear-gradient(
     to bottom,
-    #000 0 1px,
+    #171717 0 1px,
     transparent 1px 4px
   );
-  mask-image: repeating-linear-gradient(
-    to bottom,
-    #000 0 1px,
-    transparent 1px 4px
-  );
+  mix-blend-mode: color-dodge;
 }
 
 [data-theme="crt"] .hud-row {
@@ -4032,10 +4022,16 @@ html[data-theme="crt"]:has(.layout)::after {
   filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 45%, transparent));
 }
 
-/* 浅色档同样走「提亮底下画面」：浅灰底会被推到接近白色，白面板不变，
-   深色字只轻微变亮——不会把 1px 亮线糊在字上。 */
+/* 浅色档反过来：亮底本来就在发光，只有深色「墨」（文字 / 图标）需要被扫描线
+   提亮。用 lighten 混一道浅灰线——比它亮的背景 / 白面板完全不变，只有深色
+   笔画被抬起来，于是扫描线同样只落在字和图标上。 */
 [data-theme="crt"][data-crt="light"] body:has(.layout)::after {
-  backdrop-filter: brightness(1.08) saturate(1.02);
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(115, 115, 115, 0.25) 0 1px,
+    transparent 1px 4px
+  );
+  mix-blend-mode: lighten;
 }
 
 html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
@@ -4045,7 +4041,12 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 [data-theme="crt"][data-crt="light"] .toast-bubble::after,
 [data-theme="crt"][data-crt="light"] .hud-row::after,
 [data-theme="crt"][data-crt="light"] .hints-panel::after {
-  backdrop-filter: brightness(1.08) saturate(1.02);
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(115, 115, 115, 0.25) 0 1px,
+    transparent 1px 4px
+  );
+  mix-blend-mode: lighten;
 }
 
 /* 硬影换成浅灰方块影；浮窗仍只用无模糊硬影、留在透明边内。 */
