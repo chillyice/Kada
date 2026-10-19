@@ -630,6 +630,21 @@ fn action_label(action: &Action) -> &'static str {
             ..
         } => "查询程序失败",
         #[cfg(feature = "automation")]
+        Action::App {
+            operation: AppOperation::Maximize { .. },
+            ..
+        } => "最大化窗口失败",
+        #[cfg(feature = "automation")]
+        Action::App {
+            operation: AppOperation::Minimize { .. },
+            ..
+        } => "最小化窗口失败",
+        #[cfg(feature = "automation")]
+        Action::App {
+            operation: AppOperation::Activate { .. },
+            ..
+        } => "窗口置于前台失败",
+        #[cfg(feature = "automation")]
         Action::Script { .. } => "脚本失败",
         #[cfg(feature = "automation")]
         Action::OpenUrl { .. } => "打开网址失败",
@@ -792,6 +807,9 @@ fn app_body(op: &AppOperation, vars: &Vars) -> String {
             format!("启动程序 {}", join_args(&sub(program), args, vars))
         }
         AppOperation::Close { program } => format!("关闭程序 {}", sub(program)),
+        AppOperation::Maximize { program } => format!("最大化窗口 {}", sub(program)),
+        AppOperation::Minimize { program } => format!("最小化窗口 {}", sub(program)),
+        AppOperation::Activate { program } => format!("放置到前台 {}", sub(program)),
         AppOperation::Status { program, .. } => format!("查询程序 {} 是否在运行", sub(program)),
         AppOperation::Restart { program, args } => {
             format!("重启程序 {}", join_args(&sub(program), args, vars))
@@ -1280,7 +1298,7 @@ fn copy_chord() {
     }
 }
 
-/// 执行一个应用动作（打开/关闭/查询状态/重启）。
+/// 执行一个应用动作（打开/关闭/查询状态/重启/窗口控制）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -1296,6 +1314,21 @@ fn run_app(op: &AppOperation, ctx: &Ctx, vars: &mut Vars) -> Result<Option<Comma
         AppOperation::Close { program } => {
             let program = substitute_vars(program, vars);
             Ok(Some(close_program(&program, ctx)?))
+        }
+        AppOperation::Maximize { program } => {
+            let program = substitute_vars(program, vars);
+            kada_hook::control_window(&program, kada_hook::WindowOp::Maximize)?;
+            Ok(None)
+        }
+        AppOperation::Minimize { program } => {
+            let program = substitute_vars(program, vars);
+            kada_hook::control_window(&program, kada_hook::WindowOp::Minimize)?;
+            Ok(None)
+        }
+        AppOperation::Activate { program } => {
+            let program = substitute_vars(program, vars);
+            kada_hook::control_window(&program, kada_hook::WindowOp::Activate)?;
+            Ok(None)
         }
         AppOperation::Status {
             program,

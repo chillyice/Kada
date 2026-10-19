@@ -69,6 +69,43 @@ pub fn idle_seconds() -> Option<u64> {
     }
 }
 
+/// 窗口控制操作（应用动作的「最大化 / 最小化 / 放置到前台」）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowOp {
+    /// 最大化主窗口（已最小化则先还原）。
+    Maximize,
+    /// 最小化主窗口。
+    Minimize,
+    /// 把主窗口放到前台（已最小化则先还原）；不启动程序。
+    Activate,
+}
+
+/// 按程序名 / 应用名找到其主窗口并执行窗口控制。
+///
+/// 三平台各自实现（`win` / `linux` / `macos`），失败返回能直接展示给用户的中文原因。
+/// 本接口不属于输入注入，**不走提权通道**；目标程序若以管理员身份运行，非提权的 Kada
+/// 可能改不动它的窗口（Windows 上表现为 `ShowWindow` 无效果）。
+pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win::control_window(program, op)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::control_window(program, op)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::control_window(program, op)
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        let _ = (program, op);
+        Err("当前平台不支持窗口控制".into())
+    }
+}
+
+
 /// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
 /// 「往提权窗口注入」。
 ///

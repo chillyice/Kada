@@ -916,6 +916,72 @@ fn process_name_of(pid: i32) -> Option<String> {
     path.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_string)
 }
 
+/// 窗口控制（应用动作）：通过 System Events 操作目标应用的主窗口。
+///
+/// 需要在「辅助功能」之外再给一次「自动化 → System Events」授权（首次调用时系统弹窗）。
+/// 程序名取路径末段并去掉 `.app`（`/Applications/Safari.app` → `Safari`），与 System
+/// Events 里的 process 名对齐；最大化按「菜单栏以下、整块屏幕」摆放。
+pub fn control_window(program: &str, op: crate::WindowOp) -> Result<(), String> {
+    const SCRIPT: &str = r#"
+on run argv
+  set appName to item 1 of argv
+  set theOp to item 2 of argv
+  tell application "System Events"
+    if not (exists process appName) then error "程序未运行：" & appName
+    tell process appName
+      if theOp is "minimize" then
+        set value of attribute "AXMinimized" of window 1 to true
+      else
+        set frontmost to true
+        if theOp is "activate" then
+          try
+            set value of attribute "AXMinimized" of window 1 to false
+          end try
+        else if theOp is "maximize" then
+          set win to window 1
+          set screenBounds to {0, 0, 1440, 900}
+          try
+            tell application "Finder" to set screenBounds to bounds of window of desktop
+          end try
+          set {x0, y0, x1, y1} to screenBounds
+          set menuHeight to 25
+          try
+            set menuHeight to item 2 of (size of menu bar 1)
+          end try
+          set position of win to {x0, y0 + menuHeight}
+          set size of win to {(x1 - x0), (y1 - y0 - menuHeight)}
+        end if
+      end if
+    end tell
+  end tell
+end run
+"#;
+
+    let base = program.rsplit('/').next().unwrap_or(program);
+    let name = base.strip_suffix(".app").unwrap_or(base);
+    if name.is_empty() {
+        return Err("程序名不能为空".into());
+    }
+    let op_name = match op {
+        crate::WindowOp::Maximize => "maximize",
+        crate::WindowOp::Minimize => "minimize",
+        crate::WindowOp::Activate => "activate",
+    };
+    let out = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(SCRIPT)
+        .arg("--")
+        .arg(name)
+        .arg(op_name)
+        .output()
+        .map_err(|e| format!("调用 osascript 失败：{e}"))?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    Err(if msg.is_empty() { format!("操作「{name}」的窗口失败") } else { msg })
+}
+
 /// 取当前前台应用上下文（进程名 + 焦点窗口标题），供「按前台应用/窗口」类条件求值。
 ///
 /// 与 Windows 版同接口；取不到窗口标题时返回空串（条件按「不匹配」处理），取不到前台应用

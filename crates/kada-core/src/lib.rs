@@ -994,7 +994,7 @@ fn elapsed_since_now(t: std::time::SystemTime) -> u64 {
     }
 }
 
-/// 应用操作：启动、关闭、查询运行状态、重启。
+/// 应用操作：启动、关闭、查询运行状态、重启、窗口控制。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -1003,6 +1003,12 @@ pub enum AppOperation {
     Launch { program: String, args: Vec<String> },
     /// 关闭程序（结束所有同名进程）。
     Close { program: String },
+    /// 把程序的主窗口最大化（已最小化则先还原）。
+    Maximize { program: String },
+    /// 把程序的主窗口最小化。
+    Minimize { program: String },
+    /// 把程序的主窗口放置到前台（已最小化则先还原；**不会启动程序**）。
+    Activate { program: String },
     /// 查询程序是否在运行，结果写入变量 `var`（布尔值，供后续条件判断用）。
     /// `retries`：未运行时的重试次数（0 = 只查一次）；`interval_ms`：每次重试间隔。
     Status {
@@ -1241,9 +1247,12 @@ impl Action {
             Action::App { operation, .. } => {
                 use AppOperation::*;
                 match operation {
-                    Launch { program, .. } | Close { program } | Restart { program, .. } => {
-                        non_empty("程序", program)
-                    }
+                    Launch { program, .. }
+                    | Close { program }
+                    | Maximize { program }
+                    | Minimize { program }
+                    | Activate { program }
+                    | Restart { program, .. } => non_empty("程序", program),
                     // 变量名允许为空（执行时回退到 "app"），只要求程序非空。
                     Status { program, .. } => non_empty("程序", program),
                 }
@@ -4136,6 +4145,18 @@ mod os_and_sanitize_tests {
                 operation: AppOperation::Restart { program: "notepad.exe".into(), args: vec![] },
                 description: None,
             },
+            Action::App {
+                operation: AppOperation::Maximize { program: "notepad.exe".into() },
+                description: None,
+            },
+            Action::App {
+                operation: AppOperation::Minimize { program: "notepad.exe".into() },
+                description: None,
+            },
+            Action::App {
+                operation: AppOperation::Activate { program: "notepad.exe".into() },
+                description: None,
+            },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "{a:?}");
@@ -4148,6 +4169,24 @@ mod os_and_sanitize_tests {
         assert!(Action::App { operation: AppOperation::Close { program: "".into() }, description: None }
             .validate()
             .is_err());
+        assert!(Action::App {
+            operation: AppOperation::Maximize { program: "  ".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::App {
+            operation: AppOperation::Minimize { program: "".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::App {
+            operation: AppOperation::Activate { program: "".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
         assert!(Action::App {
             operation: AppOperation::Status {
                 program: "x".into(),

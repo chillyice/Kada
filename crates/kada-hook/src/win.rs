@@ -36,8 +36,8 @@ use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use windows::core::{w, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::core::{w, BOOL, PWSTR};
+use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -48,8 +48,8 @@ use windows::Win32::System::RemoteDesktop::{
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
-    GetCurrentProcessId, GetCurrentThreadId, OpenProcess, QueryFullProcessImageNameW,
-    PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId, OpenProcess,
+    QueryFullProcessImageNameW, PROCESS_NAME_FORMAT, PROCESS_QUERY_LIMITED_INFORMATION,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::{
@@ -60,7 +60,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
 
-use crate::{MouseRecord, MouseRecordKind};
+use crate::{MouseRecord, MouseRecordKind, WindowOp};
 
 pub mod agent;
 pub mod simulate;
@@ -1133,6 +1133,100 @@ fn process_name_of(pid: u32) -> Option<String> {
     ok.ok()?;
     let full = String::from_utf16_lossy(&buf[..len as usize]);
     full.rsplit(['\\', '/']).next().map(str::to_string)
+}
+
+/// 窗口控制（应用动作）：按镜像名找到主窗口，最大化 / 最小化 / 置于前台。
+///
+/// 只认**可见、无 owner、非工具窗**的顶层窗口（与用户眼里的「程序主窗口」对齐）：
+/// 托盘辅助窗、隐藏消息窗都带 `WS_EX_TOOLWINDOW` 或有 owner，别把它们最大化。
+pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
+    let target = program.rsplit(['\\', '/']).next().unwrap_or(program);
+    let hwnd = find_app_window(target).ok_or_else(|| {
+        format!("找不到「{target}」的窗口（程序未运行，或没有可见的主窗口）")
+    })?;
+    unsafe {
+        match op {
+            WindowOp::Maximize => {
+                // SW_MAXIMIZE 对已最小化的窗口会先还原再最大化。
+                let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+                force_foreground(hwnd);
+            }
+            WindowOp::Minimize => {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            WindowOp::Activate => {
+                if IsIconic(hwnd).as_bool() {
+                    let _ = ShowWindow(hwnd, SW_RESTORE);
+                }
+                force_foreground(hwnd);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 找目标镜像名（不区分大小写）的一个可见主窗口。
+fn find_app_window(target: &str) -> Option<HWND> {
+    struct Search {
+        target: String,
+        found: Option<HWND>,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = &mut *(lparam.0 as *mut Search);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        // 有 owner 的窗口（对话框 / 托盘辅助窗）不是主窗口。
+        if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
+            if !owner.0.is_null() {
+                return TRUE;
+            }
+        }
+        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+        if ex_style & WS_EX_TOOLWINDOW.0 != 0 {
+            return TRUE;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 {
+            return TRUE;
+        }
+        match process_name_of(pid) {
+            Some(name) if name.eq_ignore_ascii_case(&search.target) => {
+                search.found = Some(hwnd);
+                FALSE // 找到即停
+            }
+            _ => TRUE,
+        }
+    }
+
+    let mut search = Search { target: target.to_string(), found: None };
+    unsafe {
+        let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
+    }
+    search.found
+}
+
+/// 把窗口提到前台。`SetForegroundWindow` 在前台线程不是自己时会被系统拒绝，
+/// 临时 attach 到前台线程可绕过这条限制（attach 失败也照常尝试一次）。
+fn force_foreground(hwnd: HWND) {
+    unsafe {
+        if GetForegroundWindow() == hwnd {
+            return;
+        }
+        let fg = GetForegroundWindow();
+        let fg_thread = GetWindowThreadProcessId(fg, None);
+        let this_thread = GetCurrentThreadId();
+        let attached = fg_thread != 0
+            && fg_thread != this_thread
+            && AttachThreadInput(this_thread, fg_thread, true).as_bool();
+        let _ = BringWindowToTop(hwnd);
+        let _ = SetForegroundWindow(hwnd);
+        if attached {
+            let _ = AttachThreadInput(this_thread, fg_thread, false);
+        }
+    }
 }
 
 /// 取 [`Key`] 名的可打印形式，未知键码返回 None（放行）。

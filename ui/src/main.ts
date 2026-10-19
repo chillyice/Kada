@@ -33,6 +33,9 @@ type Condition =
 type AppOperation =
   | { op: "launch"; program: string; args: string[] }
   | { op: "close"; program: string }
+  | { op: "maximize"; program: string }
+  | { op: "minimize"; program: string }
+  | { op: "activate"; program: string }
   | { op: "status"; program: string; var: string; retries: number; interval_ms: number }
   | { op: "restart"; program: string; args: string[] };
 type TextMode = "input" | "to_upper" | "to_lower";
@@ -494,6 +497,9 @@ function newOsOp(op: OsOperation["op"]): OsOperation {
 const APP_OPS: { value: AppOperation["op"]; label: string }[] = [
   { value: "launch", label: "打开（启动）" },
   { value: "close", label: "关闭" },
+  { value: "maximize", label: "最大化" },
+  { value: "minimize", label: "最小化" },
+  { value: "activate", label: "放置到前台" },
   { value: "status", label: "查询运行状态" },
   { value: "restart", label: "重启" },
 ];
@@ -503,6 +509,9 @@ function newAppOp(op: AppOperation["op"]): AppOperation {
     case "launch":
       return { op, program: "", args: [] };
     case "close":
+    case "maximize":
+    case "minimize":
+    case "activate":
       return { op, program: "" };
     case "status":
       return { op, program: "", var: "app", retries: 0, interval_ms: 1000 };
@@ -606,6 +615,9 @@ function appHasContent(o: AppOperation): boolean {
   switch (o.op) {
     case "launch":
     case "close":
+    case "maximize":
+    case "minimize":
+    case "activate":
     case "status":
     case "restart":
       return o.program.trim().length > 0;
@@ -713,6 +725,12 @@ function appSummary(o: AppOperation): string {
       return `打开：${o.program}`;
     case "close":
       return `关闭：${o.program}`;
+    case "maximize":
+      return `最大化：${o.program}`;
+    case "minimize":
+      return `最小化：${o.program}`;
+    case "activate":
+      return `放置到前台：${o.program}`;
     case "status":
       return `查询状态：${o.program} → ${o.var}${o.retries ? `（重试 ${o.retries} 次 / ${o.interval_ms}ms）` : ""}`;
     case "restart":
@@ -4135,6 +4153,18 @@ function actionFields(
     );
     body.append(vline);
   } else if (a.type === "keys") {
+    // 从已保存的快捷键里挑触发组合：只收单个组合（序列 "F9 J K" 不能塞进一次按键注入）。
+    const combos: { combo: string; label: string }[] = [];
+    const seen = new Set<string>();
+    for (const s of cfg.shortcuts) {
+      const name = s.name?.trim();
+      for (const t of s.triggers) {
+        const combo = t.trim();
+        if (!combo || combo.includes(" ") || seen.has(combo)) continue;
+        seen.add(combo);
+        combos.push({ combo, label: name ? `${name}（${combo}）` : combo });
+      }
+    }
     const line = el("div", "action-line");
     const keys = el("input", "action-input") as HTMLInputElement;
     keys.type = "text";
@@ -4146,6 +4176,26 @@ function actionFields(
         .map((x) => x.trim())
         .filter(Boolean);
     });
+    if (combos.length) {
+      const pick = el("select", "action-input") as HTMLSelectElement;
+      const none = el("option") as HTMLOptionElement;
+      none.value = "";
+      none.textContent = "从已创建的快捷键选择…";
+      pick.append(none);
+      for (const c of combos) {
+        const o = el("option") as HTMLOptionElement;
+        o.value = c.combo;
+        o.textContent = c.label;
+        pick.append(o);
+      }
+      if (combos.some((c) => c.combo === keys.value)) pick.value = keys.value;
+      pick.addEventListener("change", () => {
+        if (!pick.value) return;
+        keys.value = pick.value;
+        a.keys = pick.value.split("+").map((x) => x.trim()).filter(Boolean);
+      });
+      body.append(pick);
+    }
     const cap = el("button", undefined, "录入");
     cap.addEventListener("click", (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
@@ -4320,7 +4370,12 @@ function actionFields(
         op.args = args.value.split(/\s+/).filter(Boolean);
       });
       body.append(args);
-    } else if (op.op === "close") {
+    } else if (
+      op.op === "close" ||
+      op.op === "maximize" ||
+      op.op === "minimize" ||
+      op.op === "activate"
+    ) {
       const line = el("div", "action-line");
       const name = el("input", "action-input") as HTMLInputElement;
       name.type = "text";
@@ -4331,6 +4386,17 @@ function actionFields(
       });
       line.append(name);
       body.append(line);
+      if (op.op !== "close") {
+        body.append(
+          el(
+            "div",
+            "unit-hint",
+            op.op === "activate"
+              ? "按程序名找到它的主窗口并放到前台（不会启动程序）。"
+              : "按程序名找到它的主窗口并调整窗口状态。Linux 需要 wmctrl（仅 X11 会话）。",
+          ),
+        );
+      }
     } else if (op.op === "status") {
       const line = el("div", "action-line");
       const name = el("input", "action-input") as HTMLInputElement;

@@ -726,6 +726,114 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
     None
 }
 
+/// 窗口控制（应用动作）：借 `wmctrl` 找到目标进程的窗口，最大化 / 最小化 / 置于前台。
+///
+/// `wmctrl` 只看得见 X11（含 XWayland）窗口：纯 Wayland 会话里拿不到窗口列表，
+/// 会以「找不到窗口 / 命令失败」收场。最小化优先用 `xdotool`（`wmctrl` 的 hidden
+/// 标记很多 WM 不认），失败再退回 `wmctrl`。
+pub fn control_window(program: &str, op: crate::WindowOp) -> Result<(), String> {
+    let target = program.rsplit('/').next().unwrap_or(program).to_ascii_lowercase();
+    let out = std::process::Command::new("wmctrl")
+        .arg("-lp")
+        .output()
+        .map_err(|e| {
+            format!("窗口控制需要 wmctrl（Debian/Ubuntu：sudo apt install wmctrl；且仅支持 X11）：{e}")
+        })?;
+    if !out.status.success() {
+        return Err(run_error("wmctrl -lp", &out));
+    }
+    let list = String::from_utf8_lossy(&out.stdout);
+    let mut window_id = None;
+    for line in list.lines() {
+        // 0x03a00007  0 12345 host title
+        let mut fields = line.split_whitespace();
+        let Some(id) = fields.next() else { continue };
+        let Some(_desktop) = fields.next() else { continue };
+        let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else { continue };
+        if pid != 0 && process_matches(pid, &target) {
+            window_id = Some(id.to_string());
+            break;
+        }
+    }
+    let id = window_id.ok_or_else(|| {
+        format!("找不到「{target}」的窗口（程序未运行，或当前是纯 Wayland 会话）")
+    })?;
+
+    match op {
+        crate::WindowOp::Activate => run_window_cmd("wmctrl", &["-i", "-a", &id]),
+        crate::WindowOp::Maximize => run_window_cmd(
+            "wmctrl",
+            &["-i", "-r", &id, "-b", "add,maximized_vert,maximized_horz"],
+        ),
+        crate::WindowOp::Minimize => {
+            let xdotool = u32::from_str_radix(id.trim_start_matches("0x"), 16)
+                .map_err(|_| format!("无法解析窗口 id「{id}」"))
+                .and_then(|dec| {
+                    run_window_cmd("xdotool", &["windowminimize", &dec.to_string()])
+                });
+            match xdotool {
+                Ok(()) => Ok(()),
+                Err(xdotool_err) => run_window_cmd(
+                    "wmctrl",
+                    &["-i", "-r", &id, "-b", "add,hidden"],
+                )
+                .map_err(|wmctrl_err| {
+                    format!("最小化失败（xdotool：{xdotool_err}；wmctrl：{wmctrl_err}）")
+                }),
+            }
+        }
+    }
+}
+
+/// `/proc/<pid>` 里的进程名（`comm`，或 cmdline 首段的文件名）是否匹配目标名（不区分大小写）。
+fn process_matches(pid: u32, target: &str) -> bool {
+    let target = target.strip_suffix(".exe").unwrap_or(target);
+    if let Ok(comm) = std::fs::read_to_string(format!("/proc/{pid}/comm")) {
+        if comm.trim().eq_ignore_ascii_case(target) {
+            return true;
+        }
+    }
+    if let Ok(cmdline) = std::fs::read(format!("/proc/{pid}/cmdline")) {
+        let first = cmdline.split(|b| *b == 0).next().unwrap_or(&[]);
+        let path = String::from_utf8_lossy(first);
+        if path
+            .rsplit('/')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(target))
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// 跑一条窗口控制命令，失败时把 stderr（空则 stdout）当成原因返回。
+fn run_window_cmd(cmd: &str, args: &[&str]) -> Result<(), String> {
+    let out = std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .map_err(|e| format!("调用 {cmd} 失败：{e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(run_error(cmd, &out))
+    }
+}
+
+/// 命令失败的原因文本。
+fn run_error(cmd: &str, out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !stderr.is_empty() {
+        return stderr;
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if stdout.is_empty() {
+        format!("{cmd} 执行失败")
+    } else {
+        stdout
+    }
+}
+
 /// 输入注入：按键/组合键/文本（与 Windows 后端同接口）。
 pub mod simulate {
     //! 文本走剪贴板 + `Ctrl+V`（对中文等 Unicode 最稳，与 Windows 一致）；
