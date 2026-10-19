@@ -3720,6 +3720,68 @@ textarea.invalid {
   stroke-width: 2.4px;
 }
 
+/* ---- 原生下拉的弹出层 ----
+   原生 <select> 的列表由浏览器画在顶层，页面里的扫描线层盖不到，默认是系统
+   字体 + 圆角 + 软阴影，和 CRT 完全割裂。Chromium 135+ 的
+   `appearance: base-select` 把弹出层变成可样式化的 `::picker(select)`：
+   像素字体、方角、静态扫描线底纹与硬影都能落到列表上。只给 CRT 两档开启，
+   其它主题仍是原生下拉。 */
+[data-theme="crt"] select,
+[data-theme="crt"] select::picker(select) {
+  appearance: base-select;
+}
+
+[data-theme="crt"] select::picker-icon {
+  color: var(--muted);
+  font-family: var(--font-pixel);
+  transition: none;
+}
+
+[data-theme="crt"] select::picker(select) {
+  margin: 4px 0 0;
+  padding: 4px;
+  /* 弹出层在顶层，吃不到主界面的 color-dodge 扫描线，这里用静态亮线底纹代替：
+     面板底色上每 4px 一条 1px 的极淡白线。选项透明，底纹才能连成整片。 */
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(255, 255, 255, 0.035) 0 1px,
+      transparent 1px 4px
+    ),
+    var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 0;
+  box-shadow:
+    4px 4px 0 rgba(0, 0, 0, 0.6),
+    0 0 18px rgba(224, 96, 64, 0.07);
+  font-family: var(--font-pixel);
+}
+
+/* 只在下拉打开时给选项上样式（`:open`）：闭合状态显示的是 selectedcontent
+   克隆，别让选项色/底纹反灌到控件本身。 */
+[data-theme="crt"] select:open option {
+  background: transparent;
+  color: var(--text);
+  padding: 6px 8px;
+  border-radius: 0;
+  font-family: var(--font-pixel);
+}
+
+[data-theme="crt"] select:open option:hover,
+[data-theme="crt"] select:open option:focus {
+  background: var(--accent-dim);
+  color: var(--text);
+}
+
+[data-theme="crt"] select:open option:checked {
+  color: var(--accent);
+}
+
+[data-theme="crt"] select:open option::checkmark {
+  color: var(--accent);
+}
+
 /* ---- 扫描线：只长在「发光的内容」上 ----
    显像管的背景不发光，发光的只有文字 / 图标这些荧光粉。所以这里不再给整屏
    做提亮，而是把 1px 亮线用 color-dodge 混到画面里：混合结果跟底色亮度走——
@@ -4056,6 +4118,20 @@ html[data-theme="crt"]:has(.layout)::after {
   filter:
     drop-shadow(0 0 1px color-mix(in srgb, currentColor 55%, transparent))
     drop-shadow(0 0 4px color-mix(in srgb, currentColor 32%, transparent));
+}
+
+/* 浅色档的下拉弹出层：底纹换成淡墨线（白底上亮线看不见），硬影同步减淡。 */
+[data-theme="crt"][data-crt="light"] select::picker(select) {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(0, 0, 0, 0.035) 0 1px,
+      transparent 1px 4px
+    ),
+    var(--panel);
+  box-shadow:
+    4px 4px 0 rgba(0, 0, 0, 0.16),
+    0 0 18px rgba(209, 85, 58, 0.05);
 }
 
 /* 浅色档反过来：亮底本来就在发光，只有深色「墨」（文字 / 图标）需要被扫描线
