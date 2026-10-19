@@ -1311,6 +1311,7 @@ body {
 .flow-step.type-open_url { --type-color: #e879b9; }
 .flow-step.type-if { --type-color: #ffd166; }
 .flow-step.type-parallel { --type-color: #5ec8c8; }
+.flow-step.type-group { --type-color: #8fa3bf; }
 
 .flow-step,
 .flow-terminator {
@@ -1580,18 +1581,76 @@ body {
   opacity: 0.4;
 }
 
-.action-row.drop-before {
-  box-shadow: inset 0 3px 0 var(--accent);
+/* 拖拽插入位置线：独立元素（fixed），画在两张卡片的**空隙**里，而不是卡片上下边缘的内描边。
+   相邻空隙之间移动时 top 有短过渡，起手用一小段从左展开的动画，拖动时不闪。 */
+.action-drop-line {
+  position: fixed;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+  pointer-events: none;
+  z-index: 400;
+  transform: translateY(-1px);
+  transform-origin: left center;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 45%, transparent);
+  animation: drop-line-in 120ms cubic-bezier(0.2, 0.7, 0.3, 1);
+  transition: top 70ms ease, left 70ms ease, width 100ms ease;
 }
 
-.action-row.drop-after {
-  box-shadow: inset 0 -3px 0 var(--accent);
+/* 左端小圆点：一眼看出「会插到这里」，又不压住卡片内容。 */
+.action-drop-line::before {
+  content: "";
+  position: absolute;
+  left: -3px;
+  top: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  transform: translateY(-50%);
 }
 
-.action-row.drop-into,
+/* 把容器拖进自己肚子里：红线 = 这个落点不允许。 */
+.action-drop-line.forbidden {
+  background: #e5484d;
+  box-shadow: 0 0 8px rgba(229, 72, 77, 0.45);
+}
+
+.action-drop-line.forbidden::before {
+  background: #e5484d;
+}
+
+@keyframes drop-line-in {
+  from {
+    opacity: 0;
+    transform: translateY(-1px) scaleX(0.9);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-1px) scaleX(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .action-drop-line {
+    animation: none;
+    transition: none;
+  }
+}
+
+/* 空列表 / 空分支没有「两张卡片之间」可画，改成整块高亮。 */
+.action-list.drop-into,
 .action-branch.drop-into {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.action-list.drop-forbidden,
+.action-branch.drop-forbidden {
+  outline: 2px dashed #e5484d;
+  outline-offset: -2px;
+  border-radius: 8px;
 }
 
 .action-type {
@@ -1762,11 +1821,12 @@ body {
 }
 
 /* ---------- 脑图式流程节点（第一版 · 并行执行 7.1-㉞ 的界面尝试） ----------
-   把容器动作（条件判断 / 并行执行）画成有辨识度的「节点块」：节点主体淡色底 + 虚线框 +
+   把容器动作（条件判断 / 并行执行 / 动作分组）画成有辨识度的「节点块」：节点主体淡色底 + 虚线框 +
    圆点光晕；分支泳道从标签处用圆角连线拐进来并带一个箭头，表达流向（呼应「箭头转个圈」的
    节点效果）。纯 CSS 伪元素，不改 DOM 拓扑、不动拖拽判定；效果不好可整块删除回退。 */
 .flow-step.type-if .action-body,
-.flow-step.type-parallel .action-body {
+.flow-step.type-parallel .action-body,
+.flow-step.type-group .action-body {
   margin-top: 8px;
   padding: 10px 10px 10px 12px;
   border-radius: 10px;
@@ -1775,7 +1835,8 @@ body {
 }
 
 .flow-step.type-if .flow-dot,
-.flow-step.type-parallel .flow-dot {
+.flow-step.type-parallel .flow-dot,
+.flow-step.type-group .flow-dot {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--type-color) 22%, transparent);
 }
 
@@ -1783,8 +1844,17 @@ body {
   color: #5ec8c8;
 }
 
+.branch-label.group {
+  color: #8fa3bf;
+}
+
 .action-branch.branch-parallel {
   --lane: rgba(94, 200, 200, 0.5);
+  border-left-color: var(--lane);
+}
+
+.action-branch.branch-group {
+  --lane: rgba(143, 163, 191, 0.5);
   border-left-color: var(--lane);
 }
 

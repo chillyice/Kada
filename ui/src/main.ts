@@ -57,6 +57,7 @@ type Action =
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
+  | { type: "group"; name?: string; actions: Action[] }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string; mark?: string | null };
@@ -292,6 +293,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "pause_ms", label: "延迟" },
   { value: "if", label: "条件判断" },
   { value: "parallel", label: "并行执行" },
+  { value: "group", label: "动作分组" },
 ];
 
 // 动作类型图标（收起态展示用）。
@@ -308,6 +310,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   open_url: "🌐",
   if: "🔀",
   parallel: "⇉",
+  group: "▣",
 };
 
 const ACTION_TYPE_LABELS = Object.fromEntries(
@@ -333,6 +336,9 @@ function actionVarWrites(a: Action): string[] {
       return a.operation.op === "status" && a.operation.var.trim()
         ? [a.operation.var.trim()]
         : [];
+    // 分组只是容器：数据流标签按成员汇总（一眼看出整组写/读了什么）。
+    case "group":
+      return [...new Set(a.actions.flatMap(actionVarWrites))];
     default:
       return [];
   }
@@ -379,6 +385,8 @@ function actionVarReads(a: Action): string[] {
       if ("text" in c) texts.push(c.text);
       break;
     }
+    case "group":
+      return [...new Set(a.actions.flatMap(actionVarReads))];
     default:
       break;
   }
@@ -566,6 +574,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "if", condition: newCondition("exists"), then: [], otherwise: [] };
     case "parallel":
       return { type: "parallel", actions: [] };
+    case "group":
+      return { type: "group", name: "", actions: [] };
   }
   return { type: "text", text: "", mode: "input" };
 }
@@ -651,6 +661,8 @@ function actionHasContent(a: Action): boolean {
     case "if":
       return condHasContent(a.condition) || a.then.length > 0 || a.otherwise.length > 0;
     case "parallel":
+      return a.actions.length > 0;
+    case "group":
       return a.actions.length > 0;
   }
   return false;
@@ -794,12 +806,19 @@ function actionSummary(a: Action): string {
       return `如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? `，否则 ${a.otherwise.length} 个` : ""}）`;
     case "parallel":
       return `并行执行（${a.actions.length} 个动作同时执行）`;
+    case "group":
+      return `动作分组（${a.actions.length} 个动作，按顺序执行）`;
   }
   return "";
 }
 
 // 收起态显示的描述：优先用用户填写的描述，否则回退到自动生成的动作摘要。
+// 分组没有描述字段，用户填的「分组名称」就是标题。
 function actionDescription(a: Action): string {
+  if (a.type === "group") {
+    const n = a.name?.trim();
+    return n ? `${n} · ${a.actions.length} 个动作` : actionSummary(a);
+  }
   const d = a.description?.trim();
   return d ? d : actionSummary(a);
 }
@@ -1857,6 +1876,7 @@ function actionCanRun(a: Action): boolean {
     return true;
   if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
   if (a.type === "parallel") return a.actions.some(actionCanRun);
+  if (a.type === "group") return a.actions.some(actionCanRun);
   return false;
 }
 
@@ -3455,6 +3475,8 @@ function collapseAllActions(actions: Action[]) {
       collapseAllActions(a.otherwise);
     } else if (a.type === "parallel") {
       collapseAllActions(a.actions);
+    } else if (a.type === "group") {
+      collapseAllActions(a.actions);
     }
   }
 }
@@ -3522,11 +3544,21 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   } else {
     const titleInput = el("input", "action-input action-title-input") as HTMLInputElement;
     titleInput.type = "text";
-    titleInput.value = a.description ?? "";
-    titleInput.placeholder = "动作标题（可选）";
-    titleInput.addEventListener("input", () => {
-      a.description = titleInput.value.trim() || undefined;
-    });
+    // 分组没有「标题」这一层：直接编辑分组名称（纯展示，不参与执行）。
+    if (a.type === "group") {
+      const group = a;
+      titleInput.value = group.name ?? "";
+      titleInput.placeholder = "分组名称（可选）";
+      titleInput.addEventListener("input", () => {
+        group.name = titleInput.value;
+      });
+    } else {
+      titleInput.value = a.description ?? "";
+      titleInput.placeholder = "动作标题（可选）";
+      titleInput.addEventListener("input", () => {
+        a.description = titleInput.value.trim() || undefined;
+      });
+    }
     const del = el("button", "action-del") as HTMLButtonElement;
     del.title = "删除动作";
     del.innerHTML =
@@ -3568,6 +3600,10 @@ function renderActionList(
 ): void {
   container.replaceChildren();
   container.classList.add("flow");
+  // 拖拽命中靠这两样：`data-action-list` 用来在指针下找出所有可落列表，
+  // `_dropList` 是这条列表对应的真实数组（非序列化属性）。
+  container.dataset.actionList = "1";
+  (container as unknown as { _dropList?: Action[] })._dropList = actions;
   if (opts.start !== undefined) {
     container.append(flowTerminator("start", "触发", opts.start));
   }
@@ -3607,7 +3643,8 @@ function makeActionTypeSelect(
   sel.value = a.type;
   sel.addEventListener("change", () => {
     const next = newAction(sel.value as Action["type"]);
-    next.description = a.description;
+    // 分组没有 description；两种形态互转时能带就带，带不了就落回默认。
+    if (a.type !== "group" && next.type !== "group") next.description = a.description;
     actions[i] = next;
     collapsedActions.delete(a);
     rerender();
@@ -3630,67 +3667,166 @@ function attachActionDragStart(
 }
 
 type ActionDropTarget =
-  | { kind: "before"; list: Action[]; index: number }
-  | { kind: "after"; list: Action[]; index: number }
+  | { kind: "line"; list: Action[]; index: number }
   | { kind: "into"; list: Action[] };
 
-// 命中计算：从指针下的元素向上找，先碰到动作行按 before/after 处理，先碰到分支按追加处理。
-function actionDropAt(
-  x: number,
-  y: number,
-): { target: ActionDropTarget; el: HTMLElement } | null {
-  if (!actionDrag) return null;
-  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-  if (!hit) return null;
-  let node: HTMLElement | null = hit;
-  while (node && node !== document.body) {
-    if (node.classList.contains("action-row")) {
-      const list = (node as unknown as { _dropList?: Action[] })._dropList;
-      const index = (node as unknown as { _dropIndex?: number })._dropIndex;
-      if (list && index !== undefined) {
-        const r = node.getBoundingClientRect();
-        const before = y - r.top < r.height / 2;
-        return {
-          el: node,
-          target: { kind: before ? "before" : "after", list, index: before ? index : index + 1 },
-        };
-      }
-      return null;
-    }
-    if (node.classList.contains("action-branch")) {
-      const list = (node as unknown as { _dropList?: Action[] })._dropList;
-      return list ? { el: node, target: { kind: "into", list } } : null;
-    }
-    node = node.parentElement;
+type ActionDropHit = {
+  target: ActionDropTarget;
+  /** 插入线的位置（视口坐标）；`into` 时为空。 */
+  line?: { y: number; left: number; width: number };
+  container?: HTMLElement;
+  forbidden: boolean;
+};
+
+// 一条可落动作的列表：顶层 `#action-list` 与每个分支泳道（if / parallel / group）。
+// 命中不复用 `elementFromPoint`：卡片之间的 12px 缝隙属于 `.flow-step`，会漏判；
+// 改成「几何包含」——指针落在哪条列表的矩形里就归哪条，嵌套时取面积最小的那条。
+type ActionListBox = { el: HTMLElement; list: Action[]; rect: DOMRect };
+
+function actionListBoxes(): ActionListBox[] {
+  const root = document.querySelector<HTMLElement>("#action-list");
+  if (!root) return [];
+  const els = [root, ...root.querySelectorAll<HTMLElement>("[data-action-list]")];
+  const out: ActionListBox[] = [];
+  for (const el of els) {
+    const list = (el as unknown as { _dropList?: Action[] })._dropList;
+    if (!Array.isArray(list)) continue;
+    out.push({ el, list, rect: el.getBoundingClientRect() });
   }
-  return null;
+  return out;
 }
 
-let actionDropEl: HTMLElement | null = null;
-function clearActionDropIndicators() {
-  if (actionDropEl) {
-    actionDropEl.classList.remove("drop-before", "drop-after", "drop-into");
-    actionDropEl = null;
+// 列表里的动作卡片（起止端点 / 空提示不算）。`.flow-step` 的结构固定是 [脊柱, 卡片]。
+function actionListRows(el: HTMLElement): HTMLElement[] {
+  const rows: HTMLElement[] = [];
+  for (const child of Array.from(el.children)) {
+    if (!child.classList.contains("flow-step")) continue;
+    const row = child.lastElementChild;
+    if (row instanceof HTMLElement && row.classList.contains("action-row")) rows.push(row);
   }
+  return rows;
+}
+
+// 某个动作内部还能落东西的列表（用于禁止把容器拖进自己肚子里）。
+function nestedActionLists(a: Action): Action[][] {
+  if (a.type === "if") {
+    return [
+      a.then,
+      a.otherwise,
+      ...a.then.flatMap(nestedActionLists),
+      ...a.otherwise.flatMap(nestedActionLists),
+    ];
+  }
+  if (a.type === "parallel" || a.type === "group") {
+    return [a.actions, ...a.actions.flatMap(nestedActionLists)];
+  }
+  return [];
+}
+
+// 命中计算：先在所有列表里找包含指针的最内层，再按卡片中线算插入下标；
+// 插入线画在两张卡片之间的空隙里（不是画在卡片上下边缘的内描边上）。
+function actionDropAt(x: number, y: number): ActionDropHit | null {
+  if (!actionDrag) return null;
+  const moved = actionDrag.list[actionDrag.index];
+  if (!moved) return null;
+  const boxes = actionListBoxes();
+  if (!boxes.length) return null;
+
+  const inside = boxes.filter(
+    (b) =>
+      x >= b.rect.left &&
+      x <= b.rect.right &&
+      y >= b.rect.top &&
+      y <= b.rect.bottom,
+  );
+  let box: ActionListBox | undefined;
+  if (inside.length) {
+    box = inside.reduce((a, b) =>
+      a.rect.width * a.rect.height <= b.rect.width * b.rect.height ? a : b,
+    );
+  } else {
+    // 指针滑到列表左右外侧（或刚好越过首尾）时，按垂直距离找最近的一条，容错 60px。
+    let best = Infinity;
+    for (const b of boxes) {
+      if (x < b.rect.left - 60 || x > b.rect.right + 60) continue;
+      const d = Math.max(0, b.rect.top - y, y - b.rect.bottom);
+      if (d < best) {
+        best = d;
+        box = b;
+      }
+    }
+    if (!box || best > 60) return null;
+  }
+  if (!box) return null;
+
+  const forbidden = nestedActionLists(moved).includes(box.list);
+  const rows = actionListRows(box.el);
+  if (!rows.length) {
+    return { target: { kind: "into", list: box.list }, container: box.el, forbidden };
+  }
+
+  let index = rows.length;
+  for (let j = 0; j < rows.length; j++) {
+    const r = rows[j].getBoundingClientRect();
+    if (y < r.top + r.height / 2) {
+      index = j;
+      break;
+    }
+  }
+
+  // 线落在相邻两张卡片的空隙中央；首尾各向外让 6px（贴着卡片但不压住内容）。
+  const prev = index > 0 ? rows[index - 1].getBoundingClientRect() : null;
+  const next = index < rows.length ? rows[index].getBoundingClientRect() : null;
+  const yLine = prev && next ? (prev.bottom + next.top) / 2 : next ? next.top - 6 : prev!.bottom + 6;
+  const first = rows[0].getBoundingClientRect();
+  return {
+    target: { kind: "line", list: box.list, index },
+    line: { y: yLine, left: first.left, width: first.width },
+    forbidden,
+  };
+}
+
+let actionDropLine: HTMLElement | null = null;
+let actionDropIntoEl: HTMLElement | null = null;
+
+function clearActionDropIndicators() {
+  actionDropLine?.remove();
+  actionDropLine = null;
+  if (actionDropIntoEl) {
+    actionDropIntoEl.classList.remove("drop-into", "drop-forbidden");
+    actionDropIntoEl = null;
+  }
+}
+
+function showActionDropLine(g: { y: number; left: number; width: number }, forbidden: boolean) {
+  if (!actionDropLine) {
+    actionDropLine = el("div", "action-drop-line");
+    document.body.append(actionDropLine);
+  }
+  actionDropLine.classList.toggle("forbidden", forbidden);
+  actionDropLine.style.left = `${g.left}px`;
+  actionDropLine.style.width = `${Math.max(0, g.width)}px`;
+  actionDropLine.style.top = `${g.y}px`;
 }
 
 function updateActionDropTarget(x: number, y: number) {
-  const res = actionDropAt(x, y);
+  const hit = actionDropAt(x, y);
   clearActionDropIndicators();
-  if (!res) return;
-  const cls =
-    res.target.kind === "into"
-      ? "drop-into"
-      : res.target.kind === "before"
-        ? "drop-before"
-        : "drop-after";
-  res.el.classList.add(cls);
-  actionDropEl = res.el;
+  if (!hit) return;
+  if (hit.target.kind === "into" && hit.container) {
+    hit.container.classList.add(hit.forbidden ? "drop-forbidden" : "drop-into");
+    actionDropIntoEl = hit.container;
+    return;
+  }
+  if (hit.line) showActionDropLine(hit.line, hit.forbidden);
 }
 
 function applyActionDrop(srcList: Action[], srcIndex: number, target: ActionDropTarget) {
-  const [moved] = srcList.splice(srcIndex, 1);
+  const moved = srcList[srcIndex];
   if (!moved) return;
+  // 把容器拖进自己的分支会造出环（序列化直接失败），一律拒绝。
+  if (nestedActionLists(moved).includes(target.list)) return;
+  srcList.splice(srcIndex, 1);
   if (target.kind === "into") {
     target.list.push(moved);
   } else {
@@ -4492,10 +4628,22 @@ function actionFields(
     });
     body.append(elseList, addElse);
   } else if (a.type === "parallel") {
-    // 成员列表复用 `.action-branch` 容器：拖拽落点识别（`actionDropAt` 只认 `.action-row`
-    // / `.action-branch`）与 `.drop-into` 高亮都自动生效，无需改动拖拽逻辑。
+    // 成员列表就是一条可落列表（`data-action-list` + `_dropList` 由 renderActionList 统一挂上）。
     body.append(el("div", "branch-label parallel", "⇉ 同时执行（全部成员结束后继续下一步）"));
     const memberList = el("div", "action-branch branch-parallel");
+    (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
+    renderActionList(memberList, a.actions, rerender);
+    const addMember = el("button", "add-inline", "＋ 添加动作");
+    addMember.addEventListener("click", () => {
+      a.actions.push(newAction("text"));
+      rerender();
+    });
+    body.append(memberList, addMember);
+  } else if (a.type === "group") {
+    body.append(
+      el("div", "branch-label group", "▣ 按顺序执行（分组只做整理，不改变执行结果）"),
+    );
+    const memberList = el("div", "action-branch branch-group");
     (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
     renderActionList(memberList, a.actions, rerender);
     const addMember = el("button", "add-inline", "＋ 添加动作");
@@ -5661,6 +5809,13 @@ function bind() {
     renderActions(draft);
   });
 
+  // 新建的分组是空的、也是展开的：用户接着往里拖动作或点组内的「添加动作」即可。
+  document.getElementById("add-group")!.addEventListener("click", () => {
+    if (section !== "shortcuts" || !draft) return;
+    draft.actions.push(newAction("group"));
+    renderActions(draft);
+  });
+
   document.getElementById("edit-capture")!.addEventListener("click", (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
     if (section !== "shortcuts" || !draft) return;
@@ -6230,7 +6385,8 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
       const rail = el("div", "pipe-rail");
       children.forEach((c, i) => {
         const lane = el("div", "pipe-lane");
-        // 条件只画走的那条分支；并行每个成员一条泳道（序号对应编排里的成员下标）。
+        // 条件只画走的那条分支；并行每个成员一条泳道（序号对应编排里的成员下标）；
+        // 分组成员按顺序串在同一条泳道里，标一个「分组」便于和顶层区分。
         lane.append(
           el(
             "span",
@@ -6241,7 +6397,9 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
                 : "条件不成立"
               : step.kind === "parallel"
                 ? `并行 ${i + 1}`
-                : "",
+                : step.kind === "group"
+                  ? "分组"
+                  : "",
           ),
         );
         lane.append(build(c));

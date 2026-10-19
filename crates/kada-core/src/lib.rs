@@ -1115,6 +1115,16 @@ pub enum Action {
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
     Mouse { op: MouseOp, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 动作分组：**纯粹的组织结构**，成员按顺序执行（等价于把它们直接摊在这一层）。
+    /// 只影响编辑页的展示与执行记录的分层（成员记录挂在分组这一步下面），不改执行语义；
+    /// 可嵌套（分组里还能放分组 / 条件判断 / 并行执行）。
+    Group {
+        /// 分组名称（纯展示，可空）。
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        actions: Vec<Action>,
+    },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
@@ -1197,6 +1207,12 @@ impl Action {
                 }
                 MouseOp::Click { .. } => Ok(()),
             },
+            Action::Group { actions, .. } => {
+                for a in actions {
+                    a.validate()?;
+                }
+                Ok(())
+            }
             #[cfg(feature = "automation")]
             Action::Command { command, .. } => non_empty("命令", command),
             #[cfg(feature = "automation")]
@@ -2763,6 +2779,9 @@ fn scan_actions_platform(
             Action::Parallel { actions, .. } => {
                 scan_actions_platform(actions, caps, bad_inject, bad_frontmost, bad_device);
             }
+            Action::Group { actions, .. } => {
+                scan_actions_platform(actions, caps, bad_inject, bad_frontmost, bad_device);
+            }
             _ => {}
         }
     }
@@ -2971,6 +2990,10 @@ pub fn migrate_action(a: Action) -> Action {
         Action::Parallel { actions, description } => Action::Parallel {
             actions: actions.into_iter().map(migrate_action).collect(),
             description,
+        },
+        Action::Group { name, actions } => Action::Group {
+            name,
+            actions: actions.into_iter().map(migrate_action).collect(),
         },
         other => other,
     }
@@ -4097,6 +4120,42 @@ mod os_and_sanitize_tests {
         let json = serde_json::to_string(&a).unwrap();
         let back: Action = serde_json::from_str(&json).unwrap();
         assert_eq!(back, a, "json: {json}");
+    }
+
+    #[test]
+    fn group_action_validate_recurses_and_roundtrips() {
+        // 合法成员 / 空组都放行（空组等价于什么都不做）。
+        assert!(Action::Group {
+            name: "清理".into(),
+            actions: vec![Action::PauseMs { ms: 10, description: None }],
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Group { name: "空".into(), actions: vec![] }.validate().is_ok());
+        // 嵌套成员非法 → 递归拒绝（分组可套分组）。
+        assert!(Action::Group {
+            name: "外层".into(),
+            actions: vec![Action::Group {
+                name: "内层".into(),
+                actions: vec![Action::Keys { keys: vec!["NotAKey".into()], description: None }],
+            }],
+        }
+        .validate()
+        .is_err());
+
+        let a = Action::Group {
+            name: "备份".into(),
+            actions: vec![Action::Group {
+                name: "收尾".into(),
+                actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
+            }],
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, a, "json: {json}");
+        // 老配置 / 手写配置缺字段时照旧可解析。
+        let bare: Action = serde_json::from_str(r#"{"type":"group"}"#).unwrap();
+        assert_eq!(bare, Action::Group { name: String::new(), actions: vec![] });
     }
 
     #[cfg(feature = "automation")]

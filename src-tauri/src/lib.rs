@@ -1445,6 +1445,7 @@ fn finish_run(
 fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
+        Action::Group { actions, .. } => injects_keys(actions),
         // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
         // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
         #[cfg(feature = "automation")]

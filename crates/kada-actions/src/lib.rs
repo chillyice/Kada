@@ -306,6 +306,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Keys { .. } => "keys",
         Action::PauseMs { .. } => "pause_ms",
         Action::Mouse { .. } => "mouse",
+        Action::Group { .. } => "group",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "command",
         #[cfg(feature = "automation")]
@@ -375,6 +376,25 @@ fn run_chain(
             return;
         }
         let mut step = step_begin(action, ctx, parent, lane, vars);
+        if let Action::Group {
+            actions: members, ..
+        } = action
+        {
+            let id = step.id;
+            run_chain(rep, members, ctx, vars, last_copied, Some(id), 0);
+            step.status = if abort::aborted(ctx.gen) {
+                "abort".into()
+            } else {
+                "ok".into()
+            };
+            step.end_ms = ctx.elapsed_ms();
+            rep.on_step(step);
+            // 成员链已因中止收尾并记过一条结果，别在外层再记一遍。
+            if abort::aborted(ctx.gen) {
+                return;
+            }
+            continue;
+        }
         #[cfg(feature = "automation")]
         if let Action::If {
             condition,
@@ -599,6 +619,7 @@ fn action_label(action: &Action) -> &'static str {
         Action::Keys { .. } => "按键注入失败",
         Action::PauseMs { .. } => "暂停失败",
         Action::Mouse { .. } => "鼠标模拟失败",
+        Action::Group { .. } => "分组执行失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
         #[cfg(feature = "automation")]
@@ -708,6 +729,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::Keys { keys, .. } => format!("按下 {}", keys.join("+")),
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
+        Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
         Action::Command { command, .. }
         | Action::Cmd { command, .. }
@@ -839,6 +861,15 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Keys { description, .. }
         | Action::PauseMs { description, .. }
         | Action::Mouse { description, .. } => description.as_deref(),
+        // 分组没有 `description`：用户填的 `name` 就是这一步的标题。
+        Action::Group { name, .. } => {
+            let n = name.trim();
+            if n.is_empty() {
+                None
+            } else {
+                Some(n)
+            }
+        }
         #[cfg(feature = "automation")]
         Action::Command { description, .. }
         | Action::Cmd { description, .. }
@@ -888,6 +919,10 @@ fn run_action(
     last_copied: &mut Option<String>,
 ) -> Result<Option<CommandResult>, String> {
     match action {
+        Action::Group { .. } => {
+            // 分组动作由 run_chain 递归处理（成员按顺序执行），不会到达这里。
+            return Err("内部错误：分组动作应在运行器内处理".into());
+        }
         Action::Text { text, mode, .. } => {
             // 持链内注入锁：剪贴板 set → 粘贴 → 还原必须原子，否则并行的另一成员会覆盖剪贴板
             // （或读到别人刚写进去的内容）。转大小写路径同理（它内部再调 `inject_text`，
@@ -2331,6 +2366,52 @@ mod tests {
             results.iter().filter(|r| r.run_id == Some(7)).count(),
             results.len()
         );
+    }
+
+    /// 分组只是组织结构：成员按顺序跑，执行记录挂在分组这一步下面（嵌套分组再挂一层）。
+    #[test]
+    fn group_runs_members_in_order_and_nests_steps() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Group {
+            name: "准备".into(),
+            actions: vec![
+                Action::PauseMs {
+                    ms: 10,
+                    description: None,
+                },
+                Action::Group {
+                    name: "收尾".into(),
+                    actions: vec![Action::PauseMs {
+                        ms: 10,
+                        description: None,
+                    }],
+                },
+            ],
+        }];
+        let (_, steps, status) = run_all(&actions, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        // 外层分组 + 第一个成员 + 内层分组 + 内层成员 = 4。
+        assert_eq!(steps.len(), 4, "{steps:?}");
+        let outer = steps
+            .iter()
+            .find(|s| s.kind == "group" && s.parent.is_none())
+            .expect("外层分组要有记录");
+        assert_eq!(outer.title, "准备（分组 2 个动作）");
+        let first = steps
+            .iter()
+            .find(|s| s.kind == "pause_ms" && s.parent == Some(outer.id))
+            .expect("第一个成员挂在外层分组下");
+        assert_eq!(first.lane, 0);
+        let inner = steps
+            .iter()
+            .find(|s| s.kind == "group" && s.parent == Some(outer.id))
+            .expect("嵌套分组挂在父分组下");
+        assert!(steps
+            .iter()
+            .any(|s| s.kind == "pause_ms" && s.parent == Some(inner.id)));
+        for s in &steps {
+            assert_eq!(s.status, "ok", "{s:?}");
+        }
     }
 
     #[test]
