@@ -3965,3 +3965,213 @@ textarea.invalid {
     display: none;
   }
 }
+
+/* ==========================================================================
+   像素 CRT · 浅色档（data-theme="crt" + data-crt="light"）
+   --------------------------------------------------------------------------
+   复用深色档的全部结构规则（像素字体 / 方角 / 扫描线 / 硬影 / 图标处理），
+   这里只换调色板并收敛亮度：浅绿纸面 + 深绿字，扫描线与暗角降到原来的
+   一半左右；荧光在浅底上会糊粗字，外扩半径也从 5px 收到 4px、浓度减半。
+   ========================================================================== */
+
+[data-theme="crt"][data-crt="light"] {
+  --bg: #e9f0e4;
+  --panel: #f7fbf2;
+  --line: #b3c8ab;
+  --text: #123a24;
+  --muted: #4d7359;
+  --accent: #0d7a46;
+  --accent-dim: #cfe8d6;
+  --hover-bg: rgba(13, 122, 70, 0.07);
+  --float-bg: rgba(250, 253, 246, 0.97);
+  --line-soft: rgba(13, 122, 70, 0.14);
+  --scroll-thumb: rgba(13, 122, 70, 0.22);
+  --scroll-thumb-hi: rgba(13, 122, 70, 0.4);
+  --key-bg: #e1ece0;
+  --key-line: #b3c8ab;
+  --crt-cyan: #086b80;
+  --crt-yellow: #93660a;
+  --crt-red: #b23a2e;
+  --crt-green: #0d7a46;
+}
+
+[data-theme="crt"][data-crt="light"] body {
+  text-shadow:
+    0 0 1px currentColor,
+    0 0 4px color-mix(in srgb, currentColor 20%, transparent);
+}
+
+[data-theme="crt"][data-crt="light"] .detail-pane {
+  background: radial-gradient(ellipse at 50% 30%, #fbfdf8 0%, var(--bg) 78%);
+}
+
+[data-theme="crt"][data-crt="light"] svg {
+  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 55%, transparent));
+}
+
+/* 扫描线换淡墨绿、暗角减半；亮带也换成很淡的绿色。 */
+[data-theme="crt"][data-crt="light"] body:has(.layout)::after {
+  background:
+    repeating-linear-gradient(
+      to bottom,
+      rgba(20, 70, 45, 0.1) 0 1px,
+      transparent 1px 3px
+    ),
+    radial-gradient(ellipse at 50% 50%, transparent 62%, rgba(20, 60, 40, 0.16) 100%);
+}
+
+[data-theme="crt"][data-crt="light"] body:has(.layout)::before {
+  background: linear-gradient(
+    to bottom,
+    transparent,
+    rgba(13, 122, 70, 0.055),
+    transparent
+  );
+}
+
+[data-theme="crt"][data-crt="light"] .toast-bubble::after,
+[data-theme="crt"][data-crt="light"] .hud-row::after,
+[data-theme="crt"][data-crt="light"] .hints-panel::after {
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(20, 70, 45, 0.1) 0 1px,
+    transparent 1px 3px
+  );
+}
+
+/* 硬影换成淡墨绿的方块影；浮窗仍只用无模糊硬影、留在透明边内。 */
+[data-theme="crt"][data-crt="light"] .set-card,
+[data-theme="crt"][data-crt="light"] .modal-box,
+[data-theme="crt"][data-crt="light"] .row-menu,
+[data-theme="crt"][data-crt="light"] .mode-menu,
+[data-theme="crt"][data-crt="light"] .key-menu,
+[data-theme="crt"][data-crt="light"] .msg-card,
+[data-theme="crt"][data-crt="light"] .action-row,
+[data-theme="crt"][data-crt="light"] .msg-step-detail,
+[data-theme="crt"][data-crt="light"] .toast {
+  box-shadow:
+    4px 4px 0 rgba(20, 60, 38, 0.22),
+    0 0 18px rgba(13, 122, 70, 0.06);
+}
+
+[data-theme="crt"][data-crt="light"] .toast-bubble,
+[data-theme="crt"][data-crt="light"] .hud-row,
+[data-theme="crt"][data-crt="light"] .hints-panel {
+  box-shadow: 4px 4px 0 rgba(20, 60, 38, 0.26);
+}
+
+[data-theme="crt"][data-crt="light"] .modal-mask {
+  background: rgba(18, 50, 30, 0.28);
+}
+
+/* 主按钮：深绿实底 + 浅字（浅色档的 accent 是深绿，不能再用深字）。 */
+[data-theme="crt"][data-crt="light"] button.primary,
+[data-theme="crt"][data-crt="light"] .icon-btn.primary,
+[data-theme="crt"][data-crt="light"] .list-toolbar .tool-btn.primary {
+  color: #f6fbf3;
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 2px 2px 0 #0a3f26;
+}
+
+[data-theme="crt"][data-crt="light"] button.primary:hover,
+[data-theme="crt"][data-crt="light"] .icon-btn.primary:hover {
+  background: #0f9253;
+}
+
+/* 覆盖顺序提醒：上面那条浅色主按钮规则与深色档的 :disabled 规则同特异性，
+   同在后写就赢——这里必须补一条更具体的，否则「没有改动」时保存键仍是实底绿。 */
+[data-theme="crt"][data-crt="light"] .icon-btn.primary:disabled {
+  background: transparent;
+  border-color: var(--line);
+  color: var(--muted);
+  box-shadow: none;
+  text-shadow: inherit;
+}
+
+[data-theme="crt"][data-crt="light"] .toggle:checked::after {
+  background: #f6fbf3;
+}
+
+[data-theme="crt"][data-crt="light"] ::selection {
+  background: rgba(13, 122, 70, 0.2);
+  color: var(--text);
+}
+
+[data-theme="crt"][data-crt="light"] .rail-brand {
+  text-shadow:
+    0 0 1px var(--accent),
+    0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+/* 四色字标在浅底上也把外扩收小，深色字的 4px 全色辉光会显脏。 */
+[data-theme="crt"][data-crt="light"] .brand-word > span {
+  text-shadow: 0 0 3px color-mix(in srgb, currentColor 35%, transparent);
+}
+
+[data-theme="crt"][data-crt="light"] .brand-zap {
+  text-shadow: 0 0 3px color-mix(in srgb, currentColor 45%, transparent);
+}
+
+/* 浅底上「强调色 / 动作类型色当文字用」会偏淡：与浅色主题同一条口径，往正文混 30%。 */
+[data-theme="crt"][data-crt="light"] .flow-step {
+  color: color-mix(in srgb, var(--type-color, var(--muted)) 70%, var(--text));
+}
+
+[data-theme="crt"][data-crt="light"] .row-trigger {
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+
+/* HUD 那三枚状态胶囊原本按深底写浅色字，浅底上换成同色系深字。 */
+[data-theme="crt"][data-crt="light"] .hud-hold {
+  color: #123a63;
+  background: rgba(64, 108, 176, 0.16);
+  border-color: rgba(50, 92, 160, 0.5);
+}
+
+[data-theme="crt"][data-crt="light"] .hud-sticky {
+  color: #14532d;
+  background: rgba(56, 128, 76, 0.16);
+  border-color: rgba(56, 128, 76, 0.5);
+}
+
+[data-theme="crt"][data-crt="light"] .hud-oneshot {
+  color: #6b4a08;
+  background: rgba(158, 116, 40, 0.16);
+  border-color: rgba(158, 116, 40, 0.5);
+}
+
+/* 少数按深底调过的状态文字：浅底上压深一档，保证小字可读。 */
+[data-theme="crt"][data-crt="light"] .conflict.error,
+[data-theme="crt"][data-crt="light"] .conflict-bubble,
+[data-theme="crt"][data-crt="light"] .conflict-bubble-close {
+  color: #a8322b;
+}
+
+[data-theme="crt"][data-crt="light"] .conflict.warn,
+[data-theme="crt"][data-crt="light"] .dirty-flag {
+  color: #8a6410;
+}
+
+[data-theme="crt"][data-crt="light"] .conflict.platform {
+  color: #2b5ea8;
+}
+
+[data-theme="crt"][data-crt="light"] .branch-label.then,
+[data-theme="crt"][data-crt="light"] .msg-run-badge.st-ok,
+[data-theme="crt"][data-crt="light"] .tl-block.st-ok .tl-block-flag,
+[data-theme="crt"][data-crt="light"] .pipe-block.st-ok .pipe-flag {
+  color: #1f7a4d;
+}
+
+[data-theme="crt"][data-crt="light"] .msg-run-badge.st-error,
+[data-theme="crt"][data-crt="light"] .tl-block.st-error .tl-block-flag,
+[data-theme="crt"][data-crt="light"] .pipe-block.st-error .pipe-flag {
+  color: #b93b34;
+}
+
+[data-theme="crt"][data-crt="light"] .msg-run-badge.st-abort,
+[data-theme="crt"][data-crt="light"] .tl-block.st-abort .tl-block-flag,
+[data-theme="crt"][data-crt="light"] .pipe-block.st-abort .pipe-flag {
+  color: #8a6410;
+}

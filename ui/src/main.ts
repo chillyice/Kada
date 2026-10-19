@@ -1317,7 +1317,20 @@ function resolveTheme(t: string): string {
   return t === "auto" ? (prefersLight.matches ? "light" : "dark") : t;
 }
 function applyTheme(t: string) {
-  document.documentElement.dataset.theme = resolveTheme(t);
+  const resolved = resolveTheme(t);
+  const root = document.documentElement;
+  // CRT 有深 / 浅两档：共用一个 data-theme="crt"（同一套像素 / 扫描线规则），
+  // 浅色档再用 data-crt="light" 覆盖调色板与亮度。其余主题清掉这个标记。
+  if (resolved === "crt-light") {
+    root.dataset.theme = "crt";
+    root.dataset.crt = "light";
+  } else if (resolved === "crt") {
+    root.dataset.theme = "crt";
+    root.dataset.crt = "dark";
+  } else {
+    root.dataset.theme = resolved;
+    delete root.dataset.crt;
+  }
 }
 // 系统切浅/深时若处于「跟随系统」，四个窗口一起跟着翻（各自监听，同源广播不必另做）。
 prefersLight.addEventListener("change", () => {
