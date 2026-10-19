@@ -3714,23 +3714,28 @@ textarea.invalid {
   stroke-width: 2.4px;
 }
 
-/* ---- 扫描线：发光的横线 + 老显示器的呼吸 ----
-   1px 亮线 / 4px 周期：线本身提亮、下一像素带一点余晖，像荧光粉在发光；
-   再叠一层很轻的闪烁与自上而下的亮带——设备感来自「亮」而不是「压暗」。 */
+/* ---- 扫描线：屏幕自己的后处理，而不是盖上去的一层 ----
+   Windows Terminal「复古终端效果」的关键是「亮的地方才发光」：这里不画线，
+   而是用 backdrop-filter 对每条扫描线覆盖的那 1px 画面直接提亮（mask 只留
+   1px 亮行 / 3px 间隔）。于是暗底只是微微透光，亮字与浅色面板会自然烧出
+   更亮的横线——扫描线和内容互相影响，不再是一层固定网格贴在窗口上。 */
 [data-theme="crt"] body:has(.layout)::after {
   content: "";
   position: fixed;
   inset: 0;
   z-index: 9990;
   pointer-events: none;
-  background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(255, 255, 255, 0.05) 0 1px,
-      rgba(255, 255, 255, 0.018) 1px 2px,
-      transparent 2px 4px
-    ),
-    radial-gradient(ellipse at 50% 50%, transparent 70%, rgba(0, 0, 0, 0.14) 100%);
+  backdrop-filter: brightness(1.55) saturate(1.08);
+  -webkit-mask-image: repeating-linear-gradient(
+    to bottom,
+    #000 0 1px,
+    transparent 1px 4px
+  );
+  mask-image: repeating-linear-gradient(
+    to bottom,
+    #000 0 1px,
+    transparent 1px 4px
+  );
   animation: crt-flicker 3.4s ease-in-out infinite;
 }
 
@@ -3751,6 +3756,16 @@ textarea.invalid {
     transparent
   );
   animation: crt-sweep 7.5s linear infinite;
+}
+
+/* 暗角单独一层：扫描线那层被 mask 裁成条纹了，压不住四角。 */
+html[data-theme="crt"]:has(.layout)::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9991;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 50%, transparent 70%, rgba(0, 0, 0, 0.14) 100%);
 }
 
 @keyframes crt-sweep {
@@ -3775,7 +3790,8 @@ textarea.invalid {
   }
 }
 
-/* 浮窗自己的扫描线：严格裁在面板内，不碰窗口那圈透明留白。 */
+/* 浮窗自己的扫描线：严格裁在面板内，不碰窗口那圈透明留白。
+   同样走 backdrop-filter，提亮的是面板里的字，而不是盖一层白线。 */
 [data-theme="crt"] .toast-bubble::after,
 [data-theme="crt"] .hud-row::after,
 [data-theme="crt"] .hints-panel::after {
@@ -3783,11 +3799,16 @@ textarea.invalid {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: repeating-linear-gradient(
+  backdrop-filter: brightness(1.55) saturate(1.08);
+  -webkit-mask-image: repeating-linear-gradient(
     to bottom,
-    rgba(255, 255, 255, 0.05) 0 1px,
-    rgba(255, 255, 255, 0.018) 1px 2px,
-    transparent 2px 4px
+    #000 0 1px,
+    transparent 1px 4px
+  );
+  mask-image: repeating-linear-gradient(
+    to bottom,
+    #000 0 1px,
+    transparent 1px 4px
   );
 }
 
@@ -4011,27 +4032,20 @@ textarea.invalid {
   filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 45%, transparent));
 }
 
-/* 扫描线 / 暗角：浅底上的「发光」用白色横线，在浅灰底上比深色线更像屏幕透光。 */
+/* 浅色档同样走「提亮底下画面」：浅灰底会被推到接近白色，白面板不变，
+   深色字只轻微变亮——不会把 1px 亮线糊在字上。 */
 [data-theme="crt"][data-crt="light"] body:has(.layout)::after {
-  background:
-    repeating-linear-gradient(
-      to bottom,
-      rgba(255, 255, 255, 0.5) 0 1px,
-      rgba(255, 255, 255, 0.18) 1px 2px,
-      transparent 2px 4px
-    ),
-    radial-gradient(ellipse at 50% 50%, transparent 74%, rgba(0, 0, 0, 0.03) 100%);
+  backdrop-filter: brightness(1.08) saturate(1.02);
+}
+
+html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
+  background: radial-gradient(ellipse at 50% 50%, transparent 74%, rgba(0, 0, 0, 0.03) 100%);
 }
 
 [data-theme="crt"][data-crt="light"] .toast-bubble::after,
 [data-theme="crt"][data-crt="light"] .hud-row::after,
 [data-theme="crt"][data-crt="light"] .hints-panel::after {
-  background: repeating-linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0.5) 0 1px,
-    rgba(255, 255, 255, 0.18) 1px 2px,
-    transparent 2px 4px
-  );
+  backdrop-filter: brightness(1.08) saturate(1.02);
 }
 
 /* 硬影换成浅灰方块影；浮窗仍只用无模糊硬影、留在透明边内。 */
