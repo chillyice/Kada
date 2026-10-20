@@ -197,6 +197,42 @@ type InputEnvReport = {
   diverters: { id: string; name: string; advice: string }[];
   checked: number;
   hvci: boolean | null;
+  /** 本平台是否支持「一键解锁罗技侧键」（档位 C，Windows 专属）。 */
+  hidpp_supported: boolean;
+};
+
+/**
+ * 罗技 HID++ 设备的只读状态（后端 `HidppStatusView`，`docs/底层输入能力规划.md` 档位 C）。
+ *
+ * `diverted: true` 就是「这个键被厂商软件拿走了」——Kada 的钩子根本收不到这次按下；
+ * `persistent: true` 表示厂商软件还写了持久标志（重启 / 重连后仍然 divert）。
+ */
+type HidppStatusView = {
+  supported: boolean;
+  keeper_active: boolean;
+  keeper_error: string | null;
+  error: string | null;
+  devices: {
+    name: string;
+    product_id: number;
+    index: number;
+    control_count: number;
+    channel: string;
+    controls: { cid: number; label: string; present: boolean; diverted: boolean; persistent: boolean }[];
+  }[];
+};
+
+/** 解锁结果（后端 `HidppUnlockView`）。`keeping` = 已开始后台保持。 */
+type HidppUnlockView = {
+  error: string | null;
+  keeping: boolean;
+  devices: {
+    name: string;
+    cleared: string[];
+    already: string[];
+    missing: string[];
+    failed: string[];
+  }[];
 };
 
 /**
@@ -4994,6 +5030,9 @@ async function renderInputEnvReport() {
     box.textContent = `检测失败：${e}`;
     return;
   }
+  // 罗技 HID++ 解锁只在 Windows 有实现（档位 C）；其余平台整块不显示，
+  // 免得点了才发现「本平台不支持」。
+  document.getElementById("hidpp-box")!.hidden = !r.hidpp_supported;
   box.replaceChildren();
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (!r.supported) {
@@ -5019,6 +5058,103 @@ async function renderInputEnvReport() {
   if (r.hvci === true) line("系统「内存完整性」已开启（不影响 Kada 当前的工作方式，仅作记录）。");
   else if (r.hvci === false) line("系统「内存完整性」未开启。");
   else line("系统「内存完整性」状态读不到（该功能未配置，或系统未提供）。");
+}
+
+/**
+ * 只读扫描罗技 HID++ 设备（`docs/底层输入能力规划.md` 档位 C）。
+ *
+ * 只在用户点按钮时跑：枚举要开 HID 集合、每个槽位还要等超时，不能拖慢设置页首屏。
+ */
+async function renderHidppStatus() {
+  const box = document.getElementById("hidpp-report")!;
+  box.textContent = "正在扫描罗技设备…";
+  let s: HidppStatusView;
+  try {
+    s = await invoke<HidppStatusView>("hidpp_status");
+  } catch (e) {
+    box.textContent = `扫描失败：${e}`;
+    return;
+  }
+  box.replaceChildren();
+  const line = (text: string) => box.append(el("div", "env-line", text));
+  if (!s.supported) {
+    line("当前平台不支持（只有 Windows 能直接解锁罗技侧键）。");
+    return;
+  }
+  if (s.error) line(s.error);
+  if (s.devices.length === 0) {
+    line("没有找到可用的罗技 HID++ 设备（没接罗技设备，或控制接口被独占）。");
+  }
+  for (const d of s.devices) {
+    const item = el("div", "env-hit");
+    item.append(el("div", "env-hit-name", d.name));
+    item.append(
+      el(
+        "div",
+        "env-hit-advice",
+        `HID++ 索引 ${d.index === 255 ? "直连" : d.index} · 控件 ${d.control_count} 个 · ${d.channel} 报文`,
+      ),
+    );
+    for (const c of d.controls) {
+      const state = !c.present
+        ? "设备上没有"
+        : c.diverted
+          ? c.persistent
+            ? "被厂商软件接管（持久）"
+            : "被厂商软件接管"
+          : "标准报文";
+      item.append(el("div", "env-hit-advice", `${c.label}：${state}`));
+    }
+    box.append(item);
+  }
+  if (s.keeper_active) line("本次运行期间保持解锁中（设备重连后会自动再关）。");
+  if (s.keeper_error) line(`保持解锁的最近一次错误：${s.keeper_error}`);
+}
+
+/**
+ * 解锁罗技侧键：把中键 / 后退 / 前进里处于 divert 的关掉，让它们回到标准报文。
+ *
+ * 后端同时会往消息中心推一条结论（用户点完按钮多半会离开设置页，结论不能只留在这里）。
+ */
+async function unlockHidpp() {
+  const box = document.getElementById("hidpp-report")!;
+  const btn = document.getElementById("hidpp-unlock") as HTMLButtonElement;
+  btn.disabled = true;
+  box.textContent = "正在解锁（读取并写入罗技控制接口）…";
+  let r: HidppUnlockView;
+  try {
+    r = await invoke<HidppUnlockView>("hidpp_unlock");
+  } catch (e) {
+    box.textContent = `解锁失败：${e}`;
+    btn.disabled = false;
+    return;
+  }
+  btn.disabled = false;
+  box.replaceChildren();
+  const line = (text: string) => box.append(el("div", "env-line", text));
+  if (r.error) {
+    line(`解锁失败：${r.error}`);
+    line("可以在 Options+ / G HUB 里把该按键设为「无操作 / 默认功能」，或直接退出它。");
+    return;
+  }
+  if (r.devices.length === 0) {
+    line("没有找到罗技设备。");
+    return;
+  }
+  for (const d of r.devices) {
+    const item = el("div", "env-hit");
+    item.append(el("div", "env-hit-name", d.name));
+    if (d.cleared.length) item.append(el("div", "env-hit-advice", `已解锁：${d.cleared.join("、")}`));
+    if (d.already.length) item.append(el("div", "env-hit-advice", `本来就是标准报文：${d.already.join("、")}`));
+    if (d.missing.length) item.append(el("div", "env-hit-advice", `设备上没有：${d.missing.join("、")}`));
+    for (const f of d.failed) item.append(el("div", "env-hit-advice", `失败：${f}`));
+    box.append(item);
+  }
+  line(
+    r.keeping
+      ? "已生效，本次运行期间会保持解锁（设备重连或厂商软件重启后自动再关）。"
+      : "没有需要解锁的键：钩子已经能收到这些按键。",
+  );
 }
 
 function bindSettings() {
@@ -5103,6 +5239,9 @@ function bindSettings() {
   document
     .getElementById("input-env-refresh")!
     .addEventListener("click", () => void renderInputEnvReport());
+  // 罗技 HID++ 解锁（档位 C）：扫描是只读的，解锁会写设备（可随时被厂商软件改回）。
+  document.getElementById("hidpp-scan")!.addEventListener("click", () => void renderHidppStatus());
+  document.getElementById("hidpp-unlock")!.addEventListener("click", () => void unlockHidpp());
   // 提权窗口注入（规划 7.2-㉑a）：**开关只写配置**，拉起 / 断开是按钮的动作——开关本身
   // 不弹 UAC（用户点「启动」才弹），关掉时后端会顺带断开通道，提权进程随之退出。
   const elevated = document.getElementById("set-elevated") as HTMLInputElement;

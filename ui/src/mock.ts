@@ -207,6 +207,8 @@ export function installBrowserMock() {
   // 提权窗口注入开关的演示态：`set_config` 存进来的设置里带上它，卡片状态跟着走
   // （浏览器里没有真提权进程，`connected` 恒 false）。
   let demoElevatedEnabled = false;
+  // 罗技 HID++ 解锁的演示态：点过「解锁侧键」后两侧键显示为标准报文（刷新页面复原）。
+  let demoHidppUnlocked = false;
   const w = window as unknown as {
     __TAURI_INTERNALS__: unknown;
     [key: string]: unknown;
@@ -267,6 +269,46 @@ export function installBrowserMock() {
             ],
             checked: 8,
             hvci: true,
+            hidpp_supported: true,
+          };
+        case "hidpp_status":
+          // 演示数据：一台接收器后面的 MX 鼠标，两个侧键被 Options+ divert——这正是
+          // 「中键能用、侧键不能用」的实际形态，解锁前后的两套渲染都能在浏览器里看到。
+          return {
+            supported: true,
+            keeper_active: demoHidppUnlocked,
+            keeper_error: null,
+            error: null,
+            devices: [
+              {
+                name: "USB Receiver（接收器槽位 3）",
+                product_id: 0xc52b,
+                index: 3,
+                control_count: 7,
+                channel: "long",
+                controls: [
+                  { cid: 0x0052, label: "中键", present: true, diverted: false, persistent: false },
+                  { cid: 0x0053, label: "后退侧键", present: true, diverted: !demoHidppUnlocked, persistent: false },
+                  { cid: 0x0056, label: "前进侧键", present: true, diverted: !demoHidppUnlocked, persistent: false },
+                ],
+              },
+            ],
+          };
+        case "hidpp_unlock":
+          // 演示模式只翻一个内存标志：刷新页面就回到「被接管」的状态。
+          demoHidppUnlocked = true;
+          return {
+            error: null,
+            keeping: true,
+            devices: [
+              {
+                name: "USB Receiver（接收器槽位 3）",
+                cleared: ["后退侧键", "前进侧键"],
+                already: ["中键"],
+                missing: [],
+                failed: [],
+              },
+            ],
           };
         case "elevated_status":
           // 演示数据：按「Windows + 跟随设置开关」的样子给，设置页那张卡片的启用/未启用

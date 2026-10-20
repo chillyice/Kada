@@ -255,6 +255,118 @@ pub mod elevated {
     }
 }
 
+/// 罗技 HID++ 客户端（`docs/底层输入能力规划.md` 档位 C）：把被厂商代理 divert 走的鼠标
+/// 侧键**交回标准 HID 报文**，让现成的钩子链直接看见它。
+///
+/// 被 divert 的成因见 [`kada_core::DIVERTERS`] 与 `docs/需求设计说明书.md` §4.6；只有
+/// Windows 有实现（共享打开厂商控制接口，见 `win::hidpp`），其余平台是空实现，界面据此说
+/// 「本平台不支持」而不是「没找到设备」。两个入口：
+/// - [`hidpp::status`]：只读探测（设备 / 控件 / divert 状态），**不写设备**；
+/// - [`hidpp::unlock`]：把中键 / 后退 / 前进三个控件里处于 divert 的关掉，成功后后台保持
+///   （设备重连或代理重启把 divert 设回时自动再关）。
+///
+/// 五条边界（与档位 C 的取舍一致）：只关 divert、**不接管事件流**（Kada 退出后按键仍是
+/// 原生行为）；只动 Kada 键模型里的三个鼠标键（手势键等不动，免得破坏厂商软件的设置）；
+/// 只管罗技自家设备；通道打不开如实报错、退化为档位 A 的文字指引；保持只在本次会话内有效。
+pub mod hidpp {
+    /// 一个鼠标控件的当前状态。
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct ControlStatus {
+        /// 控件 ID（HID++ CID）。
+        pub cid: u16,
+        /// 展示名（中键 / 后退侧键 / 前进侧键）。
+        pub label: &'static str,
+        /// 设备上是否有这个控件（读 reporting 成功即视为有）。
+        pub present: bool,
+        /// 是否正被 divert（厂商软件拿走了它）。
+        pub diverted: bool,
+        /// 是否「持久 divert」（重启 / 重连后仍然生效）。
+        pub persistent: bool,
+    }
+
+    /// 一台设备的只读状态。
+    #[derive(Clone, Debug)]
+    pub struct DeviceStatus {
+        /// 展示名（产品名 + 槽位）。
+        pub name: String,
+        pub product_id: u16,
+        /// HID++ 设备索引（`0xFF` = 直连）。
+        pub index: u8,
+        /// 控件表里登记了多少个控件（读不到时为 0）。
+        pub control_count: u8,
+        pub controls: Vec<ControlStatus>,
+        /// 走的是长报文还是短报文通道（诊断用）。
+        pub channel: &'static str,
+    }
+
+    /// 只读探测结果。
+    #[derive(Clone, Debug, Default)]
+    pub struct Status {
+        /// 本平台是否实现了这套能力（非 Windows 恒 false）。
+        pub supported: bool,
+        /// 是否正在后台保持解锁。
+        pub keeper_active: bool,
+        /// 保持解锁的最近一次错误（`None` = 正常）。
+        pub keeper_error: Option<String>,
+        /// 打不开通道之类的整体错误（例如被独占）。
+        pub error: Option<String>,
+        pub devices: Vec<DeviceStatus>,
+    }
+
+    /// 一台设备的解锁结果。
+    #[derive(Clone, Debug, Default)]
+    pub struct UnlockDevice {
+        pub name: String,
+        /// 这次真正解除了 divert 的键名。
+        pub cleared: Vec<&'static str>,
+        /// 本来就是标准报文（无需处理）。
+        pub already: Vec<&'static str>,
+        /// 设备上没有这个控件。
+        pub missing: Vec<&'static str>,
+        /// 读 / 写失败的原因（逐键）。
+        pub failed: Vec<String>,
+    }
+
+    /// 解锁结果（`error` 非空 = 整个通道都没打通）。
+    #[derive(Clone, Debug, Default)]
+    pub struct UnlockReport {
+        pub devices: Vec<UnlockDevice>,
+        pub error: Option<String>,
+    }
+
+    /// 本平台是否实现了这套能力（只有 Windows 有）。
+    pub fn supported() -> bool {
+        cfg!(windows)
+    }
+
+    /// 只读探测：列出本机罗技设备与三个鼠标键的 divert 状态。**不写设备**。
+    pub fn status() -> Status {
+        #[cfg(windows)]
+        {
+            super::win::hidpp::status()
+        }
+        #[cfg(not(windows))]
+        {
+            Status::default()
+        }
+    }
+
+    /// 解锁：把处于 divert 的鼠标键交回标准报文，并在成功后开始后台保持。
+    pub fn unlock() -> UnlockReport {
+        #[cfg(windows)]
+        {
+            super::win::hidpp::unlock()
+        }
+        #[cfg(not(windows))]
+        {
+            UnlockReport {
+                error: Some("本平台暂不支持罗技 HID++ 解锁（Windows 专属能力）".into()),
+                ..UnlockReport::default()
+            }
+        }
+    }
+}
+
 /// 鼠标录制事件（鼠标操作录制的输入源，见壳体 `MouseRecorder`）：一次触发（点击 / 滚轮），
 /// 附「自上一次触发以来的光标位移」。
 ///

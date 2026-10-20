@@ -3794,6 +3794,9 @@ struct InputEnvReport {
     checked: usize,
     /// Windows 内存完整性（HVCI）：`Some(true/false)` = 已开启/已关闭；`None` = 读不到。
     hvci: Option<bool>,
+    /// 本平台是否支持「一键解锁罗技侧键」（档位 C）。只在 Windows 为 true；前端据此
+    /// 决定要不要显示那一组按钮（**不在这里做 HID 枚举**——那要几百毫秒，不能拖慢卡片）。
+    hidpp_supported: bool,
 }
 
 /// 一个命中的接管者（展示名 + 处置办法都从 [`kada_core::DIVERTERS`] 来，前端不再抄一份）。
@@ -3827,6 +3830,177 @@ fn input_env_report(config: Config) -> InputEnvReport {
         diverters,
         checked: kada_core::DIVERTERS.len(),
         hvci: env.hvci,
+        hidpp_supported: kada_hook::hidpp::supported(),
+    }
+}
+
+// ---- 罗技 HID++ 解锁（`docs/底层输入能力规划.md` 档位 C）----
+//
+// 比档位 A 更进一步：不只告诉用户「谁拿走了按键」，而是直接把 divert 关掉，让按键回到
+// 标准报文本。只在 Windows 有实现（见 `kada_hook::hidpp`），其余平台返回 supported=false。
+
+/// 只读探测视图（设置页「罗技设备」小字）。
+#[derive(Serialize)]
+struct HidppStatusView {
+    supported: bool,
+    /// 是否正在后台保持解锁（本次 Kada 运行期间）。
+    keeper_active: bool,
+    keeper_error: Option<String>,
+    /// 通道整体打不开之类的原因。
+    error: Option<String>,
+    devices: Vec<HidppDeviceView>,
+}
+
+#[derive(Serialize)]
+struct HidppDeviceView {
+    name: String,
+    product_id: u16,
+    /// HID++ 设备索引（`255` = 直连）。
+    index: u8,
+    control_count: u8,
+    channel: String,
+    controls: Vec<HidppControlView>,
+}
+
+#[derive(Serialize)]
+struct HidppControlView {
+    cid: u16,
+    label: String,
+    present: bool,
+    diverted: bool,
+    persistent: bool,
+}
+
+/// 解锁结果视图（前端直接铺在卡片里）。
+#[derive(Serialize)]
+struct HidppUnlockView {
+    error: Option<String>,
+    devices: Vec<HidppUnlockDeviceView>,
+    /// 是否开始后台保持（有键被真正改掉时才是 true）。
+    keeping: bool,
+}
+
+#[derive(Serialize)]
+struct HidppUnlockDeviceView {
+    name: String,
+    cleared: Vec<String>,
+    already: Vec<String>,
+    missing: Vec<String>,
+    failed: Vec<String>,
+}
+
+fn hidpp_status_view() -> HidppStatusView {
+    let s = kada_hook::hidpp::status();
+    HidppStatusView {
+        supported: s.supported,
+        keeper_active: s.keeper_active,
+        keeper_error: s.keeper_error,
+        error: s.error,
+        devices: s
+            .devices
+            .into_iter()
+            .map(|d| HidppDeviceView {
+                name: d.name,
+                product_id: d.product_id,
+                index: d.index,
+                control_count: d.control_count,
+                channel: d.channel.to_string(),
+                controls: d
+                    .controls
+                    .into_iter()
+                    .map(|c| HidppControlView {
+                        cid: c.cid,
+                        label: c.label.to_string(),
+                        present: c.present,
+                        diverted: c.diverted,
+                        persistent: c.persistent,
+                    })
+                    .collect(),
+            })
+            .collect(),
+    }
+}
+
+#[tauri::command]
+fn hidpp_status() -> HidppStatusView {
+    hidpp_status_view()
+}
+
+/// 把 divert 关掉，并把结论同时推进消息中心（用户点完按钮后多半会离开设置页）。
+#[tauri::command]
+fn hidpp_unlock(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> HidppUnlockView {
+    let r = kada_hook::hidpp::unlock();
+    let keeping = r.devices.iter().any(|d| !d.cleared.is_empty());
+
+    let mut lines: Vec<String> = Vec::new();
+    for d in &r.devices {
+        lines.push(format!("设备：{}", d.name));
+        if !d.cleared.is_empty() {
+            lines.push(format!("  已解锁：{}", d.cleared.join("、")));
+        }
+        if !d.already.is_empty() {
+            lines.push(format!("  本来就是标准报文：{}", d.already.join("、")));
+        }
+        if !d.missing.is_empty() {
+            lines.push(format!("  设备上没有这些控件：{}", d.missing.join("、")));
+        }
+        for f in &d.failed {
+            lines.push(format!("  失败：{f}"));
+        }
+    }
+    let (headline, detail) = match &r.error {
+        Some(err) => (
+            "罗技鼠标侧键解锁失败".to_string(),
+            format!(
+                "{err}\n\n控制接口打不开时，先在 Options+ / G HUB 里把该按键设为「无操作 / 默认功能」，或直接退出它。"
+            ),
+        ),
+        None if keeping => (
+            "已解锁罗技鼠标侧键".to_string(),
+            format!(
+                "{}\n\n本次 Kada 运行期间会保持（设备重连或厂商软件重启后会再关一次）。现在按侧键应能触发快捷键。",
+                lines.join("\n")
+            ),
+        ),
+        None => (
+            "罗技鼠标侧键本来就是标准报文".to_string(),
+            format!("{}\n\n不需要解锁：钩子已经能收到这些按键。", lines.join("\n")),
+        ),
+    };
+    commit_result(
+        &app,
+        &state.results,
+        &state.unread,
+        CommandResult {
+            kind: "hidpp".into(),
+            label: "输入层".into(),
+            trigger: "罗技 HID++".into(),
+            name: String::new(),
+            command: headline,
+            stdout: detail,
+            stderr: String::new(),
+            exit_code: None,
+            // 不弹窗：用户就在设置页看着结果，弹窗只会多一步要关。
+            show_output: false,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            run_id: None,
+        },
+    );
+
+    HidppUnlockView {
+        error: r.error,
+        keeping,
+        devices: r
+            .devices
+            .into_iter()
+            .map(|d| HidppUnlockDeviceView {
+                name: d.name,
+                cleared: d.cleared.into_iter().map(str::to_string).collect(),
+                already: d.already.into_iter().map(str::to_string).collect(),
+                missing: d.missing.into_iter().map(str::to_string).collect(),
+                failed: d.failed,
+            })
+            .collect(),
     }
 }
 
@@ -4354,6 +4528,8 @@ pub fn run() {
             set_config,
             get_conflicts,
             input_env_report,
+            hidpp_status,
+            hidpp_unlock,
             elevated_status,
             elevated_start,
             elevated_stop,

@@ -392,11 +392,21 @@
                 </div>
                 <div class="set-body">
                   <div id="input-env-report" class="set-status">正在检测…</div>
+                  <!-- 罗技 HID++ 解锁（档位 C）：不是「检测」，而是直接把 divert 关掉。
+                       只在 Windows 显示（后端 hidpp_supported 决定 hidden）。 -->
+                  <div id="hidpp-box" class="set-status" hidden>
+                    <div class="set-actions hidpp-actions">
+                      <button id="hidpp-scan" class="ghost">查看罗技设备</button>
+                      <button id="hidpp-unlock" class="ghost">解锁侧键</button>
+                    </div>
+                    <div id="hidpp-report" class="env-line">罗技设备：点「查看罗技设备」扫描；被厂商软件接管的侧键可直接点「解锁侧键」。</div>
+                  </div>
                 </div>
                 <details class="hint-fold">
                   <summary>这是干什么的</summary>
                   <p class="hint">有些厂商软件（Logi Options+ / G HUB / 雷云 等）会把某个按键<strong>转交给它自己</strong>：设备从此不再把这个键放进标准报文，系统的输入栈里根本没有这次按下——Kada 的钩子收不到，任何底层工具都收不到。这类接管只影响<strong>被转交的键</strong>（常见是鼠标侧键 / 额外键），键盘快捷键不受影响。</p>
                   <p class="hint">认出这类软件后，Kada 会在「消息 → 冲突」里给一条提示（只在你的配置<strong>真用到鼠标键</strong>时才提示，避免打扰）。要让它放行：在厂商软件里把该按键设为「无操作 / 默认功能」，或直接退出它。详见「帮助 → 为什么按了没反应」。</p>
+                  <p class="hint"><strong>罗技鼠标可以直接解锁：</strong>「解锁侧键」会通过罗技 HID++ 把中键 / 侧键的「转交」关掉，按键回到标准报文。它<strong>不接管事件流</strong>——Kada 退出后按键仍是系统原生行为，延迟也不变；只在 Kada 运行期间保持（设备重连或厂商软件重启后会自动再关一次）。手势键等其它控件不动，免得破坏厂商软件的设置。</p>
                   <p class="hint">这个开关关掉后<strong>完全不再探测</strong>（提示与检测都停）；「重新检测」用于退出厂商软件后立刻刷新结论（结论本身有 3 秒缓存）。</p>
                 </details>
               </section>

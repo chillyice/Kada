@@ -63,6 +63,7 @@ use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
 use crate::{MouseRecord, MouseRecordKind, WindowOp};
 
 pub mod agent;
+pub mod hidpp;
 pub mod simulate;
 
 /// 一次键盘事件。

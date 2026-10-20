@@ -39,12 +39,14 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   src/win.rs                # Windows: WH_KEYBOARD_LL + WH_MOUSE_LL + swallow/Replace 状态机 + key↔VK + 自愈看门狗
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本；注入统一拆 Op 走 deliver（前台是提权窗口时交代理，见 架构设计.md §3.23）
   src/win/agent.rs          # Windows: 提权伴随进程（命名管道 + 行协议 + DACL/双向身份校验 + runas 拉起 + 父进程守望）
+  src/win/hidpp.rs          # Windows: 罗技 HID++ 客户端（枚举/握手/关 divert + 本会话保持，见 说明书 §4.8 / 底层输入能力规划 档位 C）
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
   src/macos.rs              # macOS: CGEventTap 钩子 + key↔虚拟键码 + AX 前台查询 + simulate（需「辅助功能」权限）
-  src/lib.rs                # 平台中性入口：platform_input_env / elevated（提权窗口注入，非 Windows 为空实现）
+  src/lib.rs                # 平台中性入口：platform_input_env / elevated（提权窗口注入）/ hidpp（HID++ 解锁），非 Windows 为空实现
   examples/demo.rs          # M1 冒烟 demo（三平台，真人按键验证）
   examples/mouse_probe.rs   # 鼠标侧键分诊探针（Windows）：自检「按需挂钩子」+ 看侧键事件有没有到得了钩子（分诊厂商软件接管，见 docs/底层输入能力规划.md 档位 C）
   examples/input_env_probe.rs   # 输入层环境诊断探针：印「认出了谁 + HVCI 状态」，真机核对入口（见 人工验证清单.md §30）
+  examples/hidpp_probe.rs       # 罗技 HID++ 探针：印设备 / 三个鼠标键的 divert 状态，`--unlock` 实写并回读（见 人工验证清单.md §34）
   examples/elevated_probe.rs    # 提权通道探针（Windows）：验 DACL / 双向身份校验 / 行协议往返 / 分片 / 坏 op 整批拒 / 断开即退（UAC 那段见 人工验证清单.md §31）
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）

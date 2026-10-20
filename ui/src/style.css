@@ -2263,6 +2263,11 @@ button:disabled:hover {
   font-size: var(--fs-sm);
 }
 
+/* 罗技 HID++ 解锁（档位 C）：两个动作按钮 + 结论区，排在「接管者」结论下面。 */
+.hidpp-actions {
+  margin-bottom: 6px;
+}
+
 .layer-row {
   display: flex;
   align-items: center;
