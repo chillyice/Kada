@@ -5824,10 +5824,17 @@ const THANKS_ART = [
   "🎨", "🖌️", "🖍️", "✏️", "🖼️", "🎭", "🌈", "🖊️", "✒️", "📐", "✨",
   "(๑•̀ㅂ•́)و✧", "٩(ˊᗜˋ*)و", "✿",
 ];
+const THANKS_IT = [
+  "💻", "🖥️", "⌨️", "🖱️", "🖨️", "💾", "💿", "📟", "🛰️", "📡", "⚙️", "🔧",
+  "⚡", "专业", "( •̀ ω •́ )✧",
+];
 const THANKS: ThanksEntry[] = [
   { name: "大爷", pool: THANKS_THANKS },
   { name: "胡萝北", pool: THANKS_HEARTS },
   { name: "卯秀", pool: THANKS_ART },
+  { name: "青风云羽", pool: THANKS_IT },
+  { name: "斗机叔圣咏", pool: THANKS_THANKS },
+  { name: "楚轩", pool: ["🐷", "🐽", "🐖", ...THANKS_THANKS] },
 ];
 
 // 从鼠标点击处喷一串字符泡泡：随机字符、随机横向漂移与字号，由透明变不透明并上浮，动画结束自删。
