@@ -50,6 +50,22 @@ pub fn platform_input_env() -> kada_core::InputEnv {
     }
 }
 
+/// 系统「安全输入」（Secure Input）是否开启（规划 7.2-㊸，macOS 专属；其余平台恒 false）。
+///
+/// 终端输密码等场景 macOS 会临时关掉所有事件 tap——Kada 的快捷键此时全部失效且无任何
+/// 提示。壳层定时器低频轮询这个查询，状态**翻转**时推一条消息中心提示（见
+/// `src-tauri` 的 `report_secure_input`），把「静默失灵」变成「知道为什么、知道会自己恢复」。
+pub fn secure_input_enabled() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        macos::secure_input_enabled()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
 /// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
 ///
 /// `None` = 本平台查不出来（Linux：X11 / Wayland 没有统一且免提升权的接口），调用方按

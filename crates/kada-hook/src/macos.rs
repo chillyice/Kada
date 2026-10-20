@@ -1090,6 +1090,21 @@ pub fn accessibility_granted() -> bool {
     unsafe { AXIsProcessTrusted() != 0 }
 }
 
+// HIToolbox 的 Secure Input 查询。它不在 CoreFoundation / CoreGraphics 里，单独挂 Carbon。
+#[link(name = "Carbon", kind = "framework")]
+extern "C" {
+    fn IsSecureEventInputEnabled() -> u8;
+}
+
+/// 系统「安全输入」（Secure Input）是否开启（规划 7.2-㊸）。
+///
+/// 终端里输密码、`sudo` 密码框这类场景，macOS 会临时关掉**所有**事件 tap（含
+/// CGEventTap）——此时 Kada 的快捷键全部失效且没有任何提示。查询本身只读、开销一次
+/// 系统调用，供壳层定时器低频轮询：状态**翻转**时给一条消息中心提示，而不是静默失灵。
+pub fn secure_input_enabled() -> bool {
+    unsafe { IsSecureEventInputEnabled() != 0 }
+}
+
 /// 给用户看的授权指引（错误文案与告警共用一句话，避免两处说法不一致）。
 pub const ACCESSIBILITY_HINT: &str =
     "系统设置 → 隐私与安全性 → 辅助功能 → 勾选「Kada」（改完要重启 Kada 才生效）";

@@ -482,6 +482,11 @@ const PAUSE_LEASE_MS: u64 = 60_000;
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 const ENGINE_TICK_MS: u64 = 60;
 
+/// 「安全输入」提示的巡检周期（拍数）：[`ENGINE_TICK_MS`] × 32 ≈ 2 秒——状态翻转后
+/// 最多两秒出提示，又不必每拍都进一次系统调用（macOS 专属，见 [`report_secure_input`]）。
+#[cfg(target_os = "macos")]
+const SECURE_INPUT_TICKS: u32 = 32;
+
 /// 进程启动时刻（暂停租约的时间基准）。
 static PROCESS_START: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
 
@@ -873,6 +878,12 @@ fn spawn_engine_ticker(
         // 上一次「提权窗口注入开关」：变了才通知钩子层（关掉时钩子层会顺带断开通道，
         // 提权进程随之退出——「平时不运行」，见 `kada_hook::elevated`）。
         let mut last_elevated: Option<bool> = None;
+        // 「安全输入」巡检的拍计数与上次状态（macOS 专属，规划 7.2-㊸）：初始 false——
+        // 应用启动时「安全输入」若已开着，第一拍（约 2 秒后）就该提示，而不是当作「没变」。
+        #[cfg(target_os = "macos")]
+        let mut secure_tick: u32 = 0;
+        #[cfg(target_os = "macos")]
+        let mut last_secure = false;
         loop {
             std::thread::sleep(Duration::from_millis(ENGINE_TICK_MS));
             let reset_reason = watch.poll();
@@ -951,8 +962,64 @@ fn spawn_engine_ticker(
             if let Some(notice) = input::elevated::take_notice() {
                 report_elevated_notice(&app, notice);
             }
+            // 「安全输入」提示（macOS 专属，规划 7.2-㊸）：低频轮询，状态**翻转**才报——
+            // 终端输密码这类场景系统会关掉所有事件 tap，快捷键全失效；不提示的话用户看到的
+            // 就是「Kada 坏了」，而其实退出那个场景会自己恢复。
+            #[cfg(target_os = "macos")]
+            {
+                secure_tick += 1;
+                if secure_tick >= SECURE_INPUT_TICKS {
+                    secure_tick = 0;
+                    let on = kada_hook::secure_input_enabled();
+                    if on != last_secure {
+                        last_secure = on;
+                        report_secure_input(&app, on);
+                    }
+                }
+            }
         }
     });
+}
+
+/// 「安全输入」状态翻转时进消息中心的一条提示（macOS 专属，规划 7.2-㊸）。
+///
+/// 开与关都说：开 = 「快捷键此刻全失效，不是 Kada 坏了」；关 = 「恢复了」（翻回来也报，
+/// 免得用户不知道上一条「失效」是不是还成立）。两条都给下一步：关掉那个场景 / 重启 Kada。
+#[cfg(target_os = "macos")]
+fn report_secure_input(app: &tauri::AppHandle, on: bool) {
+    let state = app.state::<KadaState>();
+    let (command, stdout) = if on {
+        (
+            "系统「安全输入」已开启：快捷键此刻全部失效".to_string(),
+            "终端输密码、`sudo` 密码框这类场景会让 macOS 暂时关掉所有事件监听（包括 Kada 的）\
+             ——这是系统安全机制，Kada 与任何其它工具都绕不过去。退出那个场景后自动恢复。"
+                .to_string(),
+        )
+    } else {
+        (
+            "系统「安全输入」已关闭：快捷键恢复".to_string(),
+            "如果刚才「按了没反应」，现在应该恢复了；仍不响应时重启一次 Kada。".to_string(),
+        )
+    };
+    commit_result(
+        app,
+        &state.results,
+        &state.unread,
+        CommandResult {
+            kind: "macos".into(),
+            label: "输入层".into(),
+            trigger: "安全输入".into(),
+            name: String::new(),
+            command,
+            stdout,
+            stderr: String::new(),
+            exit_code: None,
+            // 不弹窗：这条随时可能在用户输密码的当下出现，弹窗既抢焦点又不合时宜。
+            show_output: false,
+            time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            run_id: None,
+        },
+    );
 }
 
 /// 提权窗口注入的现状（设置页卡片的数据源，规划 7.2-㉑a）。
