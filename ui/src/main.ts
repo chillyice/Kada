@@ -1344,34 +1344,30 @@ function deepClone<T>(x: T): T {
 // 主题：纯 UI 偏好，不进 config.json（那份是跨机同步的，主题跟机器走而不是跟配置走），
 // 跟折叠目录一样存 localStorage。四个窗口加载的是同一个 index.html，所以在 <html> 上打
 // data-theme 就都跟着变（含气泡 / HUD / 提示框）。
-// "auto" 交给 matchMedia 在这里解析成 light/dark，而不是写成 CSS 的 media query——
-// 那样系统切主题时 CSS 会自动跟随，但设置页下拉框显示的还是 "auto"、UI 内部读不到
-// 当前实际值；在这里解析能让「当前是深色」只有一个事实来源。
+// 不提供「跟随系统」档：「像素 CRT 深色」是默认主题。
 const THEME_KEY = "kada.theme";
-const prefersLight = window.matchMedia("(prefers-color-scheme: light)");
-function resolveTheme(t: string): string {
-  return t === "auto" ? (prefersLight.matches ? "light" : "dark") : t;
+const DEFAULT_THEME = "crt";
+const THEMES = new Set(["crt", "crt-light", "dark", "light"]);
+// 老版本存过 "auto"（跟随系统）这一档，已废弃——读到不认识的旧值一律落回默认主题。
+function loadTheme(): string {
+  const stored = localStorage.getItem(THEME_KEY);
+  return stored && THEMES.has(stored) ? stored : DEFAULT_THEME;
 }
 function applyTheme(t: string) {
-  const resolved = resolveTheme(t);
   const root = document.documentElement;
   // CRT 有深 / 浅两档：共用一个 data-theme="crt"（同一套像素 / 扫描线规则），
   // 浅色档再用 data-crt="light" 覆盖调色板与亮度。其余主题清掉这个标记。
-  if (resolved === "crt-light") {
+  if (t === "crt-light") {
     root.dataset.theme = "crt";
     root.dataset.crt = "light";
-  } else if (resolved === "crt") {
+  } else if (t === "crt") {
     root.dataset.theme = "crt";
     root.dataset.crt = "dark";
   } else {
-    root.dataset.theme = resolved;
+    root.dataset.theme = t;
     delete root.dataset.crt;
   }
 }
-// 系统切浅/深时若处于「跟随系统」，四个窗口一起跟着翻（各自监听，同源广播不必另做）。
-prefersLight.addEventListener("change", () => {
-  if ((localStorage.getItem(THEME_KEY) ?? "auto") === "auto") applyTheme("auto");
-});
 
 // 圆圈问号：hover / 键盘聚焦显示说明（用于解释「会写入变量」的动作，如取文件属性/查询应用状态）。
 function helpIcon(tip: string): HTMLElement {
@@ -5160,7 +5156,7 @@ async function unlockHidpp() {
 function bindSettings() {
   // 主题不进配置（见 THEME_KEY 处注释），所以自己读写 localStorage + 直接打 data-theme。
   const theme = document.getElementById("set-theme") as HTMLSelectElement;
-  theme.value = localStorage.getItem(THEME_KEY) ?? "auto";
+  theme.value = loadTheme();
   theme.addEventListener("change", () => {
     localStorage.setItem(THEME_KEY, theme.value);
     applyTheme(theme.value);
@@ -7106,7 +7102,7 @@ async function bootstrapHints() {
 }
 
 // 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。四个窗口共用这段。
-applyTheme(localStorage.getItem(THEME_KEY) ?? "auto");
+applyTheme(loadTheme());
 
 if (location.hash === "#toast") {
   void bootstrapToast();
