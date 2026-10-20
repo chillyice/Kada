@@ -113,6 +113,12 @@ static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(Ha
 /// 「键盘钩子单独被摘、鼠标钩子还活着」这类半边失效（判据见 [`dead_hook`]）。
 static LAST_KEY_TICK: AtomicU32 = AtomicU32::new(0);
 static LAST_MOUSE_TICK: AtomicU32 = AtomicU32::new(0);
+/// 键盘 **Raw Input 旁路**的心跳（与 [`LAST_KEY_TICK`] 同源时钟）。0 = 旁路没建起来。
+///
+/// 它是键盘钩子之外的**第二只眼睛**：物理键盘事件走独立通路（`WM_INPUT`），钩子被系统
+/// 摘掉后它照样来消息。看门狗只要看到「旁路比钩子心跳新」，就**直接**断定键盘钩子失效——
+/// 不需要像 `GetLastInputInfo` 那样归因，因此鼠标持续移动时也能判出来（见 [`dead_hook`]）。
+static LAST_RAW_KEY_TICK: AtomicU32 = AtomicU32::new(0);
 /// 钩子线程 id。看门狗靠它把重装请求投递到拥有消息循环的钩子线程：`SetWindowsHookEx`
 /// 必须在那个线程上调用（钩子回调也在那儿跑）。0 = 钩子线程已退出。
 static HOOK_TID: AtomicU32 = AtomicU32::new(0);
@@ -331,16 +337,26 @@ fn tick_diff(a: u32, b: u32) -> i32 {
 /// 误判的代价（用户可见的输入丢失）远大于漏判（钩子真被摘时不自愈，重启即可），
 /// 宁可不判。休眠唤醒 / 会话解锁两条路径不依赖归因，照旧生效。
 ///
-/// 残留局限（已知）：鼠标**持续**移动时，系统最后输入始终约等于鼠标心跳，键盘输入被
-/// 夹在两次鼠标事件之间、归因不出来——这半边失效要等到某次键盘输入处于两次巡检之间
-/// 且其后没有鼠标事件时才被发现。
+/// 残留局限（已知）：**没有** Raw Input 旁路时（建窗 / 注册失败），鼠标持续移动时系统最后
+/// 输入始终约等于鼠标心跳，键盘输入被夹在两次鼠标事件之间、归因不出来——这半边失效要等到
+/// 某次键盘输入处于两次巡检之间且其后没有鼠标事件时才被发现。旁路在时没有这个局限（见下）。
+///
+/// `last_raw_key` = Raw Input 键盘旁路的心跳（0 = 旁路不可用）。它和键盘钩子看到的是**同一批
+/// 物理事件**，两条通路彼此独立，故「旁路比钩子心跳新」= 钩子漏掉了事件 = 失效，不需要归因、
+/// 也不受鼠标活动影响。注入事件不进旁路心跳（见 [`note_raw_input`]），不会把失效的钩子喂活。
 fn dead_hook(
     now: u32,
     last_input: u32,
     last_key: u32,
     last_mouse: u32,
+    last_raw_key: u32,
     mouse_hooked: bool,
 ) -> Option<&'static str> {
+    // Raw Input 旁路直接作证：它收到了物理键盘事件，而钩子心跳停在更早的时刻。
+    // 与闲置无关（证据已经发生），也不用管鼠标钩子在不在。
+    if last_raw_key != 0 && tick_diff(last_raw_key, last_key) > ATTRIB_GRACE_MS {
+        return Some("键盘钩子回调超时被系统摘除");
+    }
     // 没有新输入：闲置不是失效。
     if tick_diff(now, last_input) >= HEARTBEAT_GRACE_MS {
         return None;
@@ -356,8 +372,14 @@ fn dead_hook(
         return Some("键盘钩子回调超时被系统摘除");
     }
     // 鼠标失效：这次输入不是键盘（键盘钩子看得见全部键盘事件）却鼠标心跳停摆。
+    // 「键盘看得见」要算上旁路：键盘钩子挂了而旁路还活着时，别把手打的字记到鼠标账上。
+    let last_key_seen = if last_raw_key != 0 && tick_diff(last_raw_key, last_key) > 0 {
+        last_raw_key
+    } else {
+        last_key
+    };
     if mouse_hooked
-        && tick_diff(last_input, last_key) > ATTRIB_GRACE_MS
+        && tick_diff(last_input, last_key_seen) > ATTRIB_GRACE_MS
         && tick_diff(last_input, last_mouse) > HEARTBEAT_GRACE_MS
     {
         return Some("鼠标钩子回调超时被系统摘除");
@@ -514,6 +536,7 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
             last_input_tick(),
             LAST_KEY_TICK.load(Ordering::Relaxed),
             LAST_MOUSE_TICK.load(Ordering::Relaxed),
+            LAST_RAW_KEY_TICK.load(Ordering::Relaxed),
             MOUSE_HOOK.load(Ordering::Relaxed) != 0,
         ) {
             Some(dead)
@@ -1078,11 +1101,14 @@ fn note_raw_input(lparam: LPARAM) {
     if got == u32::MAX || raw.header.dwType != RIM_TYPEKEYBOARD.0 {
         return;
     }
-    // 注入事件（SendInput）没有设备句柄：不刷新，免得把「最近设备」指向不存在的设备。
+    // 注入事件（SendInput）没有设备句柄：不刷新，免得把「最近设备」指向不存在的设备，
+    // 也免得看门狗把「我们自己注入的按键」当成物理键盘还活着。
     let dev = raw.header.hDevice;
     if dev.0.is_null() {
         return;
     }
+    // 心跳：到了这里就是一次**物理**键盘事件，旁路确实还通着。
+    LAST_RAW_KEY_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if let Some(name) = device_name(dev) {
         *RAW_LAST_DEVICE.lock().unwrap() = Some(name);
     }
@@ -1574,15 +1600,15 @@ mod tests {
     #[test]
     fn watchdog_spots_hook_that_stopped_receiving_events() {
         // 系统刚有输入，而两路钩子最后一次事件都停在同样久之前 → 钩子已被摘除。
-        assert!(dead_hook(10_000, 10_000, 7_000, 7_000, true).is_some(), "系统有输入而钩子漏了 → 失效");
+        assert!(dead_hook(10_000, 10_000, 7_000, 7_000, 0, true).is_some(), "系统有输入而钩子漏了 → 失效");
         // 正常时序：输入到了，对应钩子回调也跟着跑了（落差远小于宽限）。
-        assert!(dead_hook(10_000, 9_900, 9_900, 9_900, true).is_none(), "钩子跟得上就不能重装");
+        assert!(dead_hook(10_000, 9_900, 9_900, 9_900, 0, true).is_none(), "钩子跟得上就不能重装");
         // 机器闲置：没有新输入，钩子没有事件是正常的——三个时间戳一起停在原处。
-        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, true).is_none(), "闲置不是失效");
+        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, 0, true).is_none(), "闲置不是失效");
         // 输入刚到、钩子回调还没跑完（落差在宽限内）→ 不能判失效。
-        assert!(dead_hook(10_000, 10_000, 9_200, 9_200, true).is_none(), "回调延迟不算失效");
+        assert!(dead_hook(10_000, 10_000, 9_200, 9_200, 0, true).is_none(), "回调延迟不算失效");
         // 钩子事件比系统记录的最后输入还新（我们自己的注入同样会刷新心跳）→ 活的。
-        assert!(dead_hook(10_000, 9_900, 9_900, 10_000, true).is_none(), "心跳比输入新就是活的");
+        assert!(dead_hook(10_000, 9_900, 9_900, 10_000, 0, true).is_none(), "心跳比输入新就是活的");
     }
 
     #[test]
@@ -1590,25 +1616,56 @@ mod tests {
         // 键盘半边失效：鼠标刚动过（鼠标心跳新鲜），随后用户按键——系统最后输入是键盘那次、
         // 比鼠标心跳新出 > 归因宽限，而键盘心跳停在很久以前 → 定出是键盘失效。
         assert_eq!(
-            dead_hook(10_000, 10_000, 7_000, 9_500, true),
+            dead_hook(10_000, 10_000, 7_000, 9_500, 0, true),
             Some("键盘钩子回调超时被系统摘除"),
         );
         // 鼠标半边失效：键盘刚打过（键盘心跳新鲜），随后用户动鼠标，而鼠标心跳停在很久以前。
         assert_eq!(
-            dead_hook(10_000, 10_000, 9_500, 7_000, true),
+            dead_hook(10_000, 10_000, 9_500, 7_000, 0, true),
             Some("鼠标钩子回调超时被系统摘除"),
         );
-        // 鼠标持续移动时系统最后输入≈鼠标心跳，键盘输入夹在两次鼠标事件之间归因不出来
-        // ——已知残留局限：这一拍不判失效。
-        assert!(dead_hook(10_000, 10_000, 7_000, 10_000, true).is_none(), "鼠标喂着心跳时键盘半边失效这一拍探不到");
+        // 没有 Raw Input 旁路时，鼠标持续移动使系统最后输入≈鼠标心跳、键盘输入归因不出来
+        // ——这一拍不判失效（旁路在时由下面那组用例兜住）。
+        assert!(dead_hook(10_000, 10_000, 7_000, 10_000, 0, true).is_none(), "没有旁路时鼠标喂着心跳这一拍探不到");
         // 鼠标钩子没装：没有鼠标事件的观察者，最近那次输入无从归因——此时只动鼠标不打字
         // 就会被误判成键盘失效，故宁可不判（漏判的代价只是钩子真被摘时不自愈）。
         assert!(
-            dead_hook(10_000, 10_000, 7_000, 0, false).is_none(),
+            dead_hook(10_000, 10_000, 7_000, 0, 0, false).is_none(),
             "没装鼠标钩子时不判键盘失效（否则只动鼠标就无限重装）"
         );
         // 闲置 / 没有新输入时不判。
-        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, true).is_none());
+        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, 0, true).is_none());
+    }
+
+    #[test]
+    fn watchdog_uses_raw_input_bypass_as_keyboard_observer() {
+        // 鼠标持续移动（系统最后输入≈鼠标心跳）时按下键盘、键盘钩子已被摘除：
+        // 旁路收到了这次按键而钩子心跳没跟上 → 直接判失效，不需要归因。
+        assert_eq!(
+            dead_hook(10_000, 10_000, 7_000, 10_000, 9_900, true),
+            Some("键盘钩子回调超时被系统摘除"),
+        );
+        // 鼠标钩子没装也照样判（旁路不依赖鼠标观察者）。
+        assert_eq!(
+            dead_hook(10_000, 10_000, 7_000, 0, 9_900, false),
+            Some("键盘钩子回调超时被系统摘除"),
+        );
+        // 已经闲置了也照样判：证据（旁路收到过钩子没收到的按键）不会随时间失效。
+        assert_eq!(
+            dead_hook(60_000, 9_900, 7_000, 9_900, 9_900, true),
+            Some("键盘钩子回调超时被系统摘除"),
+        );
+        // 正常时序：旁路与钩子都在跟，落差在归因宽限内 → 不重装。
+        assert!(dead_hook(10_000, 9_900, 9_900, 9_900, 9_950, true).is_none());
+        // 我们自己的注入（SendInput）不进旁路心跳：系统最后输入刷新了、钩子也刷新了，
+        // 旁路停在很久以前 → 这不是旁路作证，按老口径判。
+        assert!(dead_hook(10_000, 10_000, 10_000, 7_000, 7_000, true).is_none(), "注入不算物理按键");
+        // 键盘钩子挂了而旁路还活着时，手打的字不能记到鼠标账上（否则误判鼠标失效）。
+        assert!(
+            dead_hook(10_000, 10_000, 7_000, 7_000, 9_900, true)
+                == Some("键盘钩子回调超时被系统摘除"),
+            "键盘与鼠标都停摆时先报键盘（旁路作证的那一路）"
+        );
     }
 
     #[test]
@@ -1619,7 +1676,7 @@ mod tests {
         assert_eq!(tick_diff(1_000, before_wrap), 5_001);
         assert_eq!(tick_diff(before_wrap, 1_000), -5_001);
         assert!(
-            dead_hook(1_000, 1_000, before_wrap, before_wrap, true).is_some(),
+            dead_hook(1_000, 1_000, before_wrap, before_wrap, 0, true).is_some(),
             "跨回绕也要判得出失效"
         );
     }

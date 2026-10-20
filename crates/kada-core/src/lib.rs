@@ -1870,6 +1870,12 @@ pub struct Settings {
     /// 余地，这个开关就是给那种情况留的——关掉即整条链路静默（探测也不再做）。
     #[serde(default = "default_true")]
     pub input_env_diag: bool,
+    /// 输入层环境诊断里**已经确认误报、不再提示**的接管者 id（[`DIVERTERS`] 的 `id`）。
+    ///
+    /// 只掐提示、不改探测：被忽略的条目仍出现在设置页卡片里（旁边给「恢复提示」），
+    /// 只是不再进 [`diagnose_input_env`] 的冲突列表。缺字段 = 空 = 一条都不忽略。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub input_env_ignored: Vec<String>,
     /// 提权窗口注入（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：前台是提权窗口时，
     /// 把注入交给一个**按需拉起的提权进程**去做（UIPI 只拦「低完整性级别往高级别」的输入，
     /// 同级之间是通的），补上「按了快捷键，提权窗口里没反应」。
@@ -1937,6 +1943,7 @@ impl Default for Settings {
             snippet_index_url: default_snippet_index_url(),
             sync_dir: None,
             input_env_diag: true,
+            input_env_ignored: Vec::new(),
             elevated_inject: false,
             update_source: UpdateSource::Ihomy,
             auto_update: false,
@@ -2711,6 +2718,8 @@ pub fn diagnose_input_env(cfg: &Config, env: &InputEnv) -> Vec<Conflict> {
     DIVERTERS
         .iter()
         .filter(|d| env.diverters.iter().any(|id| id == d.id))
+        // 用户点过「忽略」的不再报（设置页卡片里仍能看到并恢复）。
+        .filter(|d| !cfg.settings.input_env_ignored.iter().any(|id| id == d.id))
         .map(|d| Conflict {
             severity: Severity::Warn,
             platform: true,
@@ -6214,6 +6223,26 @@ mod input_env_tests {
         let hits = diagnose_input_env(&mouse_cfg(), &env);
         assert_eq!(hits.len(), 1);
         assert!(hits[0].message.contains("G HUB"), "{}", hits[0].message);
+    }
+
+    /// 用户点过「忽略」的那一条不再进冲突列表；别的接管者照报（粒度是单条，不是总开关）。
+    #[test]
+    fn ignored_diverter_is_not_reported() {
+        let env = InputEnv {
+            diverters: vec!["logi-options-plus".into(), "logi-ghub".into()],
+            hvci: None,
+        };
+        let mut cfg = mouse_cfg();
+        cfg.settings.input_env_ignored = vec!["logi-options-plus".into()];
+        let hits = diagnose_input_env(&cfg, &env);
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].message.contains("G HUB"), "{}", hits[0].message);
+        // 全忽略 = 一条都不报，但探测结果本身没被改写（设置页卡片还要显示它们）。
+        cfg.settings.input_env_ignored = vec!["logi-options-plus".into(), "logi-ghub".into()];
+        assert!(diagnose_input_env(&cfg, &env).is_empty());
+        // 认不出的 id 留在忽略表里无副作用。
+        cfg.settings.input_env_ignored = vec!["以前装过的软件".into()];
+        assert_eq!(diagnose_input_env(&cfg, &env).len(), 2);
     }
 
     /// HVCI 只作环境信息：即便开着也不产出冲突（它拦内核驱动，不影响用户态钩子）。

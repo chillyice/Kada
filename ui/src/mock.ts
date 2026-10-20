@@ -257,6 +257,7 @@ export function installBrowserMock() {
         case "input_env_report":
           // 演示数据（与 DEMO_CONFLICTS 同一个理由）：浏览器里根本没有进程表可查，但设置页
           // 那张卡片的「检测到接管者」渲染路径得能在纯浏览器里验收，所以给一条假的命中项。
+          // 「忽略」状态读传进来的配置，纯浏览器里也能验到忽略 / 恢复两种渲染。
           return {
             supported: true,
             diverters: [
@@ -265,6 +266,9 @@ export function installBrowserMock() {
                 name: "Logi Options+",
                 advice:
                   "在 Options+ 里把该按键改成「无操作 / 默认功能」，它就会回到标准报文本；不想改设置就直接退出 Options+。",
+                ignored:
+                  (args as { config?: { settings?: { input_env_ignored?: string[] } } })?.config
+                    ?.settings?.input_env_ignored?.includes("logi-options-plus") ?? false,
               },
             ],
             checked: 8,

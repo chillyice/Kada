@@ -2258,6 +2258,22 @@ button:disabled:hover {
 .env-hit-name {
   font-size: var(--fs-md);
 }
+/* 已忽略提示的条目：仍然列出来（可恢复），但整体压暗、竖线变虚线。 */
+.env-hit.ignored {
+  border-left-style: dashed;
+  opacity: 0.62;
+}
+.env-hit-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.env-hit-ignore {
+  flex: none;
+  font-size: var(--fs-sm);
+  padding: 1px 8px;
+}
 .env-hit-advice {
   color: var(--muted);
   font-size: var(--fs-sm);

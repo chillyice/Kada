@@ -148,6 +148,11 @@ type Settings = {
    */
   input_env_diag?: boolean;
   /**
+   * 输入层环境诊断里已确认误报、不再提示的接管者 id（规划 7.2-㊽ 余项②）。只掐提示，
+   * 不改探测：设置页卡片仍列出它们，旁边给「恢复提示」。缺字段 = 空。
+   */
+  input_env_ignored?: string[];
+  /**
    * 提权窗口注入（规划 7.2-㉑a）：前台是提权窗口时，把注入交给一个按需拉起的提权进程去做
    * （UIPI 只拦「低往高」的输入）。缺字段 = 关（后端 `#[serde(default)]` 的零值）——
    * 它是默认关的可选能力：打开要弹一次 UAC，不替用户决定。
@@ -194,7 +199,7 @@ type Conflict = { severity: "error" | "warn"; message: string; name: string; pla
  */
 type InputEnvReport = {
   supported: boolean;
-  diverters: { id: string; name: string; advice: string }[];
+  diverters: { id: string; name: string; advice: string; ignored: boolean }[];
   checked: number;
   hvci: boolean | null;
   /** 本平台是否支持「一键解锁罗技侧键」（档位 C，Windows 专属）。 */
@@ -5044,8 +5049,11 @@ async function renderInputEnvReport() {
   } else {
     line(`检测到 ${r.diverters.length} 个可能接管按键的软件：`);
     for (const d of r.diverters) {
-      const item = el("div", "env-hit");
-      item.append(el("div", "env-hit-name", d.name));
+      const item = el("div", d.ignored ? "env-hit ignored" : "env-hit");
+      const head = el("div", "env-hit-head");
+      head.append(el("div", "env-hit-name", d.ignored ? `${d.name}（已忽略提示）` : d.name));
+      head.append(inputEnvIgnoreButton(d));
+      item.append(head);
       item.append(el("div", "env-hit-advice", d.advice));
       box.append(item);
     }
@@ -5054,6 +5062,29 @@ async function renderInputEnvReport() {
   if (r.hvci === true) line("系统「内存完整性」已开启（不影响 Kada 当前的工作方式，仅作记录）。");
   else if (r.hvci === false) line("系统「内存完整性」未开启。");
   else line("系统「内存完整性」状态读不到（该功能未配置，或系统未提供）。");
+}
+
+/**
+ * 命中项上的「忽略 / 恢复提示」按钮（规划 7.2-㊽ 余项②）。
+ *
+ * 粒度是**单个软件**，不是总开关：某个接管者在你这台机器上确实不影响用时，掐掉这一条
+ * 就行，不必把整条诊断链关掉（后者连别的接管者也不报了）。
+ */
+function inputEnvIgnoreButton(d: InputEnvReport["diverters"][number]): HTMLButtonElement {
+  const btn = el("button", "ghost env-hit-ignore", d.ignored ? "恢复提示" : "忽略") as HTMLButtonElement;
+  btn.title = d.ignored
+    ? "恢复这条提示：它重新出现在冲突检测里"
+    : "不再为这个软件提示（它仍在下方列表里，可随时恢复）";
+  btn.addEventListener("click", () => void toggleInputEnvIgnore(d.id, !d.ignored));
+  return btn;
+}
+
+/** 记住 / 撤销对某个接管者的忽略，落盘后重画结论区（冲突检测也随配置一起更新）。 */
+async function toggleInputEnvIgnore(id: string, ignore: boolean) {
+  const rest = (cfg.settings.input_env_ignored ?? []).filter((x) => x !== id);
+  cfg.settings.input_env_ignored = ignore ? [...rest, id] : rest;
+  await save();
+  await renderInputEnvReport();
 }
 
 /**

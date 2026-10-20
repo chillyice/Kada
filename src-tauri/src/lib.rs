@@ -3862,6 +3862,8 @@ struct InputEnvHit {
     id: String,
     name: String,
     advice: String,
+    /// 用户对这个接管者点过「忽略」：只影响冲突列表的提示，卡片里仍列出来（可恢复）。
+    ignored: bool,
 }
 
 #[tauri::command]
@@ -3880,6 +3882,7 @@ fn input_env_report(config: Config) -> InputEnvReport {
             id: d.id.to_string(),
             name: d.name.to_string(),
             advice: d.advice.to_string(),
+            ignored: config.settings.input_env_ignored.iter().any(|id| id == d.id),
         })
         .collect();
     InputEnvReport {
