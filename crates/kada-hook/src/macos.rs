@@ -39,12 +39,15 @@
 //!   `GetLastInputInfo`）。
 //! - **权限**：监听（`CGEventTapCreate`）与注入都需要「辅助功能」权限。未授权时 tap 建不出来，
 //!   [`start`] 返回一句能照做的错误并**顺手弹一次系统授权框**（[`request_accessibility`]）。
+//! - **媒体键**（播放 / 上一曲 / 下一曲 / 音量 / 静音）不是虚拟键码，走 `NX_SYSDEFINED`
+//!   （`kCGEventSystemDefined`）系统定义事件。core-graphics 0.25 的 `CGEventType` 没有这个
+//!   变体，故**另装一个只订阅它的 tap**（`media_tap_callback`，掩码 `1 << 14`），解析
+//!   `subtype == 8` 的 `data1`（高 16 位键码、`0xFF00` 位的 0x0A/0x0B 是按下/抬起、bit0
+//!   是自动重复）；要求吞键时返回 null，未绑定原样放行，原生功能不受影响。注入（改键目标 /
+//!   按键动作）按同样格式造事件（`simulate::post_media`）。Apple 键盘的旧式
+//!   `0x48/0x49/0x4A`（音量+/-/静音）键码是否真的出现随机型而异，故仍不映射虚拟键码。
 //!
 //! 已知天花板（升级路径）：
-//! - **媒体键**（播放 / 上一曲 / 下一曲 / 音量 / 静音）在 macOS 上走 `NX_SYSDEFINED`
-//!   系统定义事件，不是虚拟键码，本版本不识别——好处是它们**原样放行**，媒体键功能照常；
-//!   代价是绑不了。Apple 键盘的旧式 `0x48/0x49/0x4A`（音量+/-/静音）键码是否真的出现随
-//!   机型而异，故一律不映射，免得把别的键错认成音量键。
 //! - **F21~F24** 在 macOS 没有对应键码（也没有这种硬件），无法绑定。
 //! - **CapsLock** 只发 `FlagsChanged`，方向靠自记的翻转状态（[`CAPS_DOWN`]）；要
 //!   「CapsLock 当 Ctrl」这类改键，macOS「系统设置 → 键盘 → 修饰键」本身就支持，更稳。
@@ -56,7 +59,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::c_void;
 use std::io;
 use std::ptr;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicU64, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
@@ -65,7 +68,10 @@ use std::time::{Duration, Instant};
 use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
 use core_foundation::boolean::CFBoolean;
 use core_foundation::dictionary::CFDictionary;
-use core_foundation::runloop::{kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop};
+use core_foundation::mach_port::{CFMachPort, CFMachPortRef};
+use core_foundation::runloop::{
+    kCFRunLoopCommonModes, kCFRunLoopDefaultMode, CFRunLoop, CFRunLoopSource,
+};
 use core_foundation::string::{CFString, CFStringRef};
 use core_graphics::event::{
     CGEvent, CGEventFlags, CGEventTap, CGEventTapLocation, CGEventTapOptions, CGEventTapPlacement,
@@ -120,6 +126,23 @@ static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(Ha
 /// 万一某个键盘对一次按键只发一个事件，则表现为「一按一个 tap」——至少不会卡在按住态
 /// （卡住会让 `hold` 形态的改键 / 切层键永远不释放）。
 static CAPS_DOWN: AtomicBool = AtomicBool::new(false);
+/// 媒体键 tap 的原始指针（`CFMachPortRef`）。0 = 未装。
+///
+/// 媒体键是独立的 `NX_SYSDEFINED` tap（理由见模块头），系统停用时只能在这个 tap 的回调里
+/// 重新启用，故留一个全局指针给它。
+static MEDIA_TAP: AtomicPtr<c_void> = AtomicPtr::new(ptr::null_mut());
+
+/// `NX_SYSDEFINED`（14）：媒体键等系统定义事件。
+const NX_SYSDEFINED: u32 = 14;
+/// 媒体键事件的子类型（`NX_SUBTYPE_AUX_CONTROL_BUTTONS`）。
+const NX_MEDIA_SUBTYPE: i64 = 8;
+/// `data1` 低 16 位里的按键状态：0x0A 按下、0x0B 抬起。
+const NX_KEYDOWN: i64 = 0x0A;
+const NX_KEYUP: i64 = 0x0B;
+/// `CGEventField` 里未公开的三个字段（CGEventTypes.h 私有但稳定，见 `simulate::post_media`）。
+const FIELD_SUBTYPE: u32 = 0x53;
+const FIELD_DATA1: u32 = 0x95;
+const FIELD_DATA2: u32 = 0x96;
 /// tap 句柄的原始指针（`CFMachPortRef`）。0 = tap 未装。
 ///
 /// 只为了两件事：看门狗线程重新启用 tap（`CGEventTapEnable`），以及 tap 被系统停用时
@@ -252,6 +275,12 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
     let run_loop = CFRunLoop::get_current();
     run_loop.add_source(&source, unsafe { kCFRunLoopCommonModes });
     tap.enable();
+    // 媒体键走另一个只订阅 NX_SYSDEFINED 的 tap（CGEventType 没有这个变体）。
+    // 建不出来不致命：只是媒体键绑不了，键盘照常。
+    let media = install_media_tap();
+    if let Some((_, media_source)) = &media {
+        run_loop.add_source(media_source, unsafe { kCFRunLoopCommonModes });
+    }
     TAP.store(tap.mach_port().as_concrete_TypeRef() as i64, Ordering::Relaxed);
     HEARTBEAT_MS.store(now_ms(), Ordering::Relaxed);
     *RUN_LOOP.lock().unwrap() = Some(run_loop.clone());
@@ -263,6 +292,10 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
         let _ = CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(100), false);
     }
 
+    if let Some((_, media_source)) = &media {
+        run_loop.remove_source(media_source, unsafe { kCFRunLoopCommonModes });
+        MEDIA_TAP.store(ptr::null_mut(), Ordering::Relaxed);
+    }
     TAP.store(0, Ordering::Relaxed);
     *RUN_LOOP.lock().unwrap() = None;
     run_loop.remove_source(&source, unsafe { kCFRunLoopCommonModes });
@@ -346,6 +379,139 @@ fn tap_callback(_proxy: CGEventTapProxy, etype: CGEventType, event: &CGEvent) ->
     }
 }
 
+/// 装媒体键 tap（只订阅 `NX_SYSDEFINED`）。返回 `(端口, run loop source)`，端口必须活到
+/// 钩子线程退出（Drop 即 `CFMachPortInvalidate`，事件停止）。
+///
+/// 失败只记一行日志：媒体键绑不了，键盘 / 鼠标不受影响。
+fn install_media_tap() -> Option<(CFMachPort, CFRunLoopSource)> {
+    // 掩码只有一位；用裸 `CGEventTapCreate` 是因为 core-graphics 的 `CGEventType` 没有
+    // SystemDefined 变体，没法走 `CGEventTap::new`。
+    let tap_ptr = unsafe {
+        CGEventTapCreate(
+            CGEventTapLocation::Session,
+            CGEventTapPlacement::HeadInsertEventTap,
+            CGEventTapOptions::Default,
+            1 << NX_SYSDEFINED,
+            media_tap_callback,
+            ptr::null(),
+        )
+    };
+    if tap_ptr.is_null() {
+        eprintln!("kada-hook: 媒体键 tap 创建失败（媒体键绑不了，其余输入照常）");
+        return None;
+    }
+    unsafe {
+        let port = CFMachPort::wrap_under_create_rule(tap_ptr as CFMachPortRef);
+        match port.create_runloop_source(0) {
+            Ok(source) => {
+                MEDIA_TAP.store(tap_ptr, Ordering::Relaxed);
+                Some((port, source))
+            }
+            Err(()) => {
+                eprintln!("kada-hook: 媒体键 tap 的 run loop source 创建失败");
+                None
+            }
+        }
+    }
+}
+
+/// 媒体键 tap 回调：解析 `data1` 后走与普通键相同的 `dispatch`。
+///
+/// 返回 null 才吞键；未绑定 / 未知媒体键 / 自己注入的事件一律原样放行。
+extern "C" fn media_tap_callback(
+    _proxy: *mut c_void,
+    etype: u32,
+    event: *mut c_void,
+    _user: *const c_void,
+) -> *mut c_void {
+    // 系统停用：当场重新启用（同主 tap 的处置；复用全局指针）。
+    if etype == 0xFFFF_FFFE || etype == 0xFFFF_FFFF {
+        let tap = MEDIA_TAP.load(Ordering::Relaxed);
+        if !tap.is_null() {
+            unsafe { CGEventTapEnable(tap, true) };
+        }
+        return event;
+    }
+    if event.is_null() {
+        return event;
+    }
+    // 回调只做判定：读取字段 + 走状态机，不建窗、不 IO。
+    HEARTBEAT_MS.store(now_ms(), Ordering::Relaxed);
+    unsafe {
+        let injected = looks_injected(
+            CGEventGetIntegerValueField(event, FIELD_SOURCE_STATE_ID),
+            CGEventGetIntegerValueField(event, FIELD_SOURCE_PID),
+            i64::from(std::process::id()),
+        );
+        if injected {
+            return event;
+        }
+        let Some(press) = parse_media(
+            CGEventGetIntegerValueField(event, FIELD_SUBTYPE),
+            CGEventGetIntegerValueField(event, FIELD_DATA1),
+        ) else {
+            return event;
+        };
+        let mods = flags_to_mods(CGEventGetFlags(event));
+        if matches!(dispatch(press.key, mods, press.down, press.repeat), CallbackResult::Keep) {
+            event
+        } else {
+            ptr::null_mut()
+        }
+    }
+}
+
+/// 一次媒体键事件（纯解析结果，便于单测）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MediaPress {
+    key: Key,
+    down: bool,
+    repeat: bool,
+}
+
+/// 解析 `NX_SYSDEFINED` 的 `subtype` 与 `data1`。
+///
+/// `data1` 布局（未公开但二十年未变）：高 16 位 = `NX_KEYTYPE_*`；`0xFF00` 位 = 0x0A 按下 /
+/// 0x0B 抬起；bit0 = 自动重复。任何不认识的组合返回 `None`（原样放行）。
+fn parse_media(subtype: i64, data1: i64) -> Option<MediaPress> {
+    if subtype != NX_MEDIA_SUBTYPE {
+        return None;
+    }
+    let key = nx_key_to_key(((data1 >> 16) & 0xffff) as u16)?;
+    let flags = data1 & 0xffff;
+    let down = match (flags >> 8) & 0xff {
+        NX_KEYDOWN => true,
+        NX_KEYUP => false,
+        _ => return None,
+    };
+    Some(MediaPress { key, down, repeat: flags & 1 != 0 })
+}
+
+/// `NX_KEYTYPE_*` → [`Key`]（只收键模型里有的六个）。
+fn nx_key_to_key(code: u16) -> Option<Key> {
+    Some(match code {
+        0 => Key::VolumeUp,
+        1 => Key::VolumeDown,
+        7 => Key::VolumeMute,
+        16 => Key::MediaPlayPause,
+        17 => Key::MediaNext,
+        18 => Key::MediaPrev,
+        _ => return None,
+    })
+}
+
+/// [`Key`] → `NX_KEYTYPE_*`（注入用）。
+fn key_to_nx(k: Key) -> Option<u16> {
+    Some(match k {
+        Key::VolumeUp => 0,
+        Key::VolumeDown => 1,
+        Key::VolumeMute => 7,
+        Key::MediaPlayPause => 16,
+        Key::MediaNext => 17,
+        Key::MediaPrev => 18,
+        _ => return None,
+    })
+}
 /// 鼠标触发 → 录制回调，附自上次触发以来自事件坐标算出的位移。没有录制器时立即返回。
 fn record_trigger(event: &CGEvent, kind: MouseRecordKind) {
     if MOUSE_RECORDER.lock().unwrap().is_none() {
@@ -1158,7 +1324,27 @@ extern "C" {
     ) -> *mut c_void;
     fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
     fn CGEventPost(location: CGEventTapLocation, event: *mut c_void);
+    // 媒体键 tap（独立于主 tap，掩码只有 NX_SYSDEFINED）与它要用的字段读写。
+    fn CGEventTapCreate(
+        tap: CGEventTapLocation,
+        place: CGEventTapPlacement,
+        options: CGEventTapOptions,
+        events_of_interest: u64,
+        callback: RawTapCallback,
+        user_info: *const c_void,
+    ) -> *mut c_void;
+    fn CGEventGetIntegerValueField(event: *mut c_void, field: u32) -> i64;
+    fn CGEventGetFlags(event: *mut c_void) -> CGEventFlags;
+    fn CGEventSetType(event: *mut c_void, event_type: u32);
+    fn CGEventSetIntegerValueField(event: *mut c_void, field: u32, value: i64);
+    fn CGEventSetFlags(event: *mut c_void, flags: CGEventFlags);
 }
+
+type RawTapCallback = extern "C" fn(*mut c_void, u32, *mut c_void, *const c_void) -> *mut c_void;
+
+/// `kCGEventSourceUnixProcessID` / `kCGEventSourceStateID`（裸字段号，同 [`FIELD_DATA1`]）。
+const FIELD_SOURCE_PID: u32 = 41;
+const FIELD_SOURCE_STATE_ID: u32 = 45;
 
 // 辅助功能（AX）接口。`AXUIElementRef` 是 CFType（需 CFRelease）。
 #[link(name = "ApplicationServices", kind = "framework")]
@@ -1243,8 +1429,9 @@ pub mod simulate {
     use kada_core::{Key, MouseButton, MouseOp};
 
     use super::{
-        key_to_code, key_to_mouse_button, modifier_flag, CFRelease, CGEventCreate,
-        CGEventCreateMouseEvent, CGEventGetLocation, CGEventPost, CGEventSourceCreate,
+        key_to_code, key_to_mouse_button, key_to_nx, modifier_flag, CFRelease, CGEventCreate,
+        CGEventCreateMouseEvent, CGEventGetLocation, CGEventPost, CGEventSetFlags,
+        CGEventSetIntegerValueField, CGEventSetType, CGEventSourceCreate,
         CGEventSourceFlagsState,
     };
 
@@ -1303,8 +1490,12 @@ pub mod simulate {
             post_mouse(button, down);
             return;
         }
+        if let Some(nx) = key_to_nx(k) {
+            post_media(nx, down);
+            return;
+        }
         let Some(code) = key_to_code(k) else {
-            return; // 本平台没有这个键（媒体键 / F21~F24）：静默无操作
+            return; // 本平台没有这个键（F21~F24）：静默无操作
         };
         let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
             return;
@@ -1314,6 +1505,36 @@ pub mod simulate {
         };
         event.set_flags(flags);
         event.post(CGEventTapLocation::HID);
+    }
+
+    /// 注入媒体键：造一个 `NX_SYSDEFINED` 事件投到 HID 位置。
+    ///
+    /// 格式与系统发出的一致（`subtype = 8`；`data1` 高 16 位键码、`0xFF00` 位按下/抬起；
+    /// `data2 = -1`）。`CGEventSetType` 用裸接口传 14，理由同 [`super::install_media_tap`]。
+    fn post_media(nx: u16, down: bool) {
+        unsafe {
+            let source = CGEventSourceCreate(CGEventSourceStateID::Private);
+            if source.is_null() {
+                return;
+            }
+            let event = CGEventCreate(source);
+            if !event.is_null() {
+                let state = if down { super::NX_KEYDOWN } else { super::NX_KEYUP };
+                let flags: u64 = (state as u64) << 8;
+                CGEventSetType(event, super::NX_SYSDEFINED);
+                CGEventSetFlags(event, CGEventFlags::from_bits_truncate(flags));
+                CGEventSetIntegerValueField(event, super::FIELD_SUBTYPE, super::NX_MEDIA_SUBTYPE);
+                CGEventSetIntegerValueField(
+                    event,
+                    super::FIELD_DATA1,
+                    (flags | (u64::from(nx) << 16)) as i64,
+                );
+                CGEventSetIntegerValueField(event, super::FIELD_DATA2, -1);
+                CGEventPost(CGEventTapLocation::HID, event);
+                CFRelease(event as *const c_void);
+            }
+            CFRelease(source as *const c_void);
+        }
     }
 
     /// 注入鼠标其它键（中键 / 侧键）。
@@ -1583,7 +1804,7 @@ mod tests {
         }
         // 主键区回车与小键盘回车在 macOS 上是两个不同键码（不像 Windows 共用 VK_RETURN）。
         assert_ne!(key_to_code(Key::Enter), key_to_code(Key::NumpadEnter));
-        // 媒体键（NX_SYSDEFINED，非键码）与 F21~F24（无此硬件）不映射。
+        // 媒体键走独立的 NX_SYSDEFINED tap（不是键码）；F21~F24 无此硬件。
         for k in [
             Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext, Key::VolumeMute,
             Key::VolumeDown, Key::VolumeUp, Key::F21, Key::F22, Key::F23, Key::F24,
@@ -1592,6 +1813,41 @@ mod tests {
         }
         // 鼠标键不是键码，走鼠标事件注入。
         assert_eq!(key_to_code(Key::MouseBack), None);
+    }
+
+    #[test]
+    fn media_nx_mapping_roundtrip() {
+        for (code, key) in [
+            (0, Key::VolumeUp),
+            (1, Key::VolumeDown),
+            (7, Key::VolumeMute),
+            (16, Key::MediaPlayPause),
+            (17, Key::MediaNext),
+            (18, Key::MediaPrev),
+        ] {
+            assert_eq!(nx_key_to_key(code), Some(key));
+            assert_eq!(key_to_nx(key), Some(code));
+        }
+        for code in [2, 6, 8, 15, 19, u16::MAX] {
+            assert_eq!(nx_key_to_key(code), None, "NX {code} 不该认");
+        }
+        assert_eq!(key_to_nx(Key::A), None);
+    }
+
+    #[test]
+    fn parse_media_reads_data1() {
+        // 高 16 位键码，0xFF00 位 0x0A 按下 / 0x0B 抬起，bit0 自动重复。
+        let down = (i64::from(16u16) << 16) | (NX_KEYDOWN << 8);
+        let up = (i64::from(16u16) << 16) | (NX_KEYUP << 8);
+        let repeat = down | 1;
+        let press = |d| parse_media(NX_MEDIA_SUBTYPE, d);
+        assert_eq!(press(down), Some(MediaPress { key: Key::MediaPlayPause, down: true, repeat: false }));
+        assert_eq!(press(repeat), Some(MediaPress { key: Key::MediaPlayPause, down: true, repeat: true }));
+        assert_eq!(press(up), Some(MediaPress { key: Key::MediaPlayPause, down: false, repeat: false }));
+        // 非媒体子类型、未知键码、状态位不认识：一律 None（原样放行）。
+        assert_eq!(parse_media(7, down), None);
+        assert_eq!(press((99i64 << 16) | (NX_KEYDOWN << 8)), None);
+        assert_eq!(press((i64::from(16u16) << 16) | (0x0C << 8)), None);
     }
 
     #[test]

@@ -5777,12 +5777,10 @@ mod platform_caps_tests {
         PlatformCaps { frontmost_conditions: false, ..Default::default() }
     }
 
-    /// macOS 口径的 caps：媒体键 + F21~F24 无对应键码，监听与注入都不行。
+    /// macOS 口径的 caps：F21~F24 无对应键码，监听与注入都不行（媒体键已随 7.1-㊹ 支持）。
     fn macos_caps() -> PlatformCaps {
         let mut keys = BTreeSet::new();
         for k in [
-            Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
-            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp,
             Key::F21, Key::F22, Key::F23, Key::F24,
         ] {
             keys.insert(k);
@@ -5931,7 +5929,7 @@ mod platform_caps_tests {
                     "F9",
                     vec![Action::Parallel {
                         actions: vec![Action::Keys {
-                            keys: vec!["MediaPlayPause".into()],
+                            keys: vec!["F21".into()],
                             description: None,
                         }],
                         description: None,
@@ -5968,12 +5966,12 @@ mod platform_caps_tests {
     #[test]
     fn unsupported_trigger_key_flagged() {
         let cfg = Config {
-            shortcuts: vec![shortcut("s", "Ctrl+VolumeUp", vec![])],
+            shortcuts: vec![shortcut("s", "Ctrl+F21", vec![])],
             ..Default::default()
         };
         let hits = detect_conflicts(&cfg, &macos_caps());
         assert_eq!(hits.len(), 1, "{hits:?}");
-        assert!(hits[0].message.contains("VolumeUp"));
+        assert!(hits[0].message.contains("F21"));
         assert!(hits[0].message.contains("监听不到"));
         // 序列 leader 与和弦成员同样要报。
         let cfg2 = Config {
@@ -6000,13 +5998,13 @@ mod platform_caps_tests {
     fn remap_sides_flagged() {
         let cfg = Config {
             remaps: vec![
-                Remap { from: "VolumeMute".into(), to: "A".into(), enabled: true, ..Default::default() },
+                Remap { from: "F21".into(), to: "A".into(), enabled: true, ..Default::default() },
                 Remap { from: "B".into(), to: "F24".into(), enabled: true, ..Default::default() },
             ],
             ..Default::default()
         };
         let hits = detect_conflicts(&cfg, &macos_caps());
-        assert!(hits.iter().any(|c| c.message.contains("改键来源") && c.message.contains("VolumeMute")), "{hits:?}");
+        assert!(hits.iter().any(|c| c.message.contains("改键来源") && c.message.contains("F21")), "{hits:?}");
         assert!(hits.iter().any(|c| c.message.contains("目标键") && c.message.contains("F24")), "{hits:?}");
     }
 
@@ -6031,7 +6029,7 @@ mod platform_caps_tests {
         let cfg = Config {
             shortcuts: vec![shortcut(
                 "s",
-                "VolumeUp",
+                "F22",
                 vec![Action::Keys { keys: vec!["F23".into()], description: None }],
             )],
             ..Default::default()

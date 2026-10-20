@@ -3725,8 +3725,9 @@ fn input_env_cached() -> kada_core::InputEnv {
 ///   见 `kada-hook::win::current_device`）。
 /// - **Linux**：前台窗口取不到（X11 未接 / Wayland 无通用协议）→ 前台类条件恒不成立，
 ///   但设备条件可用（evdev 设备名）；键盘与鼠标键（中键/侧键）监听 + 注入都可用（7.3-㉔）。
-/// - **macOS**：媒体键与 F21~F24 无对应键码，监听与注入都不行；前台走 AX 可用；
-///   设备条件仍不可用（CGEventTap 不带设备信息，见 7.2-㊷）。
+/// - **macOS**：媒体键走独立的 `NX_SYSDEFINED` tap（7.1-㊹，监听与注入都可用）；
+///   F21~F24 无对应键码；前台走 AX 可用；设备条件仍不可用（CGEventTap 不带设备信息，
+///   见 7.2-㊷）。
 fn platform_caps() -> kada_core::PlatformCaps {
     #[cfg(target_os = "linux")]
     {
@@ -3739,18 +3740,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
     #[cfg(target_os = "macos")]
     {
         let mut keys = std::collections::BTreeSet::new();
-        for k in [
-            Key::MediaPlayPause,
-            Key::MediaPrev,
-            Key::MediaNext,
-            Key::VolumeMute,
-            Key::VolumeDown,
-            Key::VolumeUp,
-            Key::F21,
-            Key::F22,
-            Key::F23,
-            Key::F24,
-        ] {
+        for k in [Key::F21, Key::F22, Key::F23, Key::F24] {
             keys.insert(k);
         }
         kada_core::PlatformCaps {
