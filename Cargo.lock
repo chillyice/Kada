@@ -1988,6 +1988,7 @@ dependencies = [
  "evdev",
  "hidapi",
  "kada-core",
+ "libc",
  "windows",
 ]
 

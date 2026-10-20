@@ -1015,16 +1015,74 @@ pub fn current_device() -> Option<String> {
     None
 }
 
-/// 本机输入环境探测（规划 7.2-㊽）。**macOS 尚未实现，恒返回空。**
+/// 本机输入环境探测（规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）。
 ///
-/// 注意口径：这不是「这台机器没问题」，而是「这个平台还没做」——壳层据此把环境诊断
-/// 标成「当前平台暂不支持」而不是「未检测到接管软件」。两者不能混：前者是能力缺口，
-/// 后者是探测过了的结论（见 `docs/底层输入能力规划.md` 的「失败可见」不变量）。
-///
-/// 要做的话：进程表读 `NSWorkspace.runningApplications` 或 libproc，要认的接管者与
-/// Windows 同类（罗技 Options+ / G HUB 等在 macOS 上同样会 divert）。
+/// macOS 上同样有会 divert 的罗技系代理（Logi Options+ / G HUB 的 macOS 版），按
+/// [`kada_core::DIVERTERS`] 这份与 Windows 共用的目录认（进程名片段小写子串匹配）。
+/// 进程表走 libproc（`proc_listallpids` + `proc_pidpath`，纯用户态、免额外权限）；
+/// 内存完整性（HVCI）是 Windows 概念，恒 `None`。全部只读，失败一律当作「不知道」
+/// （空表）：诊断是锦上添花，不能因为它坏了影响应用本身。**调用方自己带缓存**——
+/// 一次进程表要几百个 pid，不该在每次编辑配置时重扫（壳层 `input_env_cached`）。
 pub fn input_env() -> kada_core::InputEnv {
-    kada_core::InputEnv::default()
+    kada_core::InputEnv {
+        diverters: running_diverters(),
+        hvci: None,
+    }
+}
+
+/// 正在运行的已知接管者 id（与 [`kada_core::DIVERTERS`] 的匹配片段做小写子串比对）。
+fn running_diverters() -> Vec<String> {
+    let names = process_names();
+    kada_core::DIVERTERS
+        .iter()
+        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|d| d.id.to_string())
+        .collect()
+}
+
+/// 全部进程的可执行路径基名（小写）。
+///
+/// 先走 `proc_pidpath` 拿完整路径（取基名，如 `.../logioptionsplus_agent`）；别的用户的
+/// 进程可能拿不到路径，退回 `proc_name`（内核记的短名，最长 16 字节截断——目录里的
+/// 匹配片段都短于它，够用）。两样都拿不到就跳过：**诊断宁可漏报也不误报**。
+fn process_names() -> Vec<String> {
+    use std::ffi::CStr;
+
+    let mut out = Vec::new();
+    unsafe {
+        let count = libc::proc_listallpids(std::ptr::null_mut(), 0);
+        if count < 1 {
+            return out;
+        }
+        let mut pids: Vec<libc::pid_t> = vec![0; count as usize];
+        let got = libc::proc_listallpids(
+            pids.as_mut_ptr().cast(),
+            (count as u32 as libc::c_int) * std::mem::size_of::<libc::pid_t>() as libc::c_int,
+        );
+        if got < 1 {
+            return out;
+        }
+        let mut path_buf = [0 as libc::c_char; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        let mut name_buf = [0 as libc::c_char; 64];
+        for pid in &pids[..got as usize] {
+            let name = if libc::proc_pidpath(*pid, path_buf.as_mut_ptr().cast(), path_buf.len() as u32) > 0 {
+                CStr::from_ptr(path_buf.as_ptr())
+                    .to_string_lossy()
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("")
+                    .to_lowercase()
+            } else if libc::proc_name(*pid, name_buf.as_mut_ptr().cast(), name_buf.len() as u32) > 0 {
+                CStr::from_ptr(name_buf.as_ptr()).to_string_lossy().to_lowercase()
+            } else {
+                continue;
+            };
+            if !name.is_empty() {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 /// 「辅助功能」权限是否已授予（CGEventTap 监听与注入的前置条件）。

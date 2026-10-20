@@ -12,6 +12,8 @@ evdev = "0.13"
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10"
 core-graphics = { version = "0.25", features = ["highsierra"] }
+# 输入层环境诊断的进程表（`proc_listallpids` / `proc_pidpath`，见 macos.rs 的 `input_env`）。
+libc = "0.2"
 
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
 arboard = "3"

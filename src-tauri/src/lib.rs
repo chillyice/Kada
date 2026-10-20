@@ -166,15 +166,15 @@ mod input {
     /// 事件，无此开关，这里是空实现。
     pub fn set_mouse_enabled(_on: bool) {}
 
-    /// 输入环境探测：**macOS 恒空**（尚未实现，见 `kada_hook::macos::input_env`）。
+    /// 输入环境探测：libproc 进程表 + `DIVERTERS` 目录（见 `kada_hook::macos::input_env`）。
     pub fn input_env() -> kada_core::InputEnv {
         kada_hook::platform_input_env()
     }
 
-    /// 本平台是否**做了**输入环境诊断。macOS 没做——界面据此说「当前平台暂不支持」，
-    /// 而不是「未检测到接管软件」（后者会被读成「查过了、你机器没问题」）。
+    /// 本平台是否**做了**输入环境诊断。macOS 已随 7.1-㊽ 的余项补齐（libproc 进程表），
+    /// 三平台现在都做了。
     pub fn input_env_supported() -> bool {
-        false
+        true
     }
 }
 

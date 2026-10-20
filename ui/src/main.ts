@@ -5036,7 +5036,7 @@ async function renderInputEnvReport() {
   box.replaceChildren();
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (!r.supported) {
-    line("当前平台暂不支持这项检测（Windows / Linux 已支持）。");
+    line("当前平台暂不支持这项检测。");
     return;
   }
   if (cfg.settings.input_env_diag === false) {
