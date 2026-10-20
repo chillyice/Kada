@@ -24,14 +24,16 @@
 //! 已知天花板（升级路径）：
 //! - 触摸板 / 触摸屏 / 指点杆**不抓取**：多点与 ABS 协议原样转发做不到，抓了等于废掉；
 //!   它们的中键 / 侧键不能作触发键（键盘与真鼠标不受影响）。
-//! - 热插拔不在监听列表里（重启应用即可；7.4-㉜）；Wayland 上同一套代码可用。
+//! - 热插拔靠轮询 `/dev/input`（2 秒一次，见 [`rescan_devices`]）：拔插不必重启应用；
+//!   Wayland 上同一套代码可用。
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use evdev::{
     AttributeSet, Device, EventType, InputEvent, KeyCode, PropType, RelativeAxisCode,
@@ -47,6 +49,12 @@ const EPERM: i32 = 1;
 const ENOENT: i32 = 2;
 const EACCES: i32 = 13;
 const EBUSY: i32 = 16;
+
+/// 虚拟设备名（键盘 + 鼠标合一）。热插拔重扫时必须跳过它——否则会把自己建的
+/// 虚拟设备当成新键盘抓走，注入事件又被读回来。
+const VDEV_NAME: &str = "kada-virtual-input";
+/// 热插拔检查间隔：只看 `/dev/input` 目录条目有没有变，变了才重新枚举（枚举会打开设备）。
+const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 
 /// 一次键盘/鼠标键事件。
 #[derive(Clone, Debug)]
@@ -67,6 +75,12 @@ pub enum Action {
 }
 
 type Handler = Box<dyn FnMut(KeyEvent) -> Action + Send>;
+
+/// 已抓取的设备：`path` 是 `/dev/input/eventN`，热插拔重扫据此判断「是不是已经抓过」。
+struct Grabbed {
+    path: PathBuf,
+    dev: Device,
+}
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
 /// 已决定吞掉的键：后续 keyup 也要吞。
@@ -239,21 +253,24 @@ where
     *HANDLER.lock().unwrap() = Some(Box::new(handler));
 
     // 抓取键盘与鼠标设备。能枚举到 = 打开成功（权限够）；抓取失败按 errno 分诊。
-    let mut devices: Vec<Device> = Vec::new();
+    let mut devices: Vec<Grabbed> = Vec::new();
     let mut saw_keyboard = false;
     let mut keyboard_busy = false;
-    for (_, mut dev) in evdev::enumerate() {
+    for (path, mut dev) in evdev::enumerate() {
+        if dev.name() == Some(VDEV_NAME) {
+            continue;
+        }
         if is_keyboard(&dev) {
             saw_keyboard = true;
             match dev.grab() {
-                Ok(()) => devices.push(dev),
+                Ok(()) => devices.push(Grabbed { path, dev }),
                 Err(e) if e.raw_os_error() == Some(EBUSY) => keyboard_busy = true,
                 Err(e) => eprintln!("kada-hook: 键盘抓取失败，跳过：{e}"),
             }
         } else if is_pointer(&dev) {
             // 鼠标抓不到不致命：中键/侧键改键不可用，键盘照常工作。
             match dev.grab() {
-                Ok(()) => devices.push(dev),
+                Ok(()) => devices.push(Grabbed { path, dev }),
                 Err(e) => eprintln!("kada-hook: 鼠标抓取失败，跳过：{e}"),
             }
         }
@@ -269,7 +286,7 @@ where
     let rels: AttributeSet<RelativeAxisCode> = (0x00..=0x0f).map(RelativeAxisCode).collect();
     let vdev = match VirtualDevice::builder()
         .map_err(|e| uinput_error(&e))?
-        .name("kada-virtual-input")
+        .name(VDEV_NAME)
         .with_keys(&keys)
         .and_then(|b| b.with_relative_axes(&rels))
         .and_then(|b| b.build())
@@ -282,8 +299,8 @@ where
     };
     *VDEV.lock().unwrap() = Some(vdev);
 
-    for dev in &devices {
-        dev.set_nonblocking(true)?;
+    for g in &devices {
+        g.dev.set_nonblocking(true)?;
     }
     STARTED.store(true, Ordering::Relaxed);
 
@@ -383,19 +400,30 @@ fn is_pointer(dev: &Device) -> bool {
     true
 }
 
-fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
+fn poll_loop(devices: &mut Vec<Grabbed>, stop: &AtomicBool) -> io::Result<()> {
+    let mut nodes = event_nodes(Path::new("/dev/input"));
+    let mut last_scan = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        // 热插拔：只比对目录条目（廉价），变了才重新枚举（枚举会打开每个设备）。
+        if last_scan.elapsed() >= RESCAN_INTERVAL {
+            last_scan = Instant::now();
+            let now = event_nodes(Path::new("/dev/input"));
+            if now != nodes {
+                nodes = now;
+                rescan_devices(devices);
+            }
+        }
         let mut i = 0;
         while i < devices.len() {
             // 先 collect 再进 match：fetch_events 的迭代器借住 devices[i]，
             // 匹配臂里的 devices.remove(i) 会撞上第二次可变借用。
             let fetched: io::Result<Vec<InputEvent>> =
-                devices[i].fetch_events().map(|it| it.collect());
+                devices[i].dev.fetch_events().map(|it| it.collect());
             match fetched {
                 Ok(events) => {
                     // 设备名只取一次（每次轮询每个设备）；KEY 事件前更新 LAST_DEVICE，
                     // 供壳层判断「这次触发是哪台键盘」（移动 / 滚轮不刷新，它们不触发动作）。
-                    let dev_name = devices[i].name().map(str::to_string);
+                    let dev_name = devices[i].dev.name().map(str::to_string);
                     for ev in events {
                         match ev.event_type() {
                             EventType::KEY => {
@@ -438,6 +466,7 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => i += 1,
                 Err(_) => {
                     devices.remove(i); // 设备拔出等
+                    nodes.clear(); // 强制下一轮重扫：同一 eventN 号可能被重新插入的设备复用
                     on_device_lost();
                 }
             }
@@ -445,6 +474,50 @@ fn poll_loop(devices: &mut Vec<Device>, stop: &AtomicBool) -> io::Result<()> {
         thread::sleep(Duration::from_millis(1));
     }
     Ok(())
+}
+
+/// `/dev/input` 下所有 `eventN` 节点的名字（排序后用于「目录变没变」的比对）。
+/// 读不到目录返回空表（与 [`keyboard_files_exist`] 同口径：不报错、只是没有）。
+fn event_nodes(dir: &Path) -> Vec<String> {
+    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let mut names: Vec<String> = rd
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let digits = name.strip_prefix("event")?;
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())).then_some(name)
+        })
+        .collect();
+    names.sort();
+    names
+}
+
+/// 热插拔重扫：把新出现、尚未抓取的键盘 / 鼠标接进来（拔出的设备已在 poll_loop 里移除）。
+/// 跳过自己的虚拟设备，避免注入事件被读回来。
+fn rescan_devices(devices: &mut Vec<Grabbed>) {
+    for (path, mut dev) in evdev::enumerate() {
+        if devices.iter().any(|g| g.path == path) || dev.name() == Some(VDEV_NAME) {
+            continue;
+        }
+        if !is_keyboard(&dev) && !is_pointer(&dev) {
+            continue;
+        }
+        match dev.grab() {
+            Ok(()) => match dev.set_nonblocking(true) {
+                Ok(()) => {
+                    eprintln!(
+                        "kada-hook: 新输入设备已接入：{}（{}）",
+                        dev.name().unwrap_or("?"),
+                        path.display()
+                    );
+                    devices.push(Grabbed { path, dev });
+                }
+                Err(e) => eprintln!("kada-hook: 新设备设置非阻塞失败，跳过：{e}"),
+            },
+            // 被其它工具独占：下次目录变化（重新插拔）再试，不重复刷日志。
+            Err(e) => eprintln!("kada-hook: 新设备抓取失败，跳过（{}）：{e}", path.display()),
+        }
+    }
 }
 
 /// 设备断线（拔出 / USB 抖动）：这台设备上还按着的键永远等不到抬起，状态机却会一直
@@ -1028,6 +1101,19 @@ mod tests {
         assert!(REPLACED_DOWN.lock().unwrap().is_empty());
         assert!(MODS_DOWN.lock().unwrap().is_empty());
         assert_eq!(reinstall_count(), before + 1);
+    }
+
+    /// 热插拔的目录比对只认 `eventN`（`mouse0` / `eventx` / `event-1` 不算节点变化）。
+    #[test]
+    fn event_nodes_only_lists_event_digits() {
+        let dir = std::env::temp_dir().join(format!("kada-event-nodes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["event0", "event12", "mouse0", "event", "eventx", "event-1", "eventA"] {
+            std::fs::write(dir.join(name), b"").unwrap();
+        }
+        assert_eq!(event_nodes(&dir), vec!["event0".to_string(), "event12".to_string()]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// 修饰键跟踪与吞键登记（`press` / `release` 状态机）——此前只测了键映射。
