@@ -1443,7 +1443,7 @@ fn spawn_gesture_listener(
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
 ) {
-    kada_hook::gesture::set_sink(Some(Box::new(move |stroke| {
+    kada_hook::gesture::set_sink(Some(Arc::new(move |stroke| {
         let app = app.clone();
         let cfg = cfg.clone();
         let results = results.clone();
@@ -1500,6 +1500,14 @@ fn handle_gesture(
     };
     let Some((name, actions)) = matched else {
         eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
+        // **看得见的反馈**：没匹配上时除了把右键补回去，还要告诉用户「你画的这个方向串
+        // 叫 DRUR」——否则界面毫无反应，用户只会以为功能坏了（试验台也是这么提示的：
+        // 照抄方向串进配置就能用）。弹气泡，不进消息中心（避免每次误拖都留一条）。
+        show_toast_note(
+            &app,
+            &format!("手势未匹配：{pattern}"),
+            "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
+        );
         replay_right_click();
         return;
     };
@@ -1507,6 +1515,11 @@ fn handle_gesture(
     // 按「没命中」处理、把右键补回去。
     if actions.is_empty() {
         eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
+        show_toast_note(
+            &app,
+            &format!("手势 {pattern} 没有动作"),
+            "右键已补回。给这条「鼠标操作」配上动作才会执行。",
+        );
         replay_right_click();
         return;
     }

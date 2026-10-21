@@ -5033,9 +5033,28 @@ async function pickDir(input: HTMLInputElement) {
 function renderConflictBubble() {
   const box = document.getElementById("conflict-list")!;
   box.replaceChildren();
-  const show = isListSection(section) && conflicts.length > 0 && !conflictBubbleDismissed;
+  // 「鼠标手势配了但总闸关着」也用气泡说一声：总闸关着时这一类**整类不显示**，
+  // 用户在列表里看不到自己的手势，只会觉得「配了没反应」——这里把原因摆出来。
+  const gestureCount = (cfg.gestures ?? []).length;
+  const gestureOff = isListSection(section) && gestureCount > 0 && !mouseFeaturesEnabled();
+  const hasConflict = isListSection(section) && conflicts.length > 0 && !conflictBubbleDismissed;
+  const show = hasConflict || gestureOff;
   box.classList.toggle("hidden", !show);
   if (!show) return;
+  if (gestureOff) {
+    const b = el("div", "conflict-bubble");
+    b.addEventListener("click", () => void enableExperimentalFeatures());
+    b.append(
+      el(
+        "span",
+        "conflict-bubble-text",
+        `⚠ 已配置 ${gestureCount} 条鼠标手势，但「实验功能」未开启 → 不会触发`,
+      ),
+      el("span", "conflict-bubble-hint", "点击开启"),
+    );
+    box.append(b);
+  }
+  if (!hasConflict) return;
   const { errors, warns, caps } = splitConflicts(conflicts);
   const bits: string[] = [];
   if (errors.length || warns.length)
@@ -5058,6 +5077,14 @@ function renderConflictBubble() {
   });
   bubble.append(close);
   box.append(bubble);
+}
+
+// 打开「新功能总闸」并立刻落盘：手势这类功能默认关着，用户配好了却没打开就白配。
+async function enableExperimentalFeatures() {
+  cfg.settings.experimental = true;
+  const box = document.getElementById("set-experimental") as HTMLInputElement | null;
+  if (box) box.checked = true;
+  await save();
 }
 
 // 冲突归属的条目（「是哪个快捷键」标题 + 点击跳转编辑页用）。

@@ -8,7 +8,7 @@
 //! 由壳层回放一次完整右键**（按下-抬起配对），不把用户的右键吞掉。
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// 一次手势的轨迹。
@@ -21,7 +21,10 @@ pub struct Stroke {
 }
 
 /// 轨迹出口（壳层注册）。**回调在钩子线程上跑**，壳层要自己开线程做后续。
-pub type StrokeSink = Box<dyn Fn(Stroke) + Send>;
+///
+/// 用 `Arc` 包裹：出口要能**反复**取用（每次右键抬起都要交给它），不能像 `Box` 那样
+/// 取走就没了——取走的后果是「第一次右键之后所有手势都不再上报」。
+pub type StrokeSink = Arc<dyn Fn(Stroke) + Send + Sync>;
 
 /// 手势是否启用（壳层按配置推）。
 static ENABLED: AtomicBool = AtomicBool::new(false);
@@ -143,7 +146,8 @@ pub fn on_right_up(pt: (i32, i32)) -> bool {
             points: std::mem::take(&mut t.points),
             elapsed_ms,
         };
-        let sink = SINK.lock().unwrap().take();
+        // 出口**只借用不取走**（`Arc` 克隆）：取走等于「第一次右键之后所有手势都不再上报」。
+        let sink = SINK.lock().unwrap().clone();
         (stroke, sink)
     };
     // 出口回调在锁外调（它可能要开线程、要读配置）。
@@ -157,29 +161,43 @@ pub fn on_right_up(pt: (i32, i32)) -> bool {
 mod tests {
     use super::*;
 
+    /// 采集状态是**全局静态**（钩子线程与测试共用），所以这几件事必须串在**一个**测试里：
+    /// 拆成多个 `#[test]` 会并行跑、`set_enabled` 互相踩，测出来的结果没有意义。
     #[test]
-    fn disabled_passes_right_button_through() {
+    fn right_button_gestures() {
+        // 关着 = 右键完全放行（回到系统行为）。
         set_enabled(false);
         assert!(!on_right_down((0, 0)));
         assert!(!on_right_up((0, 0)));
-    }
 
-    #[test]
-    fn down_and_up_are_swallowed_and_stroke_delivered() {
         set_enabled(true);
-        let got = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let got = Arc::new(Mutex::new(Vec::new()));
         let g = got.clone();
-        set_sink(Some(Box::new(move |s: Stroke| {
+        set_sink(Some(Arc::new(move |s: Stroke| {
             g.lock().unwrap().push(s);
         })));
+
+        // 一次完整手势：按下-移动-抬起，全程吞掉，轨迹交给出口。
         assert!(on_right_down((10, 10)));
         on_move((40, 10));
         on_move((80, 10));
         assert!(on_right_up((80, 10)));
-        let strokes = got.lock().unwrap();
-        assert_eq!(strokes.len(), 1);
-        assert_eq!(strokes[0].points.first(), Some(&(10, 10)));
-        assert_eq!(strokes[0].points.last(), Some(&(80, 10)));
+        {
+            let strokes = got.lock().unwrap();
+            assert_eq!(strokes.len(), 1);
+            assert_eq!(strokes[0].points.first(), Some(&(10, 10)));
+            assert_eq!(strokes[0].points.last(), Some(&(80, 10)));
+        }
+
+        // 出口必须**反复**可用：取走（`take`）的实现会让「第一次右键之后所有手势都不再上报」，
+        // 而第一次右键往往只是普通点击——用户看到的就是「手势完全不生效」。
+        for i in 0..5 {
+            assert!(on_right_down((i, 0)));
+            on_move((i + 30, 0));
+            assert!(on_right_up((i + 30, 0)));
+        }
+        assert_eq!(got.lock().unwrap().len(), 6);
+
         set_sink(None);
         set_enabled(false);
     }
