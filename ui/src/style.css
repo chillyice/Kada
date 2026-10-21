@@ -1194,6 +1194,10 @@ body {
 
 .thanks-name {
   display: inline-block;
+  /* 字符泡泡从昵称「后面」（下层）弹出：名字垫在泡泡之上，泡泡永远盖不住昵称。
+     泡泡在 100、名字在 101，弹窗类（200+）照旧压住这两者。 */
+  position: relative;
+  z-index: 101;
   font: inherit;
   font-size: var(--fs-sm);
   color: var(--muted);
@@ -1228,13 +1232,14 @@ body {
 }
 
 /* 字符泡泡：从鼠标点击处向四周炸开、由透明变不透明（装配见 main.ts 的 burstBubbles）。
-   fixed 定位到视口、pointer-events:none 不挡任何点击；散射位移由 --dx / --dy 给。 */
+   fixed 定位到视口、pointer-events:none 不挡任何点击；散射位移由 --dx / --dy 给。
+   z-index 100 < 昵称的 101：泡泡排在昵称下层弹出，不盖住名字（弹窗 200+ 仍在两者之上）。 */
 .thanks-bubble {
   position: fixed;
   transform: translate(-50%, -50%);
   white-space: nowrap;
   pointer-events: none;
-  z-index: 9999;
+  z-index: 100;
   animation: thanks-burst 1s ease-out forwards;
 }
 
