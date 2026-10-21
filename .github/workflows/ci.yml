@@ -53,6 +53,12 @@ jobs:
       - name: Snippet index in sync
         run: node scripts/build-snippet-index.mjs --check
 
+      # 文档一致性：失效路径引用 / 裸 § 引用歧义 / 代码地图 grep 令牌失效 /
+      # AGENTS.md 体积超限 / docs 索引漏收。文档是 AI 会话的唯一记忆，烂掉的引用
+      # 会让下一个会话把代码改到错的地方——所以跟代码一样当红线拦。
+      - name: Docs consistency
+        run: node scripts/check-docs.mjs
+
       - name: Cargo tests (all crates)
         shell: bash
         run: |

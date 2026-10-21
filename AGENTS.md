@@ -1,18 +1,120 @@
 # AGENTS.md — Kada 项目规则
 
-> 本文件供 ZCode 跨会话加载：**只留规则 + 导航索引**，目标 **≤20KB**（超出会被截断，尾部先丢）。
-> 完整功能需求见 `docs/需求设计说明书.md`（活文档，未实现规划在 §7）；实现历史归档见 `docs/变更归档.md`（只追加，不写回本文件）。
+> **本文件 = AI 会话必读入口**：只放「不可违反的规则」「去哪查」「怎么验证」。机制细节外移到 `docs/`（导航见文末）。
+> **上限 20KB**——超了注入上下文被截断、**尾部先丢**，所以「命令」和「归档」放最后，别让它们被挤掉。改完本文件跑 `node scripts/check-docs.mjs`（CI 也跑）。
 
-> **⚠ Git 规定**：非人工指令，不得主动提交代码（`git commit`/`git push` 一律禁止）；`git add` 只能指定具体文件路径（禁 `git add -A` / `git add .`）。归档文档走 `/archive` 技能。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`（不必再等指令）；`git add` 仍只给具体路径。
+## 0. 动手前 30 秒
 
-> **⚠ 编码/路径警示（遵守以防误写）**：含中文的源码/配置/文档一律走本工具的 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content`/`Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo/npm 构建与运行 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
+| 我要做 | 去哪 |
+|---|---|
+| 找到该改哪个文件的哪个符号 | **`docs/代码地图.md`**（症状 → 文件 → grep 令牌 → 规则出处） |
+| 查字段级定义 / 接口 | `docs/需求设计说明书.md`（活文档，只描述当前实现） |
+| 查机制与「为什么这样设计」 | `docs/架构设计.md` |
+| 查历史决策 | `docs/变更归档.md`（索引表）→ `docs/归档/`（分卷正文） |
+| 查只能真机验的验收项 | `docs/人工验证清单.md` |
+| 改完怎么归档 | 本文件「归档流程」 |
 
-## 项目概述
+**顺序永远是：先读规则 → 再改代码 → 再验证 → 再归档。** 铁律是底线，其余细节去上面那张表指的地方查。
 
-- **咔哒 Kada**：轻快跨平台快捷键 / 改键 / 宏工具，托盘常驻（关窗不退出），配置 JSON 落盘、可跨平台同步。
-- **技术栈**：Rust workspace（`kada-core` 纯逻辑 + `kada-hook` 平台钩子 + `kada-actions` 动作引擎）+ Tauri 2 桌面壳（crate `kada`）+ Vite/TypeScript UI（`kada-ui`）。配置落盘 `app_data_dir()/config.json`（`%APPDATA%\com.kada\`）。
+> **⚠ 编码/路径警示**：含中文的源码 / 配置 / 文档一律走 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content` / `Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo / npm 构建与跑 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
 
-## 命名约定
+## 1. 铁律
+
+> 每条都是「违反了就是 bug」，不是风格问题。括号里是细则所在的小节；机制与「为什么」在那一节里，**别在本文件复述**。
+
+### 1.1 配置与落盘（`src-tauri/src/config_io.rs` / `config_watch.rs`｜说明书 §5.6）
+
+- **保存 = 原子写**（临时文件 → `fsync` → `rename`，留 `.bak`），**不要退回 `fs::write`**
+- **解析失败绝不静默清空**：留档 → `.bak` 恢复；全失败才空配置 + 告警
+- **加载只 `migrate()`，不 `sanitize_config()`**（清洗只在保存 / 导入路径）
+- **导入必须选方式**：`merge` 只增不删、不造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档
+- **删除已保存条目要先确认**（`confirmDelete`）；未落盘的新增项可不问
+- **外部修改监听**：**能解析才采纳、解析不动就别碰磁盘**（只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收到 `config-changed` 且有未保存草稿必须问用户
+- **`config-updated`（应用内写盘）与 `config-changed`（外部改动）语义分离，不可混用**
+- **同步存档**（`settings.sync_dir`）：每条写盘路径后 `push_sync` 一份——**新增写盘路径别漏**
+
+### 1.2 模型与判重（`crates/kada-core/src/lib.rs`｜说明书 §2 / §3）
+
+- `Remap` 四类形态（to / tap-hold / 切层键 / `oneshot`·`sticky`·`tap2`·`tap3`）**互斥**，优先级 `sticky > oneshot > tap-hold > to`；`hold_layer` 与 `lock_layer` **互斥**（同设保留 lock）
+- `when` 不成立 = **该条不存在**（落同触发键下一条、不吞键）；**判重指纹含 `when`**
+- `Layer.mark` 纯展示；**颜色本机唯一**
+- **层语义**：激活层条目优先、基础层条目兜底；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**
+
+### 1.3 吞键（不可逆｜架构设计 §3.1）
+
+被吞掉的键补不回来。**「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内**；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。
+
+### 1.4 钩子线程（`crates/kada-hook/`｜说明书 §4.1 / §4.2 / §4.3、架构设计 §3.6）
+
+- **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：唤窗、动作执行、注入一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
+- **注入事件一律放行**（Windows `LLKHF_INJECTED`）防回环；**`Block` / `Replace` 登记 `SWALLOWED`** 连 keyup 一起吞，但**所有 keyup 仍要回调 handler**
+- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键**或**有启用手势才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`（会让输入层诊断误报厂商接管）
+- **macOS 辅助功能是运行时授权**（`AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；**媒体键走独立 `NX_SYSDEFINED` tap**
+- **Linux 不抓触摸板 / 指点杆**（抓了等于废掉整个触摸板）
+- **输入层起不来的处置**：Windows 失败退出；macOS / Linux **照常启动**，把 `start` 的错误串经消息中心推给用户
+
+### 1.5 注入（说明书 §4.4 / §4.7｜架构设计 §3.23）
+
+- **动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放，否则注入会被仍按住的触发修饰键污染；**新增注入类动作要同步壳层 `injects_keys`**（否则不多等这一下）并接入链内注入锁
+- **提权窗口注入**：**新增注入路径必须经 `deliver()`**（失败回落本地）；钩子线程标 `local_only`（回调里不许有带等待的 IPC）；提权通道只放行本用户 + 双向身份校验、**只许有注入类 op**、断开或父进程退出即退
+
+### 1.6 状态机与复位（`src-tauri/src/engine.rs`｜架构设计 §3.2 / §3.15 / §3.16 / §3.22）
+
+- 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`
+- **超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`）——**配置读锁必须先于 `Engine` 锁**，同序否则死锁
+- **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时也主动解除
+- **输入状态复位**（`Engine::reset`）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**、**缓冲里的丢弃不回放**、**锁定层保留**
+- **自愈看门狗**：Windows **只投递 `WM_APP_REINSTALL`**、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**，但 **Raw Input 键盘旁路**（`LAST_RAW_KEY_TICK`）是独立观察者
+- **前台 / 设备上下文**：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`；带 `when` 的条目用 `TriggerContext`，前台**惰性查询**
+
+### 1.7 浮窗与界面外链（架构设计 §3.21 / §3.6）
+
+- 透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`（能被激活就抢前台 → `ResetWatch` 误判复位）；**`hints` 是唯一可交互浮窗**：默认不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**
+- **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后收不到任何鼠标事件，只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek`
+- **界面外链必须由壳层接住**（主窗口 `.on_new_window`）：一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**（真机验收见人工验证清单 §21）
+
+### 1.8 动作执行与执行记录（`crates/kada-actions/`｜说明书 §5.4 / §5.7、架构设计 §3.17）
+
+- 命令 / 脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等；超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；**中止 = 代数计数器** `abort::request()`
+- **并行动作** `Parallel`：成员各起一线程、全部结束才进下一步；**链内注入锁**保注入串行；`vars` 成员私有、按下标合并提交
+- **每个动作都要上报一步 `ActionStep`**（文本 / 按键 / 延迟这类不产命令结果的动作也必须有）。一次触发 = 一条 `RunRecord`（`fire` 先落 `running`，收尾定 `ok` / `error` / `abort`）；**「停止执行」只在 `running` 记录的「执行中」徽标右侧**
+- **普通消息**（`run_id === null` 才进列表；内存态、重启清空）：命令结果 / 中止 / 失败 / 配置事件都记入；`show_output` 开则弹结果弹窗，否则托盘红点。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）
+
+### 1.9 卡带 / 分享（`crates/kada-core/src/snippet.rs`｜说明书 §6.7）
+
+- **卡带必须仍是合法的 `Config` JSON**（顶层多个被忽略的 `kada_snippet` 键）——对方靠现成的「导入 → 合并」吃下，**不要另立格式 / 解析器**
+- 摘取时**剥掉 `folder`**、带上被引用的层、**不带 `settings`**
+- **市场没有服务端**：索引 = 一份可下载的静态 JSON（默认 `snippets/index.json`）；**装之前必须先预览**（命令 / 脚本动作装进来就会跑）
+
+### 1.10 feature 门控
+
+- 三个 crate 都默认开启 `automation` feature；关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / System / App / OpenUrl / If / Script / Condition / Vars
+- **门控要覆盖测试目标**：用到 `Condition` / `Action::If` / `Parallel` 的测试与辅助函数（如 `linux_caps()`）必须自己也 `#[cfg(feature = "automation")]`，否则 `cargo test -p kada-core --no-default-features` 编译失败
+
+### 1.11 前端键表须与 core 同源
+
+`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 守着，Rust 增键而前端漏改即红）。
+
+### 1.12 软冲突（说明书 §3 / §4.6 / §4.8）
+
+- **平台能力缺失**（`PlatformCaps`）与**层可达性**（层有条目却无切层键指向）都属软冲突：`get_conflicts` 标 `Warn`，**不拦保存**
+- **输入层环境诊断**也属软冲突，但**只在配置用到鼠标键时才出**；`settings.input_env_diag` 关掉**连探测都不跑**；`settings.input_env_ignored` 按**单个接管者**掐提示
+- **罗技设备可一键解锁**：只交回标准报文、**不接管事件流**
+
+### 1.13 鼠标手势（实验功能｜说明书 §5.9）
+
+- 按住右键画轨迹 → 方向串。**右键按下先吞、抬起才判定**：命中执行动作；**未命中 / 没画出轨迹一律回放一次完整右键**（注入不被自己再吃）
+- 识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**；**轨迹出口只借用不取走**
+- 总闸 `Settings.experimental`（**默认关**）：关掉 → 入口隐藏、行为不生效、**配置保留**。**本功能正式完成前不打 tag、不发 release**
+
+### 1.14 软件更新（说明书 §5.5）
+
+- **私钥绝不入库**（公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；**`latest.json` 由 `tauri-action` 生成，不手写、不入库**；端点只认**已发布** Release；**前端碰不到更新**（capabilities 不开 `updater:*`）
+- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本
+- **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；CI 用 `signer sign --app-version` 签便携包。检查走 `build_updater`，**别用 `app.updater()`**
+- **安装会退出应用**；其它平台装完 `app.restart()`
+
+## 2. 命名与键模型
 
 | 项 | 值 |
 |----|----|
@@ -22,56 +124,10 @@
 | Tauri `identifier` | `com.kada` |
 | `productName` / 窗口标题 / 应用显示名 | `Kada` / `咔哒 Kada` |
 
-- **键模型使用平台无关中性名**：`Enter/Escape`（不是 `Return`）、修饰键 `Ctrl/Alt/Shift/Meta`（macOS 的 ⌘ 由 `Meta` 承载，平台层负责把 OS 键映射成 `Key`）。键名渲染回 `"Ctrl+Alt+K"` 形式。
+- **键模型使用平台无关中性名**：`Enter/Escape`（不是 `Return`），修饰键 `Ctrl/Alt/Shift/Meta`（macOS 的 ⌘ 由 `Meta` 承载，平台层负责把 OS 键映射成 `Key`）。键名渲染回 `"Ctrl+Alt+K"` 形式（说明书 §2）
+- 平台代码一律 `#[cfg]` 门控，三后端同一套接口；目录树见 `docs/README.md`
 
-## 代码结构
-
-代码地图见 `docs/README.md`「代码地图」；结构规则：members / crate 名见「命名约定」，平台代码 `#[cfg]` 门控、三后端同一套接口。
-
-## 核心概念与铁律
-
-> 逐字段定义见 `docs/需求设计说明书.md` §2~§5；下面只列**动手必须遵守的约束**。
-
-- **配置模型**：`Config { folders, layers, shortcuts, remaps, expansions, settings }`（逐字段见 §2 / §3）。`Remap` 四类形态（to / tap-hold / 切层键 / `oneshot`·`sticky`·`tap2`·`tap3`）**互斥**，优先级 `sticky > oneshot > tap-hold > to`；`hold_layer` 与 `lock_layer` 互斥、同设保留 lock。`when` 不成立 = 该条不存在（落同触发键下一条、不吞键），判重指纹含 `when`。`Layer.mark` 纯展示、颜色本机唯一。
-- **吞键铁律（序列 / 和弦 / tap-hold 必须遵守）**：被吞掉的键补不回来，「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按到底没设 `hold`，含切层键与 momentary 层单按）。反例与机制见 `架构设计.md` §3.1。
-- **配置落盘铁律**（`config_io.rs`，见 `需求设计说明书.md` §5.6）：保存 = **原子写**（临时文件 → `fsync` → `rename` 覆盖，留 `.bak`），**不要退回 `fs::write`**；加载解析失败**绝不静默清空**——留档 → `.bak` 恢复，全失败才空配置 + 告警。加载只 `migrate()` **不** `sanitize_config()`（清洗只在保存/导入路径）。**导入必须选方式**：`merge` 只增不删、不造新冲突、**设置保留本机**；`replace` 覆盖前必须 `archive_copy` 留档。**删除已保存条目要先确认**（`confirmDelete`），未落盘新增项可不问。**外部修改监听**（`config_watch.rs`）：**能解析才采纳、解析不动就别碰磁盘**（只读 `read_only`）；写盘与 `adopt_own_write` 同持 `cfg_watch` 锁；界面收 `config-changed` 有未保存草稿必须问用户。**`config-updated`（应用内写盘）与 `config-changed`（外部改动）语义分离，不可混用**。**同步存档**（`settings.sync_dir`）：每条写盘路径后 `push_sync` 一份到该目录（尽力而为）；**新增写盘路径别漏**。
-- **层语义**：激活层条目优先、基础层条目兜底（不归属任何层的条目始终生效）；**momentary 层只在 roll 或按住切层键期间按别的键时真正进入**。
-- **平台能力缺失**（`PlatformCaps`，见钩子引擎段）与**层可达性**（层有条目却无切层键指向 → 警告）同属软冲突。
-- **执行记录（消息页「执行记录」标签，见 §5.4）**：一次触发 = 一条 `RunRecord`（`fire` 先落 `running`、收尾定 `ok`/`error`/`abort`），**每个动作**都上报一步 `ActionStep`——文本/按键/延迟这类不产命令结果的动作也必须有，否则「按了没反应」查不到是哪一步。两种展示与上限见 §5.4。**停止执行**只在 `running` 记录的「执行中」徽标右侧（■ 图标，跑完即消失）。
-- **普通消息**（`run_id === null` 才进列表；内存态，重启清空）：命令结果 / 中止 / 失败 / 配置事件都记入（`kind` 见 §5.4）；`show_output` 开则弹结果弹窗，否则托盘红点；进「消息」页标记已读。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）。
-- **动作执行有界**（`kada-actions/`，见 §3.17 / §5.7）：命令/脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等，超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；中止 = **代数计数器** `abort::request()`。**并行动作** `Parallel`（7.1-㉞）：成员各起一线程、全部结束才进下一步；**链内注入锁**保注入串行（只并发非注入步骤），`vars` 成员私有、按下标合并提交。
-- **配置卡带（分享）铁律**（`snippet.rs` + `export_fragment`）：卡带**必须仍是合法的 `Config` JSON**（顶层多个被忽略的 `kada_snippet` 键）——对方靠现成的「导入 → 合并」吃下，**不要另立格式 / 解析器**；摘取时**剥掉 `folder`**、带上被引用的层、**不带 `settings`**。**市场没有服务端**：索引 = 一份可下载的静态 JSON（默认 `snippets/index.json`），**装之前必须先预览**（命令 / 脚本动作装进来就会跑）。
-- **feature 门控**（三个 crate 均 `default` 开启的 `automation` feature）：关掉（`--no-default-features`）得**基础版** = 改键全形态 / 层 / 序列 / 和弦 / 文本扩展 / Text·Keys·Mouse·PauseMs 注入，裁掉 Command / Os / System / App / OpenUrl / If / Script / Condition / Vars。手工配置允许缺字段（`#[serde(default)]`）。**门控要覆盖测试目标**：用到 `Condition` / `Action::If` / `Parallel` 的测试与辅助函数（如 `linux_caps()`）必须自己也 `#[cfg(feature = "automation")]`，否则 `cargo test -p kada-core --no-default-features` 编译失败（`cargo check` 抓不到这类漏网）。
-- **前端键表须与 core 同源校验**：`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 守着，Rust 增键而前端漏改即红）。
-
-## 钩子引擎（动手前必读的约束）
-
-- **Windows**（`kada-hook::win`，见 §4.1）：`SetWindowsHookEx(WH_KEYBOARD_LL + WH_MOUSE_LL)`——**回调里绝不能做耗时操作**（超时被系统摘钩）。自动重复按「已按下且未抬起」判定；NumLock 关时小键盘按扫描码还原。`Block`/`Replace` 登记 `SWALLOWED` 连后续 keyup 一起吞（防幽灵），**但所有 keyup 仍以观察者身份回调 handler**。注入事件带 `LLKHF_INJECTED` 一律放行防回环；`Replace` 保持「按下-抬起」配对；`Replace`/`Keys` 注入走**扫描码 + 前台布局换算**（媒体键保留 VK）。鼠标钩子**按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`：用到鼠标键**或**有启用手势才挂；手势**不算**鼠标键，别混进 `config_uses_mouse`——那会让输入层诊断误报厂商接管）。
-- **macOS**（`kada-hook::macos`，见 §4.3）：`CGEventTap` 独立线程 CFRunLoop，**回调里同样不许做耗时操作**。三条硬约束：① tap 必须会话级 `kCGSessionEventTap`；② 「辅助功能」是**运行时授权**（`hooks_supported()` = `AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；③ 注入识别两判据取或（Private 事件源 ∪ 创建者 pid == 本进程）。**媒体键（7.1-㊹）走独立 `NX_SYSDEFINED` tap**（细节见 §4.3），建不出来只记日志。自愈走下面那条看门狗。
-- **输入层起不来的处置**：Windows 失败退出；macOS / Linux **照常启动**，`start` 的错误串（带可照抄指引）经消息中心推给用户。
-
-- **回调里不许建窗口 / 碰 IO 网络**：唤窗（主窗口 / 气泡 / 状态指示）、动作执行、注入一律 `std::thread::spawn`，回调里只留判定——理由见 §3.6。判定与副作用分开：判定用不持有 `AppHandle` 的纯函数。
-- **透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`**（能被激活就抢前台 → `ResetWatch` 误判复位，见 §3.21）。**`hints`（7.1-㊳）是唯一可交互浮窗**：默认不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；唯一例外是下面那条悬停让位的临时穿透。
-- **界面外链必须由壳层接住（主窗口 `on_new_window`）**：新窗口请求没人接就被 wry 吞掉、链接点了没反应；一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**；真机验收见 `人工验证清单.md` §21。
-- **提示框悬停让位（`spawn_hints_hover_watch`，见 §3.21）**：光标进框即穿透 + 变淡，停满 2s 恢复可交互。三条硬约束：**穿透之后收不到任何鼠标事件，只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek` 让界面变淡。
-- **Linux**（`kada-hook::linux`，见 §4.2）：evdev + uinput，`EVIOCGRAB` 抓键盘与**真鼠标**（触摸板/指点杆**不抓**），`/dev/uinput` 建键鼠合一虚拟设备；权限 = `input` 组 + udev 放行 uinput（起不来分诊见 §4.2）。**设备拔出就地复位三张表**并递增 `reinstall_count()`；**热插拔**每 2s 比对 `/dev/input` 条目、变了才重扫（跳过自建虚拟设备）。自动重复 `value==2`。**改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住。
-- **注入**（`simulate`）：文本走剪贴板 + `Ctrl+V` / macOS 的 ⌘V；组合键「全部按下 → 稍停 → 逆序松开」。**动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放——否则仍按住的触发修饰键会把注入污染成 `Ctrl+Alt+V`；**新增注入类动作要同步壳层 `injects_keys`**（否则不多等这一下）与链内注入锁。
-- **提权窗口注入**（7.1-㉑a，见 §3.23）：**新增注入路径必须经 `deliver()`**（前台是提权窗口且开关开、通道在才交提权进程重放，失败回落本地）；钩子线程标 `local_only`——回调里不许有带等待的 IPC；提权通道只放行本用户 + 双向身份校验、**只许有注入类 op**（别开「执行命令」口子）、断开或父进程退出即退。
-- **状态机集中在 `src-tauri/src/engine.rs`**（Tauri 无关、可单测，接线在 `lib.rs`）：顺序为 `taphold_step`（tap-hold / 切层 / oneshot / sticky / 连击）→ `chord_step` → `sequence_step` → `decide` → `hotstring`。**超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`，传 `cfg`——**配置读锁必须先于 `Engine` 锁**，同序否则死锁；事件路径另有懒判定兜底）。热串命中后吞掉后缀键，由**后台线程**回删 + 注入 + 补回后缀。
-- **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效——前端被中断时可能来不及解除，布尔量永久卡在暂停态会让整个应用静默失效；前端失焦/隐藏/关详情时也主动解除。
-- **自愈看门狗**（`win.rs`/`macos.rs` 各一套；判据见 §3.15）：低层钩子/tap 会**静默失效**，`start` 另起 1s 巡检线程 + 指数退避。Windows **只投递 `WM_APP_REINSTALL`**（`SetWindowsHookEx` 必须在有消息循环的钩子线程上调用）、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**（没鼠标钩子时归因不到键盘，硬判会无限重装），但 **Raw Input 键盘旁路**是独立观察者（`LAST_RAW_KEY_TICK`）：旁路比键盘钩子心跳新 ⇒ 直接判失效，鼠标怎么动都判得出；注入不刷它。
-- **输入状态复位**（`Engine::reset`，三平台，机制见 §3.16）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**（补 up + 退出 momentary 层）、**缓冲里的丢弃不回放**、**锁定层保留**。触发通道：`reinstall_count()` 变化（Linux 同通道计设备拔出）、`foreground_window()` 连续两轮同一新窗口（Linux 无这路）、配置 `cfg_stale` 旗标（均在定时器线程）。
-- **前台 / 设备上下文**（`frontmost_context` / `current_device`，取法与限制见 §3.22）：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`。带 `when` 的条目用 `TriggerContext`，前台**惰性查询**（只在真被判定时才查）。**`get_conflicts` 按 `PlatformCaps` 标出平台能力缺失**（`Warn` 不拦保存），改钩子能力时同步 `platform_caps()` 填表。**输入层环境诊断**（7.1-㊽，见 §4.6）同属软冲突，但**只在配置用到鼠标键时才出**、`settings.input_env_diag` 关掉**连探测都不跑**、`settings.input_env_ignored` 按**单个接管者**掐提示；`DIVERTERS` 只收真会 divert / 独占抓取的软件。**罗技设备可一键解锁**（7.1-㊿，见 §4.8）：只交回标准报文、**不接管事件流**。
-- **鼠标手势（7.2-MG）**：按住右键画轨迹→方向串。**右键按下先吞、抬起才判定**：命中执行动作；**未命中 / 没画出轨迹一律回放一次完整右键**（注入不被自己再吃）。识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**。**轨迹出口只借用不取走**（取走一次 = 之后再没有下一次）。**新功能总闸 `Settings.experimental`**（设置页「实验功能」卡片，**默认关**）：关掉 → 入口隐藏、行为不生效、**配置保留**（已配手势时列表栏出气泡，点一下就开）；**本功能正式完成前不打 tag、不发 release**。
-- **已知天花板**：见 §4.5 / §7.2。
-
-## 软件更新
-
-- **软件更新红线**（§5.5 / `release.yml` 顶部）：**私钥绝不入库**（公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；`latest.json` 由 `tauri-action` 生成，**不手写、不入库**；端点只认**已发布** Release。**前端碰不到更新**（全在 Rust，capabilities 不开 `updater:*`）。**安装会退出应用**；其它平台装完 `app.restart()`。
-- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载/安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装，没勾只能手动。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本。
-- **更新源与形态**（§5.5）：`Settings.update_source` 可切 `github`；镜像只改 URL、`.sig` 原样；检查走 `build_updater`，别用 `app.updater()`。**不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版（`installMode: quiet` = NSIS `/S /R`）；否则便携版读清单 `windows-x86_64-portable` 裸 exe 原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；CI 用 `signer sign --app-version` 签便携包。
-
-## 构建与验证命令
+## 3. 构建与验证命令
 
 ```powershell
 cargo test --workspace      # 全 workspace 测试
@@ -79,20 +135,37 @@ cargo check -p kada         # Tauri 壳编译（完整版）
 cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation）
 cargo build --release -p kada --features custom-protocol   # 手动打 exe：**必须带 custom-protocol**（漏了只嵌壳不嵌前端 → 连 localhost:1420 白屏）
 npm --prefix ui run build   # 前端构建（tsc + vite build）
+node scripts/check-docs.mjs # 文档一致性（路径引用 / § 消歧 / 代码地图令牌 / AGENTS 体积）
 cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
-cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证（见下）
+cargo check -pada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
 ```
 
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**三条渠道（GitHub / ihomy 直链 / macOS dmg）各有清单，发什么文件与放行口径见 §5.5**。**Linux 包只能靠容器出**（`scripts/linux-package/`）、**macOS 包只能靠 CI**。
-- **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本/版本号/打包 targets 后必跑 `node scripts/verify-release.mjs`**（流水线最后一步也跑）。
-- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**、产物目录自适应，其余见顶部注释）。**macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验。
-## 里程碑与规划
+- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
+- **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验
+- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**Linux 包只能靠容器出**、**macOS 包只能靠 CI**
+- **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / 打包 targets 后必跑** `node scripts/verify-release.mjs`
+- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版 + 卡带索引同步 + 文档检查）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**）
 
-- **未实现规划唯一清单 + 已落地事项编号索引见 `docs/需求设计说明书.md` §7**（M0–M5 已完成）——立项、排期一律以那里为准（勿重复立项）；实现历史见 `docs/变更归档.md`。
+## 4. 归档流程
 
-## 文档清单
+- **每次改完就归档**（功能 / 里程碑迭代，验证通过后），别攒批、别等口令——会话可能因上下文超长失败，**没归档的改动会随会话一起丢**；多会话并行时未提交的改动会被回退
+- **分流**：`AGENTS.md`（新规则 / 踩坑 / 约定）｜ `docs/需求设计说明书.md`（功能现状，**只改模块小节、不写版本叙事**，正文引模块小节号而非版本号）｜ `docs/变更归档.md`（**索引表加一行**）+ `docs/归档/`（当前卷正文追加 `#####` 条目，标题带版本号）｜ `docs/架构设计.md`（结构变了才动）｜ `docs/人工验证清单.md`（只能真机验的项，跑完回填顶部状态表）
+- 落点细则见 `.agents/skills/archive/SKILL.md`（`/archive` 技能）
+- **⚠ Git 规定**：非人工指令**不得主动提交代码**（`git commit` / `git push` 一律禁止）；`git add` 只能指定具体文件路径（**禁 `git add -A` / `git add .`**）。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`；`git add` 仍只给具体路径
+- **交付范围 = 代码 + 本次文档更新**，别只提交代码
 
-- `README.md`；`docs/README.md`（索引 + 阅读顺序 + 全清单）。
-- **落点分工**：规则/约定/命名 → 本文件；功能需求与规划 → `需求设计说明书.md`；已实现归档 → `变更归档.md`。代码事实以源码为准，先 `grep` 再动手。本机已装 Rust / Node / Tauri CLI；前端依赖 `npm --prefix ui ci`。
-- **`需求设计说明书.md` 按功能模块组织，不按版本**：顶部 16 模块导航表；**版本号只写进 `变更归档.md`**，正文引**模块小节号**（如 §5.7）而非版本号。§N 是稳定 ID，**只增不改**，新功能写进所属模块小节。
+## 5. 文档导航
 
+| 文档 | 一句话 |
+|---|---|
+| `docs/代码地图.md` | **症状 → 文件 → grep 令牌 → 规则出处**（定位代码先看它） |
+| `docs/需求设计说明书.md` | 功能现状唯一活文档（字段级定义 / 接口 / 规划清单 说明书 §7） |
+| `docs/架构设计.md` | 分层 / 事件流转 / 关键机制为什么这样设计 |
+| `docs/变更归档.md` + `docs/归档/` | 已实现变更：索引表 + 分卷正文 |
+| `docs/人工验证清单.md` | 只能真机 + 真人操作才能确认的验收项 |
+| `docs/README.md` | 全部文档索引 + 目录树（哪个文件装什么） |
+| 根 `README.md` | 公开门面：项目简介 / 特性 / 技术栈 |
+
+- **§ 小节引用必须带文档名**（`说明书 §5.6` / `架构设计 §3.1` / `人工验证清单 §21`）——三份文档编号空间重叠，裸 `§N` 会指错；`scripts/check-docs.mjs` 盯着这件事
+- **落点分工**：规则 / 约定 / 命名 → 本文件；功能需求与规划 → 需求设计说明书；实现历史 → 变更归档；代码事实以源码为准，**先 `grep` 再动手**
+- 本机已装 Rust / Node / Tauri CLI；前端依赖 `npm --prefix ui ci`
