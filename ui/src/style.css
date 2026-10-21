@@ -1215,15 +1215,12 @@ body {
 }
 
 .thanks-name.spring {
-  animation: thanks-pop 0.42s cubic-bezier(0.3, 1.6, 0.5, 1);
+  animation: thanks-pop 0.25s ease-out;
 }
 
 @keyframes thanks-pop {
   0% {
-    transform: scale(0.82);
-  }
-  55% {
-    transform: scale(1.18);
+    transform: scale(1.25);
   }
   100% {
     transform: scale(1);
