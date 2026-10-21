@@ -5868,15 +5868,18 @@ const THANKS: ThanksEntry[] = [
   { name: "楚轩", pool: ["🐷", "🐽", "🐖", ...THANKS_THANKS] },
 ];
 
-// 从鼠标点击处喷一串字符泡泡：随机字符、随机横向漂移与字号，由透明变不透明并上浮，动画结束自删。
+// 从鼠标点击处向四周炸开一串字符泡泡：随机方向与距离、随机字号，由透明变不透明后淡出，动画结束自删。
 function burstBubbles(x: number, y: number, pool: string[]) {
-  for (let i = 0; i < 12; i++) {
+  for (let i = 0; i < 14; i++) {
     const b = el("span", "thanks-bubble", pool[Math.floor(Math.random() * pool.length)]);
     b.style.left = `${x}px`;
     b.style.top = `${y}px`;
-    b.style.setProperty("--dx", `${Math.round((Math.random() - 0.5) * 120)}px`);
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 60 + Math.random() * 110;
+    b.style.setProperty("--dx", `${Math.round(Math.cos(angle) * dist)}px`);
+    b.style.setProperty("--dy", `${Math.round(Math.sin(angle) * dist)}px`);
     b.style.fontSize = `${16 + Math.random() * 12}px`;
-    b.style.animationDelay = `${i * 40}ms`;
+    b.style.animationDelay = `${i * 25}ms`;
     b.addEventListener("animationend", () => b.remove(), { once: true });
     document.body.append(b);
   }
@@ -5887,20 +5890,36 @@ function renderThanks() {
   if (!list) return;
   list.replaceChildren(
     ...THANKS.map((t) => {
+      const node: HTMLElement = el(t.homepage ? "a" : "button", "thanks-name", t.name);
       if (t.homepage) {
-        const a = el("a", "thanks-name", t.name) as HTMLAnchorElement;
+        const a = node as HTMLAnchorElement;
         a.href = t.homepage;
         a.target = "_blank";
         a.rel = "noreferrer";
-        return a;
+      } else {
+        (node as HTMLButtonElement).type = "button";
       }
-      const b = el("button", "thanks-name", t.name) as HTMLButtonElement;
-      b.type = "button";
-      b.title = "点一下";
-      b.addEventListener("click", (e) =>
-        burstBubbles(e.clientX, e.clientY, t.pool ?? THANKS_THANKS),
-      );
-      return b;
+      // 按下缩一下；松手回弹（放大再回原样），没首页的顺带在点击处炸一串字符。
+      let px = 0;
+      let py = 0;
+      node.addEventListener("pointerdown", (e) => {
+        px = e.clientX;
+        py = e.clientY;
+        node.classList.add("pressing");
+        node.setPointerCapture(e.pointerId);
+      });
+      const release = () => {
+        if (!node.classList.contains("pressing")) return;
+        node.classList.remove("pressing");
+        node.classList.remove("spring");
+        void node.offsetWidth; // 重启动画
+        node.classList.add("spring");
+        if (!t.homepage) burstBubbles(px, py, t.pool ?? THANKS_THANKS);
+      };
+      node.addEventListener("pointerup", release);
+      node.addEventListener("pointercancel", release);
+      node.addEventListener("animationend", () => node.classList.remove("spring"));
+      return node;
     }),
   );
 }

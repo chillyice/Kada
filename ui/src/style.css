@@ -1193,6 +1193,7 @@ body {
 }
 
 .thanks-name {
+  display: inline-block;
   font: inherit;
   font-size: var(--fs-sm);
   color: var(--muted);
@@ -1208,29 +1209,78 @@ body {
   color: var(--text);
 }
 
-/* 字符泡泡：从鼠标点击处冒出、由透明变不透明并上浮（装配见 main.ts 的 burstBubbles）。
-   fixed 定位到视口、pointer-events:none 不挡任何点击；横向漂移量由 --dx 给。 */
+/* 按下瞬间缩一点，松开后弹一下（放大再回原样）；松手顺带在点击处放一串散射字符。 */
+.thanks-name.pressing {
+  transform: scale(0.82);
+}
+
+.thanks-name.spring {
+  animation: thanks-pop 0.42s cubic-bezier(0.3, 1.6, 0.5, 1);
+}
+
+@keyframes thanks-pop {
+  0% {
+    transform: scale(0.82);
+  }
+  55% {
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* 字符泡泡：从鼠标点击处向四周炸开、由透明变不透明（装配见 main.ts 的 burstBubbles）。
+   fixed 定位到视口、pointer-events:none 不挡任何点击；散射位移由 --dx / --dy 给。 */
 .thanks-bubble {
   position: fixed;
-  transform: translate(-50%, 0);
+  transform: translate(-50%, -50%);
   white-space: nowrap;
   pointer-events: none;
   z-index: 9999;
-  animation: thanks-float 1.5s ease-out forwards;
+  animation: thanks-burst 1s ease-out forwards;
 }
 
-@keyframes thanks-float {
+@keyframes thanks-burst {
   0% {
     opacity: 0;
-    transform: translate(-50%, 0) scale(0.5);
+    transform: translate(-50%, -50%) scale(0.3);
   }
-  25% {
+  15% {
     opacity: 1;
   }
   100% {
     opacity: 0;
-    transform: translate(calc(-50% + var(--dx, 0px)), -120px) scale(1.15);
+    transform: translate(calc(-50% + var(--dx, 0px)), calc(-50% + var(--dy, 0px))) scale(1.1);
   }
+}
+
+/* 开源软件 / 友链：一行行可点的名字或「图标 + 名称」，外观对齐落款外链。 */
+.os-list,
+.friend-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.os-item,
+.friend-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  text-decoration: none;
+}
+
+.os-item:hover,
+.friend-link:hover {
+  color: var(--text);
+}
+
+.friend-ico {
+  line-height: 1;
 }
 
 .editor-row {
