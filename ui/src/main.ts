@@ -6916,6 +6916,19 @@ function renderRunCard(run: RunRecord): void {
   const badges = document.getElementById("msg-run-badges")!;
   badges.replaceChildren(
     el("span", `msg-run-badge st-${run.status}`, RUN_STATUS_LABEL[run.status] ?? run.status),
+  );
+  // 停止执行只对跑着的记录有意义：图标按钮紧贴「执行中」徽标右侧，跑完即消失。
+  if (run.status === "running") {
+    const stop = el("button", "msg-run-stop") as HTMLButtonElement;
+    stop.type = "button";
+    stop.title = "停止执行：剩余动作不再执行，正在跑的命令 / 脚本立即终止";
+    stop.setAttribute("aria-label", "停止执行");
+    stop.innerHTML =
+      '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>'; // 常量 SVG，非用户输入
+    stop.addEventListener("click", () => void abortActions());
+    badges.append(stop);
+  }
+  badges.append(
     el("span", "msg-run-badge", `总耗时 ${fmtMs(run.duration_ms)}`),
     el("span", "msg-run-badge", `${run.steps.length} 个动作`),
   );
@@ -7038,7 +7051,6 @@ function bindMessages() {
     msgView = "conflicts";
     renderMessages();
   });
-  document.getElementById("abort-actions")!.addEventListener("click", () => void abortActions());
   document.getElementById("msg-mode-timeline")!.addEventListener("click", () => {
     msgMode = "timeline";
     msgSelStep = -1;

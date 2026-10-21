@@ -359,7 +359,7 @@
                 </div>
                 <details class="hint-fold">
                   <summary>超时与注入的细节</summary>
-                  <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页点「停止执行」。</p>
+                  <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页的「执行记录」里点那条记录的「执行中」状态右侧的 ■ 停止图标。</p>
                   <p class="hint">「序列等待」/「和弦等待」超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
                   <p class="hint">「文本注入」默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
                 </details>
@@ -569,7 +569,6 @@
             <button id="msg-view-results" class="msg-view-tab active">执行记录</button>
             <button id="msg-view-conflicts" class="msg-view-tab">冲突<span id="msg-conflict-count" class="msg-conflict-count hidden"></span></button>
             <span class="head-actions">
-              <button id="abort-actions" class="ghost" title="停止正在执行的动作：剩余动作不再执行，正在跑的命令 / 脚本立即终止">■ 停止执行</button>
               <button id="clear-messages" class="danger">清空</button>
             </span>
           </div>

@@ -3100,7 +3100,7 @@ pre.msg-v {
 
 /* ---------- 执行记录：卡片头 / 时间线 / 流水线 ---------- */
 
-/* 「停止执行 / 清空」下放到标签栏右端，与标签同一行。 */
+/* 「清空」下放到标签栏右端，与标签同一行。 */
 .msg-view-tabs .head-actions {
   margin-left: auto;
   padding-bottom: 4px;
@@ -3127,6 +3127,7 @@ pre.msg-v {
 
 .msg-run-badges {
   display: flex;
+  align-items: center;
   gap: 6px;
   margin-top: 6px;
   flex-wrap: wrap;
@@ -3151,6 +3152,29 @@ pre.msg-v {
 }
 .msg-run-badge.st-running {
   color: var(--accent);
+}
+
+/* 「执行中」徽标右侧的停止按钮：方形图标（■）比文字省地方，只在跑着的记录上出现。
+   18px 压进徽标行内、与徽标垂直居中；悬停才亮成警示色，平时不抢「执行中」的注意力。 */
+.msg-run-stop {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background: none;
+  color: var(--muted);
+  line-height: 1;
+}
+.msg-run-stop:hover {
+  color: #f0736b;
+  border-color: #f0736b;
+}
+.msg-run-stop svg {
+  width: 8px;
+  height: 8px;
 }
 
 .msg-run-modes {
@@ -3648,7 +3672,7 @@ pre.msg-v {
 }
 
 /* 详情页头部的一组按钮（编辑页的「执行/删除/撤销/保存/关闭」、消息页标签栏右侧的
-   「停止执行 / 清空」）。 */
+   「清空」）。 */
 .head-actions {
   display: flex;
   align-items: center;
