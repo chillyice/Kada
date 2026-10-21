@@ -117,7 +117,10 @@ const DEMO_CONFIG = {
     show_status_hud: true,
     text_inject_mode: "clipboard",
     hints: { visible: false, x: null, y: null, scale: 100, opacity: 92 },
+    // 新功能总闸（规划 7.2-MG）：默认**关**（演示里也保持关，手势区不显示）。
+    experimental: false,
   },
+  gestures: [],
 };
 
 const DEMO_RESULTS = [

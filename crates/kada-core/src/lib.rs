@@ -155,6 +155,12 @@ pub use snippet::{
 /// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
 pub mod sample;
 
+/// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。纯逻辑，识别在壳层做。
+mod gesture;
+pub use gesture::{
+    find_gesture, gesture_enabled, normalize_pattern, pattern_from_points, Gesture,
+};
+
 mod parse {
     use super::*;
 
@@ -1901,6 +1907,38 @@ pub struct Settings {
     /// （启动后 8 秒 + 每 24 小时照常检查）。
     #[serde(default)]
     pub auto_update: bool,
+    /// **新功能总开关**：关掉后本轮新增的功能一律不可用（当前管住「鼠标手势与滚轮快捷键」，
+    /// 规划 7.2-MG）。关闭 = 入口从界面隐藏 + 行为不生效，**配置保留**（重新打开即恢复）。
+    ///
+    /// 缺字段取 `false`（`#[serde(default)]` 的零值）：**新功能默认关**——这类功能多半带
+    /// 「全局抢右键」这类副作用，替用户打开不合适；要用的人自己开。开着 = 放行。
+    #[serde(default)]
+    pub experimental: bool,
+    /// 鼠标手势的**起手距离**（像素）：光标累计移动超过它才算「开始画手势」，
+    /// 之前的移动不计入轨迹（避免轻微手抖就触发）。
+    #[serde(default = "default_gesture_start_distance")]
+    pub gesture_start_distance: i32,
+    /// 鼠标手势的**超时**（毫秒）：画到一半停住超过这么久就放弃这次手势。
+    #[serde(default = "default_gesture_timeout_ms")]
+    pub gesture_timeout_ms: u64,
+    /// 鼠标手势的方向量化**段长**（像素）：一段方向至少这么长，抖动自己被吸收掉。
+    #[serde(default = "default_gesture_min_segment")]
+    pub gesture_min_segment: i32,
+}
+
+/// 鼠标手势起手距离的缺省值（像素）。
+pub fn default_gesture_start_distance() -> i32 {
+    22
+}
+
+/// 鼠标手势超时的缺省值（毫秒）。
+pub fn default_gesture_timeout_ms() -> u64 {
+    1500
+}
+
+/// 鼠标手势方向段长的缺省值（像素）。
+pub fn default_gesture_min_segment() -> i32 {
+    16
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1947,6 +1985,10 @@ impl Default for Settings {
             elevated_inject: false,
             update_source: UpdateSource::Ihomy,
             auto_update: false,
+            experimental: false,
+            gesture_start_distance: default_gesture_start_distance(),
+            gesture_timeout_ms: default_gesture_timeout_ms(),
+            gesture_min_segment: default_gesture_min_segment(),
         }
     }
 }
@@ -1966,6 +2008,9 @@ pub struct Config {
     pub remaps: Vec<Remap>,
     #[serde(default)]
     pub expansions: Vec<TextExpansion>,
+    /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、松手按方向串匹配。
+    #[serde(default)]
+    pub gestures: Vec<Gesture>,
     #[serde(default)]
     pub settings: Settings,
 }
@@ -2399,6 +2444,31 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     //    本身合法，只报 Warn 提示「在你这台机器上不会生效」。
     out.extend(platform_conflicts(cfg, caps));
 
+    // 7) 鼠标手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串 → 谁先谁后取决于
+    //    配置顺序，用户会以为「我画了却触发了别的」。只报 Warn（不拦保存）：重复方向串
+    //    可能是有意为之（同名不同动作），但多数是手滑复制。
+    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    for g in cfg.gestures.iter().filter(|g| g.enabled) {
+        let pattern = normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            continue;
+        }
+        let label = g.label();
+        match seen.get(&pattern) {
+            Some(first) => out.push(Conflict {
+                severity: Severity::Warn,
+                platform: false,
+                message: format!(
+                    "鼠标手势「{label}」与「{first}」的方向串「{pattern}」相同：只会触发先配置的那条"
+                ),
+                name: label,
+            }),
+            None => {
+                seen.insert(pattern, label);
+            }
+        }
+    }
+
     out
 }
 
@@ -2702,6 +2772,16 @@ pub fn config_uses_mouse(cfg: &Config) -> bool {
                 .map(|s| is_mouse(s.key))
                 .unwrap_or(false)
     })
+}
+
+/// **要不要挂鼠标钩子**：配置用到鼠标键（[`config_uses_mouse`]）**或**有启用的鼠标手势
+/// （规划 7.2-MG）时都要。
+///
+/// 与 [`config_uses_mouse`] 分开是刻意的：后者还兼着「输入层环境诊断要不要跑」的判断，
+/// 而厂商接管（Logi Options+ 等）拿的是**侧键**、与右键手势无关——把手势混进去会让
+/// 一堆没装那类软件、或只用手势的用户平白收到「鼠标键被接管」的提示。
+pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
+    config_uses_mouse(cfg) || (cfg.settings.experimental && gesture_enabled(cfg))
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
@@ -3303,6 +3383,33 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
     }
 
+    // 鼠标手势（规划 7.2-MG）：方向串归一化后为空 = 没法匹配，整条忽略；
+    // 动作逐个校验，坏动作单独摘掉（一条坏动作不该拖垮整条手势）。
+    let mut seen_gesture: BTreeSet<String> = BTreeSet::new();
+    for g in &cfg.gestures {
+        let label = g.label();
+        let pattern = normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            ignored.push(format!("鼠标手势「{label}」已忽略：方向串无法解析"));
+            continue;
+        }
+        if !seen_gesture.insert(pattern.clone()) {
+            ignored.push(format!("鼠标手势「{label}」已忽略：方向串「{pattern}」与前面的手势重复"));
+            continue;
+        }
+        let mut item = g.clone();
+        item.pattern = pattern;
+        let mut kept_actions = Vec::new();
+        for a in &item.actions {
+            match a.validate() {
+                Ok(()) => kept_actions.push(a.clone()),
+                Err(e) => ignored.push(format!("鼠标手势「{label}」的某个动作已忽略：{e}")),
+            }
+        }
+        item.actions = kept_actions;
+        out.gestures.push(item);
+    }
+
     // 唤醒键：无法解析成单键时清空（关闭快速唤醒），不拖垮整份配置。
     if let Some(wake) = out.settings.wake_key.as_deref() {
         if wake.parse::<Key>().is_err() {
@@ -3417,6 +3524,7 @@ mod config_tests {
             }],
             remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() }],
             expansions: vec![],
+            gestures: vec![],
             settings: Settings::default(),
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
@@ -3847,6 +3955,7 @@ mod os_and_sanitize_tests {
                 Remap { from: "NotAKey".into(), to: "Ctrl".into(), enabled: true, ..Default::default() },
             ],
             expansions: vec![],
+            gestures: vec![],
             settings: Settings::default(),
         };
         let (clean, ignored) = sanitize_config(&cfg);
@@ -4370,6 +4479,7 @@ mod os_and_sanitize_tests {
                 Remap { from: "F1".into(), to: "Home".into(), enabled: true, ..Default::default() },
             ],
             expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true, ..Default::default() }],
+            gestures: vec![],
             settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
         };
 

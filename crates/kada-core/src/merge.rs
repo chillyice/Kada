@@ -26,6 +26,7 @@ pub struct MergeReport {
     pub shortcuts: usize,
     pub remaps: usize,
     pub expansions: usize,
+    pub gestures: usize,
     /// 跳过的条目说明（逐条带名称/触发键，只报个数的话用户查不出是哪条没进来）。
     pub skipped: Vec<String>,
 }
@@ -33,7 +34,12 @@ pub struct MergeReport {
 impl MergeReport {
     /// 本次合并实际新增的条目总数。
     pub fn added(&self) -> usize {
-        self.folders + self.layers + self.shortcuts + self.remaps + self.expansions
+        self.folders
+            + self.layers
+            + self.shortcuts
+            + self.remaps
+            + self.expansions
+            + self.gestures
     }
 }
 
@@ -102,6 +108,27 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         }
         out.expansions.push(e.clone());
         report.expansions += 1;
+    }
+
+    // 鼠标手势按**归一化后的方向串**去重：同一个方向串两条手势只会触发先配置的那条，
+    // 导入第二条等于白导入（方向串写法不同但等价时也要认出来：`UP` 与 `U` 是一回事）。
+    for g in &incoming.gestures {
+        let pattern = crate::normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            report
+                .skipped
+                .push(format!("鼠标手势「{}」未导入：方向串无法解析", g.label()));
+            continue;
+        }
+        if out.gestures.iter().any(|x| crate::normalize_pattern(&x.pattern) == pattern) {
+            report.skipped.push(format!(
+                "鼠标手势「{}」未导入：方向串「{pattern}」已存在",
+                g.label()
+            ));
+            continue;
+        }
+        out.gestures.push(g.clone());
+        report.gestures += 1;
     }
 
     (out, report)

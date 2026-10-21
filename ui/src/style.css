@@ -333,6 +333,11 @@ body {
   color: #4ec97a;
 }
 
+/* 鼠标操作（手势）：紫罗兰色，与另外三类区分开。 */
+.row-kind.kind-gesture {
+  color: #a97cf0;
+}
+
 /* 停用态：整行压暗，hover 出 title（右键可启用）。 */
 .row.off .row-kind {
   color: var(--muted);
@@ -4035,6 +4040,10 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .row-kind.kind-expansion {
   color: var(--crt-cyan);
+}
+
+[data-theme="crt"] .row-kind.kind-gesture {
+  color: #d98ce0;
 }
 
 /* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标

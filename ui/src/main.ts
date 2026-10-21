@@ -169,8 +169,39 @@ type Settings = {
    * 不替用户决定。
    */
   auto_update?: boolean;
+  /**
+   * **新功能总开关**（规划 7.2-MG）：关掉后本轮新增的功能一律不可用（入口隐藏 +
+   * 行为不生效），**配置保留**（重新打开即恢复）。缺字段按后端默认「**关**」。
+   */
+  experimental?: boolean;
+  /**
+   * 鼠标手势的起手距离（像素）：光标累计移动超过它才算「开始画手势」。
+   * 缺字段按后端默认 22。
+   */
+  gesture_start_distance?: number;
+  /**
+   * 鼠标手势的超时（毫秒）：画到一半停住超过这么久就放弃这次手势。
+   * 缺字段按后端默认 1500。
+   */
+  gesture_timeout_ms?: number;
+  /**
+   * 鼠标手势方向量化的段长（像素）：一段方向至少这么长，抖动自己被吸收掉。
+   * 缺字段按后端默认 16。
+   */
+  gesture_min_segment?: number;
 };
-type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; settings: Settings };
+/**
+ * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
+ * 后端模型见 `kada-core` 的 `Gesture`。
+ */
+type Gesture = {
+  name?: string | null;
+  /** 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`（如 `DRUL`）。 */
+  pattern: string;
+  enabled: boolean;
+  actions: Action[];
+};
+type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
 type StatusPayload = {
   /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
@@ -258,21 +289,34 @@ function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict
     caps: list.filter((c) => c.platform),
   };
 }
-type Section = "shortcuts" | "remaps" | "expansions" | "messages" | "settings" | "help";
-// 合并列表里的三类条目：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
-type ListKind = "shortcut" | "remap" | "expansion";
-const KIND_SECTION: Record<ListKind, Section> = { shortcut: "shortcuts", remap: "remaps", expansion: "expansions" };
+type Section = "shortcuts" | "remaps" | "expansions" | "gestures" | "messages" | "settings" | "help";
+// 合并列表里的条目类型：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
+// gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目，与快捷键/改键/文本扩展并列。
+type ListKind = "shortcut" | "remap" | "expansion" | "gesture";
+const KIND_SECTION: Record<ListKind, Section> = {
+  shortcut: "shortcuts",
+  remap: "remaps",
+  expansion: "expansions",
+  gesture: "gestures",
+};
 function isListSection(s: Section): boolean {
-  return s === "shortcuts" || s === "remaps" || s === "expansions";
+  return s === "shortcuts" || s === "remaps" || s === "expansions" || s === "gestures";
 }
 // 当前编辑页的条目类型 / 草稿（仅列表分区有效，别在设置/消息页调）。
 function currentKind(): ListKind {
-  return section === "remaps" ? "remap" : section === "expansions" ? "expansion" : "shortcut";
+  return section === "remaps"
+    ? "remap"
+    : section === "expansions"
+      ? "expansion"
+      : section === "gestures"
+        ? "gesture"
+        : "shortcut";
 }
-function currentDraft(): ShortcutItem | Remap | TextExpansion | null {
+function currentDraft(): ShortcutItem | Remap | TextExpansion | Gesture | null {
   if (section === "shortcuts") return draft;
   if (section === "remaps") return remapDraft;
   if (section === "expansions") return expansionDraft;
+  if (section === "gestures") return gestureDraft;
   return null;
 }
 // 编辑页的四个页签：详情 / 动作·操作·展开文本（work）/ 层 / 条件。
@@ -887,6 +931,7 @@ let draftNew = false; // 当前编辑是否为“新增”未保存项
 let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保存才写回 cfg）
 let remapDraft: Remap | null = null; // 改键编辑草稿
 let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
+let gestureDraft: Gesture | null = null; // 鼠标操作（手势）编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
 // 见「未保存改动守卫」一节。
 let draftBaseline: string | null = null;
@@ -909,7 +954,7 @@ let msgView: "results" | "conflicts" = "results"; // 消息页标签：执行记
 // 复制/剪切板：存对象引用而非下标（增删/重排后仍指对那条），多选整批进同一份。
 // ponytail: 条目在编辑页「保存」时整条换新对象，这里的旧引用会失效（剪切粘贴到的是旧内容）——
 // 需要跨编辑保真时改成 kind + 下标并按内容重定位。
-let clipboard: { items: { kind: ListKind; obj: ShortcutItem | Remap | TextExpansion }[]; cut: boolean } | null = null;
+let clipboard: { items: { kind: ListKind; obj: AnyEntry }[]; cut: boolean } | null = null;
 // 列表筛选（7.3-⑳）：与 search 叠加生效，从搜索栏右侧「筛选」菜单开关。
 let listFilter = { enabled: false, conflicted: false };
 // 多选集（Ctrl / Shift 点行，右键菜单作用于它）：存对象引用而非下标；切分区清空。
@@ -1010,6 +1055,8 @@ async function save(): Promise<boolean> {
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
   cfg.expansions = cfg.expansions.filter((e) => e.trigger.trim().length > 0);
+  // 鼠标操作：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
+  if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => g.pattern.trim().length > 0);
   let ignored: string[] = [];
   try {
     ignored = await invoke<string[]>("set_config", { config: cfg });
@@ -1408,8 +1455,8 @@ function renderListPane() {
     "hidden",
     section === "settings" || section === "messages" || section === "help",
   );
-  // 多选集按三份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
-  const all: object[] = [...cfg.shortcuts, ...cfg.remaps, ...cfg.expansions];
+  // 多选集按各份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
+  const all: object[] = [...cfg.shortcuts, ...cfg.remaps, ...cfg.expansions, ...(cfg.gestures ?? [])];
   for (const o of [...picked]) if (!all.includes(o)) picked.delete(o);
   if (pickAnchor && !all.includes(pickAnchor)) pickAnchor = null;
   // 筛选按钮亮起来 = 有筛选在生效。
@@ -1486,6 +1533,8 @@ const KIND_ICON: Record<ListKind, string> = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
   expansion:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
+  gesture:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v1"/><path d="M18 3v4"/><path d="M16 5h4"/><circle cx="6" cy="19" r="2"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
@@ -1515,6 +1564,12 @@ function renderEntries() {
     cfg.expansions.forEach((e, i) => {
       if ((e.folder ?? null) === folderId && expansionVisible(e)) list.append(expansionRow(e, i, depth));
     });
+    // 鼠标操作（手势）没有目录归属（V1：全局触发源），只排在根级。
+    if (folderId === null) {
+      (cfg.gestures ?? []).forEach((g, i) => {
+        if (gestureVisible(g)) list.append(gestureRow(g, i, depth));
+      });
+    }
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
@@ -1596,7 +1651,7 @@ function pickRange(target: object) {
   renderListPane();
 }
 
-// 行元素 → 条目对象（合并列表里同一下标可能分属三类，必须连 kind 一起读）。
+// 行元素 → 条目对象（合并列表里同一下标可能分属多类，必须连 kind 一起读）。
 function rowObject(li: HTMLElement): object | null {
   const idx = Number(li.dataset.idx);
   const kind = li.dataset.kind as ListKind;
@@ -1606,7 +1661,9 @@ function rowObject(li: HTMLElement): object | null {
       ? (cfg.remaps[idx] ?? null)
       : kind === "expansion"
         ? (cfg.expansions[idx] ?? null)
-        : null;
+        : kind === "gesture"
+          ? ((cfg.gestures ?? [])[idx] ?? null)
+          : null;
 }
 
 // 只选中这一行（右键/⋯菜单用）：不整棵重绘，菜单锚点还挂在按钮上，重绘会把它拆掉。
@@ -1690,8 +1747,49 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
   return li;
 }
 
-function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {
-  const li = el("li", "folder-row");
+// 鼠标操作（手势）这类新功能是否已由用户显式打开（设置页「实验功能」总闸，默认关）。
+// 关着 = 列表里不出现这一类、新增菜单里没有它、钩子也不拦右键。
+function mouseFeaturesEnabled(): boolean {
+  return cfg.settings.experimental === true;
+}
+
+// 鼠标操作（手势）行：方向串占「组合键」那一格，后面跟名称。
+// **实验功能总闸关着时整类不显示**（入口隐藏），配置本身留着。
+function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("gesture", idx) ? " selected" : "") +
+      (picked.has(g) ? " picked" : "") +
+      (g.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!g.enabled) li.title = "已停用（右键可启用）";
+  listRow(li, g, "gesture", idx);
+  const trig = el("span", "row-trigger");
+  trig.append(el("span", "row-trigger-text", g.pattern || "未设方向串"));
+  li.append(
+    kindIcon("gesture"),
+    trig,
+    el("span", "row-name", g.name?.trim() || "（未命名）"),
+    moreButton((btn) => openRowMenu(btn, li, g)),
+  );
+  return li;
+}
+
+// 鼠标操作条目的可见性：搜索命中名称 / 方向串 / 动作摘要；筛选只认「启用的」。
+function gestureVisible(g: Gesture): boolean {
+  if (!mouseFeaturesEnabled()) return false; // 总闸关着 = 这一类不出现
+  const q = search.trim().toLowerCase();
+  if (q) {
+    const hay = `${g.pattern} ${g.name ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (listFilter.enabled && !g.enabled) return false;
+  return true;
+}
+
+function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement {  const li = el("li", "folder-row");
   li.dataset.folderId = f.id;
   li.style.marginLeft = `${depth * TREE_STEP}px`;
   makeRow(
@@ -1807,6 +1905,8 @@ function picksOfSelection(): SnippetPick[] {
   for (const o of picked) {
     const kind = kindOf(o);
     if (!kind) continue;
+    // 鼠标操作暂不进卡带（后端 PickKind 还没有这一类，见规划 7.2-MG 余项）。
+    if (kind === "gesture") continue;
     const idx = arrOf(kind).indexOf(o as AnyEntry);
     if (idx >= 0) picks.push({ kind, idx });
   }
@@ -1827,7 +1927,7 @@ function picksInFolder(rootId: string): SnippetPick[] {
     }
   }
   const picks: SnippetPick[] = [];
-  const scan = (arr: AnyEntry[], kind: ListKind) =>
+  const scan = (arr: FolderEntry[], kind: ListKind) =>
     arr.forEach((e, idx) => {
       if (e.folder && ids.has(e.folder)) picks.push({ kind, idx });
     });
@@ -2146,7 +2246,7 @@ function shortcutLabel(s: ShortcutItem): string {
   return s.name?.trim() || s.triggers.join(" / ") || "未命名";
 }
 
-const FOLDER_ENTRY_KINDS: [string, () => AnyEntry[]][] = [
+const FOLDER_ENTRY_KINDS: [string, () => FolderEntry[]][] = [
   ["快捷键", () => cfg.shortcuts],
   ["改键", () => cfg.remaps],
   ["文本扩展", () => cfg.expansions],
@@ -2208,22 +2308,39 @@ function collectDescendantIds(id: string): Set<string> {
   return ids;
 }
 
-// 选中集操作（合并列表里三类条目共存，靠内容定位而不是下标）。
-type AnyEntry = ShortcutItem | Remap | TextExpansion;
+// 选中集操作（合并列表里各类条目共存，靠内容定位而不是下标）。
+type AnyEntry = ShortcutItem | Remap | TextExpansion | Gesture;
+// **有目录归属的**条目（鼠标操作没有目录：它是全局触发源，V1 不参与目录树）。
+type FolderEntry = ShortcutItem | Remap | TextExpansion;
 
 function kindOf(o: object): ListKind | null {
   if ((cfg.shortcuts as object[]).includes(o)) return "shortcut";
   if ((cfg.remaps as object[]).includes(o)) return "remap";
   if ((cfg.expansions as object[]).includes(o)) return "expansion";
+  if ((cfg.gestures as object[]).includes(o)) return "gesture";
   return null;
 }
 
 function arrOf(kind: ListKind): AnyEntry[] {
-  return kind === "shortcut" ? cfg.shortcuts : kind === "remap" ? cfg.remaps : cfg.expansions;
+  return kind === "shortcut"
+    ? cfg.shortcuts
+    : kind === "remap"
+      ? cfg.remaps
+      : kind === "expansion"
+        ? cfg.expansions
+        : (cfg.gestures ?? []);
 }
 
 function kindLabel(kind: ListKind | null): string {
-  return kind === "shortcut" ? "快捷键" : kind === "remap" ? "改键" : kind === "expansion" ? "文本扩展" : "条目";
+  return kind === "shortcut"
+    ? "快捷键"
+    : kind === "remap"
+      ? "改键"
+      : kind === "expansion"
+        ? "文本扩展"
+        : kind === "gesture"
+          ? "鼠标操作"
+          : "条目";
 }
 
 // 条目的展示名（确认框要与列表行对得上号）：有标题用标题，否则退回各自的兜底。
@@ -2238,6 +2355,10 @@ function labelOf(o: object): string {
     const e = o as TextExpansion;
     return e.name?.trim() || e.trigger || "未命名";
   }
+  if (kind === "gesture") {
+    const g = o as Gesture;
+    return g.name?.trim() || g.pattern || "未命名";
+  }
   return "条目";
 }
 
@@ -2247,6 +2368,7 @@ function selectedObject(): AnyEntry | null {
   if (section === "shortcuts") return cfg.shortcuts[selected] ?? null;
   if (section === "remaps") return cfg.remaps[selected] ?? null;
   if (section === "expansions") return cfg.expansions[selected] ?? null;
+  if (section === "gestures") return (cfg.gestures ?? [])[selected] ?? null;
   return null;
 }
 
@@ -2324,6 +2446,8 @@ function pasteIntoFolder(folderId: string | null) {
       cfg.shortcuts.push(copy as ShortcutItem);
     } else if (it.kind === "remap") {
       cfg.remaps.push(copy as Remap);
+    } else if (it.kind === "gesture") {
+      (cfg.gestures ?? (cfg.gestures = [])).push(copy as Gesture);
     } else {
       cfg.expansions.push(copy as TextExpansion);
     }
@@ -2333,6 +2457,7 @@ function pasteIntoFolder(folderId: string | null) {
     cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
     cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
     cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
+    if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
     clipboard = null;
   }
   void save();
@@ -2783,6 +2908,7 @@ async function setPickedEnabled(v: boolean) {
   for (const s of cfg.shortcuts) if (picked.has(s)) { s.enabled = v; n++; }
   for (const r of cfg.remaps) if (picked.has(r)) { r.enabled = v; n++; }
   for (const e of cfg.expansions) if (picked.has(e)) { e.enabled = v; n++; }
+  for (const g of cfg.gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
   picked.clear();
   pickAnchor = null;
   const ok = await save(); // save 自带「已保存」提示；成功后盖上条数，失败保留错误提示
@@ -2866,6 +2992,14 @@ function setEntryTitle() {
 
 // 把草稿渲染进编辑页（openDetail 与「撤销改动」共用，避免两条路各写一份填充逻辑）。
 // 三类条目共用同一套 DOM：描述 / 层 / 条件 / 按键框只有一份，按类型显隐由 syncEntry() 管。
+// 动作编排区（`#action-list`）的操作对象：**快捷键 → 快捷键草稿，鼠标操作 → 手势草稿**。
+// 改键 / 文本扩展没有动作区，返回 null。
+function currentActionsHost(): { actions: Action[] } | null {
+  if (section === "shortcuts") return draft;
+  if (section === "gestures") return gestureDraft;
+  return null;
+}
+
 function fillShortcutEditor() {
   if (!draft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value = draft.description ?? "";
@@ -2923,19 +3057,31 @@ function fillExpansionEditor() {
   setEntryTitle();
 }
 
+// 鼠标操作（手势）编辑页：方向串 + 描述 + 动作（动作区与快捷键共用同一套编排器）。
+function fillGestureEditor() {
+  if (!gestureDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = "";
+  (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
+    gestureDraft.pattern;
+  renderActions(gestureDraft, gestureDraft.pattern || "未设方向串");
+  setEntryTitle();
+}
+
 // ---- 统一编辑页的模式 / 页签同步 ----
 // 模式按钮（快捷键 / 改键 / 文本扩展）、按键框里显示哪一套、四个页签的可用性与当前页，
 // 都在这里对齐当前类型。openDetail → renderDetail 每次都会走一遍。
 function syncEntry() {
   const kind = currentKind();
-  // 执行按钮只对「快捷键」有意义：改键 / 文本扩展没有动作串可跑。
+  // 执行按钮只对「快捷键」有意义：改键 / 文本扩展 / 鼠标操作没有动作串可跑。
   document.getElementById("entry-run")!.classList.toggle("hidden", kind !== "shortcut");
   const label = document.getElementById("mode-label");
   if (label) label.textContent = kindLabel(kind);
-  for (const k of ["shortcut", "remap", "expansion"] as ListKind[]) {
+  for (const k of ["shortcut", "remap", "expansion", "gesture"] as ListKind[]) {
     const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
     if (item) {
       item.classList.toggle("active", k === kind);
+      // 鼠标操作是实验功能：总闸关着时这一项不出现（入口隐藏，配置留着）。
+      if (k === "gesture") item.classList.toggle("hidden", !mouseFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
       item.classList.toggle("disabled", k !== kind && !draftNew);
@@ -2947,18 +3093,25 @@ function syncEntry() {
             : `${kindLabel(k)}（已保存的条目不能改类型）`;
     }
     document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
-    document.getElementById(`work-${k}`)?.classList.toggle("hidden", k !== kind);
     document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
   }
+  // 动作区：快捷键与鼠标操作共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
+  document.getElementById("work-shortcut")!.classList.toggle("hidden", kind !== "shortcut" && kind !== "gesture");
+  document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
+  document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展没有「层」与「条件」字段（按输入内容匹配，无触发侧门控），这两个页签不出现。
-  const hasLayer = kind !== "expansion";
-  const hasWhen = kind !== "expansion";
+  // 文本扩展与鼠标操作没有「层」与「条件」字段（按输入内容 / 方向串匹配，无触发侧门控），这两个页签不出现。
+  // 鼠标操作也没有「描述」字段 → 「详情」页签整页不出现（只剩方向串 + 动作）。
+  const hasLayer = kind !== "expansion" && kind !== "gesture";
+  const hasWhen = kind !== "expansion" && kind !== "gesture";
+  const hasDetail = kind !== "gesture";
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
   document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
+  document.getElementById("tab-detail")!.classList.toggle("hidden", !hasDetail);
   document.getElementById("tab-work")!.textContent =
-    kind === "shortcut" ? "动作" : kind === "remap" ? "操作" : "展开文本";
+    kind === "remap" ? "操作" : kind === "expansion" ? "展开文本" : "动作";
   if ((entryTab === "layer" && !hasLayer) || (entryTab === "when" && !hasWhen)) entryTab = "detail";
+  if (entryTab === "detail" && !hasDetail) entryTab = "work";
   applyEntryTab();
 }
 
@@ -2982,7 +3135,12 @@ function switchDraftKind(kind: ListKind) {
   stopCapture();
   void stopRecIfAny(); // 录制中切模式得先停，不然后台录的音轨挂在已丢弃的草稿上
   const prev = currentDraft();
-  const seed = prev ? { name: prev.name ?? null, description: prev.description ?? null } : undefined;
+  const seed = prev
+    ? {
+        name: prev.name ?? null,
+        description: "description" in prev ? (prev.description ?? null) : null,
+      }
+    : undefined;
   const folderId = (prev as { folder?: string | null } | null)?.folder ?? null;
   discardDraft();
   selected = null;
@@ -3027,12 +3185,19 @@ function deleteCurrentEntry() {
     void deleteDetailEntry("改键", r.name?.trim() || `${r.from} → ${remapSummary(r)}`, () => {
       if (selected !== null) cfg.remaps.splice(selected, 1);
     });
-  } else {
+  } else if (kind === "expansion") {
     if (!expansionDraft) return;
     if (draftNew) return discardNewDraft();
     const e = expansionDraft;
     void deleteDetailEntry("文本扩展", e.name?.trim() || e.trigger || "未命名", () => {
       if (selected !== null) cfg.expansions.splice(selected, 1);
+    });
+  } else {
+    if (!gestureDraft) return;
+    if (draftNew) return discardNewDraft();
+    const g = gestureDraft;
+    void deleteDetailEntry("鼠标操作", g.name?.trim() || g.pattern || "未命名", () => {
+      if (selected !== null) (cfg.gestures ?? []).splice(selected, 1);
     });
   }
 }
@@ -3117,6 +3282,14 @@ function openDetail(
       expansionDraft.description = seed.description ?? null;
     }
     fillExpansionEditor();
+  } else if (section === "gestures") {
+    gestureDraft = isNew
+      ? { name: null, pattern: "D", actions: [newAction("text")], enabled: true }
+      : deepClone((cfg.gestures ?? [])[i]);
+    if (isNew && seed) {
+      gestureDraft.name = seed.name ?? null;
+    }
+    fillGestureEditor();
   }
   markDraftBaseline();
   renderListPane();
@@ -3133,10 +3306,11 @@ function closeDetail() {
 }
 
 function discardDraft() {
-  // 草稿隔离：编辑只改 draft/remapDraft/expansionDraft，取消/关闭/切换直接丢弃，cfg 不受影响。
+  // 草稿隔离：编辑只改 draft/remapDraft/expansionDraft/gestureDraft，取消/关闭/切换直接丢弃，cfg 不受影响。
   draft = null;
   remapDraft = null;
   expansionDraft = null;
+  gestureDraft = null;
   draftBaseline = null;
   refreshDirty();
 }
@@ -3277,6 +3451,35 @@ async function saveExpansionDetail(): Promise<boolean> {
   return ok;
 }
 
+// 鼠标操作（手势）保存：方向串必填（空的后端清洗会整条丢掉），动作可空（空 = 只留条目不做事）。
+async function saveGestureDetail(): Promise<boolean> {
+  if (section !== "gestures" || !gestureDraft) return false;
+  const pattern = domValue("edit-gesture-pattern").trim().toUpperCase();
+  if (!pattern) {
+    const input = document.getElementById("edit-gesture-pattern") as HTMLInputElement;
+    showFieldError(input, "请填写方向串");
+    input.focus();
+    toast("请先填写方向串（如 D、DL、DRUL）");
+    return false;
+  }
+  gestureDraft.pattern = pattern;
+  const item = deepClone(gestureDraft);
+  const list = cfg.gestures ?? (cfg.gestures = []);
+  if (draftNew) {
+    list.unshift(item);
+  } else if (selected !== null && list[selected]) {
+    item.enabled = list[selected].enabled;
+    list[selected] = item;
+  }
+  gestureDraft = null; // 鼠标操作保存后关闭编辑页（与改键 / 文本扩展同行为）
+  draftNew = false;
+  selected = null;
+  draftBaseline = null;
+  const ok = await save();
+  if (ok) flashRow((cfg.gestures ?? []).indexOf(item), "gesture");
+  return ok;
+}
+
 // ---- 未保存改动守卫 ----
 // 编辑草稿是 cfg 的副本（openDetail 时 deepClone / 新建模板），所以「改没改过」没法靠引用比对，
 // 只能与基线比对：draftBaseline 记下打开编辑页（或上次保存）那一刻的草稿签名。
@@ -3329,6 +3532,13 @@ function draftSignature(): string | null {
       replace: domValue("edit-exp-replace"),
     });
   }
+  if (section === "gestures") {
+    if (!gestureDraft) return null;
+    return JSON.stringify({
+      ...gestureDraft,
+      pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
+    });
+  }
   return null;
 }
 
@@ -3366,6 +3576,9 @@ function revertDraft() {
   } else if (section === "expansions") {
     expansionDraft = JSON.parse(draftBaseline) as TextExpansion;
     fillExpansionEditor();
+  } else if (section === "gestures") {
+    gestureDraft = JSON.parse(draftBaseline) as Gesture;
+    fillGestureEditor();
   } else {
     return;
   }
@@ -3385,6 +3598,9 @@ function draftLabel(): string {
   }
   if (section === "expansions") {
     return `文本扩展「${expansionDraft?.name?.trim() || expansionDraft?.trigger || "未命名"}」`;
+  }
+  if (section === "gestures") {
+    return `鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || "未命名"}」`;
   }
   return "当前编辑";
 }
@@ -3423,6 +3639,7 @@ async function saveCurrentDraft(): Promise<boolean> {
   if (section === "shortcuts") return await saveShortcutDetail();
   if (section === "remaps") return await saveRemapDetail();
   if (section === "expansions") return await saveExpansionDetail();
+  if (section === "gestures") return await saveGestureDetail();
   return false;
 }
 
@@ -3456,7 +3673,7 @@ async function requestCloseDetail() {
 // 只是打开了编辑页却没改（干净草稿）就不问——关掉它什么都不会丢，留着反而危险：外部内容里
 // 的同一下标可能已经是另一条，草稿一保存就写到别人身上去了。
 async function applyExternalConfig(next: Config) {
-  const editing = draft !== null || remapDraft !== null || expansionDraft !== null;
+  const editing = draft !== null || remapDraft !== null || expansionDraft !== null || gestureDraft !== null;
   if (editing) {
     if (isDraftDirty()) {
       const take = await confirmAsk(
@@ -3515,10 +3732,11 @@ function renderTriggers(s: ShortcutItem) {
 }
 
 // ---- 动作列表渲染（流程管线视图） ----
-function renderActions(s: ShortcutItem) {
+// `start` 是流程管线的起止说明（快捷键 = 触发键；鼠标操作 = 方向串）。
+function renderActions(s: { actions: Action[]; triggers?: string[] }, start?: string) {
   const wrap = document.getElementById("action-list")!;
-  renderActionList(wrap, s.actions, () => renderActions(s), {
-    start: s.triggers.length ? s.triggers.join(" / ") : "未设触发键",
+  renderActionList(wrap, s.actions, () => renderActions(s, start), {
+    start: start ?? (s.triggers?.length ? s.triggers.join(" / ") : "未设触发键"),
   });
   refreshDirty();
 }
@@ -4926,6 +5144,10 @@ function timeoutMs(ms: number | undefined): string {
   return String(ms === undefined || !Number.isFinite(n) || n < 0 ? 1000 : Math.floor(n));
 }
 
+// ---- 鼠标手势（规划 7.2-MG）----
+// 手势的条目与编辑在「快捷键」页的「鼠标操作」分类里（与快捷键/改键/文本扩展并列），
+// 设置页只留一个「实验功能」总闸：关掉 = 这一类不出现、行为不生效，配置保留。
+
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
@@ -4959,6 +5181,10 @@ function syncSettings() {
   (document.getElementById("set-input-env") as HTMLInputElement).checked =
     cfg.settings.input_env_diag !== false;
   void renderInputEnvReport();
+  // 鼠标手势的实验开关（规划 7.2-MG）：缺字段按「关」显示，与后端 serde default 一致
+  // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
+  (document.getElementById("set-experimental") as HTMLInputElement).checked =
+    cfg.settings.experimental === true;
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -5260,6 +5486,14 @@ function bindSettings() {
     cfg.settings.input_env_diag = inputEnv.checked;
     void save();
     void renderInputEnvReport();
+  });
+  // 新功能总开关（规划 7.2-MG）：关掉后本轮新增的功能一律不可用——**配置保留**
+  // （只是入口隐藏 + 行为不生效），所以这里只改开关，不动 cfg.gestures。
+  const experimental = document.getElementById("set-experimental") as HTMLInputElement;
+  experimental.addEventListener("change", () => {
+    cfg.settings.experimental = experimental.checked;
+    // 改完重画列表：快捷键页里「鼠标操作」那一类的显隐由它决定。
+    void save().then(() => render());
   });
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
   // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
@@ -5938,6 +6172,10 @@ function bind() {
       { label: "新增快捷键", run: () => void requestNew("shortcut") },
       { label: "新增目录", run: () => addFolder(null) },
     ];
+    // 鼠标操作是实验功能：总闸关着时不提供这个入口（配置里已有的条目也不显示）。
+    if (mouseFeaturesEnabled()) {
+      items.splice(1, 0, { label: "新增鼠标操作", run: () => void requestNew("gesture") });
+    }
     if (clipboard) items.push({ label: "粘贴到根级", run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
   });
@@ -6024,16 +6262,18 @@ function bind() {
   });
 
   document.getElementById("add-action")!.addEventListener("click", () => {
-    if (section !== "shortcuts" || !draft) return;
-    draft.actions.push(newAction("text"));
-    renderActions(draft);
+    const host = currentActionsHost();
+    if (!host) return;
+    host.actions.push(newAction("text"));
+    renderActions(host);
   });
 
   // 新建的分组是空的、也是展开的：用户接着往里拖动作或点组内的「添加动作」即可。
   document.getElementById("add-group")!.addEventListener("click", () => {
-    if (section !== "shortcuts" || !draft) return;
-    draft.actions.push(newAction("group"));
-    renderActions(draft);
+    const host = currentActionsHost();
+    if (!host) return;
+    host.actions.push(newAction("group"));
+    renderActions(host);
   });
 
   document.getElementById("edit-capture")!.addEventListener("click", (e) => {
@@ -6088,8 +6328,10 @@ function bind() {
       btn.classList.remove("recording");
       btn.textContent = "● 开始录制";
       // 录制结果进草稿，统一由「保存」落盘，避免未点保存就被写盘。
-      draft.actions.push(...actions);
-      renderActions(draft);
+      const host = currentActionsHost();
+      if (!host) return;
+      host.actions.push(...actions);
+      renderActions(host);
     }
   });
 
@@ -6308,7 +6550,8 @@ async function switchSection(tab: Section) {
 // rail 只有 4 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
 // （合并列表），所以落到「快捷键」上高亮，不另造页签。
 function syncRailTab(tab: Section) {
-  const rail = tab === "remaps" || tab === "expansions" ? "shortcuts" : tab;
+  // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
+  const rail = tab === "remaps" || tab === "expansions" || tab === "gestures" ? "shortcuts" : tab;
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === rail);
   });

@@ -22,6 +22,7 @@
 | `docs/竞品分析与优化规划.md` | 竞品横向对比 + 差距清单 + 分阶段优化路线图（P0~P3） | 规划下一步功能方向、排优先级时 |
 | `docs/触摸板手势可行性调研.md` | 规划 7.2-㊻ 的可行性调研：三平台（Linux libinput / macOS 私有 API / Windows Raw Input）能拿到什么手势事件、怎么接进现有 `Key` 模型、成本与落地顺序 | 评估「触摸板手势作触发源」是否立项 / 怎么落地时 |
 | `docs/鼠标侧键跨型号调研.md` | 规划 7.2-㊼ 的调研：标准侧键 MB4/MB5 跨型号一致、额外侧键无统一编号，结论是不扩键模型（用厂商软件重映射到 F13–F24 变通）；标准侧键「不出现」属厂商 divert，另见 `底层输入能力规划.md` 档位 C | 评估「支持更多鼠标侧键」时 |
+| `docs/鼠标手势与滚轮快捷键规划.md` | 规划 7.2-MG 的方案：MouseInc 类「右键拖拽手势 / 滚轮快捷键」并入 Kada 的可行性、分级目标（V1 = 方向串手势）、数据模型、三平台接线、配置全链路、**体积实测（<1%，依赖 +0）**、与 MouseInc 的四层不兼容、全局抢右键的风险、验收与待决策项；另含本体试验台 `kada-prime/` 的实测结论 | 评估「要不要做鼠标手势 / 怎么取舍」时；开工前定方案 |
 | `docs/底层输入能力规划.md` | 输入层下探的分档规划：三平台各站在哪一层、两个真实缺口（厂商 divert 按键 / 提权窗口注入）、四个档位（A 环境诊断 / B 提权伴随进程——**两档均已落地** / C HID++ 解锁侧键——下一个 / D 内核驱动评估后不做）、签名与信任成本、轻盈五条不变量、落地顺序 | 想「再往底层走」时先读它；判断某条限制该不该用驱动 / HID++ 解决时 |
 | `docs/人工验证清单.md` | 只能真机 + 真人操作才能确认的验收项：可照做的步骤 + 预期现象 + 判失败（锁屏/唤醒/切窗复位、动作超时与中止、动作失败上报、未保存改动守卫、删除确认与导入合并 / 替换、配置外部修改监听、更新端到端含产物自检）；**顶部有逐条验证状态**（最近一轮 2026-10-10：§1~§3、§5~§8 通过，§4 休眠唤醒未执行，§9~§14 与附录待真人复跑） | 验收相关改动、发版前 |
 | `docs/变更归档.md` | 已实现变更归档：按里程碑的文件-改动表、设计决策、冒烟结论 | 检索历史实现时 |
@@ -33,6 +34,7 @@
 ```
 crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、卡带摘取
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
+  src/gesture.rs            # 鼠标手势模型与识别（方向串量化/归一化/精确匹配，7.1-MG）
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
   src/snippet.rs            # 配置卡带（分享用）：按「类别+下标」摘出条目 + 被引用的层；卡带市场的索引模型/解析，见 AGENTS「铁律」
 crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + 拦截 + 注入
@@ -40,6 +42,7 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   src/win/simulate.rs       # Windows: SendInput 注入 + 剪贴板文本；注入统一拆 Op 走 deliver（前台是提权窗口时交代理，见 架构设计.md §3.23）
   src/win/agent.rs          # Windows: 提权伴随进程（命名管道 + 行协议 + DACL/双向身份校验 + runas 拉起 + 父进程守望）
   src/win/hidpp.rs          # Windows: 罗技 HID++ 客户端（枚举/握手/关 divert + 本会话保持，见 说明书 §4.8 / 底层输入能力规划 档位 C）
+  src/gesture.rs            # 鼠标手势采集状态机（平台无关）+ 轨迹出口（识别在壳层做，7.1-MG）
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
   src/macos.rs              # macOS: CGEventTap 钩子 + key↔虚拟键码 + AX 前台查询 + simulate（需「辅助功能」权限）
   src/lib.rs                # 平台中性入口：platform_input_env / elevated（提权窗口注入）/ hidpp（HID++ 解锁），非 Windows 为空实现
@@ -50,6 +53,12 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   examples/elevated_probe.rs    # 提权通道探针（Windows）：验 DACL / 双向身份校验 / 行协议往返 / 分片 / 坏 op 整批拒 / 断开即退（UAC 那段见 人工验证清单.md §31）
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）
+kada-prime/                 # Kada' 试验台（独立 crate，自带 [workspace]，Windows only，**不进主 workspace**）：MouseInc 类鼠标手势 / 滚轮快捷键原型
+  src/main.rs               # 运行时状态机 + 鼠标钩子（右键吞/回放）+ 托盘菜单 + 轨迹浮层 + 配置读写
+  src/gesture.rs            # 方向量化 / 归一化 / 精确匹配 + 手势状态机（纯逻辑，带单测）
+  src/config.rs             # 配置模型（手势 / 滚轮 / 边缘 / 触发角）+ 原子写 + 默认手势
+  src/actions.rs            # 迷你动作执行器（组合键 / 启动 / 音量 / 通知 / 鼠标 …）+ 右键回放
+  README.md                 # 用法 / 配置格式 / 动作类型 / 已知限制（方案与取舍见 docs/鼠标手势与滚轮快捷键规划.md）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道

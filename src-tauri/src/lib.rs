@@ -25,10 +25,11 @@ use kada_actions::{
     RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
-    config_uses_mouse, detect_conflicts, diagnose_input_env, matches, parse_snippet_index,
-    sanitize_config, snippet, snippet_title, Action, Config, Conflict, IndexEntry, Key, Modifier,
-    RawEvent, Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetPick, TextExpansion,
-    TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
+    config_needs_mouse_hook, detect_conflicts, diagnose_input_env, matches,
+    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
+    IndexEntry, Key, Modifier, RawEvent, Remap, Settings, Severity, Shortcut, ShortcutItem,
+    SnippetPick, TextExpansion, TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL,
+    SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -872,6 +873,8 @@ fn spawn_engine_ticker(
         let mut last_status: Option<(StatusPayload, bool)> = None;
         // 上一次「配置是否需要鼠标钩子」：变了才通知钩子层（避免每拍都发重装请求）。
         let mut last_mouse: Option<bool> = None;
+        // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
+        let mut last_gesture: Option<bool> = None;
         // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
         // 外部改配置都能改它，这里是唯一一处常驻且拿得到最新配置的地方）。
         let mut last_paused: Option<bool> = None;
@@ -899,7 +902,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse, user_paused, elevated) = {
+            let (payload, hud_enabled, use_mouse, user_paused, elevated, gesture_on) = {
                 let guard = cfg.read().unwrap();
                 let frozen = rec.lock().unwrap().is_some()
                     || pause_active(&paused_until)
@@ -923,9 +926,12 @@ fn spawn_engine_ticker(
                 (
                     build_status(&status, &guard),
                     guard.settings.show_status_hud,
-                    config_uses_mouse(&guard),
+                    config_needs_mouse_hook(&guard),
                     guard.settings.paused,
                     guard.settings.elevated_inject,
+                    // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
+                    // → 右键完全放行（回到系统行为，一个字节都不多吞）。
+                    guard.settings.experimental && kada_core::gesture_enabled(&guard),
                 )
             };
             // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
@@ -941,6 +947,12 @@ fn spawn_engine_ticker(
             if last_mouse != Some(use_mouse) {
                 input::set_mouse_enabled(use_mouse);
                 last_mouse = Some(use_mouse);
+            }
+            // 鼠标手势（规划 7.2-MG）：开着才拦右键；关掉时钩子层把状态清干净，
+            // 右键立刻回到系统行为（总开关在设置页，配置保留）。
+            if last_gesture != Some(gesture_on) {
+                kada_hook::gesture::set_enabled(gesture_on);
+                last_gesture = Some(gesture_on);
             }
             // 托盘「暂停快捷键触发」的勾选对齐：设置页勾选、外部改配置、托盘自身点击都汇总到
             // 这一处比对（点菜单时 CheckMenuItem 已自动翻转，这里把状态钉死到真实配置值）。
@@ -1417,6 +1429,109 @@ fn fire(
             },
         );
     });
+}
+
+/// 鼠标手势（规划 7.2-MG）：注册轨迹出口。
+///
+/// 回调**在钩子线程上**跑（低层钩子回调超会被系统静默摘掉），所以这里只做
+/// 「拷贝数据 + 开线程」，识别与动作执行都在新线程里。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn spawn_gesture_listener(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+) {
+    kada_hook::gesture::set_sink(Some(Box::new(move |stroke| {
+        let app = app.clone();
+        let cfg = cfg.clone();
+        let results = results.clone();
+        let unread = unread.clone();
+        let runs = runs.clone();
+        std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke));
+    })));
+}
+
+/// 一次手势的收尾：识别 → 命中就执行动作；**没命中（或压根没画出轨迹）就把右键补回来**。
+///
+/// 吞键铁律：被吞掉的右键必须原样回放（按下-抬起配对），否则用户的右键就废了。
+/// 回放走注入（带 `INJECTED` 标记），不会被自己的钩子再吃一次。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn handle_gesture(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+    stroke: kada_hook::gesture::Stroke,
+) {
+    let (on, start_distance, min_segment, gesture_timeout, action_timeout, text_mode) = {
+        let g = cfg.read().unwrap();
+        (
+            g.settings.experimental && kada_core::gesture_enabled(&g),
+            g.settings.gesture_start_distance,
+            g.settings.gesture_min_segment,
+            g.settings.gesture_timeout_ms,
+            g.settings.action_timeout_ms,
+            g.settings.text_inject_mode,
+        )
+    };
+    if !on {
+        replay_right_click();
+        return;
+    }
+    // 位移没超过起手距离 = 普通右键点击（不是手势）；画太久 = 这次手势作废。两种都补回右键。
+    let first = stroke.points.first().copied().unwrap_or((0, 0));
+    let moved = stroke
+        .points
+        .iter()
+        .map(|p| (p.0 - first.0).abs() + (p.1 - first.1).abs())
+        .max()
+        .unwrap_or(0);
+    if moved < start_distance || stroke.elapsed_ms > gesture_timeout {
+        replay_right_click();
+        return;
+    }
+    let pattern = kada_core::pattern_from_points(&stroke.points, min_segment);
+    let matched = {
+        let g = cfg.read().unwrap();
+        kada_core::find_gesture(&g, &pattern).map(|hit| (hit.label(), hit.actions.clone()))
+    };
+    let Some((name, actions)) = matched else {
+        eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
+        replay_right_click();
+        return;
+    };
+    // 配了手势但没配动作 = 半条配置：这时**不执行**（执行空链等于把右键吞了），
+    // 按「没命中」处理、把右键补回去。
+    if actions.is_empty() {
+        eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
+        replay_right_click();
+        return;
+    }
+    fire(
+        app,
+        results,
+        unread,
+        runs,
+        actions,
+        format!("手势 {pattern}"),
+        name,
+        action_timeout,
+        text_mode,
+    );
+}
+
+/// 把被手势吞掉的右键补回来（按下-抬起配对）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn replay_right_click() {
+    let op = kada_core::MouseOp::Click {
+        button: kada_core::MouseButton::Right,
+    };
+    if let Err(e) = input::simulate::mouse(&op) {
+        eprintln!("kada: 回放右键失败：{e}");
+    }
 }
 
 /// 执行记录表的条数上限（超出丢最旧的一条）。
@@ -4662,10 +4777,11 @@ pub fn run() {
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let engine = Arc::new(Mutex::new(Engine::new()));
 
-            // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发就不挂，
-            // 缩小全局拦截面）。运行中配置变化由状态机定时器线程跟进（见 spawn_engine_ticker）。
+            // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发、
+            // 也没有启用的鼠标手势就不挂，缩小全局拦截面）。运行中配置变化由状态机
+            // 定时器线程跟进（见 spawn_engine_ticker）。
             // 此刻钩子还没起，`set_mouse_enabled` 只记下值，首次安装按它决定。
-            input::set_mouse_enabled(config_uses_mouse(&config.read().unwrap()));
+            input::set_mouse_enabled(config_needs_mouse_hook(&config.read().unwrap()));
 
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let hook_start = {
@@ -4820,6 +4936,18 @@ pub fn run() {
                 rec.clone(),
                 cfg_stale.clone(),
                 app.handle().clone(),
+            );
+
+            // 鼠标手势的轨迹出口（规划 7.2-MG）：钩子线程上回调，这里只注册；开不开由
+            // 定时器线程按配置推（总开关 / 有没有启用的手势）。
+            // 放在 `KadaState` 之前：`results` / `unread` / `runs` 三个 Arc 会被 state 拿走。
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            spawn_gesture_listener(
+                app.handle().clone(),
+                config.clone(),
+                results.clone(),
+                unread.clone(),
+                runs.clone(),
             );
 
             let state = KadaState {

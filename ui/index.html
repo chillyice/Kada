@@ -88,6 +88,7 @@
                   <li class="mode-item" data-kind="shortcut" title="快捷键：按下组合键 / 序列 / 和弦触发一串动作"><span class="mi-icon"></span><span class="mi-label">快捷键</span></li>
                   <li class="mode-item" data-kind="remap" title="改键：把一个键改成另一个键（含长按、切层、单次、粘滞等形态）"><span class="mi-icon"></span><span class="mi-label">改键</span></li>
                   <li class="mode-item" data-kind="expansion" title="文本扩展：输入触发词自动展开成一段文本"><span class="mi-icon"></span><span class="mi-label">文本扩展</span></li>
+                  <li class="mode-item" data-kind="gesture" title="鼠标操作：按住右键画一条轨迹，按方向串触发一串动作（实验功能）"><span class="mi-icon"></span><span class="mi-label">鼠标操作</span></li>
                 </ul>
               </div>
               <!-- 快捷键：触发键胶囊（左，超了就横向滚，不换行） + 录入状态 + 三个录入图标（右，与框体一体） -->
@@ -115,11 +116,15 @@
               <div class="key-view hidden" id="key-expansion">
                 <input id="edit-exp-trigger" type="text" autocomplete="off" spellcheck="false" placeholder="触发词（如 :addr、;sig，不含空格/回车/Tab）" />
               </div>
+              <!-- 鼠标操作（手势）：方向串（按住右键画轨迹的方向序列） -->
+              <div class="key-view hidden" id="key-gesture">
+                <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串，如 DL（U/D/L/R + 斜向 UR/DR/DL/UL）" />
+              </div>
             </div>
 
             <!-- 第二行：tab —— 详情 / 动作·操作·展开文本 / 层 / 条件 -->
             <div class="entry-tabs" id="entry-tabs">
-              <button class="entry-tab active" data-tab="detail">详情</button>
+              <button class="entry-tab active" data-tab="detail" id="tab-detail">详情</button>
               <button class="entry-tab" data-tab="work" id="tab-work">动作</button>
               <button class="entry-tab" data-tab="layer" id="tab-layer">层</button>
               <button class="entry-tab" data-tab="when" id="tab-when">条件</button>
@@ -370,6 +375,27 @@
                 <details class="hint-fold">
                   <summary>层是怎么生效的</summary>
                   <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键 / 改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦 / 序列用这种）。</p>
+                </details>
+              </section>
+
+              <!-- 实验功能（规划 7.2-MG）：新功能总开关。
+                   默认**关**；关掉 → 入口隐藏（快捷键页不出现「鼠标操作」这一类）+ 行为不生效，
+                   配置保留（重新打开即恢复）。鼠标功能本身的设置在「快捷键」页的「鼠标操作」分类里做。 -->
+              <section class="set-card" id="experimental-card">
+                <div class="set-card-head"><span>实验功能</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">新功能总开关</span>
+                      <span class="set-sub">默认关闭；关掉后本轮新增的功能一律不可用（入口隐藏、行为不生效），配置保留</span>
+                    </span>
+                    <input type="checkbox" id="set-experimental" class="toggle" />
+                  </label>
+                </div>
+                <details class="hint-fold">
+                  <summary>鼠标手势怎么用</summary>
+                  <p class="hint">打开后到「<strong>快捷键</strong>」页新增一条「<strong>鼠标操作</strong>」（列表里那一类）：填方向串（<code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上、<code>DR</code> 右下、<code>DL</code> 左下、<code>UL</code> 左上），再配一串动作。画的时候：按住<strong>右键</strong>画一条轨迹，松手时按方向串匹配。</p>
+                  <p class="hint">方向串也认 <code>UP</code> / <code>↓</code> 这类写法，保存时自动归一化成字母。没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
                 </details>
               </section>
 

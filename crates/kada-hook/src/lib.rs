@@ -20,6 +20,9 @@ pub mod linux;
 #[cfg(target_os = "macos")]
 pub mod macos;
 
+/// 鼠标手势的采集（规划 7.2-MG）：平台无关的状态机 + 轨迹出口，识别在壳层做。
+pub mod gesture;
+
 pub use kada_core::{
     format_shortcut, key_name, matches, Key, Modifier, MouseButton, RawEvent, Shortcut,
 };

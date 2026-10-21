@@ -1,0 +1,31 @@
+[package]
+name = "kada-prime"
+version = "0.1.0"
+edition = "2021"
+description = "Kada' — MouseInc 鼠标手势 / 滚轮快捷键试验台"
+
+# 独立于 Kada workspace：Kada' 是单独的实验软件，不参与主项目的构建与测试。
+[workspace]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

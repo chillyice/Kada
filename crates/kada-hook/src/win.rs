@@ -647,6 +647,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         // 注入事件一律放行，防回环（也不进录制——录制器只转录人手的动作）。
         if ms.flags & LLMHF_INJECTED == 0 {
+            // 鼠标手势（规划 7.2-MG）：右键按下先吞、抬起时把轨迹交给壳层。
+            // **手势开着时右键归手势**——所以这一步排在录制之前：被手势吞掉的右键不进录制。
+            match wparam.0 as u32 {
+                WM_RBUTTONDOWN => {
+                    if crate::gesture::on_right_down((ms.pt.x, ms.pt.y)) {
+                        return LRESULT(1);
+                    }
+                }
+                WM_RBUTTONUP => {
+                    if crate::gesture::on_right_up((ms.pt.x, ms.pt.y)) {
+                        return LRESULT(1);
+                    }
+                }
+                WM_MOUSEMOVE => crate::gesture::on_move((ms.pt.x, ms.pt.y)),
+                _ => {}
+            }
             record_mouse(wparam.0 as u32, ms);
             if swallow_mouse(wparam.0 as u32, ms) {
                 return LRESULT(1);
