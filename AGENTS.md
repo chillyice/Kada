@@ -105,6 +105,7 @@
 
 - 按住右键画轨迹 → 方向串。**右键按下先吞、抬起才判定**：命中执行动作；**未命中 / 没画出轨迹一律回放一次完整右键**（注入不被自己再吃）
 - 识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**；**轨迹出口只借用不取走**
+- **让路**（都算「不接管、右键原样回放」）：排除程序 `gesture_exclude` 命中、**前台全屏**（占满显示器且非最大化）、`when` 不成立（落到下一条）
 - 总闸 `Settings.experimental`（**默认关**）：关掉 → 入口隐藏、行为不生效、**配置保留**。**本功能正式完成前不打 tag、不发 release**
 
 ### 1.14 软件更新（说明书 §5.5）
@@ -113,6 +114,12 @@
 - **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本
 - **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；CI 用 `signer sign --app-version` 签便携包。检查走 `build_updater`，**别用 `app.updater()`**
 - **安装会退出应用**；其它平台装完 `app.restart()`
+
+### 1.15 界面文案（i18n｜说明书 §6.9）
+
+- `ui/index.html` / `ui/src/main.ts` 里的中文**一律** `tr("…")` 或 `trt\`…${x}…\``（key = 中文原文／占位符 `{0}`）；新增文案**必须同时补 `ui/src/i18n.en.json`**，否则 `check-i18n` 红
+- **不包**：拿后端中文文案做前缀匹配、与配置数据比较的字面量——行尾标 `// i18n:ignore`
+- 语言只记本机 `localStorage["kada.locale"]`，**不进配置 / 不同步**；壳层（Rust）文案仍是中文（已知缺口，7.2-㊲）
 
 ## 2. 命名与键模型
 
@@ -136,11 +143,12 @@ cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation
 cargo build --release -p kada --features custom-protocol   # 手动打 exe：**必须带 custom-protocol**（漏了只嵌壳不嵌前端 → 连 localhost:1420 白屏）
 npm --prefix ui run build   # 前端构建（tsc + vite build）
 node scripts/check-docs.mjs # 文档一致性（路径引用 / § 消歧 / 代码地图令牌 / AGENTS 体积）
+node scripts/check-i18n.mjs # 界面文案：中文必须包 tr()/trt()，i18n.en.json 覆盖全部 key
 cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -pada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
 ```
 
-- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
+- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
 - **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验
 - **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**Linux 包只能靠容器出**、**macOS 包只能靠 CI**
 - **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / 打包 targets 后必跑** `node scripts/verify-release.mjs`

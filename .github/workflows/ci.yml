@@ -59,6 +59,11 @@ jobs:
       - name: Docs consistency
         run: node scripts/check-docs.mjs
 
+      # 界面文案 i18n：main.ts 里的中文必须走 tr()/trt()，且 ui/src/i18n.en.json 覆盖全部 key。
+      # 漏一条中文 = 英文界面里夹一句中文，没人会主动发现。
+      - name: UI i18n coverage
+        run: node scripts/check-i18n.mjs
+
       - name: Cargo tests (all crates)
         shell: bash
         run: |

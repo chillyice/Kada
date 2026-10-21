@@ -72,10 +72,12 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
   src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页/卡带市场；草稿隔离 + 未保存守卫
+  src/i18n.ts               # 界面文案：tr()/trt() 查表 + 静态 DOM 整块翻译；语言记 localStorage["kada.locale"]
+  src/i18n.en.json          # 英文词典（中文原文 → English，key 与源码逐字一致；check-i18n 守门）
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
   src/style.css             # 深色 UI 样式
 snippets/                   # 卡带市场的内置索引托管：*.json 卡带 + index.json（脚本生成，客户端只 GET）
-scripts/                    # build-snippet-index.mjs（卡带→索引，CI 用 --check 查同步）/ check-docs.mjs（文档一致性）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）/ ihomy-mirror（更新源每日镜像 + systemd 单元）
+scripts/                    # build-snippet-index.mjs（卡带→索引，CI 用 --check 查同步）/ check-docs.mjs（文档一致性）/ check-i18n.mjs（界面文案覆盖）/ i18n-html.mjs（index.html 文案提取）/ verify-release.mjs（发版产物自检）/ linux-package（容器打包）/ ihomy-mirror（更新源每日镜像 + systemd 单元）
 .github/workflows/          # ci.yml（三平台构建+测试+文档检查）；release.yml（打 v* tag 签名发版）
 ```
 

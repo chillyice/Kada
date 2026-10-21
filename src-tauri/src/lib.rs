@@ -69,9 +69,9 @@ impl Inject for SimulatedInject {
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
-        current_device, foreground_window, frontmost_context, hotkey_occupied, reinstall_count,
-        set_mouse_enabled, set_mouse_recorder, simulate, start, Action as HookAction, HookHandle,
-        KeyEvent,
+        current_device, foreground_fullscreen, foreground_window, frontmost_context,
+        hotkey_occupied, reinstall_count, set_mouse_enabled, set_mouse_recorder, simulate, start,
+        Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -131,6 +131,11 @@ mod input {
         None
     }
 
+    /// 全屏程序自动暂停手势：Linux 拿不到前台窗口，恒 false（手势本也只在 Windows 采集）。
+    pub fn foreground_fullscreen() -> bool {
+        false
+    }
+
     /// 输入环境探测（接管者 + HVCI）：Linux 读 `/proc` 找抢占输入设备的改键守护进程，
     /// 见 `kada_hook::linux::input_env`（HVCI 恒 `None`）。
     pub fn input_env() -> kada_core::InputEnv {
@@ -166,6 +171,11 @@ mod input {
     /// 鼠标钩子按需安装是 Windows 低层钩子的优化；macOS 的 `CGEventTap` 本就一把抓全部
     /// 事件，无此开关，这里是空实现。
     pub fn set_mouse_enabled(_on: bool) {}
+
+    /// 全屏程序自动暂停手势：macOS 手势尚未接线（7.2-MG 余项②），恒 false。
+    pub fn foreground_fullscreen() -> bool {
+        false
+    }
 
     /// 输入环境探测：libproc 进程表 + `DIVERTERS` 目录（见 `kada_hook::macos::input_env`）。
     pub fn input_env() -> kada_core::InputEnv {
@@ -203,6 +213,11 @@ mod input {
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
         None
+    }
+
+    /// 无输入层实现：没有前台窗口，全屏判定恒 false。
+    pub fn foreground_fullscreen() -> bool {
+        false
     }
 
     /// 无输入层实现：不做输入环境探测。
@@ -1466,7 +1481,7 @@ fn handle_gesture(
     runs: Arc<Mutex<Vec<RunRecord>>>,
     stroke: kada_hook::gesture::Stroke,
 ) {
-    let (on, start_distance, min_segment, gesture_timeout, action_timeout, text_mode) = {
+    let (on, start_distance, min_segment, gesture_timeout, action_timeout, text_mode, exclude) = {
         let g = cfg.read().unwrap();
         (
             g.settings.experimental && kada_core::gesture_enabled(&g),
@@ -1475,11 +1490,27 @@ fn handle_gesture(
             g.settings.gesture_timeout_ms,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
+            g.settings.gesture_exclude.clone(),
         )
     };
     if !on {
         replay_right_click();
         return;
+    }
+    // 全屏程序自动暂停（规划 7.2-MG 余项⑤）：游戏 / 视频 / 远程桌面里右键拖拽本来就是正常
+    // 操作，整条不接管、右键原样回放。判据见 `kada_hook::win::foreground_fullscreen`。
+    if input::foreground_fullscreen() {
+        replay_right_click();
+        return;
+    }
+    // 排除程序（规划 7.2-MG 余项）：前台命中就整条不接管，右键原样回放。
+    if !exclude.is_empty() {
+        if let Some(front) = input::frontmost_context() {
+            if kada_core::app_excluded(&exclude, &front.process_name) {
+                replay_right_click();
+                return;
+            }
+        }
     }
     // 位移没超过起手距离 = 普通右键点击（不是手势）；画太久 = 这次手势作废。两种都补回右键。
     let first = stroke.points.first().copied().unwrap_or((0, 0));
@@ -1496,7 +1527,10 @@ fn handle_gesture(
     let pattern = kada_core::pattern_from_points(&stroke.points, min_segment);
     let matched = {
         let g = cfg.read().unwrap();
-        kada_core::find_gesture(&g, &pattern).map(|hit| (hit.label(), hit.actions.clone()))
+        // `when` 门控（前台应用 / 窗口标题 / 设备）：前台惰性查询，只有真配了条件才查。
+        let fetch = || input::frontmost_context();
+        let ctx = TriggerContext::lazy(&fetch, None);
+        kada_core::find_gesture(&g, &pattern, &ctx).map(|hit| (hit.label(), hit.actions.clone()))
     };
     let Some((name, actions)) = matched else {
         eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
@@ -4383,7 +4417,7 @@ fn export_fragment(
     picks: Vec<SnippetPick>,
 ) -> Result<usize, String> {
     let part = snippet(&state.config.read().unwrap(), &picks);
-    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len();
+    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len() + part.gestures.len();
     if n == 0 {
         return Err("没有可导出的条目".into());
     }
@@ -4489,6 +4523,7 @@ struct SnippetPreview {
     shortcuts: Vec<ShortcutItem>,
     remaps: Vec<Remap>,
     expansions: Vec<TextExpansion>,
+    gestures: Vec<kada_core::Gesture>,
 }
 
 /// 下载一个卡带并给出预览，**不落盘**。
@@ -4499,7 +4534,11 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
     let text = http_get_text(&url).await?;
     let part: Config = serde_json::from_str(&text).map_err(|e| format!("卡带解析失败：{e}"))?;
     let (part, _ignored) = sanitize_config(&part);
-    if part.shortcuts.is_empty() && part.remaps.is_empty() && part.expansions.is_empty() {
+    if part.shortcuts.is_empty()
+        && part.remaps.is_empty()
+        && part.expansions.is_empty()
+        && part.gestures.is_empty()
+    {
         return Err("卡带里没有可用的条目（全是坏条目或本来就是空的）".into());
     }
     Ok(SnippetFetch {
@@ -4508,6 +4547,7 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
             shortcuts: part.shortcuts,
             remaps: part.remaps,
             expansions: part.expansions,
+            gestures: part.gestures,
         },
     })
 }

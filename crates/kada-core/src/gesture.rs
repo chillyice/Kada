@@ -6,7 +6,7 @@
 //!
 //! 平台无关的**纯逻辑**：钩子只负责收集轨迹点，识别在壳层做（钩子回调里不许耗时）。
 
-use crate::{Action, Config};
+use crate::{Action, Config, TriggerContext};
 use serde::{Deserialize, Serialize};
 
 /// 一条鼠标手势。
@@ -21,6 +21,11 @@ pub struct Gesture {
     /// 触发后按顺序执行的多个动作（复用 [`Action`]，与快捷键同一套动作引擎）。
     #[serde(default)]
     pub actions: Vec<Action>,
+    /// 触发侧条件门控（`when`，规划 7.2-MG 余项）：仅当条件成立时这条才参与匹配，
+    /// 否则跳过（落到下一条同方向串的手势，没有就回放右键）。`None` = 无条件。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<crate::Condition>,
     #[serde(default)]
     pub enabled: bool,
 }
@@ -33,6 +38,39 @@ impl Gesture {
             .filter(|n| !n.trim().is_empty())
             .unwrap_or_else(|| self.pattern.clone())
     }
+
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// `when` 的判重指纹（见 [`crate::WhenKey`]）。
+    pub(crate) fn when_key(&self) -> crate::WhenKey {
+        #[cfg(feature = "automation")]
+        {
+            self.when.clone()
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            None
+        }
+    }
+}
+
+/// 这个前台进程名是否命中**手势排除列表**（每行一个，语义同 `when` 的「前台应用」：
+/// 不区分大小写，含 `*`/`?` 走通配、否则子串）。
+pub fn app_excluded(patterns: &[String], name: &str) -> bool {
+    patterns
+        .iter()
+        .any(|p| !p.trim().is_empty() && crate::match_name(p.trim(), name))
 }
 
 /// 8 个方向桶（屏幕坐标，y 向下）：东、东南、南、西南、西、西北、北、东北。
@@ -132,14 +170,21 @@ pub fn gesture_enabled(cfg: &Config) -> bool {
 }
 
 /// 按方向串找手势（**精确匹配**，不做前缀匹配：`D` 不该吃掉 `DR`）。
-pub fn find_gesture<'a>(cfg: &'a Config, pattern: &str) -> Option<&'a Gesture> {
+///
+/// 同方向串多条时按配置顺序取**第一条 `when` 成立**的（`when` 不成立 = 该条不存在，
+/// 落到下一条；规则与快捷键 / 改键一致）。
+pub fn find_gesture<'a>(
+    cfg: &'a Config,
+    pattern: &str,
+    ctx: &TriggerContext,
+) -> Option<&'a Gesture> {
     let pattern = normalize_pattern(pattern);
     if pattern.is_empty() {
         return None;
     }
-    cfg.gestures
-        .iter()
-        .find(|g| g.enabled && normalize_pattern(&g.pattern) == pattern)
+    cfg.gestures.iter().find(|g| {
+        g.enabled && normalize_pattern(&g.pattern) == pattern && g.when_matches(ctx)
+    })
 }
 
 #[cfg(test)]
@@ -151,6 +196,8 @@ mod tests {
             name: Some("测试".into()),
             pattern: pattern.into(),
             actions: Vec::new(),
+            #[cfg(feature = "automation")]
+            when: None,
             enabled: true,
         }
     }
@@ -201,12 +248,46 @@ mod tests {
     fn find_gesture_is_exact_and_skips_disabled() {
         let mut cfg = Config::default();
         cfg.gestures = vec![gesture("DRUL"), gesture("D")];
-        assert!(find_gesture(&cfg, "DRUL").is_some());
+        let ctx = TriggerContext::empty();
+        assert!(find_gesture(&cfg, "DRUL", &ctx).is_some());
         // 前缀不算命中：`D` 不该吃掉 `DRUL`。
-        assert!(find_gesture(&cfg, "DR").is_none());
-        assert!(find_gesture(&cfg, "UL").is_none());
+        assert!(find_gesture(&cfg, "DR", &ctx).is_none());
+        assert!(find_gesture(&cfg, "UL", &ctx).is_none());
         cfg.gestures[0].enabled = false;
-        assert!(find_gesture(&cfg, "DRUL").is_none());
+        assert!(find_gesture(&cfg, "DRUL", &ctx).is_none());
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn when_gates_gestures_and_falls_through() {
+        use crate::{Condition, FrontmostContext};
+        let chrome = FrontmostContext {
+            process_name: "chrome.exe".into(),
+            window_title: "Chrome".into(),
+        };
+        let mut cfg = Config::default();
+        let mut gated = gesture("D");
+        gated.when = Some(Condition::FrontmostApp { app: "chrome".into() });
+        cfg.gestures = vec![gated, gesture("D")];
+
+        // 前台是 chrome → 走第一条（带 when）。
+        let hit = find_gesture(&cfg, "D", &TriggerContext::fixed(Some(&chrome), None)).unwrap();
+        assert!(hit.when.is_some());
+        // 前台不是 chrome → 第一条不存在，落到第二条无门控的。
+        let hit = find_gesture(&cfg, "D", &TriggerContext::empty()).unwrap();
+        assert!(hit.when.is_none());
+        // 只有带 when 的一条时，条件不成立 = 没有命中（回放右键）。
+        cfg.gestures.truncate(1);
+        assert!(find_gesture(&cfg, "D", &TriggerContext::empty()).is_none());
+    }
+
+    #[test]
+    fn app_excluded_matches_substring_and_wildcards() {
+        let list = vec!["photoshop.exe".to_string(), "*blender*".to_string(), "  ".into()];
+        assert!(app_excluded(&list, "Photoshop.exe"));
+        assert!(app_excluded(&list, "blender"));
+        assert!(!app_excluded(&list, "notepad.exe"));
+        assert!(!app_excluded(&[], "anything"));
     }
 
     #[test]

@@ -158,7 +158,7 @@ pub mod sample;
 /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。纯逻辑，识别在壳层做。
 mod gesture;
 pub use gesture::{
-    find_gesture, gesture_enabled, normalize_pattern, pattern_from_points, Gesture,
+    app_excluded, find_gesture, gesture_enabled, normalize_pattern, pattern_from_points, Gesture,
 };
 
 mod parse {
@@ -951,7 +951,8 @@ impl Condition {
 }
 
 /// 前台进程名匹配：不区分大小写；模式含 `*`/`?` 时按通配匹配，否则按子串匹配。
-#[cfg(feature = "automation")]
+///
+/// 不按 `automation` 门控：手势排除列表（[`gesture::app_excluded`]）在基础版里也用它。
 fn match_name(pattern: &str, name: &str) -> bool {
     let p = pattern.to_lowercase();
     let n = name.to_lowercase();
@@ -963,7 +964,6 @@ fn match_name(pattern: &str, name: &str) -> bool {
 }
 
 /// 通配匹配：`*` 匹配任意序列、`?` 匹配单个字符。`pattern`/`text` 均已转小写。
-#[cfg(feature = "automation")]
 fn wildcard_match(pattern: &str, text: &str) -> bool {
     let p: Vec<char> = pattern.chars().collect();
     let t: Vec<char> = text.chars().collect();
@@ -1924,6 +1924,12 @@ pub struct Settings {
     /// 鼠标手势的方向量化**段长**（像素）：一段方向至少这么长，抖动自己被吸收掉。
     #[serde(default = "default_gesture_min_segment")]
     pub gesture_min_segment: i32,
+    /// 鼠标手势的**排除程序**（每行一个进程名）：命中的程序里不接管右键，手势完全不生效
+    /// （右键回放）。语义与 `when` 的「前台应用」一致：不区分大小写、含 `*`/`?` 走通配、
+    /// 否则子串匹配。空 = 不排除。给游戏 / CAD / 远程桌面这类「右键拖拽本来是正常操作」的
+    /// 程序留的（规划 7.2-MG 余项）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub gesture_exclude: Vec<String>,
 }
 
 /// 鼠标手势起手距离的缺省值（像素）。
@@ -1989,6 +1995,7 @@ impl Default for Settings {
             gesture_start_distance: default_gesture_start_distance(),
             gesture_timeout_ms: default_gesture_timeout_ms(),
             gesture_min_segment: default_gesture_min_segment(),
+            gesture_exclude: Vec::new(),
         }
     }
 }
@@ -2444,18 +2451,22 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     //    本身合法，只报 Warn 提示「在你这台机器上不会生效」。
     out.extend(platform_conflicts(cfg, caps));
 
-    // 7) 鼠标手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串 → 谁先谁后取决于
-    //    配置顺序，用户会以为「我画了却触发了别的」。只报 Warn（不拦保存）：重复方向串
-    //    可能是有意为之（同名不同动作），但多数是手滑复制。
-    let mut seen: BTreeMap<String, String> = BTreeMap::new();
+    // 7) 鼠标手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串、且 `when` 相同 →
+    //    谁先谁后取决于配置顺序，用户会以为「我画了却触发了别的」。只报 Warn（不拦保存）：
+    //    重复方向串可能是有意为之（同名不同动作），但多数是手滑复制。不同 `when` 是按条件
+    //    分流（同快捷键规则），不算冲突。
+    let mut seen: Vec<(String, WhenKey, String)> = Vec::new();
     for g in cfg.gestures.iter().filter(|g| g.enabled) {
         let pattern = normalize_pattern(&g.pattern);
         if pattern.is_empty() {
             continue;
         }
         let label = g.label();
-        match seen.get(&pattern) {
-            Some(first) => out.push(Conflict {
+        match seen
+            .iter()
+            .find(|(p, w, _)| *p == pattern && *w == g.when_key())
+        {
+            Some((_, _, first)) => out.push(Conflict {
                 severity: Severity::Warn,
                 platform: false,
                 message: format!(
@@ -2463,9 +2474,7 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 ),
                 name: label,
             }),
-            None => {
-                seen.insert(pattern, label);
-            }
+            None => seen.push((pattern, g.when_key(), label)),
         }
     }
 
@@ -3384,8 +3393,9 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     }
 
     // 鼠标手势（规划 7.2-MG）：方向串归一化后为空 = 没法匹配，整条忽略；
+    // 同方向串 + 同 `when` 才算重复（不同 `when` 是按条件分流，与快捷键同一口径）；
     // 动作逐个校验，坏动作单独摘掉（一条坏动作不该拖垮整条手势）。
-    let mut seen_gesture: BTreeSet<String> = BTreeSet::new();
+    let mut seen_gesture: Vec<(String, WhenKey)> = Vec::new();
     for g in &cfg.gestures {
         let label = g.label();
         let pattern = normalize_pattern(&g.pattern);
@@ -3393,12 +3403,15 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             ignored.push(format!("鼠标手势「{label}」已忽略：方向串无法解析"));
             continue;
         }
-        if !seen_gesture.insert(pattern.clone()) {
+        if seen_gesture
+            .iter()
+            .any(|(p, w)| *p == pattern && *w == g.when_key())
+        {
             ignored.push(format!("鼠标手势「{label}」已忽略：方向串「{pattern}」与前面的手势重复"));
             continue;
         }
         let mut item = g.clone();
-        item.pattern = pattern;
+        item.pattern = pattern.clone();
         let mut kept_actions = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -3407,6 +3420,14 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
         item.actions = kept_actions;
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("鼠标手势「{label}」的触发条件已忽略：{e}"));
+                item.when = None;
+            }
+        }
+        seen_gesture.push((pattern, item.when_key()));
         out.gestures.push(item);
     }
 
@@ -3417,6 +3438,15 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             out.settings.wake_key = None;
         }
     }
+
+    // 手势排除列表：去空白、丢空行（手写的多行文本常带尾随空行）。
+    out.settings.gesture_exclude = out
+        .settings
+        .gesture_exclude
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     (out, ignored)
 }

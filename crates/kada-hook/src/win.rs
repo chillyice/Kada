@@ -37,7 +37,10 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use windows::core::{w, BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
+use windows::Win32::Graphics::Gdi::{
+    GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+};
 use windows::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS,
 };
@@ -1022,6 +1025,47 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
     Some(FrontmostContext { process_name, window_title })
 }
 
+/// 前台窗口是否**占满其所在显示器**（全屏程序：游戏 / 视频 / 远程桌面）。
+/// 壳层据此让鼠标手势整条让路（规划 7.2-MG 余项⑤）：这些程序里右键拖拽本来是正常操作，
+/// 全局抢右键的代价最大。
+///
+/// 判据：窗口矩形 ⊇ 显示器矩形，且窗口**不是最大化**——最大化窗口的矩形会越过显示器边缘
+/// （不可见边框），只看矩形会把「浏览器最大化」误判成全屏。无边框全屏（游戏 / F11）不是
+/// `WS_MAXIMIZE`，照常命中。自己的窗口不算（`is_own_window`）。
+pub fn foreground_fullscreen() -> bool {
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.0.is_null() || is_own_window(hwnd) {
+        return false;
+    }
+    if unsafe { IsZoomed(hwnd) }.as_bool() {
+        return false;
+    }
+    let mut wr = RECT::default();
+    if unsafe { GetWindowRect(hwnd, &mut wr) }.is_err() {
+        return false;
+    }
+    let monitor = unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) };
+    if monitor.0.is_null() {
+        return false;
+    }
+    let mut mi = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !unsafe { GetMonitorInfoW(monitor, &mut mi) }.as_bool() {
+        return false;
+    }
+    rect_covers(wr, mi.rcMonitor)
+}
+
+/// 窗口矩形是否盖住显示器矩形（纯几何，单测覆盖）。
+fn rect_covers(window: RECT, monitor: RECT) -> bool {
+    window.left <= monitor.left
+        && window.top <= monitor.top
+        && window.right >= monitor.right
+        && window.bottom >= monitor.bottom
+}
+
 /// Raw Input 消息窗口句柄（0 = 没建起来 / 已销毁）。WM_INPUT 发到它、由钩子线程的消息
 /// 循环就地取走（见 [`install_raw_input`] / [`note_raw_input`]）。
 static RAW_WINDOW: AtomicIsize = AtomicIsize::new(0);
@@ -1695,6 +1739,17 @@ mod tests {
             dead_hook(1_000, 1_000, before_wrap, before_wrap, 0, true).is_some(),
             "跨回绕也要判得出失效"
         );
+    }
+
+    #[test]
+    fn rect_covers_requires_full_monitor() {
+        let mon = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        // 无边框全屏（含越过边缘一点）算全屏。
+        assert!(rect_covers(RECT { left: 0, top: 0, right: 1920, bottom: 1080 }, mon));
+        assert!(rect_covers(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, mon));
+        // 普通窗口 / 只占一半 / 盖住任务栏但没盖满都不是。
+        assert!(!rect_covers(RECT { left: 100, top: 100, right: 900, bottom: 700 }, mon));
+        assert!(!rect_covers(RECT { left: 0, top: 0, right: 1920, bottom: 1040 }, mon));
     }
 
     #[test]

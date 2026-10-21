@@ -85,6 +85,7 @@ pub enum PickKind {
     Shortcut,
     Remap,
     Expansion,
+    Gesture,
 }
 
 /// 一条被点名要分享的条目（前端按「类别 + 下标」指；下标越界者跳过）。
@@ -120,6 +121,11 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
                 e.folder = None;
                 out.expansions.push(e);
             }
+            PickKind::Gesture => {
+                // 手势没有目录归属，也没有层引用，原样带走即可（`when` 也跟着走）。
+                let Some(g) = cfg.gestures.get(p.idx).cloned() else { continue };
+                out.gestures.push(g);
+            }
         }
     }
 
@@ -136,10 +142,13 @@ pub fn snippet_title(part: &Config) -> String {
         r.from.clone()
     } else if let Some(e) = part.expansions.first() {
         e.trigger.clone()
+    } else if let Some(g) = part.gestures.first() {
+        g.label()
     } else {
         String::new()
     };
-    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len();
+    let n =
+        part.shortcuts.len() + part.remaps.len() + part.expansions.len() + part.gestures.len();
     if n <= 1 {
         one
     } else {
@@ -237,6 +246,22 @@ mod tests {
         assert_eq!(back.shortcuts.len(), 1);
         assert_eq!(back.shortcuts[0].name.as_deref(), Some("备份"));
         assert!(back.remaps.is_empty() && back.folders.is_empty());
+    }
+
+    #[test]
+    fn snippet_carries_gestures() {
+        let mut cfg = base();
+        cfg.gestures = vec![crate::Gesture {
+            name: Some("复制".into()),
+            pattern: "DR".into(),
+            enabled: true,
+            ..Default::default()
+        }];
+        let part = snippet(&cfg, &[pick(PickKind::Gesture, 0)]);
+        assert_eq!(part.gestures.len(), 1, "鼠标手势要能进卡带");
+        assert_eq!(snippet_title(&part), "复制");
+        // 越界下标照旧跳过。
+        assert!(snippet(&cfg, &[pick(PickKind::Gesture, 9)]).gestures.is_empty());
     }
 
     #[test]

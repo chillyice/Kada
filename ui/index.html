@@ -266,6 +266,17 @@
                   </label>
                   <label class="set-row">
                     <span class="set-main">
+                      <span class="set-name">界面语言</span>
+                      <span class="set-sub">切换后界面会重新加载（语言只记在本机，不随配置同步）</span>
+                    </span>
+                    <select id="set-lang">
+                      <option value="system">跟随系统</option>
+                      <option value="zh">中文</option>
+                      <option value="en">English</option>
+                    </select>
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
                       <span class="set-name">显示输入状态悬浮指示</span>
                       <span class="set-sub">有层 / 改键修饰键生效时，屏幕底边浮一条状态小条</span>
                     </span>
@@ -391,11 +402,19 @@
                     </span>
                     <input type="checkbox" id="set-experimental" class="toggle" />
                   </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">手势排除程序</span>
+                      <span class="set-sub">这些程序里不接管右键（每行一个进程名，支持 <code>*</code> / <code>?</code> 通配、不区分大小写）；游戏 / CAD / 远程桌面这类右键拖拽本是正常操作的程序建议加上</span>
+                    </span>
+                    <textarea id="set-gesture-exclude" rows="3" spellcheck="false" placeholder="photoshop.exe&#10;*blender*"></textarea>
+                  </label>
                 </div>
                 <details class="hint-fold">
                   <summary>鼠标手势怎么用</summary>
                   <p class="hint">打开后到「<strong>快捷键</strong>」页新增一条「<strong>鼠标操作</strong>」（列表里那一类）：填方向串（<code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上、<code>DR</code> 右下、<code>DL</code> 左下、<code>UL</code> 左上），再配一串动作。画的时候：按住<strong>右键</strong>画一条轨迹，松手时按方向串匹配。</p>
                   <p class="hint">方向串也认 <code>UP</code> / <code>↓</code> 这类写法，保存时自动归一化成字母。没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
+                  <p class="hint">全屏程序（游戏 / 视频 / F11）和上面排除列表里的程序里不接管右键：右键拖拽保持原生，手势不会触发。</p>
                 </details>
               </section>
 

@@ -2,6 +2,10 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dialog";
 import { installBrowserMock } from "./mock";
+import { applyLocale, localizeStaticDom, savedLocale, tr, trt } from "./i18n";
+
+// 静态界面文案先翻（index.html 里的整块文本 / 属性），之后动态渲染的部分都走 tr()/trt()。
+localizeStaticDom();
 
 type DesktopDirection = "prev" | "next";
 /** 文件/目录动作的子操作（动作类型 `os`）。 */
@@ -189,6 +193,11 @@ type Settings = {
    * 缺字段按后端默认 16。
    */
   gesture_min_segment?: number;
+  /**
+   * 手势排除程序（每行一个进程名）：命中的程序里不接管右键。语义同 `when` 的前台应用
+   * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
+   */
+  gesture_exclude?: string[];
 };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
@@ -200,6 +209,8 @@ type Gesture = {
   pattern: string;
   enabled: boolean;
   actions: Action[];
+  /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在，回放右键。 */
+  when?: Condition | null;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -366,19 +377,19 @@ type RunRecord = {
 
 // ---- 动作类型预设 ----
 const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
-  { value: "text", label: "文本操作" },
-  { value: "command", label: "执行命令" },
-  { value: "script", label: "执行脚本" },
-  { value: "app", label: "应用操作" },
-  { value: "open_url", label: "打开网址" },
-  { value: "os", label: "文件/目录" },
-  { value: "system", label: "操作系统" },
-  { value: "keys", label: "按键组合" },
-  { value: "mouse", label: "鼠标操作" },
-  { value: "pause_ms", label: "延迟" },
-  { value: "if", label: "条件判断" },
-  { value: "parallel", label: "并行执行" },
-  { value: "group", label: "动作分组" },
+  { value: "text", label: tr("文本操作") },
+  { value: "command", label: tr("执行命令") },
+  { value: "script", label: tr("执行脚本") },
+  { value: "app", label: tr("应用操作") },
+  { value: "open_url", label: tr("打开网址") },
+  { value: "os", label: tr("文件/目录") },
+  { value: "system", label: tr("操作系统") },
+  { value: "keys", label: tr("按键组合") },
+  { value: "mouse", label: tr("鼠标操作") },
+  { value: "pause_ms", label: tr("延迟") },
+  { value: "if", label: tr("条件判断") },
+  { value: "parallel", label: tr("并行执行") },
+  { value: "group", label: tr("动作分组") },
 ];
 
 // 动作类型图标（收起态展示用）。
@@ -487,17 +498,17 @@ function actionVarReads(a: Action): string[] {
 
 // ---- 条件判断的子条件 ----
 const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
-  { value: "exists", label: "路径存在" },
-  { value: "not_exists", label: "路径不存在" },
-  { value: "is_file", label: "路径是文件" },
-  { value: "is_dir", label: "路径是目录" },
-  { value: "modified_within", label: "修改时间在…分钟内" },
-  { value: "equals", label: "变量字段等于" },
-  { value: "not_equals", label: "变量字段不等于" },
-  { value: "frontmost_app", label: "前台应用是" },
-  { value: "not_frontmost_app", label: "前台应用不是" },
-  { value: "window_title_contains", label: "窗口标题包含" },
-  { value: "device_is", label: "设备是" },
+  { value: "exists", label: tr("路径存在") },
+  { value: "not_exists", label: tr("路径不存在") },
+  { value: "is_file", label: tr("路径是文件") },
+  { value: "is_dir", label: tr("路径是目录") },
+  { value: "modified_within", label: tr("修改时间在…分钟内") },
+  { value: "equals", label: tr("变量字段等于") },
+  { value: "not_equals", label: tr("变量字段不等于") },
+  { value: "frontmost_app", label: tr("前台应用是") },
+  { value: "not_frontmost_app", label: tr("前台应用不是") },
+  { value: "window_title_contains", label: tr("窗口标题包含") },
+  { value: "device_is", label: tr("设备是") },
 ];
 
 /** 触发侧 `when` 门控可用的条件类型：触发时没有变量，`equals/not_equals` 恒不成立，不列。 */
@@ -530,27 +541,27 @@ function newCondition(kind: Condition["kind"]): Condition {
 
 // ---- 文件/目录动作的子操作 ----
 const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
-  { value: "copy", label: "复制（文件/目录）" },
-  { value: "cut", label: "剪切（移动）" },
-  { value: "paste", label: "粘贴（上次复制/剪切来源）" },
-  { value: "delete", label: "删除" },
-  { value: "new_file", label: "新建文件" },
-  { value: "new_folder", label: "新建文件夹" },
-  { value: "open_folder", label: "打开文件夹" },
-  { value: "zip", label: "压缩为 zip" },
-  { value: "unzip", label: "解压 zip" },
-  { value: "get_file_props", label: "获取文件属性" },
+  { value: "copy", label: tr("复制（文件/目录）") },
+  { value: "cut", label: tr("剪切（移动）") },
+  { value: "paste", label: tr("粘贴（上次复制/剪切来源）") },
+  { value: "delete", label: tr("删除") },
+  { value: "new_file", label: tr("新建文件") },
+  { value: "new_folder", label: tr("新建文件夹") },
+  { value: "open_folder", label: tr("打开文件夹") },
+  { value: "zip", label: tr("压缩为 zip") },
+  { value: "unzip", label: tr("解压 zip") },
+  { value: "get_file_props", label: tr("获取文件属性") },
 ];
 
 // ---- 操作系统动作的子操作（与文件/目录是两类） ----
 const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
-  { value: "switch_desktop", label: "切换虚拟桌面" },
+  { value: "switch_desktop", label: tr("切换虚拟桌面") },
 ];
 
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
 const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
-  { value: "prev", label: "上一个（左）" },
-  { value: "next", label: "下一个（右）" },
+  { value: "prev", label: tr("上一个（左）") },
+  { value: "next", label: tr("下一个（右）") },
 ];
 
 function newSystemOp(op: SystemOperation["op"]): SystemOperation {
@@ -588,13 +599,13 @@ function newOsOp(op: OsOperation["op"]): OsOperation {
 
 // ---- 应用动作的子操作 ----
 const APP_OPS: { value: AppOperation["op"]; label: string }[] = [
-  { value: "launch", label: "打开（启动）" },
-  { value: "close", label: "关闭" },
-  { value: "maximize", label: "最大化" },
-  { value: "minimize", label: "最小化" },
-  { value: "activate", label: "放置到前台" },
-  { value: "status", label: "查询运行状态" },
-  { value: "restart", label: "重启" },
+  { value: "launch", label: tr("打开（启动）") },
+  { value: "close", label: tr("关闭") },
+  { value: "maximize", label: tr("最大化") },
+  { value: "minimize", label: tr("最小化") },
+  { value: "activate", label: tr("放置到前台") },
+  { value: "status", label: tr("查询运行状态") },
+  { value: "restart", label: tr("重启") },
 ];
 
 function newAppOp(op: AppOperation["op"]): AppOperation {
@@ -616,9 +627,9 @@ function newAppOp(op: AppOperation["op"]): AppOperation {
 
 // ---- 鼠标动作的子操作（移动 / 点击 / 滚轮） ----
 const MOUSE_OPS: { value: MouseOp["op"]; label: string }[] = [
-  { value: "move", label: "移动光标" },
-  { value: "click", label: "点击" },
-  { value: "scroll", label: "滚轮滚动" },
+  { value: "move", label: tr("移动光标") },
+  { value: "click", label: tr("点击") },
+  { value: "scroll", label: tr("滚轮滚动") },
 ];
 
 function newMouseOp(op: MouseOp["op"]): MouseOp {
@@ -756,25 +767,25 @@ function actionHasContent(a: Action): boolean {
 function osSummary(o: OsOperation): string {
   switch (o.op) {
     case "copy":
-      return `复制：${o.source} → ${o.dest}`;
+      return trt`复制：${o.source} → ${o.dest}`;
     case "cut":
-      return `剪切：${o.source} → ${o.dest}`;
+      return trt`剪切：${o.source} → ${o.dest}`;
     case "paste":
-      return `粘贴到：${o.dest}`;
+      return trt`粘贴到：${o.dest}`;
     case "delete":
-      return `删除：${o.path}`;
+      return trt`删除：${o.path}`;
     case "new_file":
-      return `新建文件：${o.path}`;
+      return trt`新建文件：${o.path}`;
     case "new_folder":
-      return `新建文件夹：${o.path}`;
+      return trt`新建文件夹：${o.path}`;
     case "open_folder":
-      return `打开文件夹：${o.path}`;
+      return trt`打开文件夹：${o.path}`;
     case "zip":
-      return `压缩：${o.source} → ${o.dest}`;
+      return trt`压缩：${o.source} → ${o.dest}`;
     case "unzip":
-      return `解压：${o.source} → ${o.dest}`;
+      return trt`解压：${o.source} → ${o.dest}`;
     case "get_file_props":
-      return `取属性：${o.path} → ${o.var}`;
+      return trt`取属性：${o.path} → ${o.var}`;
   }
   return "";
 }
@@ -783,7 +794,7 @@ function osSummary(o: OsOperation): string {
 function systemSummary(o: SystemOperation): string {
   switch (o.op) {
     case "switch_desktop":
-      return `切换虚拟桌面：${o.direction === "prev" ? "上一个" : "下一个"}`;
+      return trt`切换虚拟桌面：${o.direction === "prev" ? tr("上一个") : tr("下一个")}`;
   }
   return "";
 }
@@ -791,27 +802,27 @@ function systemSummary(o: SystemOperation): string {
 function condSummary(c: Condition): string {
   switch (c.kind) {
     case "exists":
-      return `路径存在：${c.path}`;
+      return trt`路径存在：${c.path}`;
     case "not_exists":
-      return `路径不存在：${c.path}`;
+      return trt`路径不存在：${c.path}`;
     case "is_file":
-      return `是文件：${c.path}`;
+      return trt`是文件：${c.path}`;
     case "is_dir":
-      return `是目录：${c.path}`;
+      return trt`是目录：${c.path}`;
     case "modified_within":
-      return `修改时间 ${c.minutes} 分钟内：${c.path}`;
+      return trt`修改时间 ${c.minutes} 分钟内：${c.path}`;
     case "equals":
       return `${c.var}${c.field ? "." + c.field : ""} == ${c.value}`;
     case "not_equals":
       return `${c.var}${c.field ? "." + c.field : ""} != ${c.value}`;
     case "frontmost_app":
-      return `前台应用是：${c.app}`;
+      return trt`前台应用是：${c.app}`;
     case "not_frontmost_app":
-      return `前台应用不是：${c.app}`;
+      return trt`前台应用不是：${c.app}`;
     case "window_title_contains":
-      return `窗口标题包含：${c.text}`;
+      return trt`窗口标题包含：${c.text}`;
     case "device_is":
-      return `设备是：${c.id}`;
+      return trt`设备是：${c.id}`;
   }
   return "";
 }
@@ -819,51 +830,51 @@ function condSummary(c: Condition): string {
 function appSummary(o: AppOperation): string {
   switch (o.op) {
     case "launch":
-      return `打开：${o.program}`;
+      return trt`打开：${o.program}`;
     case "close":
-      return `关闭：${o.program}`;
+      return trt`关闭：${o.program}`;
     case "maximize":
-      return `最大化：${o.program}`;
+      return trt`最大化：${o.program}`;
     case "minimize":
-      return `最小化：${o.program}`;
+      return trt`最小化：${o.program}`;
     case "activate":
-      return `放置到前台：${o.program}`;
+      return trt`放置到前台：${o.program}`;
     case "status":
-      return `查询状态：${o.program} → ${o.var}${o.retries ? `（重试 ${o.retries} 次 / ${o.interval_ms}ms）` : ""}`;
+      return trt`查询状态：${o.program} → ${o.var}${o.retries ? trt`（重试 ${o.retries} 次 / ${o.interval_ms}ms）` : ""}`;
     case "restart":
-      return `重启：${o.program}`;
+      return trt`重启：${o.program}`;
   }
   return "";
 }
 
 const MOUSE_BUTTON_LABELS: Record<MouseButton, string> = {
-  left: "左键",
-  right: "右键",
-  middle: "中键",
-  back: "侧键·后退",
-  forward: "侧键·前进",
+  left: tr("左键"),
+  right: tr("右键"),
+  middle: tr("中键"),
+  back: tr("侧键·后退"),
+  forward: tr("侧键·前进"),
 };
 
 function mouseSummary(op: MouseOp): string {
   switch (op.op) {
     case "move":
-      return `鼠标移动 (${op.dx}, ${op.dy})`;
+      return trt`鼠标移动 (${op.dx}, ${op.dy})`;
     case "click":
-      return `鼠标点击${MOUSE_BUTTON_LABELS[op.button]}`;
+      return trt`鼠标点击${MOUSE_BUTTON_LABELS[op.button]}`;
     case "scroll":
-      return `鼠标滚轮 (${op.dx}, ${op.dy})`;
+      return trt`鼠标滚轮 (${op.dx}, ${op.dy})`;
   }
 }
 
 function actionSummary(a: Action): string {
   switch (a.type) {
     case "text":
-      if (a.mode === "to_upper") return "文本转大写（选中/剪贴板）";
-      if (a.mode === "to_lower") return "文本转小写（选中/剪贴板）";
+      if (a.mode === "to_upper") return tr("文本转大写（选中/剪贴板）");
+      if (a.mode === "to_lower") return tr("文本转小写（选中/剪贴板）");
       // 隐藏的文本在摘要里也只留 ***：收起态的卡片头部就这一行（列表搜索、卡带预览也用这份），
       // 摘要里照样露出原文等于没隐藏。
-      if (a.masked) return "输入文本：***";
-      return a.text ? `输入文本：${a.text}` : "输入文本";
+      if (a.masked) return tr("输入文本：***");
+      return a.text ? trt`输入文本：${a.text}` : tr("输入文本");
     case "command": {
       const v = a.var ? ` → ${a.var}` : "";
       return `${a.shell === "cmd" ? "CMD" : "PowerShell"}：${a.command}${v}`;
@@ -871,14 +882,14 @@ function actionSummary(a: Action): string {
     case "script": {
       const v = a.var ? ` → ${a.var}` : "";
       const target = a.interpreter ? `${a.interpreter} ${a.path}` : a.path;
-      return `脚本：${target}${v}`;
+      return trt`脚本：${target}${v}`;
     }
     case "keys":
-      return `按键：${a.keys.join("+")}`;
+      return trt`按键：${a.keys.join("+")}`;
     case "mouse":
       return mouseSummary(a.op);
     case "pause_ms":
-      return `延迟 ${a.ms}ms`;
+      return trt`延迟 ${a.ms}ms`;
     case "os":
       return osSummary(a.operation);
     case "system":
@@ -886,13 +897,13 @@ function actionSummary(a: Action): string {
     case "app":
       return appSummary(a.operation);
     case "open_url":
-      return a.url ? `打开网址：${a.url}` : "打开网址";
+      return a.url ? trt`打开网址：${a.url}` : tr("打开网址");
     case "if":
-      return `如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? `，否则 ${a.otherwise.length} 个` : ""}）`;
+      return trt`如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? trt`，否则 ${a.otherwise.length} 个` : ""}）`;
     case "parallel":
-      return `并行执行（${a.actions.length} 个动作同时执行）`;
+      return trt`并行执行（${a.actions.length} 个动作同时执行）`;
     case "group":
-      return `动作分组（${a.actions.length} 个动作，按顺序执行）`;
+      return trt`动作分组（${a.actions.length} 个动作，按顺序执行）`;
   }
   return "";
 }
@@ -902,7 +913,7 @@ function actionSummary(a: Action): string {
 function actionDescription(a: Action): string {
   if (a.type === "group") {
     const n = a.name?.trim();
-    return n ? `${n} · ${a.actions.length} 个动作` : actionSummary(a);
+    return n ? trt`${n} · ${a.actions.length} 个动作` : actionSummary(a);
   }
   const d = a.description?.trim();
   return d ? d : actionSummary(a);
@@ -1061,7 +1072,7 @@ async function save(): Promise<boolean> {
   try {
     ignored = await invoke<string[]>("set_config", { config: cfg });
   } catch (e) {
-    toast(`保存失败: ${e}`);
+    toast(trt`保存失败: ${e}`);
     render();
     return false;
   }
@@ -1074,18 +1085,18 @@ async function save(): Promise<boolean> {
     const first = ignored[0];
     notes.push(
       ignored.length === 1
-        ? `已忽略 1 处无效配置：${first}`
-        : `已忽略 ${ignored.length} 处无效配置（例：${first}）`,
+        ? trt`已忽略 1 处无效配置：${first}`
+        : trt`已忽略 ${ignored.length} 处无效配置（例：${first}）`,
     );
   }
   if (errs.length || warns.length || caps.length)
     notes.push(
-      `${errs.length} 处冲突${warns.length ? `、${warns.length} 处遮蔽提示` : ""}${
-        caps.length ? `、${caps.length} 条当前平台用不了` : ""
+      trt`${errs.length} 处冲突${warns.length ? trt`、${warns.length} 处遮蔽提示` : ""}${
+        caps.length ? trt`、${caps.length} 条当前平台用不了` : ""
       }`,
     );
-  if (notes.length) toast(`已保存：${notes.join("；")}`);
-  else toast("已保存");
+  if (notes.length) toast(trt`已保存：${notes.join("；")}`);
+  else toast(tr("已保存"));
   render();
   return true;
 }
@@ -1211,7 +1222,7 @@ function captureHint(text: string | null) {
 function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement) {
   stopCapture();
   btn.disabled = true;
-  captureHint("请按组合键或鼠标侧键…（Esc 取消）");
+  captureHint(tr("请按组合键或鼠标侧键…（Esc 取消）"));
   void invoke("set_paused", { paused: true });
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -1252,7 +1263,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
   const update = () => {
-    captureHint(steps.length ? `序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : "请按键或鼠标侧键序列…（Enter 提交，Esc 取消）");
+    captureHint(steps.length ? trt`序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : tr("请按键或鼠标侧键序列…（Enter 提交，Esc 取消）"));
   };
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -1307,8 +1318,8 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
   };
   const update = () => {
     captureHint(held.length
-      ? `和弦：${chordText()}（松开提交，Esc 取消）`
-      : "请同时按住多个键或鼠标侧键…（松开提交，Esc 取消）");
+      ? trt`和弦：${chordText()}（松开提交，Esc 取消）`
+      : tr("请同时按住多个键或鼠标侧键…（松开提交，Esc 取消）"));
   };
   const EXCLUDED = new Set([
     "ControlLeft", "ControlRight", "AltLeft", "AltRight",
@@ -1682,7 +1693,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
       (s.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
-  if (!s.enabled) li.title = "已停用（右键可启用）";
+  if (!s.enabled) li.title = tr("已停用（右键可启用）");
   attachDragStart(li, { kind: "shortcut", idx });
   listRow(li, s, "shortcut", idx);
 
@@ -1690,8 +1701,8 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   const trig = el("span", "row-trigger");
   if (s.triggers.length === 0) trig.classList.add("row-trigger-empty");
   appendLayerMark(trig, s.layer);
-  trig.append(el("span", "row-trigger-text", s.triggers.join(" ") || "未设触发键"));
-  const name = el("span", "row-name", s.name || "（未命名）");
+  trig.append(el("span", "row-trigger-text", s.triggers.join(" ") || tr("未设触发键")));
+  const name = el("span", "row-name", s.name || tr("（未命名）"));
 
   const more = moreButton((btn) => openRowMenu(btn, li, s));
   li.append(kindIcon("shortcut"), trig, name, more);
@@ -1707,7 +1718,7 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
       (r.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
-  if (!r.enabled) li.title = "已停用（右键可启用）";
+  if (!r.enabled) li.title = tr("已停用（右键可启用）");
   attachDragStart(li, { kind: "remap", idx });
   listRow(li, r, "remap", idx);
   // 与快捷键行同一套观感：原键占「组合键」那一格，后面直接跟标题——
@@ -1733,7 +1744,7 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
       (e.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
-  if (!e.enabled) li.title = "已停用（右键可启用）";
+  if (!e.enabled) li.title = tr("已停用（右键可启用）");
   attachDragStart(li, { kind: "expansion", idx });
   listRow(li, e, "expansion", idx);
   // 与快捷键行同一套观感：触发词占「组合键」那一格，最多展示 10 个字符（超了截断加省略号）。
@@ -1741,7 +1752,7 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
   li.append(
     kindIcon("expansion"),
     el("span", "row-trigger", trig.length > 10 ? `${trig.slice(0, 10).join("")}…` : e.trigger),
-    el("span", "row-name", e.name?.trim() || e.replace || "（删除触发词）"),
+    el("span", "row-name", e.name?.trim() || e.replace || tr("（删除触发词）")),
     moreButton((btn) => openRowMenu(btn, li, e)),
   );
   return li;
@@ -1764,14 +1775,14 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
       (g.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
-  if (!g.enabled) li.title = "已停用（右键可启用）";
+  if (!g.enabled) li.title = tr("已停用（右键可启用）");
   listRow(li, g, "gesture", idx);
   const trig = el("span", "row-trigger");
-  trig.append(el("span", "row-trigger-text", g.pattern || "未设方向串"));
+  trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
   li.append(
     kindIcon("gesture"),
     trig,
-    el("span", "row-name", g.name?.trim() || "（未命名）"),
+    el("span", "row-name", g.name?.trim() || tr("（未命名）")),
     moreButton((btn) => openRowMenu(btn, li, g)),
   );
   return li;
@@ -1809,7 +1820,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
   if (editingFolderId === f.id) {
     const inp = el("input", "folder-input") as HTMLInputElement;
     inp.value = f.name;
-    inp.placeholder = "目录名";
+    inp.placeholder = tr("目录名");
     let done = false;
     const commit = () => {
       if (done) return;
@@ -1844,7 +1855,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
   }
   // Postman 式 hover 操作：目录行右侧「＋ 直接新增快捷键」「⋯ 更多」。
   const add = el("button", "row-add", "＋") as HTMLButtonElement;
-  add.title = "在此目录新增快捷键";
+  add.title = tr("在此目录新增快捷键");
   add.addEventListener("click", (e) => {
     e.stopPropagation();
     void requestNew("shortcut", f.id);
@@ -1871,26 +1882,26 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
 // 目录的菜单（⋯ / 右键共用）：新增在前，其后是目录自身的维护项。
 function folderMenuItems(f: Folder): MenuItem[] {
   const items: MenuItem[] = [
-    { label: "新增快捷键到此目录", run: () => void requestNew("shortcut", f.id) },
-    { label: "新增子目录", run: () => addFolder(f.id) },
-    { label: "重命名", run: () => renameFolder(f.id) },
+    { label: tr("新增快捷键到此目录"), run: () => void requestNew("shortcut", f.id) },
+    { label: tr("新增子目录"), run: () => addFolder(f.id) },
+    { label: tr("重命名"), run: () => renameFolder(f.id) },
   ];
   // 目录只装快捷键：剪贴板里没有快捷键时，粘到目录里没有意义。
   if (clipboard?.items.some((i) => i.kind === "shortcut"))
-    items.push({ label: "粘贴到该目录", run: () => pasteIntoFolder(f.id) });
+    items.push({ label: tr("粘贴到该目录"), run: () => pasteIntoFolder(f.id) });
   const inFolder = picksInFolder(f.id);
   if (inFolder.length)
     items.push({
-      label: `导出该目录为卡带（${inFolder.length} 项）`,
+      label: trt`导出该目录为卡带（${inFolder.length} 项）`,
       run: () => void exportFragment(inFolder),
     });
   // 目录级启停：一次作用到该目录（含子目录）里的全部条目。
   const n = folderEntryCounts(collectDescendantIds(f.id)).reduce((sum, [, c]) => sum + c, 0);
   if (n) {
-    items.push({ label: `启用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, true) });
-    items.push({ label: `禁用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, false) });
+    items.push({ label: trt`启用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, true) });
+    items.push({ label: trt`禁用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, false) });
   }
-  items.push({ label: "删除", run: () => void deleteFolder(f.id) });
+  items.push({ label: tr("删除"), run: () => void deleteFolder(f.id) });
   return items;
 }
 
@@ -1905,8 +1916,6 @@ function picksOfSelection(): SnippetPick[] {
   for (const o of picked) {
     const kind = kindOf(o);
     if (!kind) continue;
-    // 鼠标操作暂不进卡带（后端 PickKind 还没有这一类，见规划 7.2-MG 余项）。
-    if (kind === "gesture") continue;
     const idx = arrOf(kind).indexOf(o as AnyEntry);
     if (idx >= 0) picks.push({ kind, idx });
   }
@@ -1940,17 +1949,17 @@ function picksInFolder(rootId: string): SnippetPick[] {
 // 导出卡带：选路径 → 后端摘出这些条目写成 JSON。
 // 卡带是「只含这几条的子集配置」，对方用「导入配置 → 合并」原样吃下，不会碰本机设置。
 async function exportFragment(picks: SnippetPick[]) {
-  if (!picks.length) return toast("没有可导出的条目");
+  if (!picks.length) return toast(tr("没有可导出的条目"));
   const path = await saveFile({
-    defaultPath: "kada-卡带.json",
+    defaultPath: tr("kada-卡带.json"),
     filters: [{ name: "JSON", extensions: ["json"] }],
   });
   if (!path) return;
   try {
     const n = await invoke<number>("export_fragment", { path, picks });
-    toast(`已导出 ${n} 项到 ${path}（对方用「导入配置 → 合并」即可）`);
+    toast(trt`已导出 ${n} 项到 ${path}（对方用「导入配置 → 合并」即可）`);
   } catch (e) {
-    toast(`导出失败: ${e}`);
+    toast(trt`导出失败: ${e}`);
   }
 }
 
@@ -1971,7 +1980,12 @@ type IndexEntry = {
 // 保证「看到什么装什么」）。
 type SnippetFetch = {
   text: string;
-  preview: { shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[] };
+  preview: {
+    shortcuts: ShortcutItem[];
+    remaps: Remap[];
+    expansions: TextExpansion[];
+    gestures?: Gesture[];
+  };
 };
 
 let marketEntries: IndexEntry[] = [];
@@ -1982,15 +1996,15 @@ async function openMarket() {
   document.getElementById("market-modal")!.classList.remove("hidden");
   const note = document.getElementById("market-note")!;
   const list = document.getElementById("market-list")!;
-  note.textContent = "正在拉取索引…";
+  note.textContent = tr("正在拉取索引…");
   list.replaceChildren();
   try {
     marketEntries = await invoke<IndexEntry[]>("fetch_snippet_index");
     const set = cfg.settings.snippet_index_url?.trim();
-    note.textContent = `共 ${marketEntries.length} 条 · 索引：${set || "内置地址"}`;
+    note.textContent = trt`共 ${marketEntries.length} 条 · 索引：${set || tr("内置地址")}`;
   } catch (e) {
     marketEntries = [];
-    note.textContent = `拉取失败：${e}（可在「卡带索引地址」里换一个）`;
+    note.textContent = trt`拉取失败：${e}（可在「卡带索引地址」里换一个）`;
   }
   renderMarket();
 }
@@ -2008,7 +2022,7 @@ function renderMarket() {
     !q || [e.name, e.description ?? "", e.author ?? "", ...(e.tags ?? [])].join(" ").toLowerCase().includes(q),
   );
   if (!hit.length) {
-    list.replaceChildren(el("p", "market-empty", q ? "没有匹配的卡带" : "索引里一条卡带也没有"));
+    list.replaceChildren(el("p", "market-empty", q ? tr("没有匹配的卡带") : tr("索引里一条卡带也没有")));
     return;
   }
   list.replaceChildren(...hit.map(marketCard));
@@ -2017,7 +2031,7 @@ function renderMarket() {
 function marketCard(e: IndexEntry): HTMLElement {
   const card = el("div", "market-card");
   const head = el("div", "market-card-head");
-  const btn = el("button", "primary", "安装…") as HTMLButtonElement;
+  const btn = el("button", "primary", tr("安装…")) as HTMLButtonElement;
   btn.addEventListener("click", () => void previewSnippet(e));
   head.append(el("span", "market-name", e.name), el("span", "flex-spacer"), btn);
   card.append(head);
@@ -2041,32 +2055,43 @@ async function previewSnippet(e: IndexEntry) {
   try {
     const r = await invoke<SnippetFetch>("fetch_snippet", { url: e.url });
     const p = r.preview;
-    const total = p.shortcuts.length + p.remaps.length + p.expansions.length;
+    const total =
+      p.shortcuts.length + p.remaps.length + p.expansions.length + (p.gestures?.length ?? 0);
     snippetPending = { text: r.text, name: e.name };
-    document.getElementById("snippet-name")!.textContent = `${e.name}：共 ${total} 条`;
+    document.getElementById("snippet-name")!.textContent = trt`${e.name}：共 ${total} 条`;
     const lines: HTMLElement[] = [];
     for (const s of p.shortcuts)
       lines.push(
         el(
           "li",
           undefined,
-          `快捷键 ${s.triggers.join(" / ")}${s.name ? ` · ${s.name}` : ""} → ${s.actions
+          trt`快捷键 ${s.triggers.join(" / ")}${s.name ? ` · ${s.name}` : ""} → ${s.actions
             .map(actionSummary)
             .join(" → ")}`,
         ),
       );
     for (const r2 of p.remaps)
-      lines.push(el("li", undefined, `改键 ${r2.from} → ${remapSummary(r2)}`));
+      lines.push(el("li", undefined, trt`改键 ${r2.from} → ${remapSummary(r2)}`));
     for (const x of p.expansions)
-      lines.push(el("li", undefined, `文本扩展 ${x.trigger} → ${x.replace.slice(0, 40)}`));
+      lines.push(el("li", undefined, trt`文本扩展 ${x.trigger} → ${x.replace.slice(0, 40)}`));
+    for (const g of p.gestures ?? [])
+      lines.push(
+        el(
+          "li",
+          undefined,
+          trt`鼠标操作 ${g.pattern}${g.name ? ` · ${g.name}` : ""} → ${g.actions
+            .map(actionSummary)
+            .join(" → ")}`,
+        ),
+      );
     document.getElementById("snippet-list")!.replaceChildren(...lines);
     const warn = document.getElementById("snippet-warn")!;
     const risky = p.shortcuts.some((s) => s.actions.some(actionCanRun));
     warn.classList.toggle("hidden", !risky);
-    if (risky) warn.textContent = "⚠ 这个卡带含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。";
+    if (risky) warn.textContent = tr("⚠ 这个卡带含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。");
     document.getElementById("snippet-modal")!.classList.remove("hidden");
   } catch (err) {
-    toast(`卡带下载失败：${err}`);
+    toast(trt`卡带下载失败：${err}`);
   }
 }
 
@@ -2084,13 +2109,13 @@ async function confirmSnippetInstall() {
     await load();
     showImportResult(r);
   } catch (e) {
-    toast(`安装失败: ${e}`);
+    toast(trt`安装失败: ${e}`);
   }
 }
 
 function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElement {
   const b = el("button", "row-more", "⋯") as HTMLButtonElement;
-  b.title = "更多";
+  b.title = tr("更多");
   b.addEventListener("click", (e) => {
     e.stopPropagation();
     onClick(b);
@@ -2104,13 +2129,13 @@ type MenuItem = { label: string; run: () => void; on?: boolean };
 function selectionMenuItems(): MenuItem[] {
   const n = picked.size;
   return [
-    { label: n > 1 ? `各复制一份（${n} 项）` : "复制一份", run: duplicateSelection },
-    { label: "复制", run: () => copySelection(false) },
-    { label: "剪切", run: () => copySelection(true) },
-    { label: n > 1 ? `导出为卡带（${n} 项）` : "导出为卡带", run: () => void exportFragment(picksOfSelection()) },
-    { label: n > 1 ? `删除（${n} 项）` : "删除", run: () => void deleteSelection() },
-    { label: "启用", run: () => void setPickedEnabled(true) },
-    { label: "禁用", run: () => void setPickedEnabled(false) },
+    { label: n > 1 ? trt`各复制一份（${n} 项）` : tr("复制一份"), run: duplicateSelection },
+    { label: tr("复制"), run: () => copySelection(false) },
+    { label: tr("剪切"), run: () => copySelection(true) },
+    { label: n > 1 ? trt`导出为卡带（${n} 项）` : tr("导出为卡带"), run: () => void exportFragment(picksOfSelection()) },
+    { label: n > 1 ? trt`删除（${n} 项）` : tr("删除"), run: () => void deleteSelection() },
+    { label: tr("启用"), run: () => void setPickedEnabled(true) },
+    { label: tr("禁用"), run: () => void setPickedEnabled(false) },
   ];
 }
 
@@ -2225,7 +2250,7 @@ async function confirmAsk(
   try {
     return await ask(message, opts);
   } catch (e) {
-    toast(`确认框打开失败：${e}`);
+    toast(trt`确认框打开失败：${e}`);
     return false;
   }
 }
@@ -2234,22 +2259,22 @@ async function confirmAsk(
 // （快捷键 / 改键 / 文本扩展）却是点了就没了——同类实体的安全级别不该不一致。
 // 未落盘的新增项不弹：删除它等同「取消」，没有任何已保存的内容会丢。
 async function confirmDelete(kind: string, name: string, discardsDraft: boolean): Promise<boolean> {
-  const dirty = discardsDraft ? "该条还有未保存的改动，会一并丢弃。" : "";
-  return await confirmAsk(`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
+  const dirty = discardsDraft ? tr("该条还有未保存的改动，会一并丢弃。") : "";
+  return await confirmAsk(trt`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
     kind: "warning",
-    title: `删除${kind}`,
+    title: trt`删除${kind}`,
   });
 }
 
 // 快捷键的展示名（无名时退回触发键；列表行显示的是「触发键 + 名称」，确认框要对得上号）。
 function shortcutLabel(s: ShortcutItem): string {
-  return s.name?.trim() || s.triggers.join(" / ") || "未命名";
+  return s.name?.trim() || s.triggers.join(" / ") || tr("未命名");
 }
 
 const FOLDER_ENTRY_KINDS: [string, () => FolderEntry[]][] = [
-  ["快捷键", () => cfg.shortcuts],
-  ["改键", () => cfg.remaps],
-  ["文本扩展", () => cfg.expansions],
+  [tr("快捷键"), () => cfg.shortcuts],
+  [tr("改键"), () => cfg.remaps],
+  [tr("文本扩展"), () => cfg.expansions],
 ];
 
 // 这批目录（含子目录）里各类条目各有多少条，0 条的不报。
@@ -2278,11 +2303,11 @@ async function deleteFolder(id: string) {
   const target = cfg.folders.find((f) => f.id === id);
   if (!target) return;
   const detail = folderEntryCounts(collectDescendantIds(id))
-    .map(([label, n]) => `${n} 条${label}`)
+    .map(([label, n]) => trt`${n} 条${label}`)
     .join("、");
   const ok = await confirmAsk(
-    `删除目录「${target.name}」${detail ? `及其中的 ${detail}` : "及其所有内容"}？删除后无法撤销。`,
-    { title: "删除目录", kind: "warning" },
+    trt`删除目录「${target.name}」${detail ? trt`及其中的 ${detail}` : tr("及其所有内容")}？删除后无法撤销。`,
+    { title: tr("删除目录"), kind: "warning" },
   );
   if (!ok) return;
   dropFolderTree(id);
@@ -2333,14 +2358,14 @@ function arrOf(kind: ListKind): AnyEntry[] {
 
 function kindLabel(kind: ListKind | null): string {
   return kind === "shortcut"
-    ? "快捷键"
+    ? tr("快捷键")
     : kind === "remap"
-      ? "改键"
+      ? tr("改键")
       : kind === "expansion"
-        ? "文本扩展"
+        ? tr("文本扩展")
         : kind === "gesture"
-          ? "鼠标操作"
-          : "条目";
+          ? tr("鼠标操作")
+          : tr("条目");
 }
 
 // 条目的展示名（确认框要与列表行对得上号）：有标题用标题，否则退回各自的兜底。
@@ -2353,13 +2378,13 @@ function labelOf(o: object): string {
   }
   if (kind === "expansion") {
     const e = o as TextExpansion;
-    return e.name?.trim() || e.trigger || "未命名";
+    return e.name?.trim() || e.trigger || tr("未命名");
   }
   if (kind === "gesture") {
     const g = o as Gesture;
-    return g.name?.trim() || g.pattern || "未命名";
+    return g.name?.trim() || g.pattern || tr("未命名");
   }
-  return "条目";
+  return tr("条目");
 }
 
 // 当前编辑页打开的那条（没有打开 / 不在列表分区时为 null）。
@@ -2385,7 +2410,7 @@ function copySelection(cut: boolean) {
   pickAnchor = null;
   renderListPane();
   const n = items.length;
-  toast(cut ? `已剪切 ${n} 项，「＋ 新增 → 粘贴」移动过去` : `已复制 ${n} 项，「＋ 新增 → 粘贴」插进去`);
+  toast(cut ? trt`已剪切 ${n} 项，「＋ 新增 → 粘贴」移动过去` : trt`已复制 ${n} 项，「＋ 新增 → 粘贴」插进去`);
 }
 
 // 原位复制一份（不走剪贴板，省去「先复制再找地方粘」两步）：插在源条目后一条。
@@ -2408,12 +2433,12 @@ async function deleteSelection() {
   const editing = selectedObject();
   const hitEdit = editing !== null && objs.includes(editing);
   const what =
-    n === 1 ? `${kindLabel(kindOf(objs[0]))}「${labelOf(objs[0])}」` : `选中的 ${n} 项`;
-  const dirty = hitEdit && isDraftDirty() ? "正在编辑的那条还有未保存的改动，会一并丢弃。" : "";
+    n === 1 ? `${kindLabel(kindOf(objs[0]))}「${labelOf(objs[0])}」` : trt`选中的 ${n} 项`;
+  const dirty = hitEdit && isDraftDirty() ? tr("正在编辑的那条还有未保存的改动，会一并丢弃。") : "";
   if (
-    !(await confirmAsk(`删除${what}？${dirty}删除后应用内无法撤销。`, {
+    !(await confirmAsk(trt`删除${what}？${dirty}删除后应用内无法撤销。`, {
       kind: "warning",
-      title: "删除",
+      title: tr("删除"),
     }))
   ) {
     return;
@@ -2437,7 +2462,7 @@ async function deleteSelection() {
 }
 
 function pasteIntoFolder(folderId: string | null) {
-  if (!clipboard) return toast("剪贴板为空");
+  if (!clipboard) return toast(tr("剪贴板为空"));
   const { items, cut } = clipboard;
   for (const it of items) {
     const copy = deepClone(it.obj);
@@ -2912,7 +2937,7 @@ async function setPickedEnabled(v: boolean) {
   picked.clear();
   pickAnchor = null;
   const ok = await save(); // save 自带「已保存」提示；成功后盖上条数，失败保留错误提示
-  if (ok) toast(`已${v ? "启用" : "停用"} ${n} 项`);
+  if (ok) toast(trt`已${v ? tr("启用") : tr("停用")} ${n} 项`);
 }
 
 // 目录级启停：作用到该目录（含全部子目录）里的每一条。
@@ -2927,7 +2952,7 @@ async function setFolderEnabled(rootId: string, v: boolean) {
       }
   if (!n) return;
   const ok = await save();
-  if (ok) toast(`已${v ? "启用" : "停用"} ${n} 项`);
+  if (ok) toast(trt`已${v ? tr("启用") : tr("停用")} ${n} 项`);
 }
 
 function renderDetail() {
@@ -2964,10 +2989,10 @@ function setEntryTitle() {
     title.oninput = null;
     return;
   }
-  title.textContent = item.name || "（未命名）";
+  title.textContent = item.name || tr("（未命名）");
   title.contentEditable = "true";
   title.classList.add("title-editable");
-  title.title = "点击编辑名称";
+  title.title = tr("点击编辑名称");
   title.onkeydown = (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
@@ -2979,7 +3004,7 @@ function setEntryTitle() {
     if (!cur) return;
     const v = (title.textContent ?? "").replace(/\s+/g, " ").trim();
     cur.name = v || null;
-    title.textContent = cur.name || "（未命名）";
+    title.textContent = cur.name || tr("（未命名）");
   };
   // 名称是行内编辑的，没有对应 input 元素可监听：边打边同步进草稿，脏标记才跟得上。
   title.oninput = () => {
@@ -3057,13 +3082,21 @@ function fillExpansionEditor() {
   setEntryTitle();
 }
 
-// 鼠标操作（手势）编辑页：方向串 + 描述 + 动作（动作区与快捷键共用同一套编排器）。
+// 鼠标操作（手势）编辑页：方向串 + 描述 + 条件 + 动作（动作区与快捷键共用同一套编排器）。
 function fillGestureEditor() {
   if (!gestureDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value = "";
   (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
     gestureDraft.pattern;
-  renderActions(gestureDraft, gestureDraft.pattern || "未设方向串");
+  renderWhenEditor(
+    document.getElementById("edit-when")!,
+    () => gestureDraft?.when,
+    (c) => {
+      if (gestureDraft) gestureDraft.when = c;
+    },
+    refreshDirty,
+  );
+  renderActions(gestureDraft, gestureDraft.pattern || tr("未设方向串"));
   setEntryTitle();
 }
 
@@ -3087,10 +3120,10 @@ function syncEntry() {
       item.classList.toggle("disabled", k !== kind && !draftNew);
       item.title =
         k === kind
-          ? `${kindLabel(k)}（当前模式）`
+          ? trt`${kindLabel(k)}（当前模式）`
           : draftNew
-            ? `切到${kindLabel(k)}`
-            : `${kindLabel(k)}（已保存的条目不能改类型）`;
+            ? trt`切到${kindLabel(k)}`
+            : trt`${kindLabel(k)}（已保存的条目不能改类型）`;
     }
     document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
     document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
@@ -3100,16 +3133,16 @@ function syncEntry() {
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展与鼠标操作没有「层」与「条件」字段（按输入内容 / 方向串匹配，无触发侧门控），这两个页签不出现。
-  // 鼠标操作也没有「描述」字段 → 「详情」页签整页不出现（只剩方向串 + 动作）。
+  // 文本扩展与鼠标操作没有「层」；鼠标操作有「条件」（与快捷键同语义）。
+  // 鼠标操作也没有「描述」字段 → 「详情」页签整页不出现（方向串 + 条件 + 动作）。
   const hasLayer = kind !== "expansion" && kind !== "gesture";
-  const hasWhen = kind !== "expansion" && kind !== "gesture";
+  const hasWhen = kind !== "expansion";
   const hasDetail = kind !== "gesture";
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
   document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
   document.getElementById("tab-detail")!.classList.toggle("hidden", !hasDetail);
   document.getElementById("tab-work")!.textContent =
-    kind === "remap" ? "操作" : kind === "expansion" ? "展开文本" : "动作";
+    kind === "remap" ? tr("操作") : kind === "expansion" ? tr("展开文本") : tr("动作");
   if ((entryTab === "layer" && !hasLayer) || (entryTab === "when" && !hasWhen)) entryTab = "detail";
   if (entryTab === "detail" && !hasDetail) entryTab = "work";
   applyEntryTab();
@@ -3129,7 +3162,7 @@ function applyEntryTab() {
 function switchDraftKind(kind: ListKind) {
   if (kind === currentKind()) return;
   if (!draftNew) {
-    toast("已保存的条目不能改类型");
+    toast(tr("已保存的条目不能改类型"));
     return;
   }
   stopCapture();
@@ -3154,7 +3187,7 @@ function switchDraftKind(kind: ListKind) {
 // 保存前就能验证）。改键 / 文本扩展没有动作串，按钮本身不出现（syncEntry 里隐藏）。
 async function runCurrentEntry() {
   if (!draft || !draft.actions.length) {
-    toast("还没有动作：先在「动作」页签添加");
+    toast(tr("还没有动作：先在「动作」页签添加"));
     return;
   }
   try {
@@ -3162,9 +3195,9 @@ async function runCurrentEntry() {
       actions: draft.actions,
       name: draft.name?.trim() || shortcutLabel(draft),
     });
-    toast("已开始执行（结果见「消息」页）");
+    toast(tr("已开始执行（结果见「消息」页）"));
   } catch (err) {
-    toast(`执行失败: ${err}`);
+    toast(trt`执行失败: ${err}`);
   }
 }
 
@@ -3175,28 +3208,28 @@ function deleteCurrentEntry() {
     if (!draft) return;
     if (draftNew) return discardNewDraft();
     const d = draft;
-    void deleteDetailEntry("快捷键", shortcutLabel(d), () => {
+    void deleteDetailEntry(tr("快捷键"), shortcutLabel(d), () => {
       if (selected !== null) cfg.shortcuts.splice(selected, 1);
     });
   } else if (kind === "remap") {
     if (!remapDraft) return;
     if (draftNew) return discardNewDraft();
     const r = remapDraft;
-    void deleteDetailEntry("改键", r.name?.trim() || `${r.from} → ${remapSummary(r)}`, () => {
+    void deleteDetailEntry(tr("改键"), r.name?.trim() || `${r.from} → ${remapSummary(r)}`, () => {
       if (selected !== null) cfg.remaps.splice(selected, 1);
     });
   } else if (kind === "expansion") {
     if (!expansionDraft) return;
     if (draftNew) return discardNewDraft();
     const e = expansionDraft;
-    void deleteDetailEntry("文本扩展", e.name?.trim() || e.trigger || "未命名", () => {
+    void deleteDetailEntry(tr("文本扩展"), e.name?.trim() || e.trigger || tr("未命名"), () => {
       if (selected !== null) cfg.expansions.splice(selected, 1);
     });
   } else {
     if (!gestureDraft) return;
     if (draftNew) return discardNewDraft();
     const g = gestureDraft;
-    void deleteDetailEntry("鼠标操作", g.name?.trim() || g.pattern || "未命名", () => {
+    void deleteDetailEntry(tr("鼠标操作"), g.name?.trim() || g.pattern || tr("未命名"), () => {
       if (selected !== null) (cfg.gestures ?? []).splice(selected, 1);
     });
   }
@@ -3354,9 +3387,9 @@ async function saveRemapDetail(): Promise<boolean> {
   // 用户以为存了其实条目没了）。保存前拦住并把输入框标红。别名（Escape 等）交给后端解析。
   if (!remapDraft.from) {
     const input = document.getElementById("remap-from") as HTMLInputElement;
-    showFieldError(input, "请选择原键");
+    showFieldError(input, tr("请选择原键"));
     input.focus();
-    toast("请先选择原键");
+    toast(tr("请先选择原键"));
     return false;
   }
   remapDraft.tap = domValue("remap-tap") || null;
@@ -3385,7 +3418,7 @@ async function saveRemapDetail(): Promise<boolean> {
   if (remapDraft.hold_layer && remapDraft.lock_layer) {
     remapDraft.hold_layer = null;
     (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
-    toast("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」");
+    toast(tr("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」"));
   }
   // 没有任何输出（改为/短按/长按/长按进入层/长按锁定层/单次/粘滞/双击/三击全空）→ 后端会当
   // 无效条目丢掉。这里直接拦住并说清楚，别让用户以为配好了（「长按进入层」没选中层就是这样丢的）。
@@ -3401,7 +3434,7 @@ async function saveRemapDetail(): Promise<boolean> {
     !remapDraft.tap3 &&
     !remapDraft.to
   ) {
-    toast("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击");
+    toast(tr("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击"));
     return false;
   }
   const item = deepClone(remapDraft);
@@ -3430,7 +3463,7 @@ async function saveExpansionDetail(): Promise<boolean> {
     const input = document.getElementById("edit-exp-trigger") as HTMLInputElement;
     showFieldError(input, err);
     input.focus();
-    toast(`触发词无效：${err}`);
+    toast(trt`触发词无效：${err}`);
     return false;
   }
   expansionDraft.trigger = trigger;
@@ -3457,9 +3490,9 @@ async function saveGestureDetail(): Promise<boolean> {
   const pattern = domValue("edit-gesture-pattern").trim().toUpperCase();
   if (!pattern) {
     const input = document.getElementById("edit-gesture-pattern") as HTMLInputElement;
-    showFieldError(input, "请填写方向串");
+    showFieldError(input, tr("请填写方向串"));
     input.focus();
-    toast("请先填写方向串（如 D、DL、DRUL）");
+    toast(tr("请先填写方向串（如 D、DL、DRUL）"));
     return false;
   }
   gestureDraft.pattern = pattern;
@@ -3585,31 +3618,31 @@ function revertDraft() {
   refreshDirty();
   // 触发键可能被改回来了，冲突提示跟着重算（否则还挂着已撤销的那条冲突）。
   void refreshConflicts().then(renderConflictBubble);
-  toast("已撤销未保存的改动");
+  toast(tr("已撤销未保存的改动"));
 }
 
 type UnsavedChoice = "save" | "discard" | "cancel";
 let unsavedPending: ((c: UnsavedChoice) => void) | null = null;
 
 function draftLabel(): string {
-  if (section === "shortcuts") return `快捷键「${draft?.name || "未命名"}」`;
+  if (section === "shortcuts") return trt`快捷键「${draft?.name || tr("未命名")}」`;
   if (section === "remaps" && remapDraft) {
-    return `改键「${remapDraft.name?.trim() || `${remapDraft.from} → ${remapSummary(remapDraft)}`}」`;
+    return trt`改键「${remapDraft.name?.trim() || `${remapDraft.from} → ${remapSummary(remapDraft)}`}」`;
   }
   if (section === "expansions") {
-    return `文本扩展「${expansionDraft?.name?.trim() || expansionDraft?.trigger || "未命名"}」`;
+    return trt`文本扩展「${expansionDraft?.name?.trim() || expansionDraft?.trigger || tr("未命名")}」`;
   }
   if (section === "gestures") {
-    return `鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || "未命名"}」`;
+    return trt`鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || tr("未命名")}」`;
   }
-  return "当前编辑";
+  return tr("当前编辑");
 }
 
 function askUnsaved(): Promise<UnsavedChoice> {
   // 已经有一个确认框等着时忽略后来的请求（连点两行会同时进来）：让它当「取消」处理，
   // 否则先到的那个 promise 永远不 resolve，那一次点击就永远挂在那里。
   if (unsavedPending) return Promise.resolve("cancel");
-  document.getElementById("unsaved-text")!.textContent = `${draftLabel()}有未保存的改动。`;
+  document.getElementById("unsaved-text")!.textContent = trt`${draftLabel()}有未保存的改动。`;
   document.getElementById("unsaved-modal")!.classList.remove("hidden");
   return new Promise((resolve) => (unsavedPending = resolve));
 }
@@ -3677,13 +3710,13 @@ async function applyExternalConfig(next: Config) {
   if (editing) {
     if (isDraftDirty()) {
       const take = await confirmAsk(
-        `${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
-          "加载新内容会放弃这些改动。",
+        trt`${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
+          tr("加载新内容会放弃这些改动。"),
         {
-          title: "配置已被外部修改",
+          title: tr("配置已被外部修改"),
           kind: "warning",
-          okLabel: "加载新配置",
-          cancelLabel: "保留我的改动（下次保存会覆盖外部改动）",
+          okLabel: tr("加载新配置"),
+          cancelLabel: tr("保留我的改动（下次保存会覆盖外部改动）"),
         },
       );
       // 保留编辑：界面与内存都不动，用户手上的编辑照旧。代价（下次保存覆盖外部改动）已经写在
@@ -3700,7 +3733,7 @@ async function applyExternalConfig(next: Config) {
   await refreshConflicts();
   render();
   syncSettings();
-  toast("配置文件已被外部修改，已重新加载");
+  toast(tr("配置文件已被外部修改，已重新加载"));
 }
 
 // 合并列表里三类行同在一个 <ul>，靠 data-kind 认行（下标是各自数组的下标）。
@@ -3736,7 +3769,7 @@ function renderTriggers(s: ShortcutItem) {
 function renderActions(s: { actions: Action[]; triggers?: string[] }, start?: string) {
   const wrap = document.getElementById("action-list")!;
   renderActionList(wrap, s.actions, () => renderActions(s, start), {
-    start: start ?? (s.triggers?.length ? s.triggers.join(" / ") : "未设触发键"),
+    start: start ?? (s.triggers?.length ? s.triggers.join(" / ") : tr("未设触发键")),
   });
   refreshDirty();
 }
@@ -3780,14 +3813,14 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
 
   const rail = el("div", "flow-rail");
   const dot = el("span", "flow-dot", String(i + 1));
-  dot.title = "拖动排序 / 嵌套；点击展开或收起";
+  dot.title = tr("拖动排序 / 嵌套；点击展开或收起");
   rail.append(dot);
 
   // 第一行：拖动手柄 + 图标 + 类型名 + 标题（描述） + 变量流标签 + 删除
   const head = el("div", "action-head");
 
   const grip = el("span", "action-grip", "⋮⋮");
-  grip.title = "拖动排序 / 嵌套；点击展开或收起";
+  grip.title = tr("拖动排序 / 嵌套；点击展开或收起");
   head.append(grip);
 
   const ico = el("span", "action-ico", ACTION_ICONS[a.type]);
@@ -3796,8 +3829,8 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
 
   // 类型名本身就是切换入口：点它弹出动作类型列表（收起态也能直接换）。
   const typePick = el("select", "action-type-name") as HTMLSelectElement;
-  typePick.title = "点击切换动作类型";
-  typePick.setAttribute("aria-label", "动作类型");
+  typePick.title = tr("点击切换动作类型");
+  typePick.setAttribute("aria-label", tr("动作类型"));
   for (const t of ACTION_TYPES) {
     const o = el("option") as HTMLOptionElement;
     o.value = t.value;
@@ -3824,7 +3857,7 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
 
   if (collapsed) {
     const title = el("span", "action-title", actionDescription(a));
-    title.title = "点击展开";
+    title.title = tr("点击展开");
     title.addEventListener("click", () => {
       toggleActionCollapsed(a);
       rerender();
@@ -3837,19 +3870,19 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
     if (a.type === "group") {
       const group = a;
       titleInput.value = group.name ?? "";
-      titleInput.placeholder = "分组名称（可选）";
+      titleInput.placeholder = tr("分组名称（可选）");
       titleInput.addEventListener("input", () => {
         group.name = titleInput.value;
       });
     } else {
       titleInput.value = a.description ?? "";
-      titleInput.placeholder = "动作标题（可选）";
+      titleInput.placeholder = tr("动作标题（可选）");
       titleInput.addEventListener("input", () => {
         a.description = titleInput.value.trim() || undefined;
       });
     }
     const del = el("button", "action-del") as HTMLButtonElement;
-    del.title = "删除动作";
+    del.title = tr("删除动作");
     del.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
     del.addEventListener("click", () => {
@@ -3895,7 +3928,7 @@ function renderActionList(
   container.dataset.actionList = "1";
   (container as unknown as { _dropList?: Action[] })._dropList = actions;
   if (opts.start !== undefined) {
-    container.append(flowTerminator("start", "触发", opts.start));
+    container.append(flowTerminator("start", tr("触发"), opts.start));
   }
   actions.forEach((a, i) => {
     container.append(flowStep(a, i, actions, rerender));
@@ -3904,11 +3937,11 @@ function renderActionList(
     container.append(
       flowTerminator(
         "end",
-        actions.length ? "执行完成" : "还没有动作 · 点下方「+ 添加动作」",
+        actions.length ? tr("执行完成") : tr("还没有动作 · 点下方「+ 添加动作」"),
       ),
     );
   } else if (actions.length === 0) {
-    container.append(el("div", "flow-empty", "空 · 拖入动作或点下方「添加动作」"));
+    container.append(el("div", "flow-empty", tr("空 · 拖入动作或点下方「添加动作」")));
   }
 }
 
@@ -4124,9 +4157,9 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
   if (a.type === "text") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const m of [
-      { value: "input" as TextMode, label: "输入文本" },
-      { value: "to_upper" as TextMode, label: "小写转大写（选中/剪贴板）" },
-      { value: "to_lower" as TextMode, label: "大写转小写（选中/剪贴板）" },
+      { value: "input" as TextMode, label: tr("输入文本") },
+      { value: "to_upper" as TextMode, label: tr("小写转大写（选中/剪贴板）") },
+      { value: "to_lower" as TextMode, label: tr("大写转小写（选中/剪贴板）") },
     ]) {
       const opt = el("option") as HTMLOptionElement;
       opt.value = m.value;
@@ -4262,46 +4295,46 @@ function conditionFields(cond: Condition): HTMLElement {
     mins.addEventListener("input", () => {
       cond.minutes = intIn(mins.value, 0, 0);
     });
-    line.append(el("span", "unit-hint", "修改时间在"), mins, el("span", "unit-hint", "分钟内为真"));
+    line.append(el("span", "unit-hint", tr("修改时间在")), mins, el("span", "unit-hint", tr("分钟内为真")));
     body.append(line);
   } else if (cond.kind === "frontmost_app" || cond.kind === "not_frontmost_app") {
     const line = el("div", "action-line");
     const app = el("input", "action-input") as HTMLInputElement;
     app.type = "text";
     app.value = cond.app;
-    app.placeholder = "进程名，如 chrome.exe（含 * / ? 走通配，否则子串匹配）";
+    app.placeholder = tr("进程名，如 chrome.exe（含 * / ? 走通配，否则子串匹配）");
     app.addEventListener("input", () => {
       cond.app = app.value;
     });
-    line.append(el("span", "unit-hint", "进程名"), app);
+    line.append(el("span", "unit-hint", tr("进程名")), app);
     body.append(line);
   } else if (cond.kind === "window_title_contains") {
     const line = el("div", "action-line");
     const text = el("input", "action-input") as HTMLInputElement;
     text.type = "text";
     text.value = cond.text;
-    text.placeholder = "窗口标题包含的文本（不区分大小写）";
+    text.placeholder = tr("窗口标题包含的文本（不区分大小写）");
     text.addEventListener("input", () => {
       cond.text = text.value;
     });
-    line.append(el("span", "unit-hint", "包含文本"), text);
+    line.append(el("span", "unit-hint", tr("包含文本")), text);
     body.append(line);
   } else if (cond.kind === "device_is") {
     const line = el("div", "action-line");
     const id = el("input", "action-input") as HTMLInputElement;
     id.type = "text";
     id.value = cond.id;
-    id.placeholder = "设备标识，如 AT Translated Set 2 keyboard 或 VID_046D&PID_C31C（含 * / ? 走通配，否则子串匹配）";
+    id.placeholder = tr("设备标识，如 AT Translated Set 2 keyboard 或 VID_046D&PID_C31C（含 * / ? 走通配，否则子串匹配）");
     id.addEventListener("input", () => {
       cond.id = id.value;
     });
-    line.append(el("span", "unit-hint", "设备名"), id);
+    line.append(el("span", "unit-hint", tr("设备名")), id);
     body.append(line);
     body.append(
       el(
         "div",
         "unit-hint",
-        "按触发键来自哪台键盘区分（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。",
+        tr("按触发键来自哪台键盘区分（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
       ),
     );
   } else {
@@ -4309,33 +4342,33 @@ function conditionFields(cond: Condition): HTMLElement {
     const vname = el("input", "action-input") as HTMLInputElement;
     vname.type = "text";
     vname.value = cond.var;
-    vname.placeholder = "变量名，如 f";
+    vname.placeholder = tr("变量名，如 f");
     vname.addEventListener("input", () => {
       cond.var = vname.value.trim();
     });
-    lineVar.append(el("span", "unit-hint", "变量名"), vname);
+    lineVar.append(el("span", "unit-hint", tr("变量名")), vname);
     body.append(lineVar);
 
     const lineField = el("div", "action-line");
     const fname = el("input", "action-input") as HTMLInputElement;
     fname.type = "text";
     fname.value = cond.field;
-    fname.placeholder = "字段（空 = 完整路径），如 ext / size / is_dir";
+    fname.placeholder = tr("字段（空 = 完整路径），如 ext / size / is_dir");
     fname.addEventListener("input", () => {
       cond.field = fname.value.trim();
     });
-    lineField.append(el("span", "unit-hint", "字段"), fname);
+    lineField.append(el("span", "unit-hint", tr("字段")), fname);
     body.append(lineField);
 
     const lineVal = el("div", "action-line");
     const val = el("input", "action-input") as HTMLInputElement;
     val.type = "text";
     val.value = cond.value;
-    val.placeholder = "比较值，如 .txt";
+    val.placeholder = tr("比较值，如 .txt");
     val.addEventListener("input", () => {
       cond.value = val.value;
     });
-    lineVal.append(el("span", "unit-hint", "等于/不等于"), val);
+    lineVal.append(el("span", "unit-hint", tr("等于/不等于")), val);
     body.append(lineVal);
   }
 
@@ -4356,7 +4389,7 @@ function renderWhenEditor(
     const sel = el("select", "when-kind") as HTMLSelectElement;
     const none = el("option") as HTMLOptionElement;
     none.value = "";
-    none.textContent = "无条件（始终触发）";
+    none.textContent = tr("无条件（始终触发）");
     sel.append(none);
     for (const c of WHEN_CONDITION_TYPES) {
       const opt = el("option") as HTMLOptionElement;
@@ -4384,20 +4417,20 @@ function mouseRecordButton(
   ctx?: { actions: Action[]; idx: number },
 ): HTMLElement {
   const btn = el("button", "record action-mouse-record") as HTMLButtonElement;
-  btn.textContent = mouseRecording ? "■ 录制中（点此停止）" : "● 录制鼠标操作";
+  btn.textContent = mouseRecording ? tr("■ 录制中（点此停止）") : tr("● 录制鼠标操作");
   if (mouseRecording) btn.classList.add("recording");
-  btn.title = "录一段鼠标动作：移动到某处点击 / 滚轮，录完替换当前动作";
+  btn.title = tr("录一段鼠标动作：移动到某处点击 / 滚轮，录完替换当前动作");
   btn.addEventListener("click", async () => {
     if (!mouseRecording) {
       try {
         await invoke("start_mouse_record");
       } catch (err) {
-        toast(`开始录制失败: ${err}`);
+        toast(trt`开始录制失败: ${err}`);
         return;
       }
       mouseRecording = true;
       btn.classList.add("recording");
-      btn.textContent = "■ 录制中（点此停止）";
+      btn.textContent = tr("■ 录制中（点此停止）");
       return;
     }
     mouseRecording = false;
@@ -4405,19 +4438,19 @@ function mouseRecordButton(
     try {
       rec = await invoke<Action[]>("stop_mouse_record");
     } catch (err) {
-      toast(`停止录制失败: ${err}`);
+      toast(trt`停止录制失败: ${err}`);
       btn.classList.remove("recording");
-      btn.textContent = "● 录制鼠标操作";
+      btn.textContent = tr("● 录制鼠标操作");
       return;
     }
     btn.classList.remove("recording");
-    btn.textContent = "● 录制鼠标操作";
+    btn.textContent = tr("● 录制鼠标操作");
     if (rec.length && ctx) {
       // 录到的鼠标动作替换掉当前这一条（占位），其余顺次插在后面。
       ctx.actions.splice(ctx.idx, 1, ...rec);
       rerender();
     } else {
-      toast("未录到鼠标动作");
+      toast(tr("未录到鼠标动作"));
     }
   });
   return btn;
@@ -4434,12 +4467,12 @@ function actionFields(
       // 隐藏态不渲染真文本（连长度都不露），编辑框位置换成一块 *** 占位；要改内容先关掉开关。
       if (a.masked) {
         const masked = el("div", "action-textarea action-masked", "***");
-        masked.title = "文本已隐藏（关掉下面的开关即可查看与编辑）";
+        masked.title = tr("文本已隐藏（关掉下面的开关即可查看与编辑）");
         body.append(masked);
       } else {
         const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
         ta.value = a.text;
-        ta.placeholder = "要输入的文本（支持 {变量名} 占位符）……";
+        ta.placeholder = tr("要输入的文本（支持 {变量名} 占位符）……");
         ta.addEventListener("input", () => {
           a.text = ta.value;
         });
@@ -4449,12 +4482,12 @@ function actionFields(
       const hb = el("input", "toggle") as HTMLInputElement;
       hb.type = "checkbox";
       hb.checked = !!a.masked;
-      hide.title = "勾上后这段文本在界面上以 *** 显示（执行记录里也掩掉），注入的内容不受影响";
+      hide.title = tr("勾上后这段文本在界面上以 *** 显示（执行记录里也掩掉），注入的内容不受影响");
       hb.addEventListener("change", () => {
         a.masked = hb.checked;
         rerender();
       });
-      hide.append(hb, el("span", undefined, "隐藏内容（显示为 ***）"));
+      hide.append(hb, el("span", undefined, tr("隐藏内容（显示为 ***）")));
       body.append(hide);
     } else {
       body.append(
@@ -4462,8 +4495,8 @@ function actionFields(
           "div",
           "unit-hint",
           a.mode === "to_upper"
-            ? "把当前选中（或剪贴板）的文本转为大写，并粘贴回原处。"
-            : "把当前选中（或剪贴板）的文本转为小写，并粘贴回原处。",
+            ? tr("把当前选中（或剪贴板）的文本转为大写，并粘贴回原处。")
+            : tr("把当前选中（或剪贴板）的文本转为小写，并粘贴回原处。"),
         ),
       );
     }
@@ -4472,8 +4505,8 @@ function actionFields(
     ta.value = a.command;
     ta.placeholder =
       a.shell === "cmd"
-        ? "CMD 命令，如 echo hello（可用 {变量名} / {变量名.字段} 引用变量）"
-        : "PowerShell 命令，如 Get-Date（可用 {变量名} / {变量名.字段} 引用变量）";
+        ? tr("CMD 命令，如 echo hello（可用 {变量名} / {变量名.字段} 引用变量）")
+        : tr("PowerShell 命令，如 Get-Date（可用 {变量名} / {变量名.字段} 引用变量）");
     ta.addEventListener("input", () => {
       a.command = ta.value;
     });
@@ -4487,17 +4520,17 @@ function actionFields(
     cb.addEventListener("change", () => {
       a.show_output = cb.checked;
     });
-    popup.append(cb, el("span", undefined, "弹窗显示结果"));
+    popup.append(cb, el("span", undefined, tr("弹窗显示结果")));
 
     const hidden = el("label", "action-check") as HTMLLabelElement;
     const hcb = el("input", "toggle") as HTMLInputElement;
     hcb.type = "checkbox";
     hcb.checked = !!a.hide_window;
-    hidden.title = "勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）";
+    hidden.title = tr("勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）");
     hcb.addEventListener("change", () => {
       a.hide_window = hcb.checked;
     });
-    hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
+    hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
     flags.append(popup, hidden);
     body.append(flags);
 
@@ -4505,31 +4538,31 @@ function actionFields(
     const vname = el("input", "action-input") as HTMLInputElement;
     vname.type = "text";
     vname.value = a.var;
-    vname.placeholder = "变量名（可选），留空则只进消息中心";
+    vname.placeholder = tr("变量名（可选），留空则只进消息中心");
     vname.addEventListener("input", () => {
       a.var = vname.value.trim();
     });
     vline.append(
-      el("span", "unit-hint", "存为变量"),
+      el("span", "unit-hint", tr("存为变量")),
       vname,
       helpIcon(
-        "填写后把命令标准输出存进该变量：{drive} 得到输出全文、{drive.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。",
+        tr("填写后把命令标准输出存进该变量：{drive} 得到输出全文、{drive.exit_code} 得到退出码（0=成功）。留空则维持现状，仅记入消息中心。示例：取盘符 (Get-Volume -FileSystemLabel '我的硬盘').DriveLetter 存为 drive，后面复制动作目标写 {drive}:\\备份\\。"),
       ),
     );
     body.append(vline);
   } else if (a.type === "script") {
-    body.append(pathField(a.path, (v) => (a.path = v), { file: true, label: "脚本路径" }));
+    body.append(pathField(a.path, (v) => (a.path = v), { file: true, label: tr("脚本路径") }));
 
     const iline = el("div", "action-line");
     const interp = el("input", "action-input") as HTMLInputElement;
     interp.type = "text";
     interp.value = a.interpreter ?? "";
-    interp.placeholder = "解释器（可选），如 python / node / bash；留空则直接执行脚本本身";
+    interp.placeholder = tr("解释器（可选），如 python / node / bash；留空则直接执行脚本本身");
     interp.addEventListener("input", () => {
       const v = interp.value.trim();
       a.interpreter = v.length > 0 ? v : null;
     });
-    iline.append(el("span", "unit-hint", "解释器"), interp);
+    iline.append(el("span", "unit-hint", tr("解释器")), interp);
     body.append(iline);
 
     const flags = el("div", "action-checks");
@@ -4540,17 +4573,17 @@ function actionFields(
     cb.addEventListener("change", () => {
       a.show_output = cb.checked;
     });
-    popup.append(cb, el("span", undefined, "弹窗显示结果"));
+    popup.append(cb, el("span", undefined, tr("弹窗显示结果")));
 
     const hidden = el("label", "action-check") as HTMLLabelElement;
     const hcb = el("input", "toggle") as HTMLInputElement;
     hcb.type = "checkbox";
     hcb.checked = !!a.hide_window;
-    hidden.title = "勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）";
+    hidden.title = tr("勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）");
     hcb.addEventListener("change", () => {
       a.hide_window = hcb.checked;
     });
-    hidden.append(hcb, el("span", undefined, "隐藏控制台窗口"));
+    hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
     flags.append(popup, hidden);
     body.append(flags);
 
@@ -4558,15 +4591,15 @@ function actionFields(
     const vname = el("input", "action-input") as HTMLInputElement;
     vname.type = "text";
     vname.value = a.var;
-    vname.placeholder = "变量名（可选），留空则只进消息中心";
+    vname.placeholder = tr("变量名（可选），留空则只进消息中心");
     vname.addEventListener("input", () => {
       a.var = vname.value.trim();
     });
     vline.append(
-      el("span", "unit-hint", "存为变量"),
+      el("span", "unit-hint", tr("存为变量")),
       vname,
       helpIcon(
-        "脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存进该变量（{out} 得输出全文、{out.exit_code} 得退出码）。",
+        tr("脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存进该变量（{out} 得输出全文、{out.exit_code} 得退出码）。"),
       ),
     );
     body.append(vline);
@@ -4587,7 +4620,7 @@ function actionFields(
     const keys = el("input", "action-input") as HTMLInputElement;
     keys.type = "text";
     keys.value = a.keys.join("+");
-    keys.placeholder = "如 Ctrl+C";
+    keys.placeholder = tr("如 Ctrl+C");
     keys.addEventListener("input", () => {
       a.keys = keys.value
         .split("+")
@@ -4598,7 +4631,7 @@ function actionFields(
       const pick = el("select", "action-input") as HTMLSelectElement;
       const none = el("option") as HTMLOptionElement;
       none.value = "";
-      none.textContent = "从已创建的快捷键选择…";
+      none.textContent = tr("从已创建的快捷键选择…");
       pick.append(none);
       for (const c of combos) {
         const o = el("option") as HTMLOptionElement;
@@ -4614,7 +4647,7 @@ function actionFields(
       });
       body.append(pick);
     }
-    const cap = el("button", undefined, "录入");
+    const cap = el("button", undefined, tr("录入"));
     cap.addEventListener("click", (e) => {
       const btn = e.currentTarget as HTMLButtonElement;
       startCapture((combo) => {
@@ -4631,14 +4664,14 @@ function actionFields(
       const dx = el("input", "action-input") as HTMLInputElement;
       dx.type = "number";
       dx.value = String(op.dx);
-      dx.placeholder = "横向";
+      dx.placeholder = tr("横向");
       dx.addEventListener("input", () => {
         op.dx = intIn(dx.value, -10000, 0, 10000);
       });
       const dy = el("input", "action-input") as HTMLInputElement;
       dy.type = "number";
       dy.value = String(op.dy);
-      dy.placeholder = "纵向";
+      dy.placeholder = tr("纵向");
       dy.addEventListener("input", () => {
         op.dy = intIn(dy.value, -10000, 0, 10000);
       });
@@ -4649,8 +4682,8 @@ function actionFields(
           "span",
           "unit-hint",
           op.op === "move"
-            ? "像素，相对当前位置（右下为正）"
-            : "格数：纵向正数上滚 / 负数下滚，横向正数右滚",
+            ? tr("像素，相对当前位置（右下为正）")
+            : tr("格数：纵向正数上滚 / 负数下滚，横向正数右滚"),
         ),
       );
     } else {
@@ -4665,7 +4698,7 @@ function actionFields(
       sel.addEventListener("change", () => {
         op.button = sel.value as MouseButton;
       });
-      line.append(el("span", "unit-hint", "在当前光标位置点击"), sel);
+      line.append(el("span", "unit-hint", tr("在当前光标位置点击")), sel);
     }
     body.append(line);
     body.append(mouseRecordButton(rerender, ctx));
@@ -4675,62 +4708,62 @@ function actionFields(
     num.type = "number";
     num.min = "0";
     num.value = String(a.ms);
-    num.placeholder = "如 500";
+    num.placeholder = tr("如 500");
     num.addEventListener("input", () => {
       a.ms = intIn(num.value, 0, 0);
     });
-    line.append(num, el("span", "unit-hint", "毫秒 (ms)"));
+    line.append(num, el("span", "unit-hint", tr("毫秒 (ms)")));
     body.append(line);
   } else if (a.type === "os") {
     const op = a.operation;
     if (op.op === "copy" || op.op === "cut") {
       body.append(
-        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: "原始路径" }),
+        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: tr("原始路径") }),
       );
       body.append(
-        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: "目标路径" }),
+        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: tr("目标路径") }),
       );
     } else if (op.op === "zip") {
       body.append(
-        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: "待压缩路径" }),
+        pathField(op.source, (v) => (op.source = v), { file: true, dir: true, label: tr("待压缩路径") }),
       );
       body.append(
-        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: "压缩文件路径" }),
+        pathField(op.dest, (v) => (op.dest = v), { file: true, dir: true, label: tr("压缩文件路径") }),
       );
     } else if (op.op === "unzip") {
       body.append(
-        pathField(op.source, (v) => (op.source = v), { file: true, label: "压缩包路径" }),
+        pathField(op.source, (v) => (op.source = v), { file: true, label: tr("压缩包路径") }),
       );
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: "解压到目录" }));
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("解压到目录") }));
     } else if (op.op === "paste") {
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: "目标目录" }));
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("目标目录") }));
     } else if (op.op === "delete") {
       body.append(
-        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: "待删除路径" }),
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("待删除路径") }),
       );
     } else if (op.op === "new_file") {
-      body.append(pathField(op.path, (v) => (op.path = v), { file: true, label: "新建文件路径" }));
+      body.append(pathField(op.path, (v) => (op.path = v), { file: true, label: tr("新建文件路径") }));
     } else if (op.op === "new_folder") {
-      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: "新建文件夹路径" }));
+      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("新建文件夹路径") }));
     } else if (op.op === "open_folder") {
-      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: "打开目录" }));
+      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("打开目录") }));
     } else if (op.op === "get_file_props") {
       body.append(
-        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: "文件路径" }),
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("文件路径") }),
       );
       const line = el("div", "action-line");
       const vname = el("input", "action-input") as HTMLInputElement;
       vname.type = "text";
       vname.value = op.var;
-      vname.placeholder = "变量名，如 file";
+      vname.placeholder = tr("变量名，如 file");
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
       line.append(
-        el("span", "unit-hint", "变量名"),
+        el("span", "unit-hint", tr("变量名")),
         vname,
         helpIcon(
-          "把这个文件的属性写进该变量：{file} 得完整路径，还能取 .name / .dir / .ext / .size 等字段（字段清单见「帮助」页）。",
+          tr("把这个文件的属性写进该变量：{file} 得完整路径，还能取 .name / .dir / .ext / .size 等字段（字段清单见「帮助」页）。"),
         ),
       );
       body.append(line);
@@ -4751,17 +4784,17 @@ function actionFields(
         op.direction = sel.value as DesktopDirection;
       });
       line.append(
-        el("span", "unit-hint", "方向"),
+        el("span", "unit-hint", tr("方向")),
         sel,
         helpIcon(
-          "按各系统的默认键位切换：Windows 注入 Win+Ctrl+←/→，macOS 注入 ⌃←/→，Linux 注入 Super+PageUp/PageDown。系统里改过这些快捷键的话，注入的就不生效了，那种情况改用「按键组合」动作写自己的键位。",
+          tr("按各系统的默认键位切换：Windows 注入 Win+Ctrl+←/→，macOS 注入 ⌃←/→，Linux 注入 Super+PageUp/PageDown。系统里改过这些快捷键的话，注入的就不生效了，那种情况改用「按键组合」动作写自己的键位。"),
         ),
       );
       body.append(line);
 
       const hint = el("div", "unit-hint");
       hint.textContent =
-        "切换虚拟桌面（不是切换显示器）。Windows：Win+Ctrl+←/→；macOS：⌃←/→；Linux（GNOME）：Super+PageUp/PageDown。";
+        tr("切换虚拟桌面（不是切换显示器）。Windows：Win+Ctrl+←/→；macOS：⌃←/→；Linux（GNOME）：Super+PageUp/PageDown。");
       body.append(hint);
     }
   } else if (a.type === "app") {
@@ -4771,11 +4804,11 @@ function actionFields(
       const prog = el("input", "action-input") as HTMLInputElement;
       prog.type = "text";
       prog.value = op.program;
-      prog.placeholder = "程序路径/名，如 C:\\Windows\\notepad.exe 或 notepad.exe";
+      prog.placeholder = tr("程序路径/名，如 C:\\Windows\\notepad.exe 或 notepad.exe");
       prog.addEventListener("input", () => {
         op.program = prog.value;
       });
-      const browse = el("button", undefined, "浏览…");
+      const browse = el("button", undefined, tr("浏览…"));
       browse.addEventListener("click", () => void pickFile(prog));
       progWrap.append(prog, browse);
       body.append(progWrap);
@@ -4783,7 +4816,7 @@ function actionFields(
       const args = el("input", "action-input") as HTMLInputElement;
       args.type = "text";
       args.value = op.args.join(" ");
-      args.placeholder = "参数（可选，空格分隔）";
+      args.placeholder = tr("参数（可选，空格分隔）");
       args.addEventListener("input", () => {
         op.args = args.value.split(/\s+/).filter(Boolean);
       });
@@ -4798,7 +4831,7 @@ function actionFields(
       const name = el("input", "action-input") as HTMLInputElement;
       name.type = "text";
       name.value = op.program;
-      name.placeholder = "程序名/路径，如 notepad.exe";
+      name.placeholder = tr("程序名/路径，如 notepad.exe");
       name.addEventListener("input", () => {
         op.program = name.value.trim();
       });
@@ -4810,8 +4843,8 @@ function actionFields(
             "div",
             "unit-hint",
             op.op === "activate"
-              ? "按程序名找到它的主窗口并放到前台（不会启动程序）。"
-              : "按程序名找到它的主窗口并调整窗口状态。Linux 需要 wmctrl（仅 X11 会话）。",
+              ? tr("按程序名找到它的主窗口并放到前台（不会启动程序）。")
+              : tr("按程序名找到它的主窗口并调整窗口状态。Linux 需要 wmctrl（仅 X11 会话）。"),
           ),
         );
       }
@@ -4820,7 +4853,7 @@ function actionFields(
       const name = el("input", "action-input") as HTMLInputElement;
       name.type = "text";
       name.value = op.program;
-      name.placeholder = "程序名/路径，如 notepad.exe";
+      name.placeholder = tr("程序名/路径，如 notepad.exe");
       name.addEventListener("input", () => {
         op.program = name.value.trim();
       });
@@ -4831,15 +4864,15 @@ function actionFields(
       const vname = el("input", "action-input") as HTMLInputElement;
       vname.type = "text";
       vname.value = op.var;
-      vname.placeholder = "变量名，如 app";
+      vname.placeholder = tr("变量名，如 app");
       vname.addEventListener("input", () => {
         op.var = vname.value.trim();
       });
       vline.append(
-        el("span", "unit-hint", "变量名"),
+        el("span", "unit-hint", tr("变量名")),
         vname,
         helpIcon(
-          "写入布尔变量：程序在运行则为 true，否则 false。引用 {变量名} 得到 true/false，可配合「条件判断」动作使用。",
+          tr("写入布尔变量：程序在运行则为 true，否则 false。引用 {变量名} 得到 true/false，可配合「条件判断」动作使用。"),
         ),
       );
       body.append(vline);
@@ -4860,13 +4893,13 @@ function actionFields(
         op.interval_ms = intIn(ival.value, 0, 0);
       });
       rline.append(
-        el("span", "unit-hint", "未运行时重试"),
+        el("span", "unit-hint", tr("未运行时重试")),
         retries,
-        el("span", "unit-hint", "次 · 间隔"),
+        el("span", "unit-hint", tr("次 · 间隔")),
         ival,
         el("span", "unit-hint", "ms"),
         helpIcon(
-          "程序未运行（变量为 false）时，按「重试次数 × 重试间隔」轮询重查，等程序起来；0 次 = 只查一次。",
+          tr("程序未运行（变量为 false）时，按「重试次数 × 重试间隔」轮询重查，等程序起来；0 次 = 只查一次。"),
         ),
       );
       body.append(rline);
@@ -4876,34 +4909,34 @@ function actionFields(
     const url = el("input", "action-input") as HTMLInputElement;
     url.type = "text";
     url.value = a.url;
-    url.placeholder = "网址，如 https://example.com（支持 {变量名} 占位符）";
+    url.placeholder = tr("网址，如 https://example.com（支持 {变量名} 占位符）");
     url.addEventListener("input", () => {
       a.url = url.value.trim();
       showFieldError(url, urlError(url.value));
     });
     line.append(url);
     body.append(line);
-    body.append(el("div", "unit-hint", "用系统默认浏览器打开该网页。"));
+    body.append(el("div", "unit-hint", tr("用系统默认浏览器打开该网页。")));
   } else if (a.type === "if") {
     const cond = a.condition;
     body.append(conditionFields(cond));
 
-    body.append(el("div", "branch-label then", "✓ 满足条件时执行"));
+    body.append(el("div", "branch-label then", tr("✓ 满足条件时执行")));
     const thenList = el("div", "action-branch branch-then");
     (thenList as unknown as { _dropList?: Action[] })._dropList = a.then;
     renderActionList(thenList, a.then, rerender);
-    const addThen = el("button", "add-inline", "＋ 添加动作");
+    const addThen = el("button", "add-inline", tr("＋ 添加动作"));
     addThen.addEventListener("click", () => {
       a.then.push(newAction("text"));
       rerender();
     });
     body.append(thenList, addThen);
 
-    body.append(el("div", "branch-label else", "✗ 否则执行（可空）"));
+    body.append(el("div", "branch-label else", tr("✗ 否则执行（可空）")));
     const elseList = el("div", "action-branch branch-else");
     (elseList as unknown as { _dropList?: Action[] })._dropList = a.otherwise;
     renderActionList(elseList, a.otherwise, rerender);
-    const addElse = el("button", "add-inline", "＋ 添加动作");
+    const addElse = el("button", "add-inline", tr("＋ 添加动作"));
     addElse.addEventListener("click", () => {
       a.otherwise.push(newAction("text"));
       rerender();
@@ -4911,11 +4944,11 @@ function actionFields(
     body.append(elseList, addElse);
   } else if (a.type === "parallel") {
     // 成员列表就是一条可落列表（`data-action-list` + `_dropList` 由 renderActionList 统一挂上）。
-    body.append(el("div", "branch-label parallel", "⇉ 同时执行（全部成员结束后继续下一步）"));
+    body.append(el("div", "branch-label parallel", tr("⇉ 同时执行（全部成员结束后继续下一步）")));
     const memberList = el("div", "action-branch branch-parallel");
     (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
     renderActionList(memberList, a.actions, rerender);
-    const addMember = el("button", "add-inline", "＋ 添加动作");
+    const addMember = el("button", "add-inline", tr("＋ 添加动作"));
     addMember.addEventListener("click", () => {
       a.actions.push(newAction("text"));
       rerender();
@@ -4923,12 +4956,12 @@ function actionFields(
     body.append(memberList, addMember);
   } else if (a.type === "group") {
     body.append(
-      el("div", "branch-label group", "▣ 按顺序执行（分组只做整理，不改变执行结果）"),
+      el("div", "branch-label group", tr("▣ 按顺序执行（分组只做整理，不改变执行结果）")),
     );
     const memberList = el("div", "action-branch branch-group");
     (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
     renderActionList(memberList, a.actions, rerender);
-    const addMember = el("button", "add-inline", "＋ 添加动作");
+    const addMember = el("button", "add-inline", tr("＋ 添加动作"));
     addMember.addEventListener("click", () => {
       a.actions.push(newAction("text"));
       rerender();
@@ -4962,24 +4995,24 @@ function showFieldError(input: HTMLElement, msg: string) {
 // 保存前有 actionHasContent 兜底）。
 function pathError(v: string): string {
   const bare = v.replace(/\{[^}]*\}/g, "");
-  if (/[<>|?*"]/.test(bare)) return '路径含不允许的字符（< > | ? * "）';
-  if (/[\u0000-\u001f]/.test(bare)) return "路径含不可见控制字符";
+  if (/[<>|?*"]/.test(bare)) return tr('路径含不允许的字符（< > | ? * "）');
+  if (/[\u0000-\u001f]/.test(bare)) return tr("路径含不可见控制字符");
   return "";
 }
 
 // 网址合法性：非空、http(s) 开头；含 {变量} 占位符的拼完才知道形态，放行。
 function urlError(v: string): string {
   const t = v.trim();
-  if (!t) return "网址不能为空";
+  if (!t) return tr("网址不能为空");
   if (t.includes("{")) return "";
-  if (!/^https?:\/\/\S+$/i.test(t)) return "需以 http:// 或 https:// 开头";
+  if (!/^https?:\/\/\S+$/i.test(t)) return tr("需以 http:// 或 https:// 开头");
   return "";
 }
 
 // 文本扩展触发词（与后端 TextExpansion::validate 同口径）：非空、无空白字符。
 function expansionTriggerError(v: string): string {
-  if (!v) return "触发词不能为空";
-  if (/\s/.test(v)) return "触发词不能含空格 / 回车 / Tab";
+  if (!v) return tr("触发词不能为空");
+  if (/\s/.test(v)) return tr("触发词不能含空格 / 回车 / Tab");
   return "";
 }
 
@@ -4993,7 +5026,7 @@ function pathField(
   const input = el("input", "action-input") as HTMLInputElement;
   input.type = "text";
   input.value = value;
-  input.placeholder = opts.label ? `${opts.label}（可用 {变量名}）` : "路径（可用 {变量名} 占位符）";
+  input.placeholder = opts.label ? trt`${opts.label}（可用 {变量名}）` : tr("路径（可用 {变量名} 占位符）");
   // 全部路径字段都从这里过——校验放共用口，一处管住所有调用方（条件/复制/脚本…）。
   input.addEventListener("input", () => {
     onInput(input.value);
@@ -5001,12 +5034,12 @@ function pathField(
   });
   line.append(input);
   if (opts.file) {
-    const bf = el("button", undefined, "文件…");
+    const bf = el("button", undefined, tr("文件…"));
     bf.addEventListener("click", () => void pickFile(input));
     line.append(bf);
   }
   if (opts.dir) {
-    const bd = el("button", undefined, "目录…");
+    const bd = el("button", undefined, tr("目录…"));
     bd.addEventListener("click", () => void pickDir(input));
     line.append(bd);
   }
@@ -5048,9 +5081,9 @@ function renderConflictBubble() {
       el(
         "span",
         "conflict-bubble-text",
-        `⚠ 已配置 ${gestureCount} 条鼠标手势，但「实验功能」未开启 → 不会触发`,
+        trt`⚠ 已配置 ${gestureCount} 条鼠标手势，但「实验功能」未开启 → 不会触发`,
       ),
-      el("span", "conflict-bubble-hint", "点击开启"),
+      el("span", "conflict-bubble-hint", tr("点击开启")),
     );
     box.append(b);
   }
@@ -5059,17 +5092,17 @@ function renderConflictBubble() {
   const bits: string[] = [];
   if (errors.length || warns.length)
     bits.push(
-      `${errors.length + warns.length} 处冲突${errors.length ? `（${errors.length} 处需处理）` : ""}`,
+      trt`${errors.length + warns.length} 处冲突${errors.length ? trt`（${errors.length} 处需处理）` : ""}`,
     );
-  if (caps.length) bits.push(`${caps.length} 条当前环境用不了`);
+  if (caps.length) bits.push(trt`${caps.length} 条当前环境用不了`);
   const bubble = el("div", "conflict-bubble");
   bubble.addEventListener("click", openConflictView);
   bubble.append(
     el("span", "conflict-bubble-text", `⚠ ${bits.join(" · ")}`),
-    el("span", "conflict-bubble-hint", "点击查看"),
+    el("span", "conflict-bubble-hint", tr("点击查看")),
   );
   const close = el("button", "conflict-bubble-close", "×") as HTMLButtonElement;
-  close.title = "消除提醒";
+  close.title = tr("消除提醒");
   close.addEventListener("click", (e) => {
     e.stopPropagation();
     conflictBubbleDismissed = true;
@@ -5095,7 +5128,8 @@ function conflictOwner(c: Conflict): { kind: ListKind; index: number } | null {
     const i = cfg.shortcuts.findIndex((s) => (s.name ?? "") === c.name);
     if (i >= 0) return { kind: "shortcut", index: i };
   }
-  const remapMsg = c.message.startsWith("改键");
+  // 后端文案仍是中文（壳层消息不参与界面 i18n），所以这里按中文字面量判断，别套 tr()。
+  const remapMsg = c.message.startsWith("改键"); // i18n:ignore
   for (const q of [...c.message.matchAll(/「([^」]+)」/g)].map((m) => m[1])) {
     if (!remapMsg) {
       const si = cfg.shortcuts.findIndex((s) => s.triggers.includes(q));
@@ -5109,9 +5143,9 @@ function conflictOwner(c: Conflict): { kind: ListKind; index: number } | null {
 
 function entryLabel(ref: { kind: ListKind; index: number }): string {
   if (ref.kind === "shortcut" && cfg.shortcuts[ref.index])
-    return cfg.shortcuts[ref.index].name?.trim() || "未命名快捷键";
+    return cfg.shortcuts[ref.index].name?.trim() || tr("未命名快捷键");
   if (ref.kind === "remap" && cfg.remaps[ref.index])
-    return cfg.remaps[ref.index].name?.trim() || "未命名改键";
+    return cfg.remaps[ref.index].name?.trim() || tr("未命名改键");
   return "";
 }
 
@@ -5120,15 +5154,15 @@ function renderConflictList() {
   const box = document.getElementById("msg-conflict-list")!;
   box.replaceChildren();
   if (conflicts.length === 0) {
-    box.append(el("div", "detail-empty", "暂无冲突"));
+    box.append(el("div", "detail-empty", tr("暂无冲突")));
     return;
   }
-  box.append(el("div", "conflict-head", `⚠ 冲突提醒（${conflicts.length} 处）`));
+  box.append(el("div", "conflict-head", trt`⚠ 冲突提醒（${conflicts.length} 处）`));
   const { errors, warns, caps } = splitConflicts(conflicts);
   const groups: [string, Conflict[], string][] = [
-    ["需处理", errors, "error"],
-    ["软冲突（遮蔽 / 重叠）", warns, "warn"],
-    ["平台 / 环境限制（配置合法，当前环境支持不了）", caps, "platform"],
+    [tr("需处理"), errors, "error"],
+    [tr("软冲突（遮蔽 / 重叠）"), warns, "warn"],
+    [tr("平台 / 环境限制（配置合法，当前环境支持不了）"), caps, "platform"],
   ];
   for (const [title, items, kind] of groups) {
     if (!items.length) continue;
@@ -5142,7 +5176,7 @@ function renderConflictList() {
         if (owner) {
           // 自己创建的快捷键/改键：点标题跳到它的编辑页。
           head.classList.add("conflict-link");
-          head.title = "点击跳到编辑页";
+          head.title = tr("点击跳到编辑页");
           head.addEventListener("click", () => void requestOpenDetail(owner.index, false, owner.kind));
         }
         d.append(head);
@@ -5202,7 +5236,7 @@ function syncSettings() {
     cfg.settings.snippet_index_url ?? "";
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
-    cfg.settings.sync_dir?.trim() || "未设置 —— 选一个目录（如 OneDrive）即可自动存一份";
+    cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个目录（如 OneDrive）即可自动存一份");
   // 输入层环境诊断：缺字段的老配置按「开」显示，与后端 `default_true` 一致；
   // 结论每次进设置页重算（探测在后端，有 3 秒缓存，不构成负担）。
   (document.getElementById("set-input-env") as HTMLInputElement).checked =
@@ -5212,6 +5246,8 @@ function syncSettings() {
   // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
   (document.getElementById("set-experimental") as HTMLInputElement).checked =
     cfg.settings.experimental === true;
+  (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
+    (cfg.settings.gesture_exclude ?? []).join("\n");
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -5237,7 +5273,7 @@ async function renderElevatedReport() {
   try {
     s = await invoke<ElevatedStatus>("elevated_status");
   } catch (e) {
-    box.textContent = `状态读取失败：${e}`;
+    box.textContent = trt`状态读取失败：${e}`;
     run.hidden = true;
     return;
   }
@@ -5245,28 +5281,28 @@ async function renderElevatedReport() {
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (!s.supported) {
     run.hidden = true;
-    line("当前平台不支持（这是 Windows 专属能力：它的对手是 UIPI）。");
+    line(tr("当前平台不支持（这是 Windows 专属能力：它的对手是 UIPI）。"));
     return;
   }
   const enabled = cfg.settings.elevated_inject === true;
   run.hidden = false;
-  run.textContent = s.connected ? "断开提权进程" : "启动提权进程";
+  run.textContent = s.connected ? tr("断开提权进程") : tr("启动提权进程");
   if (!enabled) {
     // 开关关着时按钮没有意义（就算拉起来，注入也不会走它）——禁用而不是隐藏，
     // 让「先开开关」这件事看得见。
     run.disabled = true;
-    run.title = "先打开上面的「提权窗口也生效」";
-    line("未启用。打开上面的开关后点「启动提权进程」（会弹一次 UAC 授权）。");
+    run.title = tr("先打开上面的「提权窗口也生效」");
+    line(tr("未启用。打开上面的开关后点「启动提权进程」（会弹一次 UAC 授权）。"));
     return;
   }
   run.disabled = false;
   run.title = "";
   if (s.connected) {
-    line("已连接：提权进程在运行，提权窗口里的注入会交给它。");
+    line(tr("已连接：提权进程在运行，提权窗口里的注入会交给它。"));
   } else {
-    line("开关已打开，但提权进程没在运行——点右上角「启动提权进程」拉起它。");
+    line(tr("开关已打开，但提权进程没在运行——点右上角「启动提权进程」拉起它。"));
   }
-  line("它平时不运行：关掉开关、或退出 Kada，它就跟着退出，不会留在系统里。");
+  line(tr("它平时不运行：关掉开关、或退出 Kada，它就跟着退出，不会留在系统里。"));
 }
 
 /**
@@ -5281,7 +5317,7 @@ async function renderInputEnvReport() {
   try {
     r = await invoke<InputEnvReport>("input_env_report", { config: cfg });
   } catch (e) {
-    box.textContent = `检测失败：${e}`;
+    box.textContent = trt`检测失败：${e}`;
     return;
   }
   // 罗技 HID++ 解锁只在 Windows 有实现（档位 C）；其余平台整块不显示，
@@ -5290,21 +5326,21 @@ async function renderInputEnvReport() {
   box.replaceChildren();
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (!r.supported) {
-    line("当前平台暂不支持这项检测。");
+    line(tr("当前平台暂不支持这项检测。"));
     return;
   }
   if (cfg.settings.input_env_diag === false) {
-    line("已关闭。开启后 Kada 才会检测会接管按键的厂商软件。");
+    line(tr("已关闭。开启后 Kada 才会检测会接管按键的厂商软件。"));
     return;
   }
   if (r.diverters.length === 0) {
-    line(`未检测到会接管按键的厂商软件（已查 ${r.checked} 类）。`);
+    line(trt`未检测到会接管按键的厂商软件（已查 ${r.checked} 类）。`);
   } else {
-    line(`检测到 ${r.diverters.length} 个可能接管按键的软件：`);
+    line(trt`检测到 ${r.diverters.length} 个可能接管按键的软件：`);
     for (const d of r.diverters) {
       const item = el("div", d.ignored ? "env-hit ignored" : "env-hit");
       const head = el("div", "env-hit-head");
-      head.append(el("div", "env-hit-name", d.ignored ? `${d.name}（已忽略提示）` : d.name));
+      head.append(el("div", "env-hit-name", d.ignored ? trt`${d.name}（已忽略提示）` : d.name));
       head.append(inputEnvIgnoreButton(d));
       item.append(head);
       item.append(el("div", "env-hit-advice", d.advice));
@@ -5312,9 +5348,9 @@ async function renderInputEnvReport() {
     }
   }
   // 内存完整性：只报状态、不当问题说——它拦的是内核驱动，不影响 Kada 现在的用户态钩子。
-  if (r.hvci === true) line("系统「内存完整性」已开启（不影响 Kada 当前的工作方式，仅作记录）。");
-  else if (r.hvci === false) line("系统「内存完整性」未开启。");
-  else line("系统「内存完整性」状态读不到（该功能未配置，或系统未提供）。");
+  if (r.hvci === true) line(tr("系统「内存完整性」已开启（不影响 Kada 当前的工作方式，仅作记录）。"));
+  else if (r.hvci === false) line(tr("系统「内存完整性」未开启。"));
+  else line(tr("系统「内存完整性」状态读不到（该功能未配置，或系统未提供）。"));
 }
 
 /**
@@ -5324,10 +5360,10 @@ async function renderInputEnvReport() {
  * 就行，不必把整条诊断链关掉（后者连别的接管者也不报了）。
  */
 function inputEnvIgnoreButton(d: InputEnvReport["diverters"][number]): HTMLButtonElement {
-  const btn = el("button", "ghost env-hit-ignore", d.ignored ? "恢复提示" : "忽略") as HTMLButtonElement;
+  const btn = el("button", "ghost env-hit-ignore", d.ignored ? tr("恢复提示") : tr("忽略")) as HTMLButtonElement;
   btn.title = d.ignored
-    ? "恢复这条提示：它重新出现在冲突检测里"
-    : "不再为这个软件提示（它仍在下方列表里，可随时恢复）";
+    ? tr("恢复这条提示：它重新出现在冲突检测里")
+    : tr("不再为这个软件提示（它仍在下方列表里，可随时恢复）");
   btn.addEventListener("click", () => void toggleInputEnvIgnore(d.id, !d.ignored));
   return btn;
 }
@@ -5347,23 +5383,23 @@ async function toggleInputEnvIgnore(id: string, ignore: boolean) {
  */
 async function renderHidppStatus() {
   const box = document.getElementById("hidpp-report")!;
-  box.textContent = "正在扫描罗技设备…";
+  box.textContent = tr("正在扫描罗技设备…");
   let s: HidppStatusView;
   try {
     s = await invoke<HidppStatusView>("hidpp_status");
   } catch (e) {
-    box.textContent = `扫描失败：${e}`;
+    box.textContent = trt`扫描失败：${e}`;
     return;
   }
   box.replaceChildren();
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (!s.supported) {
-    line("当前平台不支持（只有 Windows 能直接解锁罗技侧键）。");
+    line(tr("当前平台不支持（只有 Windows 能直接解锁罗技侧键）。"));
     return;
   }
   if (s.error) line(s.error);
   if (s.devices.length === 0) {
-    line("没有找到可用的罗技 HID++ 设备（没接罗技设备，或控制接口被独占）。");
+    line(tr("没有找到可用的罗技 HID++ 设备（没接罗技设备，或控制接口被独占）。"));
   }
   for (const d of s.devices) {
     const item = el("div", "env-hit");
@@ -5372,23 +5408,23 @@ async function renderHidppStatus() {
       el(
         "div",
         "env-hit-advice",
-        `HID++ 索引 ${d.index === 255 ? "直连" : d.index} · 控件 ${d.control_count} 个 · ${d.channel} 报文`,
+        trt`HID++ 索引 ${d.index === 255 ? tr("直连") : d.index} · 控件 ${d.control_count} 个 · ${d.channel} 报文`,
       ),
     );
     for (const c of d.controls) {
       const state = !c.present
-        ? "设备上没有"
+        ? tr("设备上没有")
         : c.diverted
           ? c.persistent
-            ? "被厂商软件接管（持久）"
-            : "被厂商软件接管"
-          : "标准报文";
+            ? tr("被厂商软件接管（持久）")
+            : tr("被厂商软件接管")
+          : tr("标准报文");
       item.append(el("div", "env-hit-advice", `${c.label}：${state}`));
     }
     box.append(item);
   }
-  if (s.keeper_active) line("本次运行期间保持解锁中（设备重连后会自动再关）。");
-  if (s.keeper_error) line(`保持解锁的最近一次错误：${s.keeper_error}`);
+  if (s.keeper_active) line(tr("本次运行期间保持解锁中（设备重连后会自动再关）。"));
+  if (s.keeper_error) line(trt`保持解锁的最近一次错误：${s.keeper_error}`);
 }
 
 /**
@@ -5400,12 +5436,12 @@ async function unlockHidpp() {
   const box = document.getElementById("hidpp-report")!;
   const btn = document.getElementById("hidpp-unlock") as HTMLButtonElement;
   btn.disabled = true;
-  box.textContent = "正在解锁（读取并写入罗技控制接口）…";
+  box.textContent = tr("正在解锁（读取并写入罗技控制接口）…");
   let r: HidppUnlockView;
   try {
     r = await invoke<HidppUnlockView>("hidpp_unlock");
   } catch (e) {
-    box.textContent = `解锁失败：${e}`;
+    box.textContent = trt`解锁失败：${e}`;
     btn.disabled = false;
     return;
   }
@@ -5413,27 +5449,27 @@ async function unlockHidpp() {
   box.replaceChildren();
   const line = (text: string) => box.append(el("div", "env-line", text));
   if (r.error) {
-    line(`解锁失败：${r.error}`);
-    line("可以在 Options+ / G HUB 里把该按键设为「无操作 / 默认功能」，或直接退出它。");
+    line(trt`解锁失败：${r.error}`);
+    line(tr("可以在 Options+ / G HUB 里把该按键设为「无操作 / 默认功能」，或直接退出它。"));
     return;
   }
   if (r.devices.length === 0) {
-    line("没有找到罗技设备。");
+    line(tr("没有找到罗技设备。"));
     return;
   }
   for (const d of r.devices) {
     const item = el("div", "env-hit");
     item.append(el("div", "env-hit-name", d.name));
-    if (d.cleared.length) item.append(el("div", "env-hit-advice", `已解锁：${d.cleared.join("、")}`));
-    if (d.already.length) item.append(el("div", "env-hit-advice", `本来就是标准报文：${d.already.join("、")}`));
-    if (d.missing.length) item.append(el("div", "env-hit-advice", `设备上没有：${d.missing.join("、")}`));
-    for (const f of d.failed) item.append(el("div", "env-hit-advice", `失败：${f}`));
+    if (d.cleared.length) item.append(el("div", "env-hit-advice", trt`已解锁：${d.cleared.join("、")}`));
+    if (d.already.length) item.append(el("div", "env-hit-advice", trt`本来就是标准报文：${d.already.join("、")}`));
+    if (d.missing.length) item.append(el("div", "env-hit-advice", trt`设备上没有：${d.missing.join("、")}`));
+    for (const f of d.failed) item.append(el("div", "env-hit-advice", trt`失败：${f}`));
     box.append(item);
   }
   line(
     r.keeping
-      ? "已生效，本次运行期间会保持解锁（设备重连或厂商软件重启后自动再关）。"
-      : "没有需要解锁的键：钩子已经能收到这些按键。",
+      ? tr("已生效，本次运行期间会保持解锁（设备重连或厂商软件重启后自动再关）。")
+      : tr("没有需要解锁的键：钩子已经能收到这些按键。"),
   );
 }
 
@@ -5444,6 +5480,13 @@ function bindSettings() {
   theme.addEventListener("change", () => {
     localStorage.setItem(THEME_KEY, theme.value);
     applyTheme(theme.value);
+  });
+  // 界面语言：只记本机（localStorage），切完整页 reload——静态文案与已渲染的界面一起换掉。
+  const lang = document.getElementById("set-lang") as HTMLSelectElement;
+  lang.value = savedLocale() ?? "system";
+  lang.addEventListener("change", () => {
+    applyLocale(lang.value === "system" ? null : (lang.value as "zh" | "en"));
+    location.reload();
   });
   const autostart = document.getElementById("set-autostart") as HTMLInputElement;
   const paused = document.getElementById("set-paused") as HTMLInputElement;
@@ -5522,6 +5565,15 @@ function bindSettings() {
     // 改完重画列表：快捷键页里「鼠标操作」那一类的显隐由它决定。
     void save().then(() => render());
   });
+  // 手势排除程序：每行一个（后端清洗会 trim 并丢空行），失焦时落盘。
+  const gestureExclude = document.getElementById("set-gesture-exclude") as HTMLTextAreaElement;
+  gestureExclude.addEventListener("change", () => {
+    cfg.settings.gesture_exclude = gestureExclude.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    void save();
+  });
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
   // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
   document
@@ -5543,14 +5595,14 @@ function bindSettings() {
   const elevatedRun = document.getElementById("elevated-toggle-run") as HTMLButtonElement;
   elevatedRun.addEventListener("click", async () => {
     const box = document.getElementById("elevated-report")!;
-    const wasConnected = elevatedRun.textContent?.includes("断开") === true;
+    const wasConnected = elevatedRun.textContent?.includes(tr("断开")) === true;
     elevatedRun.disabled = true;
-    box.textContent = wasConnected ? "正在断开…" : "正在请求管理员授权（会弹 UAC，请在弹出的窗口里确认）…";
+    box.textContent = wasConnected ? tr("正在断开…") : tr("正在请求管理员授权（会弹 UAC，请在弹出的窗口里确认）…");
     try {
       if (wasConnected) await invoke("elevated_stop");
       else await invoke<string>("elevated_start");
     } catch (e) {
-      box.textContent = `${wasConnected ? "断开" : "启动"}失败：${e}`;
+      box.textContent = trt`${wasConnected ? tr("断开") : tr("启动")}失败：${e}`;
       elevatedRun.disabled = false;
       return;
     }
@@ -5610,9 +5662,9 @@ async function exportConfig() {
   if (!path) return;
   try {
     await invoke("export_config", { path });
-    toast("已导出到 " + path);
+    toast(tr("已导出到 ") + path);
   } catch (e) {
-    toast(`导出失败: ${e}`);
+    toast(trt`导出失败: ${e}`);
   }
 }
 
@@ -5630,9 +5682,9 @@ async function chooseSyncDir() {
 async function syncNow() {
   try {
     const path = await invoke<string>("sync_now");
-    toast("已同步到 " + path);
+    toast(tr("已同步到 ") + path);
   } catch (e) {
-    toast(`同步失败: ${e}`);
+    toast(trt`同步失败: ${e}`);
   }
 }
 
@@ -5642,7 +5694,7 @@ async function syncRestore() {
   try {
     path = await invoke<string>("sync_import_path");
   } catch (e) {
-    toast(`无法读取同步存档: ${e}`);
+    toast(trt`无法读取同步存档: ${e}`);
     return;
   }
   const mode = await askImportMode(fileName(path));
@@ -5652,7 +5704,7 @@ async function syncRestore() {
     await load();
     showImportResult(r);
   } catch (e) {
-    toast(`恢复失败: ${e}`);
+    toast(trt`恢复失败: ${e}`);
   }
 }
 
@@ -5672,7 +5724,7 @@ let importModePending: ((m: ImportMode | null) => void) | null = null;
 function askImportMode(file: string): Promise<ImportMode | null> {
   // 已经有一个框等着时，后来的请求按「取消」处理（同未保存守卫：否则先到的 promise 永远挂着）。
   if (importModePending) return Promise.resolve(null);
-  document.getElementById("import-file")!.textContent = `将导入 ${file}，请选择导入方式：`;
+  document.getElementById("import-file")!.textContent = trt`将导入 ${file}，请选择导入方式：`;
   document.getElementById("import-modal")!.classList.remove("hidden");
   return new Promise((resolve) => (importModePending = resolve));
 }
@@ -5696,7 +5748,7 @@ async function importConfig() {
     await load();
     showImportResult(r);
   } catch (e) {
-    toast(`导入失败: ${e}`);
+    toast(trt`导入失败: ${e}`);
   }
 }
 
@@ -5707,7 +5759,7 @@ async function loadSampleConfig() {
     await load();
     showImportResult(r);
   } catch (e) {
-    toast(`载入示例失败: ${e}`);
+    toast(trt`载入示例失败: ${e}`);
   }
 }
 
@@ -5719,11 +5771,11 @@ function showImportResult(r: ImportOutcome) {
   const skipped = r.notes.length;
   document.getElementById("import-result-text")!.textContent =
     r.mode === "merge"
-      ? `已合并：新增 ${r.added} 条${skipped ? `，跳过 / 忽略 ${skipped} 条` : ""}。`
-      : `已替换为导入的配置：共 ${r.added} 条${skipped ? `，忽略 ${skipped} 条` : ""}。`;
+      ? trt`已合并：新增 ${r.added} 条${skipped ? trt`，跳过 / 忽略 ${skipped} 条` : ""}。`
+      : trt`已替换为导入的配置：共 ${r.added} 条${skipped ? trt`，忽略 ${skipped} 条` : ""}。`;
   const note = document.getElementById("import-result-note")!;
   note.classList.toggle("hidden", !r.backup);
-  if (r.backup) note.textContent = `导入前的配置已留档：${r.backup}（覆盖回去即可回滚）`;
+  if (r.backup) note.textContent = trt`导入前的配置已留档：${r.backup}（覆盖回去即可回滚）`;
   const list = document.getElementById("import-result-list")!;
   list.replaceChildren(...r.notes.map((n) => el("li", undefined, n)));
   document.getElementById("import-result-modal")!.classList.remove("hidden");
@@ -5757,7 +5809,7 @@ function syncUpdate() {
   const installBtn = document.getElementById("install-update")!;
   const checkBtn = document.getElementById("check-update") as HTMLButtonElement;
   if (!updateStatus) {
-    line.textContent = "正在读取版本…";
+    line.textContent = tr("正在读取版本…");
     actions.classList.add("hidden");
     return;
   }
@@ -5777,47 +5829,47 @@ function syncUpdate() {
 
   switch (updateStatus.phase) {
     case "idle":
-      line.textContent = `当前版本 ${current}`;
+      line.textContent = trt`当前版本 ${current}`;
       break;
     case "checking":
-      line.textContent = `当前版本 ${current} · 正在检查更新…`;
+      line.textContent = trt`当前版本 ${current} · 正在检查更新…`;
       break;
     case "up-to-date":
-      line.textContent = `当前版本 ${current}，已是最新版本`;
+      line.textContent = trt`当前版本 ${current}，已是最新版本`;
       break;
     case "available":
       line.textContent = portable
-        ? `发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取更新包`
-        : `发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取安装包`;
+        ? trt`发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取更新包`
+        : trt`发现新版本 v${updateStatus.version}（当前 ${current}），点「下载」获取安装包`;
       break;
     case "downloading": {
       const pct =
         updateStatus.percent === null || updateStatus.percent === undefined
           ? ""
           : ` ${Math.round(updateStatus.percent)}%`;
-      line.textContent = `正在下载 v${updateStatus.version}…${pct}`;
+      line.textContent = trt`正在下载 v${updateStatus.version}…${pct}`;
       break;
     }
     case "ready": {
       // 安装会退出并重启：安装版交给安装器静默装完重启，免安装版原位替换 exe 后重启。
       const how = portable
-        ? "点「安装」将替换 kada.exe 并重启应用"
-        : "点「安装」将退出应用、由安装器静默安装后重启";
+        ? tr("点「安装」将替换 kada.exe 并重启应用")
+        : tr("点「安装」将退出应用、由安装器静默安装后重启");
       const auto = cfg.settings.auto_update
         ? portable
-          ? "；已开启自动更新，也会在长时间空闲或下次启动时自动安装"
-          : "；已开启自动更新，也会在长时间空闲时自动安装"
+          ? tr("；已开启自动更新，也会在长时间空闲或下次启动时自动安装")
+          : tr("；已开启自动更新，也会在长时间空闲时自动安装")
         : "";
-      line.textContent = `已下载 v${updateStatus.version}，${how}${auto}`;
+      line.textContent = trt`已下载 v${updateStatus.version}，${how}${auto}`;
       break;
     }
     case "installing":
       line.textContent = portable
-        ? `正在替换程序到 v${updateStatus.version}，应用即将重启…`
-        : `正在安装 v${updateStatus.version}，应用即将退出…`;
+        ? trt`正在替换程序到 v${updateStatus.version}，应用即将重启…`
+        : trt`正在安装 v${updateStatus.version}，应用即将退出…`;
       break;
     case "error":
-      line.textContent = `更新失败：${updateStatus.message}`;
+      line.textContent = trt`更新失败：${updateStatus.message}`;
       break;
   }
 }
@@ -5828,7 +5880,7 @@ function fillKeySelect(sel: HTMLSelectElement, value: string, withEmpty = false)
   if (withEmpty) {
     const o = document.createElement("option");
     o.value = "";
-    o.textContent = "（无）";
+    o.textContent = tr("（无）");
     sel.append(o);
   }
   for (const k of KEY_OPTIONS) {
@@ -5875,7 +5927,7 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
   sel.replaceChildren();
   const empty = document.createElement("option");
   empty.value = "";
-  empty.textContent = mode === "hold" ? "（不切层）" : "基础层（始终生效）";
+  empty.textContent = mode === "hold" ? tr("（不切层）") : tr("基础层（始终生效）");
   sel.append(empty);
   for (const l of cfg.layers) {
     const o = document.createElement("option");
@@ -5887,23 +5939,23 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
 }
 
 function layerName(id: string | null | undefined): string {
-  if (!id) return "基础层";
-  return cfg.layers.find((l) => l.id === id)?.name ?? "基础层";
+  if (!id) return tr("基础层");
+  return cfg.layers.find((l) => l.id === id)?.name ?? tr("基础层");
 }
 
 // 层标记调色板：固定色值，保证「已用颜色在别的层不可选」的判重稳定，也免得调出肉眼难分的近似色。
 // 每层至多一个标记：颜色（`#rrggbb`）或一个 emoji 字符，互斥，存 core `Layer.mark`。
 const LAYER_COLORS: { value: string; label: string }[] = [
-  { value: "#e5484d", label: "红" },
-  { value: "#f76b15", label: "橙" },
-  { value: "#f5b300", label: "黄" },
-  { value: "#46a758", label: "绿" },
-  { value: "#12a594", label: "青" },
-  { value: "#4f9cf9", label: "蓝" },
-  { value: "#6e56cf", label: "紫" },
-  { value: "#e93d82", label: "粉" },
-  { value: "#a18072", label: "棕" },
-  { value: "#8b8d98", label: "灰" },
+  { value: "#e5484d", label: tr("红") },
+  { value: "#f76b15", label: tr("橙") },
+  { value: "#f5b300", label: tr("黄") },
+  { value: "#46a758", label: tr("绿") },
+  { value: "#12a594", label: tr("青") },
+  { value: "#4f9cf9", label: tr("蓝") },
+  { value: "#6e56cf", label: tr("紫") },
+  { value: "#e93d82", label: tr("粉") },
+  { value: "#a18072", label: tr("棕") },
+  { value: "#8b8d98", label: tr("灰") },
 ];
 
 function isLayerColor(mark: string | null | undefined): boolean {
@@ -5930,15 +5982,15 @@ function appendLayerMark(trig: HTMLElement, layerId: string | null | undefined) 
 
 // 改键形态的人类可读摘要（列表行 + 详情标题共用），与 kada-core 的 Remap::describe 对齐。
 function remapSummary(r: Remap): string {
-  if (r.sticky) return `粘滞 ${r.sticky}`;
-  if (r.oneshot) return `单击 ${r.oneshot}`;
-  if (r.lock_layer) return `长按锁定层「${layerName(r.lock_layer)}」`;
-  if (r.hold_layer) return `长按进层「${layerName(r.hold_layer)}」`;
+  if (r.sticky) return trt`粘滞 ${r.sticky}`;
+  if (r.oneshot) return trt`单击 ${r.oneshot}`;
+  if (r.lock_layer) return trt`长按锁定层「${layerName(r.lock_layer)}」`;
+  if (r.hold_layer) return trt`长按进层「${layerName(r.hold_layer)}」`;
   const parts: string[] = [];
-  if (r.tap) parts.push(`单击 ${r.tap}`);
-  if (r.tap2) parts.push(`双击 ${r.tap2}`);
-  if (r.tap3) parts.push(`三击 ${r.tap3}`);
-  if (r.hold) parts.push(`长按 ${r.hold}`);
+  if (r.tap) parts.push(trt`单击 ${r.tap}`);
+  if (r.tap2) parts.push(trt`双击 ${r.tap2}`);
+  if (r.tap3) parts.push(trt`三击 ${r.tap3}`);
+  if (r.hold) parts.push(trt`长按 ${r.hold}`);
   if (parts.length) return parts.join(" · ");
   return r.to;
 }
@@ -5952,7 +6004,7 @@ function renderLayers() {
       el(
         "div",
         "set-empty",
-        "还没有层。层让同一按键在不同状态下干不同事：在改键里配好「长按进入层 / 长按锁定层」后，层内的快捷键与改键才生效。",
+        tr("还没有层。层让同一按键在不同状态下干不同事：在改键里配好「长按进入层 / 长按锁定层」后，层内的快捷键与改键才生效。"),
       ),
     );
     return;
@@ -5977,7 +6029,7 @@ function renderLayers() {
     if (editingLayerId === l.id) {
       const inp = el("input", "layer-name-input") as HTMLInputElement;
       inp.value = l.name;
-      inp.placeholder = "层名";
+      inp.placeholder = tr("层名");
       let done = false;
       const commit = () => {
         if (done) return;
@@ -6004,7 +6056,7 @@ function renderLayers() {
       setTimeout(() => inp.focus(), 0);
     } else {
       const name = el("span", "layer-name", l.name);
-      name.title = "点击改名";
+      name.title = tr("点击改名");
       name.addEventListener("click", () => {
         editingLayerId = l.id;
         renderLayers();
@@ -6016,7 +6068,7 @@ function renderLayers() {
     const sel = el("select", "layer-color") as HTMLSelectElement;
     const none = document.createElement("option");
     none.value = "";
-    none.textContent = "无颜色";
+    none.textContent = tr("无颜色");
     sel.append(none);
     for (const c of LAYER_COLORS) {
       const o = document.createElement("option");
@@ -6027,7 +6079,7 @@ function renderLayers() {
       sel.append(o);
     }
     sel.value = isLayerColor(l.mark) ? l.mark! : "";
-    sel.title = "层颜色（已被其它层占用的颜色不可选）";
+    sel.title = tr("层颜色（已被其它层占用的颜色不可选）");
     sel.addEventListener("change", () => {
       if (sel.value) l.mark = sel.value; // 选颜色 → 盖掉旧标记（含 emoji）
       else if (isLayerColor(l.mark)) l.mark = null; // 选「无」→ 仅在原为颜色时清空，保留 emoji
@@ -6040,7 +6092,7 @@ function renderLayers() {
     emoji.value = isLayerColor(l.mark) ? "" : (l.mark ?? "");
     emoji.placeholder = "emoji";
     emoji.maxLength = 4;
-    emoji.title = "层 emoji 图标（填了就顶掉颜色）";
+    emoji.title = tr("层 emoji 图标（填了就顶掉颜色）");
     emoji.addEventListener("change", () => {
       const v = emoji.value.trim();
       l.mark = v || null;
@@ -6049,7 +6101,7 @@ function renderLayers() {
     row.append(emoji);
 
     const del = el("button", "row-more layer-del", "×") as HTMLButtonElement;
-    del.title = "删除层";
+    del.title = tr("删除层");
     del.addEventListener("click", (e) => {
       e.stopPropagation();
       void deleteLayer(l.id);
@@ -6070,8 +6122,8 @@ async function deleteLayer(id: string) {
   const target = cfg.layers.find((l) => l.id === id);
   if (!target) return;
   const ok = await confirmAsk(
-    `删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`,
-    { title: "删除层", kind: "warning" },
+    trt`删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`,
+    { title: tr("删除层"), kind: "warning" },
   );
   if (!ok) return;
   cfg.layers = cfg.layers.filter((l) => l.id !== id);
@@ -6104,7 +6156,7 @@ function isFormTarget(t: EventTarget | null): boolean {
 // 点击处喷一串向上漂浮的字符泡泡（字符取自该人自己的池子）。
 type ThanksEntry = { name: string; homepage?: string; pool?: string[] };
 const THANKS_THANKS = [
-  "🙏", "🙇", "🎉", "✨", "🌟", "💐", "🍻", "🎊", "谢谢", "感谢",
+  "🙏", "🙇", "🎉", "✨", "🌟", "💐", "🍻", "🎊", tr("谢谢"), tr("感谢"),
   "💻", "🖥️", "⌨️", "🖱️", "🔧", "⚙️", "🛠️", "💾", "⚡", "🎧",
   "(◍•ᴗ•◍)", "m(_ _)m", "(*´▽`*)", "ヽ(•‿•)ノ",
 ];
@@ -6118,15 +6170,15 @@ const THANKS_ART = [
 ];
 const THANKS_IT = [
   "💻", "🖥️", "⌨️", "🖱️", "🖨️", "💾", "💿", "📟", "🛰️", "📡", "⚙️", "🔧",
-  "⚡", "专业", "( •̀ ω •́ )✧",
+  "⚡", tr("专业"), "( •̀ ω •́ )✧",
 ];
 const THANKS: ThanksEntry[] = [
-  { name: "大爷", pool: THANKS_THANKS },
-  { name: "胡萝北", pool: THANKS_HEARTS },
-  { name: "卯秀", pool: THANKS_ART },
-  { name: "青风云羽", pool: THANKS_IT },
-  { name: "斗机叔圣咏", pool: THANKS_THANKS },
-  { name: "楚轩", pool: ["🐷", "🐽", "🐖", ...THANKS_THANKS] },
+  { name: tr("大爷"), pool: THANKS_THANKS },
+  { name: tr("胡萝北"), pool: THANKS_HEARTS },
+  { name: tr("卯秀"), pool: THANKS_ART },
+  { name: tr("青风云羽"), pool: THANKS_IT },
+  { name: tr("斗机叔圣咏"), pool: THANKS_THANKS },
+  { name: tr("楚轩"), pool: ["🐷", "🐽", "🐖", ...THANKS_THANKS] },
 ];
 
 // 从鼠标点击处向四周炸开一串字符泡泡：随机方向与距离、随机字号，由透明变不透明后淡出，动画结束自删。
@@ -6196,14 +6248,14 @@ function bind() {
   // 新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
-      { label: "新增快捷键", run: () => void requestNew("shortcut") },
-      { label: "新增目录", run: () => addFolder(null) },
+      { label: tr("新增快捷键"), run: () => void requestNew("shortcut") },
+      { label: tr("新增目录"), run: () => addFolder(null) },
     ];
     // 鼠标操作是实验功能：总闸关着时不提供这个入口（配置里已有的条目也不显示）。
     if (mouseFeaturesEnabled()) {
-      items.splice(1, 0, { label: "新增鼠标操作", run: () => void requestNew("gesture") });
+      items.splice(1, 0, { label: tr("新增鼠标操作"), run: () => void requestNew("gesture") });
     }
-    if (clipboard) items.push({ label: "粘贴到根级", run: () => pasteIntoFolder(null) });
+    if (clipboard) items.push({ label: tr("粘贴到根级"), run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
   });
 
@@ -6268,8 +6320,8 @@ function bind() {
       renderListPane();
     };
     showMenu(e.currentTarget as HTMLElement, [
-      { label: "已启用", on: listFilter.enabled, run: flip("enabled") },
-      { label: "有冲突", on: listFilter.conflicted, run: flip("conflicted") },
+      { label: tr("已启用"), on: listFilter.enabled, run: flip("enabled") },
+      { label: tr("有冲突"), on: listFilter.conflicted, run: flip("conflicted") },
     ]);
   });
 
@@ -6343,17 +6395,17 @@ function bind() {
       try {
         await invoke("start_record");
       } catch (err) {
-        toast(`开始录制失败: ${err}`);
+        toast(trt`开始录制失败: ${err}`);
         return;
       }
       recording = true;
       btn.classList.add("recording");
-      btn.textContent = "■ 录制中（点此停止）";
+      btn.textContent = tr("■ 录制中（点此停止）");
     } else {
       recording = false;
       const actions = await invoke<Action[]>("stop_record");
       btn.classList.remove("recording");
-      btn.textContent = "● 开始录制";
+      btn.textContent = tr("● 开始录制");
       // 录制结果进草稿，统一由「保存」落盘，避免未点保存就被写盘。
       const host = currentActionsHost();
       if (!host) return;
@@ -6610,7 +6662,7 @@ async function stopRecIfAny() {
     recording = false;
     const btn = document.getElementById("action-record") as HTMLButtonElement;
     btn.classList.remove("recording");
-    btn.textContent = "● 开始录制";
+    btn.textContent = tr("● 开始录制");
     await invoke("stop_record").catch(() => {});
   }
   if (mouseRecording) {
@@ -6641,13 +6693,13 @@ function msgField(k: string, v: string, code = false): HTMLElement {
 
 function resultCard(r: CommandResult): HTMLElement {
   const card = el("div", "msg-card");
-  card.append(msgField("快捷键", r.trigger));
-  if (r.name) card.append(msgField("名称", r.name));
-  card.append(msgField("时间", r.time));
-  card.append(msgField("命令", r.command, true));
+  card.append(msgField(tr("快捷键"), r.trigger));
+  if (r.name) card.append(msgField(tr("名称"), r.name));
+  card.append(msgField(tr("时间"), r.time));
+  card.append(msgField(tr("命令"), r.command, true));
   card.append(msgField("stdout", r.stdout, true));
   if (r.stderr) card.append(msgField("stderr", r.stderr, true));
-  card.append(msgField("退出码", r.exit_code === null ? "—" : String(r.exit_code)));
+  card.append(msgField(tr("退出码"), r.exit_code === null ? "—" : String(r.exit_code)));
   return card;
 }
 
@@ -6657,7 +6709,7 @@ function fmtMs(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
   const m = Math.floor(ms / 60_000);
-  return `${m}分${Math.round((ms % 60_000) / 1000)}秒`;
+  return trt`${m}分${Math.round((ms % 60_000) / 1000)}秒`;
 }
 
 // 执行时刻（绝对钟点）：记录的起始 epoch 毫秒 + 相对毫秒 → HH:MM:SS.mmm
@@ -6668,17 +6720,17 @@ function clockAt(run: RunRecord, offsetMs: number): string {
 }
 
 const STEP_STATUS_LABEL: Record<string, string> = {
-  ok: "成功",
-  error: "失败",
-  abort: "已中止",
-  running: "执行中",
+  ok: tr("成功"),
+  error: tr("失败"),
+  abort: tr("已中止"),
+  running: tr("执行中"),
 };
 
 const RUN_STATUS_LABEL: Record<string, string> = {
-  running: "执行中",
-  ok: "成功",
-  error: "有失败",
-  abort: "已中止",
+  running: tr("执行中"),
+  ok: tr("成功"),
+  error: tr("有失败"),
+  abort: tr("已中止"),
 };
 
 // 记录列表里一眼要分得清的状态：跑起来 = 执行中；一个动作都没落 = 未执行
@@ -6686,12 +6738,12 @@ const RUN_STATUS_LABEL: Record<string, string> = {
 // class 用 is-*（别用 st-*：那套是给带边框的元素设 border-color 的，挂到 tab 上会给整格染边框）。
 function runState(run: RunRecord): { cls: string; label: string } {
   if (run.status === "running") {
-    return run.steps.length ? { cls: "is-running", label: "执行中" } : { cls: "is-idle", label: "未执行" };
+    return run.steps.length ? { cls: "is-running", label: tr("执行中") } : { cls: "is-idle", label: tr("未执行") };
   }
-  if (!run.steps.length) return { cls: "is-idle", label: "未执行" };
-  if (run.status === "ok") return { cls: "is-ok", label: "执行完成" };
-  if (run.status === "error") return { cls: "is-error", label: "有失败" };
-  return { cls: "is-abort", label: "已中止" };
+  if (!run.steps.length) return { cls: "is-idle", label: tr("未执行") };
+  if (run.status === "ok") return { cls: "is-ok", label: tr("执行完成") };
+  if (run.status === "error") return { cls: "is-error", label: tr("有失败") };
+  return { cls: "is-abort", label: tr("已中止") };
 }
 
 // 记录 tab 的一行：优先用名称，否则触发键（时刻不进标签，悬停 tooltip 里看）。
@@ -6761,20 +6813,20 @@ function stepLabel(step: ActionStep): string {
 // 时间线上一个动作块的详情（时间线模式下点块看这里）。
 function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
   const box = el("div", "msg-step-fields");
-  box.append(msgField("开始", `${clockAt(run, step.start_ms)}（+${fmtMs(step.start_ms)}）`));
-  box.append(msgField("结束", `${clockAt(run, step.end_ms)}（+${fmtMs(step.end_ms)}）`));
-  box.append(msgField("耗时", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
-  box.append(msgField("状态", STEP_STATUS_LABEL[step.status] ?? step.status));
+  box.append(msgField(tr("开始"), `${clockAt(run, step.start_ms)}（+${fmtMs(step.start_ms)}）`));
+  box.append(msgField(tr("结束"), `${clockAt(run, step.end_ms)}（+${fmtMs(step.end_ms)}）`));
+  box.append(msgField(tr("耗时"), fmtMs(Math.max(0, step.end_ms - step.start_ms))));
+  box.append(msgField(tr("状态"), STEP_STATUS_LABEL[step.status] ?? step.status));
   if (step.kind === "if" && step.detail) {
     const c = step.detail as Condition;
-    box.append(msgField("条件", condSummary(c)));
-    box.append(msgField("走向", step.branch ? "条件成立（then）" : "条件不成立（otherwise）"));
+    box.append(msgField(tr("条件"), condSummary(c)));
+    box.append(msgField(tr("走向"), step.branch ? tr("条件成立（then）") : tr("条件不成立（otherwise）")));
   } else {
-    box.append(msgField("动作", stepLabel(step), true));
+    box.append(msgField(tr("动作"), stepLabel(step), true));
   }
   if (step.stdout) box.append(msgField("stdout", step.stdout, true));
   if (step.stderr) box.append(msgField("stderr", step.stderr, true));
-  box.append(msgField("退出码", step.exit_code === null ? "—" : String(step.exit_code)));
+  box.append(msgField(tr("退出码"), step.exit_code === null ? "—" : String(step.exit_code)));
   return box;
 }
 
@@ -6790,7 +6842,7 @@ function renderTimeline(run: RunRecord): HTMLElement {
   const host = el("div", "tl");
   const steps = run.steps.slice().sort((a, b) => a.start_ms - b.start_ms || a.id - b.id);
   if (steps.length === 0) {
-    host.append(el("div", "tl-empty", run.status === "running" ? "正在执行…" : "没有可展示的动作"));
+    host.append(el("div", "tl-empty", run.status === "running" ? tr("正在执行…") : tr("没有可展示的动作")));
     return host;
   }
   const total = Math.max(run.duration_ms, ...steps.map((s) => s.end_ms), 1);
@@ -6849,7 +6901,7 @@ function renderTimeline(run: RunRecord): HTMLElement {
 function renderPipeline(run: RunRecord): HTMLElement {
   const host = el("div", "pipe");
   if (run.steps.length === 0) {
-    host.append(el("div", "tl-empty", run.status === "running" ? "正在执行…" : "没有可展示的动作"));
+    host.append(el("div", "tl-empty", run.status === "running" ? tr("正在执行…") : tr("没有可展示的动作")));
     return host;
   }
   const kids = new Map<number, ActionStep[]>();
@@ -6890,12 +6942,12 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
             "pipe-lane-label",
             step.kind === "if"
               ? step.branch
-                ? "条件成立"
-                : "条件不成立"
+                ? tr("条件成立")
+                : tr("条件不成立")
               : step.kind === "parallel"
-                ? `并行 ${i + 1}`
+                ? trt`并行 ${i + 1}`
                 : step.kind === "group"
-                  ? "分组"
+                  ? tr("分组")
                   : "",
           ),
         );
@@ -6912,7 +6964,7 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
 
 function renderRunCard(run: RunRecord): void {
   const title = document.getElementById("msg-run-title")!;
-  title.textContent = `${run.name || "（未命名）"} · ${run.trigger} · ${run.time}`;
+  title.textContent = `${run.name || tr("（未命名）")} · ${run.trigger} · ${run.time}`;
   const badges = document.getElementById("msg-run-badges")!;
   badges.replaceChildren(
     el("span", `msg-run-badge st-${run.status}`, RUN_STATUS_LABEL[run.status] ?? run.status),
@@ -6921,16 +6973,16 @@ function renderRunCard(run: RunRecord): void {
   if (run.status === "running") {
     const stop = el("button", "msg-run-stop") as HTMLButtonElement;
     stop.type = "button";
-    stop.title = "停止执行：剩余动作不再执行，正在跑的命令 / 脚本立即终止";
-    stop.setAttribute("aria-label", "停止执行");
+    stop.title = tr("停止执行：剩余动作不再执行，正在跑的命令 / 脚本立即终止");
+    stop.setAttribute("aria-label", tr("停止执行"));
     stop.innerHTML =
       '<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg>'; // 常量 SVG，非用户输入
     stop.addEventListener("click", () => void abortActions());
     badges.append(stop);
   }
   badges.append(
-    el("span", "msg-run-badge", `总耗时 ${fmtMs(run.duration_ms)}`),
-    el("span", "msg-run-badge", `${run.steps.length} 个动作`),
+    el("span", "msg-run-badge", trt`总耗时 ${fmtMs(run.duration_ms)}`),
+    el("span", "msg-run-badge", trt`${run.steps.length} 个动作`),
   );
   document.getElementById("msg-run-modes")!.classList.toggle("hidden", run.steps.length === 0);
   const timeline = document.getElementById("msg-timeline")!;
@@ -7014,7 +7066,7 @@ function renderMessages() {
 let resultModalPrevFocus: HTMLElement | null = null;
 
 function showResultModal(r: CommandResult) {
-  document.getElementById("modal-title")!.textContent = `命令结果 · ${r.label}`;
+  document.getElementById("modal-title")!.textContent = trt`命令结果 · ${r.label}`;
   document.getElementById("modal-body")!.replaceChildren(resultCard(r));
   const modal = document.getElementById("result-modal")!;
   if (modal.classList.contains("hidden")) {
@@ -7029,9 +7081,9 @@ function showResultModal(r: CommandResult) {
 async function abortActions() {
   try {
     const running = await invoke<number>("abort_actions");
-    toast(running > 0 ? `已请求停止（${running} 条正在执行）` : "当前没有正在执行的动作");
+    toast(running > 0 ? trt`已请求停止（${running} 条正在执行）` : tr("当前没有正在执行的动作"));
   } catch (e) {
-    toast(`停止失败: ${e}`);
+    toast(trt`停止失败: ${e}`);
   }
 }
 
@@ -7163,7 +7215,7 @@ async function bootstrapToast() {
     const trigger = payload?.trigger ?? "";
     title.textContent = name || trigger;
     sub.textContent =
-      payload?.subtitle ?? (name ? `${trigger} · ` : "") + "正在执行…";
+      payload?.subtitle ?? (name ? `${trigger} · ` : "") + tr("正在执行…");
   };
   await listen<ToastPayload>("toast-show", (e) => render(e.payload));
   // 首次懒创建后补一次拉取：窗口刚建好时 toast-show 事件可能早于监听器注册，
@@ -7182,12 +7234,12 @@ async function bootstrapHud() {
   const row = el("div", "hud-row");
   box.append(row);
   document.body.append(box);
-  const MOD_KIND_LABEL: Record<string, string> = { hold: "按住", sticky: "粘滞", oneshot: "单次" };
+  const MOD_KIND_LABEL: Record<string, string> = { hold: tr("按住"), sticky: tr("粘滞"), oneshot: tr("单次") };
   const render = (payload: StatusPayload | null) => {
     row.replaceChildren();
     if (payload?.layer) {
       const chip = el("span", "hud-chip hud-layer");
-      chip.textContent = `层 · ${payload.layer}${payload.locked ? "（锁定）" : "（按住）"}`;
+      chip.textContent = trt`层 · ${payload.layer}${payload.locked ? tr("（锁定）") : tr("（按住）")}`;
       row.append(chip);
     }
     for (const m of payload?.mods ?? []) {
@@ -7226,9 +7278,9 @@ async function bootstrapHints() {
 
   const panel = el("div", "hints-panel");
   const head = el("div", "hints-head");
-  head.append(el("span", "hints-title", "快捷键速查"));
+  head.append(el("span", "hints-title", tr("快捷键速查")));
   const close = el("button", "hints-close", "×");
-  close.title = "关闭提示框（可从设置页或托盘菜单重新打开）";
+  close.title = tr("关闭提示框（可从设置页或托盘菜单重新打开）");
   head.append(close);
   const body = el("div", "hints-body");
   const foot = el(
@@ -7236,7 +7288,7 @@ async function bootstrapHints() {
     "hints-foot",
     // 两行是量着排的，别合回一行：21em 面板的内容宽只有 ~250px，这串提示单行要 288px，
     // 挤成一行末尾的「拖面板移动」就会被省略号吃掉（`style.css` 里 `.hints-foot` 配合）。
-    "滚轮：大小 · Ctrl+滚轮：透明度\n拖面板：移动 · Shift+滚轮：滚动",
+    tr("滚轮：大小 · Ctrl+滚轮：透明度\n拖面板：移动 · Shift+滚轮：滚动"),
   );
   panel.append(head, body, foot);
   document.body.append(panel);
@@ -7310,13 +7362,13 @@ async function bootstrapHints() {
       }
     }
     const groups: { title: string; items: ShortcutItem[] }[] = [];
-    if (base.length) groups.push({ title: "基础层", items: base });
+    if (base.length) groups.push({ title: tr("基础层"), items: base });
     for (const l of c.layers) {
       const items = byLayer.get(l.id);
       if (items?.length) groups.push({ title: l.name, items });
     }
     if (!groups.length) {
-      body.append(el("div", "hints-empty", "还没有启用的快捷键"));
+      body.append(el("div", "hints-empty", tr("还没有启用的快捷键")));
     }
     for (const g of groups) {
       const group = el("div", "hints-group");
@@ -7327,7 +7379,7 @@ async function bootstrapHints() {
         for (const t of s.triggers) keys.append(triggerEl(t));
         const name = s.name?.trim();
         const desc = s.description?.trim();
-        const label = el("span", "hints-label", name || desc || "（未命名）");
+        const label = el("span", "hints-label", name || desc || tr("（未命名）"));
         // 只放得下名字时，把描述挂成悬停提示——不额外占一行高度。
         if (name && desc) label.title = desc;
         row.append(keys, label);
