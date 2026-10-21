@@ -927,6 +927,8 @@ pub fn key_to_code(k: Key) -> Option<u16> {
         F21 | F22 | F23 | F24 => return None,
         // 鼠标键不是键码，注入走 [`simulate`] 的鼠标事件。
         MouseMiddle | MouseBack | MouseForward => return None,
+        // 滚轮触发键只接了 Windows（7.2-MG 余项①），macOS 注入侧没有映射。
+        WheelUp | WheelDown => return None,
     };
     Some(code)
 }

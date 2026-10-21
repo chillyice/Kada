@@ -94,8 +94,43 @@ pub(crate) fn play_local(ops: &[Op]) -> io::Result<()> {
 fn send_key(k: Key, up: bool) {
     if is_mouse_button(k) {
         mouse_button(k, up);
+    } else if let Some(delta) = wheel_delta(k) {
+        // 滚轮是离散键（7.2-MG 余项①）：「按下」= 滚一格，「抬起」没有对应事件——
+        // 否则 tap（Down+Up）会滚两格。
+        if !up {
+            send_wheel(delta);
+        }
     } else {
         send_one(k, if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) });
+    }
+}
+
+/// 滚轮键 → 一格的方向（正值向上 / 负值向下）；非滚轮键返回 `None`。
+fn wheel_delta(k: Key) -> Option<i32> {
+    match k {
+        Key::WheelUp => Some(120),
+        Key::WheelDown => Some(-120),
+        _ => None,
+    }
+}
+
+/// 注入一格滚轮（`MOUSEEVENTF_WHEEL`，120 = 一格）。
+fn send_wheel(delta: i32) {
+    let input = INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: 0,
+                dy: 0,
+                mouseData: delta as u32,
+                dwFlags: MOUSEEVENTF_WHEEL,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    unsafe {
+        SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
     }
 }
 
@@ -516,6 +551,14 @@ mod tests {
     #[test]
     fn numpad_enter_keeps_extended_scan() {
         assert_eq!(scan_for_key(Key::NumpadEnter, 0x0D), Some((0x1C, true)));
+    }
+
+    /// 滚轮是离散键：一格 = 一个方向（按下滚、抬起不滚，否则 tap 会滚两格）。
+    #[test]
+    fn wheel_keys_scroll_one_notch_each() {
+        assert_eq!(wheel_delta(Key::WheelUp), Some(120));
+        assert_eq!(wheel_delta(Key::WheelDown), Some(-120));
+        assert_eq!(wheel_delta(Key::A), None);
     }
 
     /// 媒体 / 音量键保留虚拟键码注入（`scan_for_key` 直接返回 `None`）。

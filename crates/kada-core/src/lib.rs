@@ -68,9 +68,10 @@ keys! {
     NumpadAdd => "NumpadAdd", NumpadSubtract => "NumpadSubtract",
     NumpadMultiply => "NumpadMultiply", NumpadDivide => "NumpadDivide",
     NumpadDecimal => "NumpadDecimal", NumpadEnter => "NumpadEnter", NumLock => "NumLock",
-    // 鼠标键（中键 / 侧键，作为触发键与改键目标；左右键与滚轮不纳入，
-    // 避免全局误拦截点击）。
+    // 鼠标键（中键 / 侧键 / 滚轮上下一格，作为触发键与改键目标；左右键不纳入，
+    // 避免全局误拦截点击）。滚轮按「一格 = 一次按下 + 抬起」当离散键（7.2-MG 余项①）。
     MouseMiddle => "MouseMiddle", MouseBack => "MouseBack", MouseForward => "MouseForward",
+    WheelUp => "WheelUp", WheelDown => "WheelDown",
 }
 
 impl Key {
@@ -256,6 +257,8 @@ mod parse {
             "MouseMiddle" | "MB3" | "Middle" => MouseMiddle,
             "MouseBack" | "MB4" | "XButton1" | "X1" => MouseBack,
             "MouseForward" | "MB5" | "XButton2" | "X2" => MouseForward,
+            "WheelUp" | "ScrollUp" | "WheelPlus" => WheelUp,
+            "WheelDown" | "ScrollDown" | "WheelMinus" => WheelDown,
             _ => letter_or_digit(s).ok_or(ParseError::UnknownKey(s.to_string()))?,
         })
     }
@@ -2764,21 +2767,38 @@ pub struct InputEnv {
 /// 两个用途：Windows 按需安装鼠标低层钩子（见规划 7.4-㉛）、输入层环境诊断只在用到
 /// 鼠标键时才提醒接管者（见 [`diagnose_input_env`]）。
 pub fn config_uses_mouse(cfg: &Config) -> bool {
-    fn is_mouse(k: Key) -> bool {
-        matches!(k, Key::MouseMiddle | Key::MouseBack | Key::MouseForward)
-    }
+    uses_key_as_trigger(cfg, |k| {
+        matches!(
+            k,
+            Key::MouseMiddle
+                | Key::MouseBack
+                | Key::MouseForward
+                | Key::WheelUp
+                | Key::WheelDown
+        )
+    })
+}
+
+/// 配置是否把**滚轮**绑成触发键（7.2-MG 余项①）：滚轮当离散键要钩子层逐事件处理，
+/// 没用到时钩子层直接放行（不让每次滚动都走一遍判定）。
+pub fn config_uses_wheel(cfg: &Config) -> bool {
+    uses_key_as_trigger(cfg, |k| matches!(k, Key::WheelUp | Key::WheelDown))
+}
+
+/// 配置是否把满足 `hit` 的键用作**触发侧**（快捷键 / 改键来源）。
+fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
     cfg.shortcuts.iter().any(|s| {
         s.enabled
             && s.triggers.iter().any(|t| {
                 Trigger::parse(t)
-                    .map(|t| t.steps().iter().any(|s| is_mouse(s.key)))
+                    .map(|t| t.steps().iter().any(|s| hit(s.key)))
                     .unwrap_or(false)
             })
     }) || cfg.remaps.iter().any(|r| {
         r.enabled
             && r.from
                 .parse::<Shortcut>()
-                .map(|s| is_mouse(s.key))
+                .map(|s| hit(s.key))
                 .unwrap_or(false)
     })
 }
@@ -3485,6 +3505,29 @@ mod tests {
     }
 
     #[test]
+    fn wheel_is_a_mouse_trigger_but_only_when_bound() {
+        let mut cfg = Config::default();
+        assert!(!config_uses_mouse(&cfg), "空配置不该挂鼠标钩子");
+        assert!(!config_uses_wheel(&cfg));
+        cfg.shortcuts.push(ShortcutItem {
+            triggers: vec!["Ctrl+WheelUp".into()],
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(config_uses_mouse(&cfg), "滚轮触发键也要挂鼠标钩子");
+        assert!(config_uses_wheel(&cfg), "绑了滚轮 → 钩子层逐事件处理");
+        // 只作为改键的**目标** / 注入目标不算触发侧：不监听滚轮。
+        let mut injected = Config::default();
+        injected.remaps.push(Remap {
+            from: "F1".into(),
+            to: "ScrollUp".into(),
+            enabled: true,
+            ..Default::default()
+        });
+        assert!(!config_uses_wheel(&injected));
+    }
+
+    #[test]
     fn new_keys_roundtrip_and_aliases() {
         // 新增键：解析 → 渲染回环必须一致。
         let cases = [
@@ -3492,7 +3535,7 @@ mod tests {
             "VolumeMute", "VolumeDown", "VolumeUp", "NumLock",
             "Numpad0", "Numpad9", "NumpadAdd", "NumpadSubtract",
             "NumpadMultiply", "NumpadDivide", "NumpadDecimal", "NumpadEnter",
-            "MouseMiddle", "MouseBack", "MouseForward",
+            "MouseMiddle", "MouseBack", "MouseForward", "WheelUp", "WheelDown",
         ];
         for s in cases {
             let k: Key = s.parse().unwrap();
@@ -3501,6 +3544,7 @@ mod tests {
         // 别名解析到同一键，且主键名渲染为规范名。
         assert_eq!("MB4".parse::<Key>().unwrap(), Key::MouseBack);
         assert_eq!(key_name("XButton2".parse::<Key>().unwrap()), "MouseForward");
+        assert_eq!("ScrollUp".parse::<Key>().unwrap(), Key::WheelUp);
         assert_eq!("NumpadPlus".parse::<Key>().unwrap(), Key::NumpadAdd);
         assert_eq!("VolUp".parse::<Key>().unwrap(), Key::VolumeUp);
         // 组合键触发：无修饰的鼠标键与带修饰的媒体键都能解析。

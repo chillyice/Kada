@@ -310,6 +310,7 @@ fn reset_runtime_state() {
     }
     SWALLOWED.lock().unwrap().clear();
     HELD_KEYS.lock().unwrap().clear();
+    *WHEEL_ACC.lock().unwrap() = 0;
 }
 
 /// 取走所有待释放的替换目标键（宿主原键 → 已注入并按住的键），并清空登记表。
@@ -678,8 +679,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 }
 
 /// 鼠标侧键/中键事件 → 决定吞掉/改键/放行。只处理中键与 X 侧键（MB4/MB5），
-/// 左右键、滚轮、移动一律放行（不纳入键模型，避免全局误拦截点击）。
+/// 左右键、移动一律放行（不纳入键模型，避免全局误拦截点击）。滚轮见 [`swallow_wheel`]。
 fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
+    if wparam == WM_MOUSEWHEEL {
+        return swallow_wheel(ms);
+    }
     // mouseData 高 16 位承载 X 按钮号：1 = XBUTTON1（后退/MB4），2 = XBUTTON2（前进/MB5）。
     let x_button = |ms: &MSLLHOOKSTRUCT| ms.mouseData >> 16;
     let (key, down) = match wparam {
@@ -733,6 +737,74 @@ fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
             SWALLOWED.lock().unwrap().insert(key);
             REPLACED_DOWN.lock().unwrap().insert(key, target);
             simulate::down(target);
+            true
+        }
+    }
+}
+
+/// 滚轮累积器：高精度滚轮 / 触控板一次事件可能只有 15 / 30，累积到 120 才算一格
+/// （规划 7.2-MG 余项①）。不足一格的事件**原样放行**，累积值留着下次接着用。
+static WHEEL_ACC: LazyLock<Mutex<i32>> = LazyLock::new(|| Mutex::new(0));
+/// 配置里有没有把滚轮绑成触发键（壳层推送，见 [`set_wheel_enabled`]）。没绑时滚轮一个字节
+/// 都不多走——不构造事件、不碰判定。
+static WHEEL_ENABLED: AtomicBool = AtomicBool::new(false);
+
+/// 壳层按配置推送「滚轮是否作为触发键」（与 [`set_mouse_enabled`] 同一个 60ms 定时器线程）。
+pub fn set_wheel_enabled(on: bool) {
+    if !on {
+        *WHEEL_ACC.lock().unwrap() = 0;
+    }
+    WHEEL_ENABLED.store(on, Ordering::Relaxed);
+}
+
+/// 一个滚轮事件 → 一格「按下 + 抬起」的离散键（`WheelUp` / `WheelDown`）。
+///
+/// 只有在配置把这个方向绑成触发键时才吞（`Action::Block` / `Replace`），否则原样放行、
+/// 页面照常滚动。`Replace` 的目标直接点一下（滚轮没有抬起事件可等，不能沿用按键的
+/// 「按住原键 = 按住目标键」）。一次事件最多算一格：多余的部分留给后续事件，不做连发。
+fn swallow_wheel(ms: &MSLLHOOKSTRUCT) -> bool {
+    if !WHEEL_ENABLED.load(Ordering::Relaxed) {
+        return false;
+    }
+    let delta = (ms.mouseData >> 16) as u16 as i16 as i32;
+    if delta == 0 {
+        return false;
+    }
+    let reached = {
+        let mut acc = WHEEL_ACC.lock().unwrap();
+        // 换向先清零：反向滚动时残余不该跨方向累计（否则「上 90 + 下 90」会被凑成一格）。
+        if (*acc > 0 && delta < 0) || (*acc < 0 && delta > 0) {
+            *acc = 0;
+        }
+        *acc += delta;
+        if acc.abs() >= 120 {
+            *acc -= if *acc > 0 { 120 } else { -120 };
+            true
+        } else {
+            false
+        }
+    };
+    if !reached {
+        return false;
+    }
+    let key = if delta > 0 { Key::WheelUp } else { Key::WheelDown };
+    let mods = current_mods();
+    let action = {
+        let mut h = HANDLER.lock().unwrap();
+        match h.as_mut() {
+            Some(f) => f(KeyEvent::Down { key, mods: mods.clone(), repeat: false }),
+            None => Action::Allow,
+        }
+    };
+    // 滚轮没有真实的抬起事件：抬起由我们补，状态机（按住集合 / 序列）才看得到完整一对。
+    if let Some(f) = HANDLER.lock().unwrap().as_mut() {
+        let _ = f(KeyEvent::Up { key, mods });
+    }
+    match action {
+        Action::Allow => false,
+        Action::Block => true,
+        Action::Replace(target) => {
+            simulate::tap(target);
             true
         }
     }
@@ -861,7 +933,7 @@ pub fn key_to_vk(k: Key) -> Option<u16> {
         NumpadMultiply => VK_MULTIPLY, NumpadDivide => VK_DIVIDE,
         NumpadDecimal => VK_DECIMAL, NumpadEnter => VK_RETURN, NumLock => VK_NUMLOCK,
         // 鼠标键注入走 SendInput 鼠标事件（simulate），非虚拟键码。
-        MouseMiddle | MouseBack | MouseForward => return None,
+        MouseMiddle | MouseBack | MouseForward | WheelUp | WheelDown => return None,
     };
     Some(vk.0)
 }

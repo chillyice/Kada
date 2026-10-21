@@ -705,6 +705,8 @@ pub fn key_to_code(k: Key) -> Option<u16> {
         MouseMiddle => KeyCode::BTN_MIDDLE,
         MouseBack => KeyCode::BTN_SIDE,
         MouseForward => KeyCode::BTN_EXTRA,
+        // 滚轮触发键只接了 Windows（7.2-MG 余项①），Linux 注入侧没有映射。
+        WheelUp | WheelDown => return None,
     };
     Some(code.0)
 }

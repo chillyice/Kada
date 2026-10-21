@@ -1043,7 +1043,7 @@ const KEY_OPTIONS = [
   "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9",
   "NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide",
   "NumpadDecimal", "NumpadEnter", "NumLock",
-  "MouseMiddle", "MouseBack", "MouseForward",
+  "MouseMiddle", "MouseBack", "MouseForward", "WheelUp", "WheelDown",
 ];
 
 // ---- IPC ----
@@ -1222,7 +1222,7 @@ function captureHint(text: string | null) {
 function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement) {
   stopCapture();
   btn.disabled = true;
-  captureHint(tr("请按组合键或鼠标侧键…（Esc 取消）"));
+  captureHint(tr("请按组合键或鼠标侧键 / 滚轮…（Esc 取消）"));
   void invoke("set_paused", { paused: true });
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -1242,10 +1242,20 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
     onCommit(withMods(e, key));
     finish();
   };
+  // 滚轮也当离散键录（一格一下）。不阻止默认的话页面会跟着滚。
+  const onWheel = (e: WheelEvent) => {
+    const key = wheelKeyFromEvent(e);
+    if (!key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    onCommit(withMods(e, key));
+    finish();
+  };
   const finish = () => {
     activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
     window.removeEventListener("mousedown", onMouse, true);
+    window.removeEventListener("wheel", onWheel, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     captureHint(null);
@@ -1253,6 +1263,7 @@ function startCapture(onCommit: (combo: string) => void, btn: HTMLButtonElement)
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
   window.addEventListener("mousedown", onMouse, true);
+  window.addEventListener("wheel", onWheel, { capture: true, passive: false });
 }
 
 // 键序列录入：逐键累积 comboFromEvent 出的组合（空格拼接实时预览），Enter 提交、Esc 取消。
@@ -1263,7 +1274,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   btn.disabled = true;
   void invoke("set_paused", { paused: true });
   const update = () => {
-    captureHint(steps.length ? trt`序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : tr("请按键或鼠标侧键序列…（Enter 提交，Esc 取消）"));
+    captureHint(steps.length ? trt`序列：${steps.join(" ")}（Enter 提交，Esc 取消）` : tr("请按键、鼠标侧键或滚轮序列…（Enter 提交，Esc 取消）"));
   };
   const handler = (e: KeyboardEvent) => {
     e.preventDefault();
@@ -1287,10 +1298,19 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
     steps.push(withMods(e, key));
     update();
   };
+  const onWheel = (e: WheelEvent) => {
+    const key = wheelKeyFromEvent(e);
+    if (!key) return;
+    e.preventDefault();
+    e.stopPropagation();
+    steps.push(withMods(e, key));
+    update();
+  };
   const finish = () => {
     activeCaptureCleanup = null;
     window.removeEventListener("keydown", handler, true);
     window.removeEventListener("mousedown", onMouse, true);
+    window.removeEventListener("wheel", onWheel, true);
     void invoke("set_paused", { paused: false });
     btn.disabled = false;
     captureHint(null);
@@ -1298,6 +1318,7 @@ function startSequenceCapture(onCommit: (seq: string) => void, btn: HTMLButtonEl
   activeCaptureCleanup = finish;
   window.addEventListener("keydown", handler, true);
   window.addEventListener("mousedown", onMouse, true);
+  window.addEventListener("wheel", onWheel, { capture: true, passive: false });
   update();
 }
 
@@ -1379,6 +1400,12 @@ function startChordCapture(onCommit: (chord: string) => void, btn: HTMLButtonEle
   window.addEventListener("mousedown", onMouse, true);
   window.addEventListener("mouseup", onMouse, true);
   update();
+}
+
+// 滚轮事件 → 离散键名（一格 = 一次按下 + 抬起；规划 7.2-MG 余项①）。
+function wheelKeyFromEvent(e: WheelEvent): string | null {
+  if (!e.deltaY) return null;
+  return e.deltaY < 0 ? "WheelUp" : "WheelDown";
 }
 
 // 当前按住的修饰键（与后端键名一致：Ctrl / Alt / Shift / Meta）。键盘与鼠标事件都有这四个字段。

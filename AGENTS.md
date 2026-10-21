@@ -48,7 +48,8 @@
 
 - **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：唤窗、动作执行、注入一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
 - **注入事件一律放行**（Windows `LLKHF_INJECTED`）防回环；**`Block` / `Replace` 登记 `SWALLOWED`** 连 keyup 一起吞，但**所有 keyup 仍要回调 handler**
-- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键**或**有启用手势才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`（会让输入层诊断误报厂商接管）
+- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）**或**有启用手势才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`（会让输入层诊断误报厂商接管）
+- **滚轮只在绑了触发键时接管**（`config_uses_wheel` → `set_wheel_enabled`）：120 累积一格、换向清零；没绑就原样放行
 - **macOS 辅助功能是运行时授权**（`AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；**媒体键走独立 `NX_SYSDEFINED` tap**
 - **Linux 不抓触摸板 / 指点杆**（抓了等于废掉整个触摸板）
 - **输入层起不来的处置**：Windows 失败退出；macOS / Linux **照常启动**，把 `start` 的错误串经消息中心推给用户
@@ -132,6 +133,7 @@
 | `productName` / 窗口标题 / 应用显示名 | `Kada` / `咔哒 Kada` |
 
 - **键模型使用平台无关中性名**：`Enter/Escape`（不是 `Return`），修饰键 `Ctrl/Alt/Shift/Meta`（macOS 的 ⌘ 由 `Meta` 承载，平台层负责把 OS 键映射成 `Key`）。键名渲染回 `"Ctrl+Alt+K"` 形式（说明书 §2）
+- **滚轮是离散键**（`WheelUp`/`WheelDown`）：一格 = 一次按下+抬起，不能作和弦成员 / 按住类触发；高精度滚轮累积到 120 才算一格（说明书 §5.10）
 - 平台代码一律 `#[cfg]` 门控，三后端同一套接口；目录树见 `docs/README.md`
 
 ## 3. 构建与验证命令

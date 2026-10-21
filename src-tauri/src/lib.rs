@@ -70,8 +70,8 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, foreground_fullscreen, foreground_window, frontmost_context,
-        hotkey_occupied, reinstall_count, set_mouse_enabled, set_mouse_recorder, simulate, start,
-        Action as HookAction, HookHandle, KeyEvent,
+        hotkey_occupied, reinstall_count, set_mouse_enabled, set_mouse_recorder,
+        set_wheel_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -117,6 +117,9 @@ mod input {
     /// 鼠标钩子按需安装是 Windows 低层钩子（`WH_MOUSE_LL`）的优化；Linux 的鼠标键与键盘
     /// 同走 evdev，无此开关，这里是空实现。
     pub fn set_mouse_enabled(_on: bool) {}
+
+    /// 滚轮触发键的闸门（7.2-MG 余项①）：滚轮触发键目前只接了 Windows，Linux 空实现。
+    pub fn set_wheel_enabled(_on: bool) {}
 
     /// evdev 钩子没有「被系统摘除后重装」这条路（不依赖系统钩子链），0 = 没重装过；
     /// 设备拔出导致的丢事件由 `reinstall_count`（`kada-hook::linux`）计数，语义与
@@ -172,6 +175,9 @@ mod input {
     /// 事件，无此开关，这里是空实现。
     pub fn set_mouse_enabled(_on: bool) {}
 
+    /// 滚轮触发键的闸门（7.2-MG 余项①）：滚轮触发键目前只接了 Windows，macOS 空实现。
+    pub fn set_wheel_enabled(_on: bool) {}
+
     /// 全屏程序自动暂停手势：macOS 手势尚未接线（7.2-MG 余项②），恒 false。
     pub fn foreground_fullscreen() -> bool {
         false
@@ -203,6 +209,9 @@ mod input {
 
     /// 无输入层实现：无鼠标钩子可开关。
     pub fn set_mouse_enabled(_on: bool) {}
+
+    /// 无输入层实现：滚轮触发键不生效。
+    pub fn set_wheel_enabled(_on: bool) {}
 
     /// 无输入层实现：没有鼠标录制。
     pub fn set_mouse_recorder(_f: Option<crate::MouseRecordCallback>) {}
@@ -888,6 +897,8 @@ fn spawn_engine_ticker(
         let mut last_status: Option<(StatusPayload, bool)> = None;
         // 上一次「配置是否需要鼠标钩子」：变了才通知钩子层（避免每拍都发重装请求）。
         let mut last_mouse: Option<bool> = None;
+        // 上一次「滚轮是否作为触发键」的推送值（规划 7.2-MG 余项①）：没绑时钩子层直接放行。
+        let mut last_wheel: Option<bool> = None;
         // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
         let mut last_gesture: Option<bool> = None;
         // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
@@ -917,7 +928,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse, user_paused, elevated, gesture_on) = {
+            let (payload, hud_enabled, use_mouse, use_wheel, user_paused, elevated, gesture_on) = {
                 let guard = cfg.read().unwrap();
                 let frozen = rec.lock().unwrap().is_some()
                     || pause_active(&paused_until)
@@ -942,6 +953,7 @@ fn spawn_engine_ticker(
                     build_status(&status, &guard),
                     guard.settings.show_status_hud,
                     config_needs_mouse_hook(&guard),
+                    kada_core::config_uses_wheel(&guard),
                     guard.settings.paused,
                     guard.settings.elevated_inject,
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
@@ -962,6 +974,11 @@ fn spawn_engine_ticker(
             if last_mouse != Some(use_mouse) {
                 input::set_mouse_enabled(use_mouse);
                 last_mouse = Some(use_mouse);
+            }
+            // 滚轮触发键的闸门（规划 7.2-MG 余项①）：没绑时钩子层不构造事件、不碰判定。
+            if last_wheel != Some(use_wheel) {
+                input::set_wheel_enabled(use_wheel);
+                last_wheel = Some(use_wheel);
             }
             // 鼠标手势（规划 7.2-MG）：开着才拦右键；关掉时钩子层把状态清干净，
             // 右键立刻回到系统行为（总开关在设置页，配置保留）。
@@ -4835,6 +4852,7 @@ pub fn run() {
             // 定时器线程跟进（见 spawn_engine_ticker）。
             // 此刻钩子还没起，`set_mouse_enabled` 只记下值，首次安装按它决定。
             input::set_mouse_enabled(config_needs_mouse_hook(&config.read().unwrap()));
+            input::set_wheel_enabled(kada_core::config_uses_wheel(&config.read().unwrap()));
 
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let hook_start = {
