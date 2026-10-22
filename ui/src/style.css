@@ -4571,3 +4571,144 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 [data-theme="crt"][data-crt="light"] .pipe-block.st-abort .pipe-flag {
   color: #8a6410;
 }
+
+/* 复制快捷菜单（EXT-13）：设置页的条目编辑器 */
+.clipboard-menu-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.menu-editor-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.menu-editor-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.menu-editor-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.menu-editor-label {
+  flex: 1;
+  min-width: 80px;
+}
+
+.menu-editor-kind {
+  flex: 1;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.menu-editor-btn {
+  padding: 2px 8px;
+  line-height: 1.4;
+}
+
+.menu-editor-btn.danger {
+  color: var(--accent);
+}
+
+.menu-editor-sub {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.menu-editor-adds {
+  padding-left: 12px;
+}
+
+/* 复制快捷菜单浮窗（clipboard-menu 窗口）：透明窗口 + 不可激活的菜单面板 */
+body:has(.clipboard-menu-panel) {
+  background: transparent;
+}
+
+.clipboard-menu-panel {
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 160px;
+  max-width: 320px;
+  padding: 4px;
+  color: var(--text);
+  background: var(--float-bg);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.45);
+  font-size: var(--fs-sm);
+  user-select: none;
+}
+
+.clipboard-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.clipboard-menu-item:hover:not(:disabled) {
+  background: var(--hover-bg);
+}
+
+.clipboard-menu-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.clipboard-menu-item.submenu {
+  justify-content: space-between;
+}
+
+.clipboard-menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.clipboard-menu-caret {
+  color: var(--muted);
+  transition: transform 0.12s ease;
+}
+
+.clipboard-menu-group.open > .clipboard-menu-item .clipboard-menu-caret {
+  transform: rotate(90deg);
+}
+
+.clipboard-menu-sub {
+  display: none;
+  flex-direction: column;
+  margin-left: 10px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+}
+
+.clipboard-menu-group.open > .clipboard-menu-sub {
+  display: flex;
+}
+
+.clipboard-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}

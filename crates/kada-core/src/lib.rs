@@ -2030,6 +2030,84 @@ pub fn keycast_text(
     Some(format!("{} {}", parts.join("+"), if down { "↓" } else { "↑" }))
 }
 
+/// 复制快捷菜单（EXT-13）：选中文字后**双击 Ctrl+C** 在光标处弹出动作菜单。
+///
+/// 触发是**旁路观察**（不吞键，复制行为仍是系统 / 前台程序自己的），菜单本身只做展示；
+/// 每个条目内部是一段 [`Action`]，点击后走与快捷键相同的 `fire` 链路（注入锁 / 步骤上报 /
+/// 超时与中止全部继承）。缺字段 = 关闭。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClipboardMenu {
+    /// 是否启用。关掉只是不弹菜单，条目配置保留。
+    #[serde(default)]
+    pub enabled: bool,
+    /// 两次 Ctrl+C 的最大间隔（毫秒）。
+    #[serde(default = "default_double_copy_ms")]
+    pub double_copy_ms: u64,
+    /// 菜单条目（数组顺序即显示顺序，可嵌套子菜单）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub items: Vec<MenuEntry>,
+}
+
+impl ClipboardMenu {
+    /// 双击间隔上下限（毫秒）。
+    pub const DOUBLE_COPY_MS_RANGE: (u64, u64) = (150, 2000);
+    /// 子菜单最大嵌套层数（顶层算第 1 层）。
+    pub const MAX_DEPTH: usize = 3;
+
+    /// 归一化：间隔钳到合法区间（手改 JSON 写坏也不至于让菜单永远弹不出来）。
+    pub fn normalized(mut self) -> Self {
+        self.double_copy_ms = self
+            .double_copy_ms
+            .clamp(Self::DOUBLE_COPY_MS_RANGE.0, Self::DOUBLE_COPY_MS_RANGE.1);
+        self
+    }
+}
+
+impl Default for ClipboardMenu {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            double_copy_ms: default_double_copy_ms(),
+            items: Vec::new(),
+        }
+    }
+}
+
+/// 两次 Ctrl+C 最大间隔的缺省值（毫秒）。
+pub fn default_double_copy_ms() -> u64 {
+    500
+}
+
+/// 复制快捷菜单的一个条目：动作 / 子菜单 / 分割线。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum MenuEntry {
+    /// 普通条目：点击执行 `action`。`label` 是菜单上显示的文字。
+    Action {
+        #[serde(default)]
+        label: String,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        enabled: bool,
+        action: Action,
+    },
+    /// 子菜单：`items` 与顶层同构（可继续嵌套，见 [`ClipboardMenu::MAX_DEPTH`]）。
+    Submenu {
+        #[serde(default)]
+        label: String,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        enabled: bool,
+        #[serde(default)]
+        items: Vec<MenuEntry>,
+    },
+    /// 分割线（纯展示，不可点击）。
+    Separator,
+}
+
+/// `serde` 的 `skip_serializing_if` 帮手：`true` 的布尔字段不落盘（`enabled` 缺省即 true）。
+fn is_true(v: &bool) -> bool {
+    *v
+}
+
 /// 软件更新源（见 `docs/需求设计说明书.md` §5.5）。
 ///
 /// 国内网络到 GitHub 不稳定，默认走 ihomy 服务器上的每日镜像；镜像里的安装包与清单
@@ -2217,6 +2295,9 @@ pub struct Settings {
     /// 屏幕按键回显（EXT-12）：当前按键 + 修饰键组合，见 [`Keycast`]。缺字段 = 关闭。
     #[serde(default)]
     pub keycast: Keycast,
+    /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
+    #[serde(default)]
+    pub clipboard_menu: ClipboardMenu,
 }
 
 /// 鼠标手势起手距离的缺省值（像素）。
@@ -2316,6 +2397,7 @@ impl Default for Settings {
             gesture_label_offset: default_gesture_label_offset(),
             gesture_fail_color: default_gesture_fail_color(),
             keycast: Keycast::default(),
+            clipboard_menu: ClipboardMenu::default(),
         }
     }
 }
@@ -3531,6 +3613,8 @@ impl Config {
         }
         self.settings.hints = std::mem::take(&mut self.settings.hints).normalized();
         self.settings.keycast = std::mem::take(&mut self.settings.keycast).normalized();
+        self.settings.clipboard_menu =
+            std::mem::take(&mut self.settings.clipboard_menu).normalized();
     }
 }
 
@@ -3606,6 +3690,62 @@ fn clean_layers(layers: &[Layer]) -> (Vec<Layer>, Vec<String>) {
     (out, ignored)
 }
 
+/// 清洗复制快捷菜单的条目：空标签、校验不过的动作、超深子菜单、空子菜单逐条丢弃，
+/// 其余原样保留（顺序不变）。`depth` 是当前层号，顶层为 1。
+fn clean_menu_items(
+    items: &[MenuEntry],
+    depth: usize,
+    ignored: &mut Vec<String>,
+) -> Vec<MenuEntry> {
+    let mut out = Vec::new();
+    for item in items {
+        match item {
+            MenuEntry::Separator => out.push(MenuEntry::Separator),
+            MenuEntry::Action { label, enabled, action } => {
+                let label = label.trim();
+                if label.is_empty() {
+                    ignored.push("快捷菜单条目已忽略：标签为空".into());
+                    continue;
+                }
+                if let Err(e) = action.validate() {
+                    ignored.push(format!("快捷菜单「{label}」已忽略：{e}"));
+                    continue;
+                }
+                out.push(MenuEntry::Action {
+                    label: label.to_string(),
+                    enabled: *enabled,
+                    action: action.clone(),
+                });
+            }
+            MenuEntry::Submenu { label, enabled, items } => {
+                let label = label.trim();
+                if label.is_empty() {
+                    ignored.push("快捷菜单子菜单已忽略：标签为空".into());
+                    continue;
+                }
+                if depth >= ClipboardMenu::MAX_DEPTH {
+                    ignored.push(format!(
+                        "快捷菜单「{label}」已忽略：子菜单最多嵌套 {} 层",
+                        ClipboardMenu::MAX_DEPTH
+                    ));
+                    continue;
+                }
+                let items = clean_menu_items(items, depth + 1, ignored);
+                if items.is_empty() {
+                    ignored.push(format!("快捷菜单「{label}」已忽略：子菜单为空"));
+                    continue;
+                }
+                out.push(MenuEntry::Submenu {
+                    label: label.to_string(),
+                    enabled: *enabled,
+                    items,
+                });
+            }
+        }
+    }
+    out
+}
+
 /// 清洗配置：先迁移旧版动作，再丢弃无法解析的触发键/动作/改键，返回可安全保存的
 /// 配置与每处被忽略内容的说明（供 UI 提示）。
 ///
@@ -3624,6 +3764,8 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     let valid_layer_ids: BTreeSet<String> = layers.iter().map(|l| l.id.clone()).collect();
 
     let mut out = Config { settings: cfg.settings.clone(), folders, layers, ..Default::default() };
+    out.settings.clipboard_menu.items =
+        clean_menu_items(&cfg.settings.clipboard_menu.items, 1, &mut ignored);
 
     for s in &cfg.shortcuts {
         let label = s.name.clone().unwrap_or_else(|| "（未命名）".into());
@@ -5040,6 +5182,70 @@ mod os_and_sanitize_tests {
         let (again, ignored2) = sanitize_config(&clean);
         assert!(ignored2.is_empty(), "二次清洗不该有新提示：{ignored2:?}");
         assert_eq!(again, clean, "清洗应幂等");
+    }
+
+    /// 复制快捷菜单（EXT-13）：配置形状（动作 / 子菜单 / 分割线）、缺省 `enabled = true`
+    /// 不落盘、间隔钳值、坏条目在清洗时丢弃。菜单是新配置，锁住形状免得手改 JSON 或
+    /// 老版本回写把它打散。
+    #[test]
+    fn clipboard_menu_shape_migrate_and_sanitize() {
+        let json = r#"{
+            "layers": [], "shortcuts": [], "remaps": [], "expansions": [], "folders": [],
+            "settings": { "clipboard_menu": {
+                "enabled": true,
+                "double_copy_ms": 9000,
+                "items": [
+                    { "kind": "action", "label": "纯文本", "action": { "type": "pause_ms", "ms": 1 } },
+                    { "kind": "separator" },
+                    { "kind": "submenu", "label": "搜索", "items": [
+                        { "kind": "action", "label": "网页", "enabled": false, "action": { "type": "pause_ms", "ms": 2 } }
+                    ] }
+                ]
+            } }
+        }"#;
+        let cfg: Config = serde_json::from_str(json).unwrap();
+        let menu = &cfg.settings.clipboard_menu;
+        assert!(menu.enabled);
+        assert_eq!(menu.items.len(), 3);
+        // 缺省 enabled = true；显式 false 保留。
+        assert!(matches!(&menu.items[0], MenuEntry::Action { enabled: true, .. }));
+        assert!(matches!(&menu.items[2], MenuEntry::Submenu { items, .. }
+            if matches!(&items[0], MenuEntry::Action { enabled: false, .. })));
+
+        // 序列化：缺省 true 不落盘（少噪音），但读回来仍是 true。
+        let text = serde_json::to_string(menu).unwrap();
+        assert!(
+            !text.contains("\"label\":\"纯文本\",\"enabled\":true"),
+            "条目缺省 enabled 不该落盘: {text}"
+        );
+        let back: ClipboardMenu = serde_json::from_str(&text).unwrap();
+        assert_eq!(&back, menu);
+
+        // migrate 钳间隔。
+        let mut cfg = cfg;
+        cfg.migrate();
+        assert_eq!(cfg.settings.clipboard_menu.double_copy_ms, 2000);
+
+        // 清洗：空标签 / 非法动作 / 空子菜单丢弃，合法条目保留。
+        let mut cfg = cfg;
+        cfg.settings.clipboard_menu.items.push(MenuEntry::Action {
+            label: "  ".into(),
+            enabled: true,
+            action: Action::PauseMs { ms: 1, description: None },
+        });
+        cfg.settings.clipboard_menu.items.push(MenuEntry::Action {
+            label: "坏动作".into(),
+            enabled: true,
+            action: Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None },
+        });
+        cfg.settings.clipboard_menu.items.push(MenuEntry::Submenu {
+            label: "空".into(),
+            enabled: true,
+            items: Vec::new(),
+        });
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.settings.clipboard_menu.items.len(), 3, "只该留下 3 条合法条目");
+        assert_eq!(ignored.len(), 3, "三处坏条目都要有提示：{ignored:?}");
     }
 }
 

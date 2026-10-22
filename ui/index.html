@@ -557,6 +557,41 @@
                 </details>
               </section>
 
+              <!-- 复制快捷菜单（EXT-13）：选中文字后双击 Ctrl+C，在光标处弹出动作菜单。
+                   触发只旁路观察、不吞键；菜单窗不可激活（与提示框同类），不抢前台。 -->
+              <section class="set-card" id="clipboard-menu-card">
+                <div class="set-card-head"><span>复制快捷菜单</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">双击 Ctrl+C 弹出菜单</span>
+                      <span class="set-sub">选中文字后连按两次 Ctrl+C，在光标处弹出动作菜单；复制本身照常进行（不吞键）。暂停 / 全屏暂停 / 排除程序里不弹</span>
+                    </span>
+                    <input type="checkbox" id="set-clipboard-menu" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">双击间隔</span>
+                      <span class="set-sub">两次 Ctrl+C 的最大间隔（毫秒，150~2000）；调大更容易触发，也更容易误触</span>
+                    </span>
+                    <input type="number" id="set-clipboard-menu-ms" min="150" max="2000" step="50" />
+                  </label>
+                </div>
+                <div class="set-body">
+                  <div id="clipboard-menu-editor" class="clipboard-menu-editor"></div>
+                  <div class="set-actions">
+                    <button id="clipboard-menu-add-action" class="ghost">＋ 动作</button>
+                    <button id="clipboard-menu-add-submenu" class="ghost">＋ 子菜单</button>
+                    <button id="clipboard-menu-add-separator" class="ghost">＋ 分割线</button>
+                  </div>
+                </div>
+                <details class="hint-fold">
+                  <summary>菜单条目怎么配</summary>
+                  <p class="hint">每个条目是<strong>一个动作</strong>：可以是「粘贴为纯文本」「用搜索引擎搜选中文字」「转大写」「复制到某个文件」等；要多步就选「分组」，把几个动作串起来。子菜单最多再嵌两层，分割线只负责分组视觉。</p>
+                  <p class="hint">弹菜单时剪贴板里已经有复制好的文字：动作里可以用「剪贴板 → 读取到变量」拿它，或用 <code>{clipboard}</code> 占位符（命令 / 文本动作里可用）。条目取消勾选 = 灰掉不可点，配置保留。</p>
+                </details>
+              </section>
+
               <!-- 输入层环境：厂商软件把按键 divert 走后，钩子看不到这次按下（规划 7.2-㊽）。
                    探测在后台 Rust 侧做（进程表 / 注册表），这里只显示结论 + 一个总开关。 -->
               <section class="set-card">

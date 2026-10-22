@@ -26,11 +26,10 @@ use kada_actions::{
 };
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, keycast_text, matches,
-    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, ClipboardOperation,
-    Config, Conflict,
-    IndexEntry, Key, Keycast, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
-    ShortcutItem, SnippetPick, TextExpansion, TextInjectMode, TriggerContext, Vars,
-    DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
+    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, ClipboardMenu,
+    ClipboardOperation, Config, Conflict, IndexEntry, Key, Keycast, MenuEntry, Modifier, RawEvent,
+    Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetPick, TextExpansion, TextInjectMode,
+    TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -472,6 +471,18 @@ struct KadaState {
     /// 未匹配手势待添加的方向串（EXT-03）：主窗口可能是刚被唤出的，事件会早于前端监听器，
     /// 所以先落这里，前端加载后 `take_pending_gesture` 取走。
     pending_gesture: Arc<Mutex<Option<String>>>,
+    /// 复制快捷菜单（EXT-13）是否处于「已请求 / 已显示」生命周期。
+    clipboard_menu_showing: Arc<AtomicBool>,
+    /// 钩子回调发现 Esc 时置位，菜单轮询线程消费后收回（回调里不碰窗口）。
+    clipboard_menu_hide: Arc<AtomicBool>,
+    /// 每次触发递增：旧的轮询线程据此让位（与 `GESTURE_VISUAL_SERIAL` 同一套路）。
+    clipboard_menu_serial: Arc<AtomicU64>,
+    /// 菜单锚点（物理像素，触发时的鼠标位置）。
+    clipboard_menu_anchor: Mutex<Option<(i32, i32)>>,
+    /// 触发那一刻的前台窗口：菜单开着时前台变了就收回，别把动作打进别的程序。
+    clipboard_menu_foreground: Mutex<Option<isize>>,
+    /// 最近一次菜单载荷（菜单窗懒创建后，前端加载时兜底渲染）。
+    clipboard_menu_payload: Mutex<Option<ClipboardMenuPayload>>,
     /// 托盘图标（用于运行时叠 / 去红点）。
     tray: Mutex<Option<TrayIcon>>,
     /// 托盘基础图标（无红点）。
@@ -2446,6 +2457,359 @@ fn get_keycast_payload(state: tauri::State<'_, KadaState>) -> Option<KeycastPayl
     state.keycast.lock().unwrap().clone()
 }
 
+// ---- 复制快捷菜单（EXT-13） ----
+//
+// 触发 = 选中文字后**双击 Ctrl+C**：钩子回调里只旁路观察（不吞键，复制仍是前台程序自己的），
+// 命中后后台线程读剪贴板、建菜单窗。菜单窗**不可激活**（与 hints 同一类：能收鼠标、不抢前台），
+// 点条目回壳层后走与快捷键相同的 `fire` 链路（注入锁 / 等待修饰键释放 / 步骤上报全继承）。
+
+const CLIPBOARD_MENU_WINDOW: &str = "clipboard-menu";
+/// 菜单相对光标偏移（逻辑像素）。
+const CLIPBOARD_MENU_OFFSET: f64 = 12.0;
+
+/// 发给菜单浮窗的展示树（动作本身留在壳层，前端只画标签与结构）。
+#[derive(Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum MenuNodeView {
+    Action {
+        label: String,
+        enabled: bool,
+        /// 在配置树里的下标路径（点击时回传，壳层按当前配置重新解析）。
+        path: Vec<usize>,
+    },
+    Submenu {
+        label: String,
+        enabled: bool,
+        items: Vec<MenuNodeView>,
+    },
+    Separator,
+}
+
+#[derive(Clone, Serialize)]
+struct ClipboardMenuPayload {
+    items: Vec<MenuNodeView>,
+}
+
+fn menu_node_views(items: &[MenuEntry], prefix: &[usize]) -> Vec<MenuNodeView> {
+    items
+        .iter()
+        .enumerate()
+        .map(|(i, entry)| {
+            let mut path = prefix.to_vec();
+            path.push(i);
+            match entry {
+                MenuEntry::Separator => MenuNodeView::Separator,
+                MenuEntry::Action { label, enabled, .. } => MenuNodeView::Action {
+                    label: label.clone(),
+                    enabled: *enabled,
+                    path,
+                },
+                MenuEntry::Submenu { label, enabled, items } => MenuNodeView::Submenu {
+                    label: label.clone(),
+                    enabled: *enabled,
+                    items: menu_node_views(items, &path),
+                },
+            }
+        })
+        .collect()
+}
+
+/// 双击 Ctrl+C 判定：只认「按下、非 repeat、主键 C、修饰键恰为 Ctrl」，两次间隔不超过
+/// `double_copy_ms`。命中后清空窗口（避免连按三次又弹一次）；`last` 由调用方跨事件保存。
+fn double_copy_hit(menu: &ClipboardMenu, ev: &Ev, last: &mut Option<Instant>) -> bool {
+    let Ev::Down { key, mods, repeat } = ev else {
+        return false;
+    };
+    if *repeat || *key != Key::C || mods.len() != 1 || !mods.contains(&Modifier::Ctrl) {
+        return false;
+    }
+    let now = Instant::now();
+    let hit = last.is_some_and(|t| {
+        now.saturating_duration_since(t) <= Duration::from_millis(menu.double_copy_ms)
+    });
+    *last = if hit { None } else { Some(now) };
+    hit
+}
+
+/// 从配置树里按路径取菜单动作；路径上任一子菜单被禁用、或目标条目被禁用都不执行。
+fn menu_action_at<'a>(items: &'a [MenuEntry], path: &[usize]) -> Option<(&'a str, &'a Action)> {
+    let mut level = items;
+    for (depth, idx) in path.iter().enumerate() {
+        let last = depth + 1 == path.len();
+        match level.get(*idx)? {
+            MenuEntry::Action { label, enabled, action } if last && *enabled => {
+                return Some((label.as_str(), action))
+            }
+            MenuEntry::Submenu { enabled, items, .. } if !last && *enabled => level = items,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// 剪贴板里有文本才弹菜单（空 = 多半没选中东西，弹出只会让人困惑）。
+fn menu_clipboard_has_text() -> bool {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        input::simulate::get_clipboard_text()
+            .map(|t| !t.trim().is_empty())
+            .unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        false
+    }
+}
+
+/// 触发那一刻的前台窗口（菜单开着时前台变了就收回，避免点条目时把动作打进别的程序）。
+fn menu_foreground_window() -> Option<isize> {
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    {
+        input::foreground_window()
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// 按需创建菜单窗：透明、无边框、不借系统投影、**不可激活**（`WS_EX_NOACTIVATE`）。
+///
+/// 与 toast / hud / keycast 的差别：**不能** `set_ignore_cursor_events(true)`——条目要能点。
+/// 与 hints 同一个例外：`focusable(false)` 只挡激活，不挡鼠标消息。
+fn ensure_clipboard_menu(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window(CLIPBOARD_MENU_WINDOW) {
+        return Some(w);
+    }
+    match tauri::WebviewWindowBuilder::new(
+        app,
+        CLIPBOARD_MENU_WINDOW,
+        tauri::WebviewUrl::App("index.html#clipboard-menu".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .focusable(false)
+    .zoom_hotkeys_enabled(false)
+    .inner_size(240.0, 120.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => Some(w),
+        Err(e) => {
+            eprintln!("创建复制快捷菜单失败: {e}");
+            None
+        }
+    }
+}
+
+/// 收回菜单：隐藏窗口并作废当前轮询线程（`serial` 递增后旧线程自行退出）。
+fn hide_clipboard_menu(app: &tauri::AppHandle, state: &KadaState) {
+    state.clipboard_menu_showing.store(false, Ordering::Relaxed);
+    state.clipboard_menu_hide.store(false, Ordering::Relaxed);
+    state.clipboard_menu_serial.fetch_add(1, Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window(CLIPBOARD_MENU_WINDOW) {
+        let _ = w.hide();
+    }
+}
+
+/// 双击命中后调用：记下锚点 / 载荷、后台线程读剪贴板并弹窗。
+///
+/// 钩子回调里只做几次内存写入 + `thread::spawn`（读剪贴板可能被别的程序卡住，不能就地做）。
+fn spawn_clipboard_menu(
+    app: tauri::AppHandle,
+    payload: ClipboardMenuPayload,
+    anchor: Option<(i32, i32)>,
+    foreground: Option<isize>,
+) {
+    let Some(state) = app.try_state::<KadaState>() else {
+        return;
+    };
+    // 新一次触发：先让旧菜单与旧轮询线程作废。
+    state.clipboard_menu_serial.fetch_add(1, Ordering::Relaxed);
+    state.clipboard_menu_showing.store(true, Ordering::Relaxed);
+    state.clipboard_menu_hide.store(false, Ordering::Relaxed);
+    *state.clipboard_menu_anchor.lock().unwrap() = anchor;
+    *state.clipboard_menu_foreground.lock().unwrap() = foreground;
+    state.clipboard_menu_payload.lock().unwrap().replace(payload.clone());
+    std::thread::spawn(move || {
+        if !menu_clipboard_has_text() {
+            if let Some(state) = app.try_state::<KadaState>() {
+                state.clipboard_menu_showing.store(false, Ordering::Relaxed);
+            }
+            return;
+        }
+        let Some(w) = ensure_clipboard_menu(&app) else {
+            return;
+        };
+        let _ = w.emit("clipboard-menu", &payload);
+    });
+}
+
+/// 菜单渲染完成（前端量出内容宽高后调用）：贴光标定位、钳进当前显示器工作区并显示。
+#[tauri::command]
+fn clipboard_menu_ready(app: tauri::AppHandle, width: f64, height: f64) {
+    let Some(state) = app.try_state::<KadaState>() else {
+        return;
+    };
+    if !state.clipboard_menu_showing.load(Ordering::Relaxed) {
+        return;
+    }
+    // 页面加载期间已经按过 Esc：别把它亮回来。
+    if state.clipboard_menu_hide.swap(false, Ordering::Relaxed) {
+        hide_clipboard_menu(&app, &state);
+        return;
+    }
+    let Some(anchor) = *state.clipboard_menu_anchor.lock().unwrap() else {
+        return;
+    };
+    let Some(w) = app.get_webview_window(CLIPBOARD_MENU_WINDOW) else {
+        return;
+    };
+    let monitor = app
+        .monitor_from_point(anchor.0 as f64, anchor.1 as f64)
+        .ok()
+        .flatten()
+        .or_else(|| app.primary_monitor().ok().flatten());
+    let Some(m) = monitor else {
+        return;
+    };
+    let scale = m.scale_factor();
+    let work = m.work_area();
+    let (wx, wy) = (work.position.x as f64, work.position.y as f64);
+    let (ww, wh) = (work.size.width as f64, work.size.height as f64);
+    // 尺寸来自界面，不可全信：宽 120~640、高 60~1200 CSS 像素。
+    let (wp, hp) = (
+        (width.clamp(120.0, 640.0) * scale).round(),
+        (height.clamp(60.0, 1200.0) * scale).round(),
+    );
+    let offset = CLIPBOARD_MENU_OFFSET * scale;
+    let mut x = anchor.0 as f64 + offset;
+    let mut y = anchor.1 as f64 + offset;
+    // 右 / 下放不下就翻到光标另一侧，再兜底钳进工作区。
+    if x + wp > wx + ww {
+        x = anchor.0 as f64 - wp - offset;
+    }
+    if y + hp > wy + wh {
+        y = anchor.1 as f64 - hp - offset;
+    }
+    x = x.max(wx);
+    y = y.max(wy);
+    let _ = w.set_size(tauri::PhysicalSize::new(wp as u32, hp as u32));
+    let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    let _ = w.show();
+    let serial = state.clipboard_menu_serial.load(Ordering::Relaxed);
+    let foreground = *state.clipboard_menu_foreground.lock().unwrap();
+    let showing = state.clipboard_menu_showing.clone();
+    let hide = state.clipboard_menu_hide.clone();
+    let serials = state.clipboard_menu_serial.clone();
+    std::thread::spawn(move || {
+        let mut outside: Option<Instant> = None;
+        loop {
+            std::thread::sleep(Duration::from_millis(60));
+            if serials.load(Ordering::Relaxed) != serial || !showing.load(Ordering::Relaxed) {
+                return;
+            }
+            // Esc：钩子回调只置旗标，真正收窗在这里做（回调里不碰窗口 / IPC）。
+            if hide.swap(false, Ordering::Relaxed) {
+                if let Some(state) = app.try_state::<KadaState>() {
+                    hide_clipboard_menu(&app, &state);
+                }
+                return;
+            }
+            let Some(w) = app.get_webview_window(CLIPBOARD_MENU_WINDOW) else {
+                return;
+            };
+            if !w.is_visible().unwrap_or(false) {
+                showing.store(false, Ordering::Relaxed);
+                return;
+            }
+            // 前台变了（Alt-Tab / 点了别的窗口）：点条目会把动作打进新窗口，直接收回。
+            if foreground.is_some() && menu_foreground_window() != foreground {
+                if let Some(state) = app.try_state::<KadaState>() {
+                    hide_clipboard_menu(&app, &state);
+                }
+                return;
+            }
+            // 光标离开菜单 300ms 视为「点了别处」：菜单不可激活，收不到失焦事件，只能轮询。
+            if let (Ok(cursor), Ok(pos), Ok(size)) =
+                (w.cursor_position(), w.outer_position(), w.outer_size())
+            {
+                let (left, top) =
+                    (pos.x as f64, pos.y as f64);
+                let (right, bottom) =
+                    (left + size.width as f64, top + size.height as f64);
+                let inside =
+                    cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom;
+                if inside {
+                    outside = None;
+                } else {
+                    let now = Instant::now();
+                    let since = *outside.get_or_insert(now);
+                    if now.saturating_duration_since(since) >= Duration::from_millis(300) {
+                        if let Some(state) = app.try_state::<KadaState>() {
+                            hide_clipboard_menu(&app, &state);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
+    });
+}
+
+/// 点击菜单条目：按路径取动作 → 收回菜单 → 交给 [`fire`]（与快捷键同一条执行链）。
+#[tauri::command]
+fn clipboard_menu_exec(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, KadaState>,
+    path: Vec<usize>,
+) {
+    let resolved = {
+        let cfg = state.config.read().unwrap();
+        if !cfg.settings.clipboard_menu.enabled {
+            None
+        } else {
+            menu_action_at(&cfg.settings.clipboard_menu.items, &path).map(|(label, action)| {
+                (
+                    label.to_string(),
+                    action.clone(),
+                    cfg.settings.action_timeout_ms,
+                    cfg.settings.text_inject_mode,
+                )
+            })
+        }
+    };
+    hide_clipboard_menu(&app, &state);
+    let Some((label, action, timeout_ms, text_mode)) = resolved else {
+        return;
+    };
+    fire(
+        app,
+        state.results.clone(),
+        state.unread.clone(),
+        state.runs.clone(),
+        vec![action],
+        "快捷菜单".into(),
+        label,
+        timeout_ms,
+        text_mode,
+        None,
+    );
+}
+
+/// 读取最近一次菜单载荷（菜单窗懒创建后，前端加载时调用兜底渲染）。
+#[tauri::command]
+fn get_clipboard_menu_payload(
+    state: tauri::State<'_, KadaState>,
+) -> Option<ClipboardMenuPayload> {
+    state.clipboard_menu_payload.lock().unwrap().clone()
+}
+
 // ---- 快捷键提示框（常显速查浮窗，见规划 7.3-㊳） ----
 
 /// 按需创建快捷键提示框窗口（`index.html#hints`）：常显的快捷键速查表，可拖动、滚轮调大小 /
@@ -4193,6 +4557,47 @@ mod tests {
         assert!(last.is_none(), "自动重复也不该开始计时");
     }
 
+    /// 复制快捷菜单（EXT-13）的双击判定：修饰键必须恰为 Ctrl、忽略 repeat 与抬起事件、
+    /// 超窗只重新计时。菜单只在真机上弹，这条纯函数是唯一能自动验的部分。
+    #[test]
+    fn double_copy_requires_exact_ctrl_c_and_fresh_window() {
+        let menu = ClipboardMenu {
+            enabled: true,
+            double_copy_ms: 400,
+            items: Vec::new(),
+        };
+        let ctrl_c = Ev::Down {
+            key: Key::C,
+            mods: BTreeSet::from([Modifier::Ctrl]),
+            repeat: false,
+        };
+        let mut last = None;
+        assert!(!double_copy_hit(&menu, &ctrl_c, &mut last), "第一击只是单击");
+        assert!(double_copy_hit(&menu, &ctrl_c, &mut last), "窗口内第二击命中");
+        assert!(
+            !double_copy_hit(&menu, &ctrl_c, &mut last),
+            "命中后归零，第三击重新算单击"
+        );
+
+        // 修饰键不精确 / repeat / 别的键 / 抬起事件都不算，也不该开始计时。
+        for ev in [
+            Ev::Down { key: Key::C, mods: BTreeSet::from([Modifier::Ctrl, Modifier::Shift]), repeat: false },
+            Ev::Down { key: Key::C, mods: BTreeSet::new(), repeat: false },
+            Ev::Down { key: Key::C, mods: BTreeSet::from([Modifier::Ctrl]), repeat: true },
+            Ev::Down { key: Key::V, mods: BTreeSet::from([Modifier::Ctrl]), repeat: false },
+            Ev::Up { key: Key::C },
+        ] {
+            let mut last = None;
+            assert!(!double_copy_hit(&menu, &ev, &mut last), "不该命中: {ev:?}");
+            assert!(last.is_none(), "不该开始计时: {ev:?}");
+        }
+
+        // 超出窗口：这一击只算新的单击。
+        let mut last = Some(Instant::now() - Duration::from_millis(menu.double_copy_ms + 50));
+        assert!(!double_copy_hit(&menu, &ctrl_c, &mut last), "超窗不算双击");
+        assert!(last.is_some(), "超时后要重新计时");
+    }
+
     #[test]
     fn wake_disabled_or_unparsable_key_never_wakes() {
         // 未设唤醒键 = 快速唤醒关闭：按多少次都不唤窗。
@@ -5445,6 +5850,9 @@ pub fn run() {
             get_toast_payload,
               get_status_payload,
               get_keycast_payload,
+            get_clipboard_menu_payload,
+            clipboard_menu_ready,
+            clipboard_menu_exec,
             take_pending_gesture,
             hud_ready,
             keycast_ready,
@@ -5495,6 +5903,10 @@ pub fn run() {
             let engine = Arc::new(Mutex::new(Engine::new()));
             // 按键回显（EXT-12）的唯一一块共享状态：钩子回调写、定时器线程读并推浮窗。
             let keycast_feed: Arc<Mutex<Option<KeycastFeed>>> = Arc::new(Mutex::new(None));
+            // 复制快捷菜单（EXT-13）：钩子回调只做双击判定与置旗标；建窗 / 收窗在后台线程。
+            let clipboard_menu_showing = Arc::new(AtomicBool::new(false));
+            let clipboard_menu_hide = Arc::new(AtomicBool::new(false));
+            let clipboard_menu_serial = Arc::new(AtomicU64::new(0));
 
             // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发、
             // 也没有启用的鼠标手势就不挂，缩小全局拦截面）。运行中配置变化由状态机
@@ -5514,7 +5926,11 @@ pub fn run() {
                 let runs = runs.clone();
                 let engine = engine.clone();
                 let keycast_feed = keycast_feed.clone();
+                let menu_showing = clipboard_menu_showing.clone();
+                let menu_hide = clipboard_menu_hide.clone();
                 let mut last_tap: Option<Instant> = None;
+                // 上一次非 repeat 的 Ctrl+C（复制快捷菜单双击判定）。
+                let mut last_copy: Option<Instant> = None;
                 input::start(move |ev: input::KeyEvent| {
                     let raw = ev;
                     let ev = to_ev(&raw);
@@ -5525,6 +5941,12 @@ pub fn run() {
                             recorder.push(&ev);
                             return input::HookAction::Allow;
                         }
+                    }
+                    // 复制快捷菜单开着时按 Esc：只置旗标（收回由菜单轮询线程做），按键本身照常放行。
+                    if menu_showing.load(Ordering::Relaxed)
+                        && matches!(&raw, input::KeyEvent::Down { key: Key::Escape, .. })
+                    {
+                        menu_hide.store(true, Ordering::Relaxed);
                     }
                     // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
                     // 判定留在回调里（只读配置 + 比时间，很快），**建窗口丢后台线程**：
@@ -5564,6 +5986,22 @@ pub fn run() {
                     // 按键回显（EXT-12）：走到这里说明没被暂停 / 排除 / 全屏暂停拦下，
                     // 记录物理按键（注入事件不会进回调，天然不自我回显）。
                     note_keycast(&keycast_feed, &guard.settings.keycast, &raw);
+                    // 复制快捷菜单（EXT-13）：旁路观察双击 Ctrl+C，**不吞键**——复制仍由
+                    // 前台程序完成；命中后后台线程读剪贴板、弹菜单。
+                    if guard.settings.clipboard_menu.enabled
+                        && !guard.settings.clipboard_menu.items.is_empty()
+                        && double_copy_hit(&guard.settings.clipboard_menu, &ev, &mut last_copy)
+                    {
+                        let payload = ClipboardMenuPayload {
+                            items: menu_node_views(&guard.settings.clipboard_menu.items, &[]),
+                        };
+                        let app = app_handle.clone();
+                        let anchor = app
+                            .cursor_position()
+                            .ok()
+                            .map(|p| (p.x.round() as i32, p.y.round() as i32));
+                        spawn_clipboard_menu(app, payload, anchor, menu_foreground_window());
+                    }
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
                             app_handle.clone(),
@@ -5709,6 +6147,12 @@ pub fn run() {
                   keycast: Arc::new(Mutex::new(None)),
                   keycast_until: Mutex::new(None),
                 pending_gesture: Arc::new(Mutex::new(None)),
+                clipboard_menu_showing,
+                clipboard_menu_hide,
+                clipboard_menu_serial,
+                clipboard_menu_anchor: Mutex::new(None),
+                clipboard_menu_foreground: Mutex::new(None),
+                clipboard_menu_payload: Mutex::new(None),
                 hints_tray: Mutex::new(None),
                 pause_tray: Mutex::new(None),
                 hints_placed: AtomicBool::new(false),

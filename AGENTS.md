@@ -76,7 +76,7 @@
 
 ### 1.7 浮窗与界面外链（架构设计 §3.21 / §3.6）
 
-- 透明浮窗（`toast` / `hud` / `hints`）必须 `focusable(false)`（能被激活就抢前台 → `ResetWatch` 误判复位）；**`hints` 是唯一可交互浮窗**：默认不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**
+- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu`）必须 `focusable(false)`（能被激活就抢前台 → `ResetWatch` 误判复位）；**可交互浮窗只有 `hints` / `clipboard-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单的触发（双击 Ctrl+C）只旁听、**不吞键**
 - **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后收不到任何鼠标事件，只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek`
 - **界面外链必须由壳层接住**（主窗口 `.on_new_window`）：一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**（真机验收见人工验证清单 §21）
 

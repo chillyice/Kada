@@ -244,7 +244,20 @@ type Settings = {
       hide_ms?: number;
       ignore_single_char?: boolean;
     };
+    /**
+     * 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单。缺字段 = 关（后端
+     * `ClipboardMenu::default`）；`enabled` 缺省即 true（条目里的）。
+     */
+    clipboard_menu?: ClipboardMenu;
   };
+/**
+ * 复制快捷菜单（EXT-13）：见后端 `ClipboardMenu`。条目数组顺序即显示顺序。
+ */
+type MenuEntry =
+  | { kind: "action"; label: string; enabled?: boolean; action: Action }
+  | { kind: "submenu"; label: string; enabled?: boolean; items: MenuEntry[] }
+  | { kind: "separator" };
+type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntry[] };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
@@ -5511,6 +5524,167 @@ function timeoutMs(ms: number | undefined): string {
 // 手势的条目与编辑在「快捷键」页的「鼠标操作」分类里（与快捷键/改键/文本扩展并列），
 // 设置页只留一个「实验功能」总闸：关掉 = 这一类不出现、行为不生效，配置保留。
 
+// ---- 复制快捷菜单（EXT-13）----
+// 条目 = 一个 Action（可用「分组」串多步），编辑器内嵌在设置页；菜单浮窗只负责展示与点击，
+// 动作执行始终在壳层（与快捷键同一条 fire 链路）。
+function clipboardMenuCfg(): ClipboardMenu {
+  const s = cfg.settings;
+  if (!s.clipboard_menu) s.clipboard_menu = { enabled: false, double_copy_ms: 500, items: [] };
+  if (!Array.isArray(s.clipboard_menu.items)) s.clipboard_menu.items = [];
+  return s.clipboard_menu;
+}
+
+function renderClipboardMenuEditor() {
+  const host = document.getElementById("clipboard-menu-editor");
+  if (!host) return;
+  host.replaceChildren();
+  const rerender = () => renderClipboardMenuEditor();
+  // 只读展示时不要顺手往 cfg 里塞一个默认字段（没碰过菜单的用户不该因此多一份配置）。
+  const menu = cfg.settings.clipboard_menu ?? { enabled: false, double_copy_ms: 500, items: [] };
+  host.append(menuItemsEditor(menu.items, 1, rerender));
+}
+
+function menuItemsEditor(items: MenuEntry[], depth: number, rerender: () => void): HTMLElement {
+  const list = el("div", "menu-editor-list");
+  if (!items.length) {
+    list.append(el("div", "unit-hint", tr("还没有条目：点下面的「＋ 动作」开始添加。")));
+  }
+  items.forEach((_, i) => list.append(menuEntryEditor(items, i, depth, rerender)));
+  return list;
+}
+
+function moveMenuEntry(items: MenuEntry[], from: number, to: number) {
+  if (to < 0 || to >= items.length || from === to) return;
+  const [moved] = items.splice(from, 1);
+  items.splice(to, 0, moved);
+}
+
+function menuEntryEditor(
+  items: MenuEntry[],
+  i: number,
+  depth: number,
+  rerender: () => void,
+): HTMLElement {
+  const item = items[i];
+  const box = el("div", "menu-editor-entry");
+  // 动作字段的改动在失焦时落盘（与设置页其它字段同一口径）。
+  box.addEventListener("change", () => void save());
+
+  const head = el("div", "menu-editor-head");
+  if (item.kind === "separator") {
+    head.append(el("span", "menu-editor-kind", tr("分割线")));
+  } else {
+    const label = el("input", "action-input menu-editor-label") as HTMLInputElement;
+    label.type = "text";
+    label.value = item.label;
+    label.placeholder = tr("菜单上显示的文字");
+    label.addEventListener("input", () => {
+      item.label = label.value;
+    });
+    head.append(label);
+
+    const on = el("label", "action-check") as HTMLLabelElement;
+    const cb = el("input", "toggle") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = item.enabled !== false;
+    cb.title = tr("取消勾选 = 菜单里灰掉不可点（配置保留）");
+    cb.addEventListener("change", () => {
+      item.enabled = cb.checked;
+    });
+    on.append(cb, el("span", undefined, tr("启用")));
+    head.append(on);
+  }
+
+  const up = el("button", "ghost menu-editor-btn", "↑") as HTMLButtonElement;
+  up.title = tr("上移");
+  up.disabled = i === 0;
+  up.addEventListener("click", () => {
+    moveMenuEntry(items, i, i - 1);
+    rerender();
+    void save();
+  });
+  const down = el("button", "ghost menu-editor-btn", "↓") as HTMLButtonElement;
+  down.title = tr("下移");
+  down.disabled = i === items.length - 1;
+  down.addEventListener("click", () => {
+    moveMenuEntry(items, i, i + 1);
+    rerender();
+    void save();
+  });
+  const del = el("button", "ghost menu-editor-btn danger", "×") as HTMLButtonElement;
+  del.title = tr("删除这一条");
+  del.addEventListener("click", () => {
+    items.splice(i, 1);
+    rerender();
+    void save();
+  });
+  head.append(up, down, del);
+  box.append(head);
+
+  if (item.kind === "action") {
+    const action = item.action;
+    const typeRow = el("div", "action-type-row");
+    const typeSel = el("select", "action-type-name") as HTMLSelectElement;
+    typeSel.title = tr("点击切换动作类型");
+    typeSel.setAttribute("aria-label", tr("动作类型"));
+    for (const t of ACTION_TYPES) {
+      const o = el("option") as HTMLOptionElement;
+      o.value = t.value;
+      o.textContent = t.label;
+      typeSel.append(o);
+    }
+    typeSel.value = action.type;
+    typeSel.addEventListener("change", () => {
+      item.action = newAction(typeSel.value as Action["type"]);
+      rerender();
+      void save();
+    });
+    typeRow.append(typeSel);
+    const sub = actionSubtypeSelect(action, () => {
+      rerender();
+      void save();
+    });
+    if (sub) typeRow.append(sub);
+    box.append(typeRow);
+    box.append(
+      actionFields(action, () => {
+        rerender();
+        void save();
+      }),
+    );
+  } else if (item.kind === "submenu") {
+    box.append(el("div", "menu-editor-sub", tr("子菜单")));
+    box.append(menuItemsEditor(item.items, depth + 1, rerender));
+    // 子菜单最多再嵌两层（顶层算第 1 层，与后端 `MAX_DEPTH` 一致）。
+    if (depth < 3) {
+      const adds = el("div", "set-actions menu-editor-adds");
+      for (const [text, mk] of [
+        [tr("＋ 动作"), () => ({ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") })],
+        [
+          tr("＋ 子菜单"),
+          () => ({
+            kind: "submenu",
+            label: tr("新子菜单"),
+            enabled: true,
+            items: [{ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") }],
+          }),
+        ],
+        [tr("＋ 分割线"), () => ({ kind: "separator" })],
+      ] as [string, () => MenuEntry][]) {
+        const b = el("button", "ghost", text) as HTMLButtonElement;
+        b.addEventListener("click", () => {
+          item.items.push(mk());
+          rerender();
+          void save();
+        });
+        adds.append(b);
+      }
+      box.append(adds);
+    }
+  }
+  return box;
+}
+
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
@@ -5604,6 +5778,14 @@ function syncSettings() {
     cfg.settings.update_source ?? "ihomy";
   (document.getElementById("set-auto-update") as HTMLInputElement).checked =
     cfg.settings.auto_update === true;
+  // 复制快捷菜单（EXT-13）：缺字段 = 关；间隔回落后端默认（与 `ClipboardMenu::default` 一致）。
+  const menu = cfg.settings.clipboard_menu;
+  (document.getElementById("set-clipboard-menu") as HTMLInputElement).checked =
+    menu?.enabled === true;
+  (document.getElementById("set-clipboard-menu-ms") as HTMLInputElement).value = String(
+    menu?.double_copy_ms ?? 500,
+  );
+  renderClipboardMenuEditor();
 }
 
 /**
@@ -6040,6 +6222,39 @@ function bindSettings() {
     keycast().ignore_single_char = keycastIgnoreSingle.checked;
     void save();
   });
+  // 复制快捷菜单（EXT-13）：总开关 / 双击间隔 / 条目结构都在这里改；条目内部字段由
+  // `menuEntryEditor` 的 change 监听统一落盘。
+  const clipboardMenu = document.getElementById("set-clipboard-menu") as HTMLInputElement;
+  clipboardMenu.addEventListener("change", () => {
+    clipboardMenuCfg().enabled = clipboardMenu.checked;
+    void save();
+  });
+  const clipboardMenuMs = document.getElementById("set-clipboard-menu-ms") as HTMLInputElement;
+  clipboardMenuMs.addEventListener("change", () => {
+    const v = Math.min(2000, Math.max(150, Math.floor(Number(clipboardMenuMs.value) || 500)));
+    clipboardMenuMs.value = String(v);
+    clipboardMenuCfg().double_copy_ms = v;
+    void save();
+  });
+  for (const [id, mk] of [
+    ["clipboard-menu-add-action", () => ({ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") })],
+    [
+      "clipboard-menu-add-submenu",
+      () => ({
+        kind: "submenu",
+        label: tr("新子菜单"),
+        enabled: true,
+        items: [{ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") }],
+      }),
+    ],
+    ["clipboard-menu-add-separator", () => ({ kind: "separator" })],
+  ] as [string, () => MenuEntry][]) {
+    document.getElementById(id)!.addEventListener("click", () => {
+      clipboardMenuCfg().items.push(mk());
+      renderClipboardMenuEditor();
+      void save();
+    });
+  }
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
   // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
   document
@@ -8104,6 +8319,106 @@ async function bootstrapGesture() {
   );
 }
 
+// ---- 复制快捷菜单（独立窗口，加载 index.html#clipboard-menu，EXT-13）----
+// 壳层只推「展示树」，点击回传配置下标路径；动作执行在壳层（与快捷键同一条 fire 链路）。
+// 窗口不可激活、收不到失焦事件：Esc / 点外面 / 前台切换的收回全由壳层轮询线程负责。
+type MenuNodeView =
+  | { kind: "action"; label: string; enabled: boolean; path: number[] }
+  | { kind: "submenu"; label: string; enabled: boolean; items: MenuNodeView[] }
+  | { kind: "separator" };
+type ClipboardMenuPayload = { items: MenuNodeView[] };
+
+async function bootstrapClipboardMenu(preview = false) {
+  for (const sel of [
+    ".layout",
+    "#result-modal",
+    "#save-status",
+    "#row-menu",
+    "#unsaved-modal",
+    "#import-modal",
+    "#import-result-modal",
+    "#market-modal",
+    "#snippet-modal",
+  ]) {
+    document.querySelector(sel)?.remove();
+  }
+  const panel = el("div", "clipboard-menu-panel");
+  panel.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.body.append(panel);
+
+  // 内容变了（渲染 / 展开子菜单）就回报尺寸：壳层据此定位并钳进工作区。
+  const measure = () =>
+    requestAnimationFrame(() => {
+      const rect = panel.getBoundingClientRect();
+      void invoke("clipboard_menu_ready", {
+        width: Math.ceil(rect.width),
+        height: Math.ceil(rect.height),
+      }).catch(() => {});
+    });
+
+  const renderNode = (n: MenuNodeView): HTMLElement => {
+    if (n.kind === "separator") return el("div", "clipboard-menu-sep");
+    if (n.kind === "submenu") {
+      const group = el("div", "clipboard-menu-group");
+      const head = el("button", "clipboard-menu-item submenu") as HTMLButtonElement;
+      head.disabled = !n.enabled;
+      head.title = n.label;
+      head.append(
+        el("span", "clipboard-menu-label", n.label),
+        el("span", "clipboard-menu-caret", "▸"),
+      );
+      // 子菜单就地展开（不用独立飞出层：窗口尺寸由壳层按内容钳，飞出层会被窗口边界裁掉）。
+      head.addEventListener("click", () => {
+        group.classList.toggle("open");
+        measure();
+      });
+      const sub = el("div", "clipboard-menu-sub");
+      for (const c of n.items) sub.append(renderNode(c));
+      group.append(head, sub);
+      return group;
+    }
+    const b = el("button", "clipboard-menu-item") as HTMLButtonElement;
+    b.textContent = n.label;
+    b.disabled = !n.enabled;
+    b.addEventListener("click", () => {
+      if (!n.enabled) return;
+      void invoke("clipboard_menu_exec", { path: n.path }).catch(() => {});
+    });
+    return b;
+  };
+
+  const render = (p: ClipboardMenuPayload) => {
+    panel.replaceChildren(...p.items.map(renderNode));
+    measure();
+  };
+
+  await listen<ClipboardMenuPayload>("clipboard-menu", (e) => render(e.payload));
+  // 首次建窗时 emit 可能早于监听器注册（与 keycast 同一个套路）：拉一次兜底。
+  const pending = await invoke<ClipboardMenuPayload | null>("get_clipboard_menu_payload").catch(
+    () => null,
+  );
+  if (pending) {
+    render(pending);
+  } else if (preview) {
+    render({
+      items: [
+        { kind: "action", label: tr("粘贴为纯文本"), enabled: true, path: [0] },
+        { kind: "separator" },
+        { kind: "action", label: tr("搜索选中文字"), enabled: true, path: [2] },
+        {
+          kind: "submenu",
+          label: tr("转换"),
+          enabled: true,
+          items: [
+            { kind: "action", label: tr("转成大写"), enabled: true, path: [3, 0] },
+            { kind: "action", label: tr("转成小写"), enabled: false, path: [3, 1] },
+          ],
+        },
+      ],
+    });
+  }
+}
+
 // ---- 自绘标题栏（主窗口）----
 // 壳层把主窗口设成 `decorations(false)`（macOS 走 Overlay，红绿灯由系统画），标题区由这里补。
 // 拖动 / 双击最大化不在这里做：Tauri 内建的 `data-tauri-drag-region` 脚本接管，且会自动跳过
@@ -8256,6 +8571,11 @@ if (location.hash === "#toast") {
   // 同 `#hud`：提示框也能纯浏览器直开预览样式（演示 IPC 给一份样例配置与状态）。
   installBrowserMock();
   void bootstrapHints();
+} else if (location.hash === "#clipboard-menu") {
+  // 同 `#keycast`：纯浏览器直开时给一份样例菜单，方便调样式。
+  const preview = !("__TAURI_INTERNALS__" in window);
+  installBrowserMock();
+  void bootstrapClipboardMenu(preview);
 } else {
   mountTitlebar();
   installBrowserMock();
