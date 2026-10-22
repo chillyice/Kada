@@ -4296,9 +4296,13 @@ html[data-theme="crt"]:has(.layout)::after {
   color: #d98ce0;
 }
 
-/* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标
-   （K 青 / a 黄 / d 红 / a 靛，末字右上角一点星芒 = 咔哒那声轻响）。 */
-.brand-word {
+/* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标。
+   静止时四字各发荧光，偶尔按 K → d → 左 a → 右 a 的次序短促熄一下；
+   按下时四字一起往屏幕里沉一点、荧光熄灭只剩暗淡本色；
+   松开回弹的同时，右上角迸出两三颗星与三根短射线（星 / 线的落点与时机都错开）。
+   星屑层是字标的兄弟节点，不跟着 skewX 斜切——星的形状与射线角度才可控。 */
+.brand-word,
+.brand-burst {
   display: none;
 }
 
@@ -4307,10 +4311,15 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 [data-theme="crt"] .rail-brand {
+  position: relative;
   color: var(--accent);
   /* 橙色描边框去掉：CRT 下品牌字标本身就是 logo，外面再套一圈框像一枚按钮。
      `border: 0`（而不是透明色）让 38px 盒宽全部给字标用。 */
   border: 0;
+  /* 星屑要飞出 38px 盒边界，别被裁掉。 */
+  overflow: visible;
+  /* 这是个按下会动的按钮状元素，别让拖拽顺手把字选蓝。 */
+  user-select: none;
   text-shadow:
     0 0 2px var(--accent),
     0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -4328,60 +4337,231 @@ html[data-theme="crt"]:has(.layout)::after {
   transform: skewX(-6deg);
 }
 
-[data-theme="crt"] .brand-word > span {
-  position: relative;
-  text-shadow: 0 0 3px color-mix(in srgb, currentColor 70%, transparent);
-}
-
+/* 四色字母：颜色 / 闪烁相位都走变量，字本身只写一份规则。
+   `--flick-delay` 按 K → d → 左 a → 右 a 递增 90ms = 一次「快速衔接」的霓虹抽搐。 */
 [data-theme="crt"] .bw-cyan {
-  color: var(--crt-cyan);
-}
-
-[data-theme="crt"] .bw-yellow {
-  color: var(--crt-yellow);
+  --bw-c: var(--crt-cyan);
+  --flick-delay: 0ms;
 }
 
 [data-theme="crt"] .bw-red {
-  color: var(--crt-red);
+  --bw-c: var(--crt-red);
+  --flick-delay: 90ms;
+}
+
+[data-theme="crt"] .bw-yellow {
+  --bw-c: var(--crt-yellow);
+  --flick-delay: 180ms;
 }
 
 [data-theme="crt"] .bw-indigo {
-  color: var(--crt-indigo);
+  --bw-c: var(--crt-indigo);
+  --flick-delay: 270ms;
 }
 
-[data-theme="crt"] .brand-zap {
+[data-theme="crt"] .brand-word > .bw {
+  position: relative;
+  color: var(--bw-c);
+  text-shadow:
+    0 0 2px color-mix(in srgb, var(--bw-c) 85%, transparent),
+    0 0 7px color-mix(in srgb, var(--bw-c) 55%, transparent);
+  /* 松开的手感：轻微过冲再落回原位（按下时另用一套更快的过渡）。 */
+  transition:
+    transform 190ms cubic-bezier(0.2, 1.7, 0.45, 1),
+    color 130ms ease-out,
+    filter 130ms ease-out,
+    text-shadow 90ms linear;
+  animation: crt-neon-idle 9s steps(1, end) infinite;
+  animation-delay: var(--flick-delay, 0s);
+}
+
+/* 按下：四字同步沉进屏幕一点点 + 摘掉辉光。别压太深，否则像素字会糊。 */
+[data-theme="crt"] .rail-brand.is-pressed .bw {
+  transform: translateY(1px) scale(0.9);
+  color: color-mix(in srgb, var(--bw-c) 38%, var(--panel));
+  filter: saturate(0.75);
+  text-shadow: none;
+  transition-duration: 80ms, 80ms, 80ms, 60ms;
+  transition-timing-function: ease-out;
+}
+
+/* 星屑层：钉在字标右上角外沿（38px 盒的 top 9px / right 0），0×0 的定位点。 */
+[data-theme="crt"] .brand-burst {
+  display: block;
   position: absolute;
-  top: -6px;
-  right: -7px;
-  font-size: 8px;
-  font-style: normal;
+  top: 9px;
+  right: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
   color: var(--crt-yellow);
-  text-shadow: 0 0 6px currentColor;
-  animation: crt-twinkle 2.4s ease-in-out infinite;
 }
 
-/* 三根短射线：一根 1px 短杠 + 两枚错位投影，斜指向右上（与星芒一起读作「清脆一声」）。 */
-[data-theme="crt"] .brand-zap::before {
-  content: "";
+[data-theme="crt"] .brand-burst .bz {
   position: absolute;
-  left: 3px;
-  top: 2px;
-  width: 3px;
-  height: 1px;
-  background: currentColor;
-  transform: rotate(-35deg);
-  box-shadow:
-    2px -3px 0 0 currentColor,
-    4px -6px 0 0 currentColor;
+  display: block;
+  opacity: 0;
+  font-style: normal;
 }
 
-@keyframes crt-twinkle {
+[data-theme="crt"] .bz-star {
+  background: currentColor;
+  filter: drop-shadow(0 0 2px currentColor);
+}
+
+/* 三颗星：7 / 5 / 4px，4 角 / 5 角 / 4 角，射出方向与时长各不相同。 */
+[data-theme="crt"] .bz-s1 {
+  left: 0;
+  top: 0;
+  width: 7px;
+  height: 7px;
+  --dx: 10px;
+  --dy: -8px;
+  clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
+  animation-duration: 470ms;
+  animation-delay: 20ms;
+}
+
+[data-theme="crt"] .bz-s2 {
+  left: 2px;
+  top: -2px;
+  width: 5px;
+  height: 5px;
+  --dx: 5px;
+  --dy: -11px;
+  /* 一颗冷色星，免得右上角糊成一片黄。 */
+  color: var(--crt-cyan);
+  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+  animation-duration: 530ms;
+  animation-delay: 60ms;
+}
+
+[data-theme="crt"] .bz-s3 {
+  left: -2px;
+  top: 3px;
+  width: 4px;
+  height: 4px;
+  --dx: 13px;
+  --dy: -3px;
+  clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
+  animation-duration: 400ms;
+  animation-delay: 0ms;
+}
+
+/* 三根放射线：以右上角为原点，-18° / -42° / -66° 扇开，长度与起点各错开一点。 */
+[data-theme="crt"] .bz-ray {
+  left: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, currentColor 30%, currentColor);
+  transform-origin: 0 50%;
+  box-shadow: 0 0 3px color-mix(in srgb, currentColor 55%, transparent);
+}
+
+[data-theme="crt"] .bz-r1 {
+  --ang: -18deg;
+  width: 9px;
+  top: -1px;
+  animation-duration: 340ms;
+  animation-delay: 0ms;
+}
+
+[data-theme="crt"] .bz-r2 {
+  --ang: -42deg;
+  width: 7px;
+  left: -2px;
+  top: 1px;
+  animation-duration: 280ms;
+  animation-delay: 55ms;
+}
+
+[data-theme="crt"] .bz-r3 {
+  --ang: -66deg;
+  width: 8px;
+  left: 1px;
+  top: 2px;
+  animation-duration: 320ms;
+  animation-delay: 105ms;
+}
+
+/* 只有松开那一下才让星屑真的动起来。 */
+[data-theme="crt"] .rail-brand.is-burst .bz-star {
+  animation-name: crt-star-fly;
+  animation-timing-function: cubic-bezier(0.15, 0.75, 0.3, 1);
+  animation-fill-mode: both;
+}
+
+[data-theme="crt"] .rail-brand.is-burst .bz-ray {
+  animation-name: crt-ray-flash;
+  animation-timing-function: ease-out;
+  animation-fill-mode: both;
+}
+
+/* 霓虹微闪：每个周期两次「两连熄」+ 一次单熄，都是几十毫秒的硬切。
+   `steps(1, end)` 让亮度是跳变的（像素 CRT 的灯管就该这么抖，不要渐隐）。 */
+@keyframes crt-neon-idle {
   0%,
+  27.5% {
+    opacity: 1;
+  }
+  28% {
+    opacity: 0.08;
+  }
+  28.8% {
+    opacity: 1;
+  }
+  29.6% {
+    opacity: 0.14;
+  }
+  30.6% {
+    opacity: 1;
+  }
+  60% {
+    opacity: 1;
+  }
+  60.7% {
+    opacity: 0.1;
+  }
+  61.7% {
+    opacity: 1;
+  }
   100% {
     opacity: 1;
   }
+}
+
+/* 星：冒头 → 向 --dx/--dy 方向射出边淡出，同时缩一点、转一点。 */
+@keyframes crt-star-fly {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) scale(0.2) rotate(0deg);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(calc(var(--dx) * 0.4), calc(var(--dy) * 0.4)) scale(1) rotate(40deg);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) scale(0.5) rotate(110deg);
+  }
+}
+
+/* 射线：快速亮起、短暂停住、再快速消失。 */
+@keyframes crt-ray-flash {
+  0% {
+    opacity: 0;
+    transform: rotate(var(--ang)) scaleX(0.25);
+  }
+  16% {
+    opacity: 1;
+    transform: rotate(var(--ang)) scaleX(1);
+  }
   50% {
-    opacity: 0.45;
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+    transform: rotate(var(--ang)) scaleX(1.2);
   }
 }
 
@@ -4401,11 +4581,18 @@ html[data-theme="crt"]:has(.layout)::after {
 @media (prefers-reduced-motion: reduce) {
   [data-theme="crt"] body:has(.layout)::after,
   [data-theme="crt"] body:has(.layout)::before,
-  [data-theme="crt"] .brand-zap {
+  [data-theme="crt"] .brand-word > .bw {
     animation: none;
   }
   [data-theme="crt"] body:has(.layout)::before {
     display: none;
+  }
+  /* 星屑与按下深度都是纯装饰：在减少动态效果下只保留「荧光亮 / 暗」的反馈。 */
+  [data-theme="crt"] .rail-brand.is-burst .bz {
+    animation: none;
+  }
+  [data-theme="crt"] .rail-brand.is-pressed .bw {
+    transform: none;
   }
 }
 
@@ -4537,12 +4724,19 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 }
 
 /* 四色字标在浅底上也把外扩收小，深色字的 4px 全色辉光会显脏。 */
-[data-theme="crt"][data-crt="light"] .brand-word > span {
-  text-shadow: 0 0 3px color-mix(in srgb, currentColor 35%, transparent);
+[data-theme="crt"][data-crt="light"] .brand-word > .bw {
+  text-shadow: 0 0 3px color-mix(in srgb, var(--bw-c) 35%, transparent);
 }
 
-[data-theme="crt"][data-crt="light"] .brand-zap {
-  text-shadow: 0 0 3px color-mix(in srgb, currentColor 45%, transparent);
+/* 浅底上「暗淡的本色」要往暗里混（混白会淡到看不见），并显式摘掉辉光——
+   这条选择器比上面那条浅色辉光规则更靠后、更具体，否则按下时字还亮着。 */
+[data-theme="crt"][data-crt="light"] .rail-brand.is-pressed .bw {
+  color: color-mix(in srgb, var(--bw-c) 62%, var(--text));
+  text-shadow: none;
+}
+
+[data-theme="crt"][data-crt="light"] .bz-star {
+  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 40%, transparent));
 }
 
 /* 浅底上「强调色 / 动作类型色当文字用」会偏淡：与浅色主题同一条口径，往正文混 30%。 */

@@ -7084,6 +7084,7 @@ function bind() {
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
     b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
   });
+  bindBrandLogo();
 
   renderThanks();
 
@@ -7480,6 +7481,47 @@ function bind() {
 async function switchSection(tab: Section) {
   if (!(await confirmLeaveDraft())) return;
   switchSectionNow(tab);
+}
+
+// 品牌字标：按下四字一起沉进屏幕，松开回弹并向右上迸出星屑 / 射线。
+// 形态与节奏都在 CSS（`.is-pressed` / `.is-burst`），这里只管按压状态与重播放。
+function bindBrandLogo() {
+  const brand = document.querySelector<HTMLElement>(".rail-brand");
+  if (!brand) return;
+  // 与 CSS 里最长一支动画（530ms）+ 延迟（105ms）对齐，留一点余量。
+  const BURST_MS = 760;
+  let pressed = false;
+  let burstTimer = 0;
+
+  const release = (burst: boolean) => {
+    if (!pressed) return;
+    pressed = false;
+    brand.classList.remove("is-pressed");
+    if (!burst) return;
+    // 同一个类名连点两次要能重播放：先摘掉、强制一次样式计算，再挂回去。
+    brand.classList.remove("is-burst");
+    void brand.offsetWidth;
+    brand.classList.add("is-burst");
+    window.clearTimeout(burstTimer);
+    burstTimer = window.setTimeout(() => brand.classList.remove("is-burst"), BURST_MS);
+  };
+
+  brand.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    pressed = true;
+    brand.classList.add("is-pressed");
+    try {
+      // 指针捕获后拖动中松手也算这次按压的收尾；不支持时退回 pointerleave。
+      brand.setPointerCapture(e.pointerId);
+    } catch {
+      /* 捕获不可用不影响观感，交给 pointerleave 兜底。 */
+    }
+  });
+  brand.addEventListener("pointerup", () => release(true));
+  brand.addEventListener("pointercancel", () => release(false));
+  brand.addEventListener("pointerleave", (e) => {
+    if (!brand.hasPointerCapture?.(e.pointerId)) release(false);
+  });
 }
 
 // rail 只有 4 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
