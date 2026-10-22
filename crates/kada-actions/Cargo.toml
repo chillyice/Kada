@@ -9,6 +9,9 @@ kada-hook = { path = "../kada-hook" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
+# 算法动作（EXT-18）：两者都已在依赖树里（Tauri / reqwest 传递依赖），纯 Rust，不拉新 crate。
+base64 = "0.22"
+sha2 = "0.10"
 
 # 只有 `kill_tree` 的 unix 分支用得到（`kill(-pgid)` 杀整棵进程树）：
 # 按 `cfg(unix)` 声明，免得 Windows 白编一个用不上的绑定。

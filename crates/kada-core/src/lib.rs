@@ -1201,6 +1201,25 @@ pub enum ClipboardOperation {
     },
 }
 
+/// 算法动作的子操作（[`Action::Transform`]，EXT-18）：纯文本变换，不依赖平台。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TransformOperation {
+    /// base64 编码（标准字母表带 `=` 填充，输入按 UTF-8 字节）。
+    #[default]
+    Base64Encode,
+    /// base64 解码（忽略换行 / 空白；结果必须是 UTF-8 文本）。
+    Base64Decode,
+    /// URL 编码（RFC 3986：保留 `A-Za-z0-9-._~`，其余按 UTF-8 字节转 `%XX`）。
+    UrlEncode,
+    /// URL 解码（`%XX` 还原、`+` 还原为空格；结果必须是 UTF-8 文本）。
+    UrlDecode,
+    /// SHA-256 哈希，小写十六进制（输入按 UTF-8 字节）。
+    HashSha256,
+    /// SHA-512 哈希，小写十六进制（输入按 UTF-8 字节）。
+    HashSha512,
+}
+
 /// `serde` 的 `skip_serializing_if` 帮手：`false` 的布尔字段不落盘——默认值写进 JSON 只是噪音
 /// （配置、导出卡带、分享出去的卡带都会带上）。
 fn is_false(v: &bool) -> bool {
@@ -1255,6 +1274,9 @@ pub enum Action {
     Mouse { op: MouseOp, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 剪贴板动作（EXT-15）：写入 / 读取文本到变量 / 临时文本（粘贴后恢复原剪贴板）。
     Clipboard { operation: ClipboardOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 算法动作（EXT-18）：base64 / URL 编解码、SHA-256 / SHA-512 哈希。
+    /// `input` 支持 `{变量}` 占位符；结果写进变量 `var`，`inject` 为真时再按文本注入当前焦点。
+    Transform { operation: TransformOperation, #[serde(default)] input: String, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "is_false")] inject: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 动作分组：**纯粹的组织结构**，成员按顺序执行（等价于把它们直接摊在这一层）。
     /// 只影响编辑页的展示与执行记录的分层（成员记录挂在分组这一步下面），不改执行语义；
     /// 可嵌套（分组里还能放分组 / 条件判断 / 并行执行）。
@@ -1352,6 +1374,13 @@ impl Action {
                 ClipboardOperation::GetClipboard { var } => non_empty("变量名", var),
                 ClipboardOperation::TempStr { text } => non_empty("文本", text),
             },
+            Action::Transform { input, var, inject, .. } => {
+                non_empty("输入", input)?;
+                if !*inject && var.trim().is_empty() {
+                    return Err("算法动作要填结果变量名，或勾选「直接注入结果」".into());
+                }
+                Ok(())
+            }
             Action::Mouse { op, .. } => match op {
                 MouseOp::Move { dx, dy } | MouseOp::Scroll { dx, dy } => {
                     if *dx == 0 && *dy == 0 {
@@ -5762,6 +5791,56 @@ mod new_action_and_folder_tests {
         .is_err());
     }
 
+    /// 算法动作（EXT-18）：`operation` 是短名（不是对象），默认 `inject = false` 不落盘。
+    #[test]
+    fn transform_action_json_roundtrip_and_validate() {
+        let a: Action = serde_json::from_str(
+            r#"{"type":"transform","operation":"base64_encode","input":"{clip}","var":"b64"}"#,
+        )
+        .unwrap();
+        assert!(a.validate().is_ok());
+        assert!(matches!(
+            a,
+            Action::Transform {
+                operation: TransformOperation::Base64Encode,
+                inject: false,
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""operation":"base64_encode""#), "{json}");
+        assert!(!json.contains("inject"), "{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+
+        assert!(Action::Transform {
+            operation: TransformOperation::UrlDecode,
+            input: " ".into(),
+            var: "out".into(),
+            inject: false,
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Transform {
+            operation: TransformOperation::HashSha256,
+            input: "x".into(),
+            var: " ".into(),
+            inject: false,
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Transform {
+            operation: TransformOperation::HashSha256,
+            input: "x".into(),
+            var: " ".into(),
+            inject: true,
+            description: None,
+        }
+        .validate()
+        .is_ok());
+    }
+
     /// `masked` 只影响展示，但它是配置字段，得守住三件事：老配置（没这个键）读成「不隐藏」、
     /// 标记了隐藏的能落盘并原样读回、默认值 `false` 不落盘（配置与导出卡带里不留噪音）。
     /// 不断言「注入行为」，因为 `masked` 本就不参与执行（见 `Action::Text` 的字段注释）。
@@ -7228,8 +7307,7 @@ mod platform_caps_tests {
     use super::*;
 
     /// Linux 口径的 caps：前台条件不可用（Wayland / X11 都未接前台查询）。
-    /// 用它的测试全是 automation 专属（条件类），基础版编译时一并消失，故同样门控。
-    #[cfg(feature = "automation")]
+    /// 不门控：`SendTo`（后台发送）在基础版也存在，它的平台冲突测试要用。
     fn linux_caps() -> PlatformCaps {
         PlatformCaps {
             frontmost_conditions: false,

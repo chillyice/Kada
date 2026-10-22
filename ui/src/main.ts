@@ -35,6 +35,14 @@ type ClipboardOperation =
   | { op: "set_clipboard"; text: string }
   | { op: "get_clipboard"; var: string }
   | { op: "tempstr"; text: string };
+/** 算法动作（类型 `transform`，EXT-18）：base64 / URL 编解码、哈希。 */
+type TransformOperation =
+  | "base64_encode"
+  | "base64_decode"
+  | "url_encode"
+  | "url_decode"
+  | "hash_sha256"
+  | "hash_sha512";
 type Condition =
   | { kind: "exists"; path: string }
   | { kind: "not_exists"; path: string }
@@ -76,6 +84,7 @@ type Action =
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "clipboard"; operation: ClipboardOperation; description?: string }
+  | { type: "transform"; operation: TransformOperation; input: string; var: string; inject?: boolean; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "system"; operation: SystemOperation; description?: string }
   | { type: "window"; operation: { op: WindowOperation }; description?: string }
@@ -472,6 +481,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "system", label: tr("操作系统") },
   { value: "window", label: tr("窗口操作") },
   { value: "clipboard", label: tr("剪贴板") },
+  { value: "transform", label: tr("算法") },
   { value: "keys", label: tr("按键组合") },
   { value: "send_to", label: tr("后台发送") },
   { value: "mouse", label: tr("鼠标操作") },
@@ -490,6 +500,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   send_to: "📨",
   mouse: "🖱️",
   clipboard: "📋",
+  transform: "🔣",
   pause_ms: "⏱️",
   os: "📁",
   system: "🖥️",
@@ -528,6 +539,8 @@ function actionVarWrites(a: Action): string[] {
       return a.operation.op === "get_clipboard" && a.operation.var.trim()
         ? [a.operation.var.trim()]
         : [];
+    case "transform":
+      return a.var.trim() ? [a.var.trim()] : [];
     // 分组只是容器：数据流标签按成员汇总（一眼看出整组写/读了什么）。
     case "group":
       return [...new Set(a.actions.flatMap(actionVarWrites))];
@@ -568,6 +581,9 @@ function actionVarReads(a: Action): string[] {
     }
     case "clipboard":
       if (a.operation.op !== "get_clipboard") texts.push(a.operation.text);
+      break;
+    case "transform":
+      texts.push(a.input);
       break;
     case "open_url":
       texts.push(a.url);
@@ -712,6 +728,20 @@ function newClipboardOp(op: ClipboardOperation["op"]): ClipboardOperation {
   return { op: "set_clipboard", text: "" };
 }
 
+// ---- 算法动作的子操作（EXT-18）----
+const TRANSFORM_OPS: { value: TransformOperation; label: string }[] = [
+  { value: "base64_encode", label: tr("base64 编码") },
+  { value: "base64_decode", label: tr("base64 解码") },
+  { value: "url_encode", label: tr("URL 编码") },
+  { value: "url_decode", label: tr("URL 解码") },
+  { value: "hash_sha256", label: tr("SHA-256 哈希") },
+  { value: "hash_sha512", label: tr("SHA-512 哈希") },
+];
+
+function transformLabel(op: TransformOperation): string {
+  return TRANSFORM_OPS.find((o) => o.value === op)?.label ?? op;
+}
+
 function newOsOp(op: OsOperation["op"]): OsOperation {  switch (op) {
     case "copy":
       return { op, source: "", dest: "" };
@@ -806,6 +836,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "mouse", op: newMouseOp("move") };
     case "clipboard":
       return { type: "clipboard", operation: { op: "set_clipboard", text: "" } };
+    case "transform":
+      return { type: "transform", operation: "base64_encode", input: "", var: "result", inject: false };
     case "pause_ms":
       return { type: "pause_ms", ms: 0 };
     case "os":
@@ -919,6 +951,8 @@ function actionHasContent(a: Action): boolean {
       }
     case "pause_ms":
       return a.ms > 0;
+    case "transform":
+      return a.input.trim().length > 0 && (a.var.trim().length > 0 || !!a.inject);
     case "os":
       return osHasContent(a.operation);
     // 没有要填的字段（方向有默认值），新建出来就是可执行的。
@@ -1116,6 +1150,12 @@ function actionSummary(a: Action): string {
       return mouseSummary(a.op);
     case "clipboard":
       return clipboardSummary(a.operation);
+    case "transform": {
+      const sink = [a.var.trim() ? `→ ${a.var.trim()}` : "", a.inject ? tr("并注入") : ""]
+        .filter(Boolean)
+        .join(" ");
+      return `${transformLabel(a.operation)}：${a.input}${sink ? ` ${sink}` : ""}`;
+    }
     case "pause_ms":
       return trt`延迟 ${a.ms}ms`;
     case "os":
@@ -4564,6 +4604,21 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "transform") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of TRANSFORM_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation;
+    sel.addEventListener("change", () => {
+      a.operation = sel.value as TransformOperation;
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "send_to") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const [value, label] of [
@@ -5176,6 +5231,47 @@ function actionFields(
         ),
       );
     }
+  } else if (a.type === "transform") {
+    const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
+    ta.value = a.input;
+    ta.placeholder = tr("要处理的文本（支持 {变量名} 占位符）……");
+    ta.addEventListener("input", () => {
+      a.input = ta.value;
+    });
+    body.append(ta);
+
+    const line = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = tr("变量名，如 result");
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    line.append(
+      el("span", "unit-hint", tr("结果变量")),
+      vname,
+      helpIcon(tr("结果存进该变量，后续动作用 {result} 引用。变量与「直接注入」至少填一项。")),
+    );
+    body.append(line);
+
+    const injectLine = el("label", "action-check") as HTMLLabelElement;
+    const cb = el("input", "toggle") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = !!a.inject;
+    cb.addEventListener("change", () => {
+      a.inject = cb.checked;
+    });
+    injectLine.append(cb, el("span", undefined, tr("直接注入结果到当前焦点")));
+    body.append(injectLine);
+
+    body.append(
+      el(
+        "div",
+        "unit-hint",
+        tr("base64 解码会忽略换行与空白；解码结果必须是 UTF-8 文本。非法输入（坏 base64、残缺的 %XX）会明确报错，不会静默丢内容。"),
+      ),
+    );
   } else if (a.type === "pause_ms") {
     const line = el("div", "action-line");
     const num = el("input", "action-input") as HTMLInputElement;
@@ -8958,6 +9054,14 @@ function mountTitlebar() {
     document.body.append(z);
   }
 }
+
+// 右键只留给界面自己设计过的菜单（列表行 / 目录行，它们在各自 handler 里先
+// `preventDefault()` 再调 `showMenu`）。冒泡到 document 时还没被拦下的，就是没设计过的位置
+// （输入框、空白、按钮、浮窗背景…）——一律拦掉 WebView 自带的「刷新 / 另存为 / 打印 / 检查」。
+// 五个窗口共用这段守卫：浮窗同样不该弹系统菜单。
+document.addEventListener("contextmenu", (e) => {
+  if (!e.defaultPrevented) e.preventDefault();
+});
 
 // 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。五个窗口共用这段。
 applyTheme(loadTheme());

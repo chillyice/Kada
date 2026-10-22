@@ -72,6 +72,24 @@ const DEMO_CONFIG = {
         { type: "open_url", url: "https://example.com/search" },
       ],
     },
+    {
+      name: "URL 编码并搜索",
+      description: "算法动作示例",
+      folder: null,
+      layer: null,
+      triggers: ["Ctrl+Alt+U"],
+      enabled: true,
+      actions: [
+        {
+          type: "transform",
+          operation: "url_encode",
+          input: "hello world",
+          var: "q",
+          inject: false,
+        },
+        { type: "open_url", url: "https://example.com/search?q={q}" },
+      ],
+    },
   ],
   remaps: [
     {

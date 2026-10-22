@@ -2262,6 +2262,8 @@ fn injects_keys(actions: &[Action]) -> bool {
             operation: ClipboardOperation::TempStr { .. },
             ..
         } => true,
+        // 算法动作只有勾了「直接注入结果」才走 SendInput；写变量那条不注入。
+        Action::Transform { inject, .. } => *inject,
         Action::Group { actions, .. } => injects_keys(actions),
         // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
         // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
@@ -4000,6 +4002,24 @@ mod tests {
             description: None,
         }];
         assert!(!injects_keys(&set_clip));
+
+        // 算法动作只有勾了「直接注入结果」才发输入；只写变量不用等修饰键。
+        let transform_inject = vec![Action::Transform {
+            operation: kada_core::TransformOperation::Base64Encode,
+            input: "x".into(),
+            var: "out".into(),
+            inject: true,
+            description: None,
+        }];
+        assert!(injects_keys(&transform_inject));
+        let transform_var = vec![Action::Transform {
+            operation: kada_core::TransformOperation::Base64Encode,
+            input: "x".into(),
+            var: "out".into(),
+            inject: false,
+            description: None,
+        }];
+        assert!(!injects_keys(&transform_var));
 
         // 命令 / 暂停不受修饰键影响，不该白等 300ms。
         let plain = vec![

@@ -30,7 +30,7 @@ pub mod abort;
 
 use kada_core::{
     substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, SendPayload,
-    TextInjectMode, TextMode, TextValue, Value, Vars,
+    TextInjectMode, TextMode, TextValue, TransformOperation, Value, Vars,
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -330,6 +330,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::PauseMs { .. } => "pause_ms",
         Action::Mouse { .. } => "mouse",
         Action::Clipboard { .. } => "clipboard",
+        Action::Transform { .. } => "transform",
         Action::Group { .. } => "group",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "command",
@@ -793,6 +794,7 @@ fn action_label(action: &Action) -> &'static str {
         Action::PauseMs { .. } => "暂停失败",
         Action::Mouse { .. } => "鼠标模拟失败",
         Action::Clipboard { .. } => "剪贴板操作失败",
+        Action::Transform { .. } => "算法动作失败",
         Action::Group { .. } => "分组执行失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
@@ -938,6 +940,9 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
         Action::Clipboard { operation, .. } => clipboard_body(operation, vars),
+        Action::Transform { operation, input, var, inject, .. } => {
+            transform_body(*operation, input, var, *inject, vars)
+        }
         Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
         Action::Command { command, .. }
@@ -994,6 +999,117 @@ fn clipboard_body(op: &ClipboardOperation, vars: &Vars) -> String {
             format!("临时文本 {}", preview(&substitute_vars(text, vars)))
         }
     }
+}
+
+/// 算法动作摘要（消息中心「命令」一栏）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn transform_body(
+    op: TransformOperation,
+    input: &str,
+    var: &str,
+    inject: bool,
+    vars: &Vars,
+) -> String {
+    let label = match op {
+        TransformOperation::Base64Encode => "base64 编码",
+        TransformOperation::Base64Decode => "base64 解码",
+        TransformOperation::UrlEncode => "URL 编码",
+        TransformOperation::UrlDecode => "URL 解码",
+        TransformOperation::HashSha256 => "SHA-256 哈希",
+        TransformOperation::HashSha512 => "SHA-512 哈希",
+    };
+    let sink = match (var.trim().is_empty(), inject) {
+        (false, true) => format!("→ {} + 注入", var.trim()),
+        (false, false) => format!("→ {}", var.trim()),
+        (true, true) => "→ 注入".to_string(),
+        (true, false) => String::new(),
+    };
+    format!("{label} {} {sink}", preview(&substitute_vars(input, vars)))
+        .trim()
+        .to_string()
+}
+
+/// 算法动作的纯计算部分：输入已代入变量，输出要么进变量、要么注入。解码类结果必须是 UTF-8
+/// 文本（变量与注入都只承载文本），否则明确报错而不是丢字节。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn transform_text(op: TransformOperation, input: &str) -> Result<String, String> {
+    use base64::Engine;
+    use sha2::Digest;
+    match op {
+        TransformOperation::Base64Encode => {
+            Ok(base64::engine::general_purpose::STANDARD.encode(input.as_bytes()))
+        }
+        TransformOperation::Base64Decode => {
+            // 粘贴来的 base64 常带换行：解码前先压掉空白，省得用户手动收拾。
+            let compact: String = input.chars().filter(|c| !c.is_whitespace()).collect();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(compact.as_bytes())
+                .map_err(|e| format!("base64 解码失败：{e}"))?;
+            String::from_utf8(bytes).map_err(|_| "base64 解码结果不是 UTF-8 文本".to_string())
+        }
+        TransformOperation::UrlEncode => Ok(url_encode(input)),
+        TransformOperation::UrlDecode => url_decode(input),
+        TransformOperation::HashSha256 => Ok(hex(&sha2::Sha256::digest(input.as_bytes()))),
+        TransformOperation::HashSha512 => Ok(hex(&sha2::Sha512::digest(input.as_bytes()))),
+    }
+}
+
+/// RFC 3986 百分号编码：保留无保留字符 `A-Za-z0-9-._~`，其余按 UTF-8 字节转 `%XX`。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~') {
+            out.push(b as char);
+        } else {
+            out.push_str(&format!("%{b:02X}"));
+        }
+    }
+    out
+}
+
+/// 百分号解码：`%XX` → 字节、`+` → 空格；不完整的 `%` 序列明确报错。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn url_decode(s: &str) -> Result<String, String> {
+    let hex = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    };
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hi = bytes.get(i + 1).copied().and_then(hex);
+                let lo = bytes.get(i + 2).copied().and_then(hex);
+                match (hi, lo) {
+                    (Some(h), Some(l)) => {
+                        out.push(h * 16 + l);
+                        i += 3;
+                    }
+                    _ => return Err(format!("URL 解码失败：位置 {i} 的「%」后面不是两位十六进制")),
+                }
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).map_err(|_| "URL 解码结果不是 UTF-8 文本".to_string())
+}
+
+/// 字节串转小写十六进制（哈希输出）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 当前窗口动作摘要（消息中心「命令」一栏）。
@@ -1116,7 +1232,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::SendTo { description, .. }
         | Action::PauseMs { description, .. }
         | Action::Mouse { description, .. }
-        | Action::Clipboard { description, .. } => description.as_deref(),
+        | Action::Clipboard { description, .. }
+        | Action::Transform { description, .. } => description.as_deref(),
         // 分组没有 `description`：用户填的 `name` 就是这一步的标题。
         Action::Group { name, .. } => {
             let n = name.trim();
@@ -1286,6 +1403,21 @@ fn run_action(
                     .map_err(|e| format!("临时文本粘贴失败：{e}"))?;
             }
         },
+        Action::Transform { operation, input, var, inject, .. } => {
+            let output = transform_text(*operation, &substitute_vars(input, vars))?;
+            if !var.trim().is_empty() {
+                vars.insert(
+                    var.trim().to_string(),
+                    Value::Text(TextValue { text: output.clone(), exit_code: None }),
+                );
+            }
+            if *inject {
+                // 与 Text 动作同一条注入链路：持链内注入锁，等物理修饰键释放由壳层
+                // `injects_keys` 统一把关（见 src-tauri `injects_keys`）。
+                let _inj = lock_inject(ctx);
+                inject_text(&output, ctx.text_mode)?;
+            }
+        }
         // 长等待也要能被中止：一次 `PauseMs` 可以是几十秒，睡死在里面的话「停止」要等到
         // 它自然睡醒才生效（用户看到的是「点了停止还在继续」）。切成小片睡，每片查一次。
         Action::PauseMs { ms, .. } => {
@@ -3142,6 +3274,60 @@ mod tests {
             description: None,
         };
         assert!(super::action_summary(&temp, &vars).contains("临时文本 hi"));
+    }
+
+    /// 算法动作（EXT-18）：编解码往返、哈希已知向量、非法输入必须报错。
+    #[test]
+    fn transform_ops_roundtrip_and_reject_bad_input() {
+        use kada_core::TransformOperation::*;
+
+        let text = "hello 世界";
+        let b64 = super::transform_text(Base64Encode, text).unwrap();
+        assert_eq!(b64, "aGVsbG8g5LiW55WM");
+        assert_eq!(super::transform_text(Base64Decode, &b64).unwrap(), text);
+        // 粘贴来的 base64 带换行也要能解。
+        assert_eq!(
+            super::transform_text(Base64Decode, "aGVsbG8g\n5LiW55WM").unwrap(),
+            text
+        );
+
+        let url = super::transform_text(UrlEncode, "a b/中").unwrap();
+        assert_eq!(url, "a%20b%2F%E4%B8%AD");
+        assert_eq!(super::transform_text(UrlDecode, &url).unwrap(), "a b/中");
+        assert_eq!(super::transform_text(UrlDecode, "a+b").unwrap(), "a b");
+
+        assert_eq!(
+            super::transform_text(HashSha256, "abc").unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(super::transform_text(HashSha512, "abc")
+            .unwrap()
+            .starts_with("ddaf35a193617aba"));
+
+        assert!(super::transform_text(Base64Decode, "不是 base64").is_err());
+        // 能解码成字节但不是 UTF-8 文本：变量与注入都只承载文本，必须报错。
+        assert!(super::transform_text(Base64Decode, "//8=").is_err());
+        assert!(super::transform_text(UrlDecode, "%E4%B").is_err());
+        assert!(super::transform_text(UrlDecode, "%ZZ").is_err());
+    }
+
+    /// 算法动作的摘要：代入变量后的输入要看得见、结果去向（变量 / 注入）要写出来。
+    #[test]
+    fn transform_summary_shows_input_and_sink() {
+        let _g = abort::test_lock();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert("who".into(), Value::Text("Kada".into()));
+        let action = Action::Transform {
+            operation: kada_core::TransformOperation::UrlEncode,
+            input: "hi {who}".into(),
+            var: "q".into(),
+            inject: true,
+            description: None,
+        };
+        assert_eq!(super::action_kind(&action), "transform");
+        let s = super::action_summary(&action, &vars);
+        assert!(s.contains("URL 编码 hi Kada"), "{s}");
+        assert!(s.contains("→ q + 注入"), "{s}");
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。

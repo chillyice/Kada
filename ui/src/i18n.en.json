@@ -886,5 +886,19 @@
   "切换桌面图标": "Toggle desktop icons",
   "永久清空回收站，不弹系统确认。仅 Windows 支持；其它平台会标平台冲突并在执行时报错。": "Permanently empties the recycle bin without a system confirmation. Windows only; other platforms show a platform conflict and fail at runtime.",
   "立刻关闭显示器；动一下鼠标或按任意键就会亮回来。仅 Windows 支持。": "Turns the display off immediately; moving the mouse or pressing a key turns it back on. Windows only.",
-  "显示 / 隐藏桌面图标（等价于右键桌面 → 查看 → 显示桌面图标）。仅 Windows 支持。": "Shows / hides desktop icons (same as right-clicking the desktop → View → Show desktop icons). Windows only."
+  "显示 / 隐藏桌面图标（等价于右键桌面 → 查看 → 显示桌面图标）。仅 Windows 支持。": "Shows / hides desktop icons (same as right-clicking the desktop → View → Show desktop icons). Windows only.",
+  "算法": "Algorithms",
+  "base64 编码": "Base64 encode",
+  "base64 解码": "Base64 decode",
+  "URL 编码": "URL encode",
+  "URL 解码": "URL decode",
+  "SHA-256 哈希": "SHA-256 hash",
+  "SHA-512 哈希": "SHA-512 hash",
+  "要处理的文本（支持 {变量名} 占位符）……": "Text to process (supports {variable} placeholders)…",
+  "变量名，如 result": "Variable name, e.g. result",
+  "结果变量": "Result variable",
+  "结果存进该变量，后续动作用 {result} 引用。变量与「直接注入」至少填一项。": "Stores the result in this variable; later actions can reference {result}. Fill in a variable or enable direct injection.",
+  "直接注入结果到当前焦点": "Inject the result into the focused control",
+  "并注入": "and inject",
+  "base64 解码会忽略换行与空白；解码结果必须是 UTF-8 文本。非法输入（坏 base64、残缺的 %XX）会明确报错，不会静默丢内容。": "Base64 decoding ignores line breaks and whitespace; the decoded bytes must be UTF-8 text. Invalid input (bad base64, incomplete %XX) fails loudly instead of silently dropping content."
 }
