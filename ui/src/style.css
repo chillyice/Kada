@@ -284,13 +284,6 @@ body.is-mac .titlebar {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: var(--fs-2xl);
-  font-weight: 700;
-  color: var(--accent);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  /* 简约主题的 logo 是满幅方图，圆角由这层裁；CRT 的星屑要飞出 38px 盒，那边改回 visible。 */
-  overflow: hidden;
 }
 
 .rail-nav {
@@ -4323,8 +4316,7 @@ html[data-theme="crt"]:has(.layout)::after {
   color: #d98ce0;
 }
 
-/* 品牌字：简约深 / 浅色用设计好的方形 logo（满幅方图，圆角由 .rail-brand 的 overflow 裁）；
-   CRT 换成四色 Kada 字标。
+/* 品牌字：简约深 / 浅色用透明底的 K（深色白 / 浅色橙，图上已去掉底色）；CRT 换成四色 Kada 字标。
    静止时四字各发荧光，偶尔按 K → d → 左 a → 右 a 的次序短促熄一下；
    之后自动把四字一起按进屏幕、再弹回来，右上角同时迸出两三颗星与三根短射线。
    星屑层是字标的兄弟节点，不跟着 skewX 斜切——星的形状与射线角度才可控。 */
@@ -4350,9 +4342,6 @@ html[data-theme="crt"]:has(.layout)::after {
 [data-theme="crt"] .rail-brand {
   position: relative;
   color: var(--accent);
-  /* 橙色描边框去掉：CRT 下品牌字标本身就是 logo，外面再套一圈框像一枚按钮。
-     `border: 0`（而不是透明色）让 38px 盒宽全部给字标用。 */
-  border: 0;
   /* 星屑要飞出 38px 盒边界，别被裁掉。 */
   overflow: visible;
   /* 字标是纯展示元素，拖窗口 / 划选时别把字选蓝。 */
@@ -4365,8 +4354,8 @@ html[data-theme="crt"]:has(.layout)::after {
 [data-theme="crt"] .brand-word {
   display: inline-flex;
   align-items: baseline;
-  /* 字标撑满原来那圈橙框的宽度：字宽 = 2 倍字号（4 个字 × 0.5em）+ 斜切多出的约 0.1 倍，
-     18px 落在 37.9px，刚好贴到原边框外沿（盒宽 38px）。 */
+  /* 字标撑满 38px 盒的宽度：字宽 = 2 倍字号（4 个字 × 0.5em）+ 斜切多出的约 0.1 倍，
+     18px 落在 37.9px。 */
   font-size: 18px;
   line-height: 1;
   white-space: nowrap;
