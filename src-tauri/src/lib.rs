@@ -3010,6 +3010,31 @@ mod tests {
         stop.store(true, Ordering::Relaxed);
     }
 
+    /// 内置示例卡带（「载入示例」与卡带市场同一批 JSON）：每份都能独立解析成非空 `Config`，
+    /// 合进示例配置后不制造冲突、清洗不丢条目（否则「载入示例」要么报错要么装出半截）。
+    #[test]
+    fn bundled_example_snippets_are_valid_configs() {
+        let mut texts: Vec<&str> = BASIC_EXAMPLE_SNIPPETS.to_vec();
+        #[cfg(feature = "automation")]
+        texts.extend_from_slice(AUTOMATION_EXAMPLE_SNIPPETS);
+        for text in texts {
+            let part: Config =
+                serde_json::from_str(text).unwrap_or_else(|e| panic!("内置示例卡带解析失败：{e}"));
+            let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len();
+            assert!(n > 0, "内置示例卡带一条条目也没有");
+            let (clean, notes) = sanitize_config(&part);
+            assert!(notes.is_empty(), "内置示例卡带清洗报了问题：{notes:?}");
+            assert_eq!(clean.shortcuts.len(), part.shortcuts.len(), "内置示例条目被清洗掉");
+        }
+        let cfg = bundled_examples().expect("内置示例合并失败");
+        assert!(
+            cfg.shortcuts.len() > kada_core::sample::sample_config().shortcuts.len(),
+            "内置示例卡带没贡献任何快捷键"
+        );
+        let conflicts = kada_core::detect_conflicts(&cfg, &kada_core::PlatformCaps::default());
+        assert!(conflicts.is_empty(), "内置示例自带冲突：{conflicts:?}");
+    }
+
     /// 单线程的「静态文件服务」：回一个请求就够测试用（每条连接单独 spawn）。
     fn serve_dir(dir: &str) -> (String, Arc<AtomicBool>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("端口绑定失败");
@@ -4720,6 +4745,42 @@ fn import_config(
     })
 }
 
+/// 内置示例卡带（`snippets/*.json`，与卡带市场里的是同一批文件，编译期嵌进二进制）：
+/// 「载入示例」把 [`kada_core::sample::sample_config`] 和它们一起并入。
+///
+/// 基础版（`--no-default-features`）里窗口 / 搜索 / 文件三份含 automation 专属动作，整份
+/// 解析会失败，所以只在完整版编进来；剪贴板与延时用的都是基础版动作，始终可用。
+const BASIC_EXAMPLE_SNIPPETS: &[&str] = &[
+    include_str!("../../snippets/clipboard-actions.json"),
+    include_str!("../../snippets/delay-actions.json"),
+];
+#[cfg(feature = "automation")]
+const AUTOMATION_EXAMPLE_SNIPPETS: &[&str] = &[
+    include_str!("../../snippets/window-actions.json"),
+    include_str!("../../snippets/search-web.json"),
+    include_str!("../../snippets/file-actions.json"),
+];
+
+/// 内置示例 = 代码里搭的样例配置 + 静态卡带文件（顶层的 `kada_snippet` 反序列化时忽略）。
+fn bundled_examples() -> Result<Config, String> {
+    let mut cfg = kada_core::sample::sample_config();
+    #[cfg_attr(not(feature = "automation"), allow(unused_mut))]
+    let mut texts: Vec<&str> = BASIC_EXAMPLE_SNIPPETS.to_vec();
+    #[cfg(feature = "automation")]
+    texts.extend_from_slice(AUTOMATION_EXAMPLE_SNIPPETS);
+    for text in texts {
+        let part: Config =
+            serde_json::from_str(text).map_err(|e| format!("内置示例卡带解析失败：{e}"))?;
+        cfg.folders.extend(part.folders);
+        cfg.layers.extend(part.layers);
+        cfg.shortcuts.extend(part.shortcuts);
+        cfg.remaps.extend(part.remaps);
+        cfg.expansions.extend(part.expansions);
+        cfg.gestures.extend(part.gestures);
+    }
+    Ok(cfg)
+}
+
 /// 载入内置示例配置（设置页「载入示例配置」）：并入当前配置，走合并语义——只增不删、
 /// 不碰本机设置（与 `import_config(mode = "merge")` 同一口径，只是内容内置在二进制里）。
 #[tauri::command]
@@ -4727,7 +4788,7 @@ fn load_sample_config(
     app: tauri::AppHandle,
     state: tauri::State<'_, KadaState>,
 ) -> Result<ImportOutcome, String> {
-    merge_into_config(&app, &state, kada_core::sample::sample_config())
+    merge_into_config(&app, &state, bundled_examples()?)
 }
 
 /// 导出配置卡带（规划 7.2-㉕，配置分享 / 卡带市场）：把点名的那几条（单条、多选、或某个

@@ -1,0 +1,32 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "延时动作（PauseMs 串多步）",
+    "description": "PauseMs 让动作链在两步之间停一会儿：复制后等剪贴板就绪再粘贴，或隔一秒再输入。延时期间「停止执行」仍能立即中止。",
+    "author": "Kada",
+    "tags": ["延时", "PauseMs", "动作链", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "延时：复制 → 等 300ms → 粘贴",
+      "description": "多步动作里夹一个 PauseMs：先 Ctrl+C，等 300 毫秒，再 Ctrl+V，避免目标程序还没准备好剪贴板。",
+      "triggers": ["Ctrl+Alt+9"],
+      "actions": [
+        { "type": "keys", "keys": ["Ctrl", "C"] },
+        { "type": "pause_ms", "ms": 300 },
+        { "type": "keys", "keys": ["Ctrl", "V"] }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "延时：等 1 秒再输入",
+      "description": "PauseMs 1000 之后再打一段文字——需要先让窗口切过来 / 加载完的场景就用这种写法。",
+      "triggers": ["Ctrl+Alt+0"],
+      "actions": [
+        { "type": "pause_ms", "ms": 1000 },
+        { "type": "text", "text": "延时结束，开始输入。" }
+      ],
+      "enabled": true
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "窗口动作（最大化 / 最小化 / 叫到前台）",
+    "description": "App 动作按程序名控制窗口：最大化、最小化、叫到前台、重启。示例以记事本（notepad）为例，把 program 换成你自己的进程名即可。",
+    "author": "Kada",
+    "tags": ["窗口", "App", "最大化", "最小化", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "窗口：最大化记事本",
+      "description": "把记事本主窗口最大化（已最小化则先还原）。程序名按进程名匹配：notepad = 记事本。",
+      "triggers": ["F7"],
+      "actions": [
+        { "type": "app", "operation": { "op": "maximize", "program": "notepad" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "窗口：最小化记事本",
+      "description": "把记事本主窗口最小化——同一个 App 动作换成 minimize。",
+      "triggers": ["F8"],
+      "actions": [
+        { "type": "app", "operation": { "op": "minimize", "program": "notepad" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "窗口：把记事本叫到前台",
+      "description": "Activate 只把已在运行的程序放到前台，不会启动它；程序没运行时报错进消息中心。",
+      "triggers": ["F10"],
+      "actions": [
+        { "type": "app", "operation": { "op": "activate", "program": "notepad" } }
+      ],
+      "enabled": true
+    }
+  ]
+}

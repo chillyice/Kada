@@ -1,0 +1,32 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "剪贴板动作（复制 / 粘贴 / 转大小写）",
+    "description": "剪贴板相关的现成动作：用 Keys 发 Ctrl+C / Ctrl+V，或用「文本 → 转大写 / 转小写」把选中内容整体改写。全平台可用。",
+    "author": "Kada",
+    "tags": ["剪贴板", "复制", "粘贴", "Keys", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "剪贴板：复制选中内容",
+      "description": "Keys 动作发一次 Ctrl+C；不必再记组合键，换个更好按的触发键即可。",
+      "triggers": ["Ctrl+Alt+4"],
+      "actions": [{ "type": "keys", "keys": ["Ctrl", "C"] }],
+      "enabled": true
+    },
+    {
+      "name": "剪贴板：粘贴",
+      "description": "Keys 动作发一次 Ctrl+V——复制 / 粘贴这类高频组合都适合收成单键。",
+      "triggers": ["Ctrl+Alt+5"],
+      "actions": [{ "type": "keys", "keys": ["Ctrl", "V"] }],
+      "enabled": true
+    },
+    {
+      "name": "剪贴板：选中内容转大写",
+      "description": "文本动作的「转大写」模式：读当前选中（没有选中就读剪贴板），整段转大写后粘贴回原处。",
+      "triggers": ["Ctrl+Alt+6"],
+      "actions": [{ "type": "text", "text": "", "mode": "to_upper" }],
+      "enabled": true
+    }
+  ]
+}

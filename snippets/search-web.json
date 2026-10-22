@@ -1,0 +1,29 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "搜索入口（浏览器 / 站点搜索）",
+    "description": "OpenUrl 动作把常用搜索页收成快捷键：用系统默认浏览器打开带查询词的地址。把 URL 里 q= 后面的词换成你要搜的内容即可。",
+    "author": "Kada",
+    "tags": ["搜索", "OpenUrl", "浏览器", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "搜索：用浏览器搜 Kada",
+      "description": "OpenUrl 动作：用默认浏览器打开 Bing 搜索页。把 q=Kada 改成别的词，就是你的常用搜索入口。",
+      "triggers": ["Ctrl+Alt+2"],
+      "actions": [
+        { "type": "open_url", "url": "https://www.bing.com/search?q=Kada" }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "搜索：在 GitHub 搜 Kada",
+      "description": "同一个 OpenUrl 动作，换成站点内搜索页——任何「网址里带查询参数」的搜索都能这样收成快捷键。",
+      "triggers": ["Ctrl+Alt+3"],
+      "actions": [
+        { "type": "open_url", "url": "https://github.com/search?q=Kada" }
+      ],
+      "enabled": true
+    }
+  ]
+}

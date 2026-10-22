@@ -1,0 +1,40 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "文件动作（打开目录 / 取文件属性）",
+    "description": "文件/目录动作：在文件管理器里打开目录，或取文件属性写进变量再拼进文本。示例路径是 Windows 的，换成本机路径即可用。",
+    "author": "Kada",
+    "tags": ["文件", "目录", "取属性", "Os", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "文件：打开系统盘",
+      "description": "文件/目录动作的 open_folder：在资源管理器里打开 C:\\；把路径换成一个常用目录就是你的快捷入口。",
+      "triggers": ["Ctrl+Alt+7"],
+      "actions": [
+        { "type": "os", "operation": { "op": "open_folder", "path": "C:\\" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "文件：看文件属性",
+      "description": "先取 notepad.exe 的属性写进变量 file，再用 {file.size} / {file.dir} 等字段拼成一句话打出来——文件动作与变量串成一条流水线。",
+      "triggers": ["Ctrl+Alt+8"],
+      "actions": [
+        {
+          "type": "os",
+          "operation": {
+            "op": "get_file_props",
+            "path": "C:\\Windows\\notepad.exe",
+            "var": "file"
+          }
+        },
+        {
+          "type": "text",
+          "text": "notepad.exe：{file.size} 字节，位于 {file.dir}"
+        }
+      ],
+      "enabled": true
+    }
+  ]
+}

@@ -13,6 +13,19 @@
       ]
     },
     {
+      "name": "窗口动作（最大化 / 最小化 / 叫到前台）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/window-actions.json",
+      "description": "App 动作按程序名控制窗口：最大化、最小化、叫到前台、重启。示例以记事本（notepad）为例，把 program 换成你自己的进程名即可。",
+      "author": "Kada",
+      "tags": [
+        "窗口",
+        "App",
+        "最大化",
+        "最小化",
+        "常用动作"
+      ]
+    },
+    {
       "name": "词级跳转（Ctrl+Alt+方向）",
       "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/word-jump.json",
       "description": "Windows 上 Ctrl+Alt+左右切虚拟桌面、和编辑器里的词级跳转撞车；改成注入 Ctrl+左右，各编辑器通用。",
@@ -22,6 +35,56 @@
         "编辑器",
         "跳转",
         "keys"
+      ]
+    },
+    {
+      "name": "剪贴板动作（复制 / 粘贴 / 转大小写）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/clipboard-actions.json",
+      "description": "剪贴板相关的现成动作：用 Keys 发 Ctrl+C / Ctrl+V，或用「文本 → 转大写 / 转小写」把选中内容整体改写。全平台可用。",
+      "author": "Kada",
+      "tags": [
+        "剪贴板",
+        "复制",
+        "粘贴",
+        "Keys",
+        "常用动作"
+      ]
+    },
+    {
+      "name": "搜索入口（浏览器 / 站点搜索）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/search-web.json",
+      "description": "OpenUrl 动作把常用搜索页收成快捷键：用系统默认浏览器打开带查询词的地址。把 URL 里 q= 后面的词换成你要搜的内容即可。",
+      "author": "Kada",
+      "tags": [
+        "搜索",
+        "OpenUrl",
+        "浏览器",
+        "常用动作"
+      ]
+    },
+    {
+      "name": "文件动作（打开目录 / 取文件属性）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/file-actions.json",
+      "description": "文件/目录动作：在文件管理器里打开目录，或取文件属性写进变量再拼进文本。示例路径是 Windows 的，换成本机路径即可用。",
+      "author": "Kada",
+      "tags": [
+        "文件",
+        "目录",
+        "取属性",
+        "Os",
+        "常用动作"
+      ]
+    },
+    {
+      "name": "延时动作（PauseMs 串多步）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/delay-actions.json",
+      "description": "PauseMs 让动作链在两步之间停一会儿：复制后等剪贴板就绪再粘贴，或隔一秒再输入。延时期间「停止执行」仍能立即中止。",
+      "author": "Kada",
+      "tags": [
+        "延时",
+        "PauseMs",
+        "动作链",
+        "常用动作"
       ]
     },
     {
