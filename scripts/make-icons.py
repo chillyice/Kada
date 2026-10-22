@@ -97,7 +97,7 @@ def main() -> None:
     glyph = glyph_mask()
     DEST.mkdir(parents=True, exist_ok=True)
 
-    # ---- 托盘：透明底，字高约画布 62%，辉光按字高等比 ----
+    # ---- 托盘：透明底，字高约画布 70%，辉光按字高等比 ----
     for box, k_ratio, size, name in (
         (1024, 0.70, 32, "tray.png"),
         (1408, 0.70, 44, "tray-macos.png"),
