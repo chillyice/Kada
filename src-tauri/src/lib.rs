@@ -25,11 +25,11 @@ use kada_actions::{
     RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
-    config_needs_mouse_hook, detect_conflicts, diagnose_input_env, matches,
+    config_needs_mouse_hook, detect_conflicts, diagnose_input_env, keycast_text, matches,
     parse_snippet_index, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
-    IndexEntry, Key, Modifier, RawEvent, Remap, Settings, Severity, Shortcut, ShortcutItem,
-    SnippetPick, TextExpansion, TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL,
-    SYSTEM_SHORTCUTS,
+    IndexEntry, Key, Keycast, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
+    ShortcutItem, SnippetPick, TextExpansion, TextInjectMode, TriggerContext, Vars,
+    DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -462,6 +462,12 @@ struct KadaState {
     toast: Arc<Mutex<Option<ToastPayload>>>,
     /// 最近一次输入状态指示的载荷（懒创建状态指示窗时，供前端加载后兜底读取）。
     status: Arc<Mutex<Option<StatusPayload>>>,
+    /// 最近一次按键回显载荷（懒创建 keycast 窗时，供前端加载后兜底读取——首次按键建窗
+    /// 要几百毫秒，直接 emit 会早于监听器注册）。
+    keycast: Arc<Mutex<Option<KeycastPayload>>>,
+    /// 按键回显的隐藏截止时刻：前端建窗后回报尺寸时据此判断「这条已经过期了」，
+    /// 别把一条早该消失的按键在冷启动完成后又亮出来。
+    keycast_until: Mutex<Option<Instant>>,
     /// 未匹配手势待添加的方向串（EXT-03）：主窗口可能是刚被唤出的，事件会早于前端监听器，
     /// 所以先落这里，前端加载后 `take_pending_gesture` 取走。
     pending_gesture: Arc<Mutex<Option<String>>>,
@@ -891,10 +897,14 @@ fn spawn_engine_ticker(
     paused_until: Arc<AtomicU64>,
     rec: Arc<Mutex<Option<Recorder>>>,
     cfg_stale: Arc<AtomicBool>,
+    keycast: Arc<Mutex<Option<KeycastFeed>>>,
     app: tauri::AppHandle,
 ) {
     std::thread::spawn(move || {
         let mut watch = ResetWatch::new();
+        // 按键回显（EXT-12）：上次画过的序号 + 隐藏截止时刻。只在有**新**按键时重发。
+        let mut last_keycast: Option<u64> = None;
+        let mut keycast_deadline: Option<Instant> = None;
         // 上一次推给界面的指示（载荷 + 指示开关）：两者任一变了才重新推。开关也参与比对，
         // 否则「关掉悬浮指示」要等到下次状态变化才生效（锁定层能让它一直挂着）。
         let mut last_status: Option<(StatusPayload, bool)> = None;
@@ -931,7 +941,7 @@ fn spawn_engine_ticker(
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse, use_wheel, user_paused, elevated, gesture_on) = {
+            let (payload, hud_enabled, use_mouse, use_wheel, user_paused, elevated, gesture_on, keycast_cfg) = {
                 let guard = cfg.read().unwrap();
                 let frozen = rec.lock().unwrap().is_some()
                     || pause_active(&paused_until)
@@ -962,6 +972,7 @@ fn spawn_engine_ticker(
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
                     // → 右键完全放行（回到系统行为，一个字节都不多吞）。
                     guard.settings.experimental && kada_core::gesture_enabled(&guard),
+                    guard.settings.keycast.clone(),
                 )
             };
             // 锁（配置 / 引擎）到此释放：推指示要动托盘图标、建窗口、发事件，不能在锁里做。
@@ -1009,6 +1020,8 @@ fn spawn_engine_ticker(
             if let Some(notice) = input::elevated::take_notice() {
                 report_elevated_notice(&app, notice);
             }
+            // 按键回显（EXT-12）：由这一拍推 / 收浮窗，钩子回调只记一格最新按键。
+            keycast_tick(&app, &keycast_cfg, &keycast, &mut last_keycast, &mut keycast_deadline);
             // 「安全输入」提示（macOS 专属，规划 7.2-㊸）：低频轮询，状态**翻转**才报——
             // 终端输密码这类场景系统会关掉所有事件 tap，快捷键全失效；不提示的话用户看到的
             // 就是「Kada 坏了」，而其实退出那个场景会自己恢复。
@@ -2134,6 +2147,195 @@ fn ensure_hud(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
     Some(w)
 }
 
+// ---- 按键回显（EXT-12） ----
+
+/// 每收到一条物理按键事件就 +1：定时器线程靠它判断「有没有新的一键要画」。
+static KEYCAST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 钩子回调写、定时器线程读的一格「最新按键」。回调里只做字符串拼接 + 加锁写一格，
+/// **不建窗、不做 IPC**；重绘与隐藏都在定时器线程上摊薄。
+#[derive(Clone, Debug)]
+struct KeycastFeed {
+    seq: u64,
+    text: String,
+    down: bool,
+}
+
+/// 发给回显浮窗的载荷：文字 + 方向 + 外观（前端按它渲染并量尺寸）。
+#[derive(Clone, Serialize)]
+struct KeycastPayload {
+    text: String,
+    down: bool,
+    color: String,
+    font_size: u16,
+    hide_ms: u64,
+}
+
+/// 钩子回调里记录一次按键（注入事件根本不会进回调，因此天然不自我回显）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn note_keycast(feed: &Mutex<Option<KeycastFeed>>, settings: &Keycast, ev: &input::KeyEvent) {
+    if !settings.enabled {
+        return;
+    }
+    let (text, down) = match ev {
+        input::KeyEvent::Down { key, mods, .. } => {
+            (keycast_text(*key, mods, true, settings.ignore_single_char), true)
+        }
+        input::KeyEvent::Up { key, mods } => {
+            (keycast_text(*key, mods, false, settings.ignore_single_char), false)
+        }
+    };
+    if let Some(text) = text {
+        let seq = KEYCAST_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        *feed.lock().unwrap() = Some(KeycastFeed { seq, text, down });
+    }
+}
+
+/// 按需创建按键回显浮窗：同样 `focusable(false)` + 鼠标穿透 + 不借系统投影。
+fn ensure_keycast(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window("keycast") {
+        return Some(w);
+    }
+    let w = match tauri::WebviewWindowBuilder::new(
+        app,
+        "keycast",
+        tauri::WebviewUrl::App("index.html#keycast".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .focusable(false)
+    .inner_size(320.0, 96.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("创建按键回显窗失败: {e}");
+            return None;
+        }
+    };
+    let _ = w.set_ignore_cursor_events(true);
+    Some(w)
+}
+
+/// 定时器线程每拍调用：有新按键就推给浮窗；到点隐藏；关掉开关立即收起。
+fn keycast_tick(
+    app: &tauri::AppHandle,
+    kc: &Keycast,
+    feed: &Mutex<Option<KeycastFeed>>,
+    last_seq: &mut Option<u64>,
+    deadline: &mut Option<Instant>,
+) {
+    if !kc.enabled {
+        if let Some(w) = app.get_webview_window("keycast") {
+            let _ = w.hide();
+        }
+        if let Some(state) = app.try_state::<KadaState>() {
+            state.keycast.lock().unwrap().take();
+            *state.keycast_until.lock().unwrap() = None;
+        }
+        // 记下当前序号：重新打开开关时不该把关着期间最后一次按键补画出来。
+        *last_seq = feed.lock().unwrap().as_ref().map(|f| f.seq);
+        *deadline = None;
+        return;
+    }
+    let latest = feed.lock().unwrap().clone();
+    if let Some(f) = latest {
+        if Some(f.seq) != *last_seq {
+            *last_seq = Some(f.seq);
+            let until = Instant::now() + Duration::from_millis(kc.hide_ms);
+            *deadline = Some(until);
+            let payload = KeycastPayload {
+                text: f.text,
+                down: f.down,
+                color: kc.color.clone(),
+                font_size: kc.font_size,
+                hide_ms: kc.hide_ms,
+            };
+            // 先落一份再 emit：首次按键时窗口还在冷启动（WebView 要几百毫秒），事件的
+            // 监听器尚未注册，前端加载后靠 `get_keycast_payload` 兜底渲染。
+            if let Some(state) = app.try_state::<KadaState>() {
+                state.keycast.lock().unwrap().replace(payload.clone());
+                *state.keycast_until.lock().unwrap() = Some(until);
+            }
+            let app = app.clone();
+            std::thread::spawn(move || {
+                if let Some(w) = ensure_keycast(&app) {
+                    let _ = w.emit("keycast", &payload);
+                }
+            });
+        }
+    }
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        if let Some(w) = app.get_webview_window("keycast") {
+            let _ = w.hide();
+        }
+        if let Some(state) = app.try_state::<KadaState>() {
+            *state.keycast_until.lock().unwrap() = None;
+        }
+        *deadline = None;
+    }
+}
+
+/// 回显窗渲染完成（前端量出内容宽高后调用）：按配置的位置贴到工作区四角 / 边中并显示。
+#[tauri::command]
+fn keycast_ready(app: tauri::AppHandle, width: f64, height: f64) {
+    let Some(w) = app.get_webview_window("keycast") else {
+        return;
+    };
+    let Some(state) = app.try_state::<KadaState>() else {
+        return;
+    };
+    let (enabled, position) = {
+        let cfg = state.config.read().unwrap();
+        (cfg.settings.keycast.enabled, cfg.settings.keycast.position.clone())
+    };
+    if !enabled {
+        let _ = w.hide();
+        return;
+    }
+    // 冷启动建窗期间这条按键可能已经过期（停留时间调得很短时）：别把早该消失的
+    // 按键在 WebView 加载完成后又亮出来。
+    let fresh = state
+        .keycast_until
+        .lock()
+        .unwrap()
+        .is_some_and(|until| Instant::now() < until);
+    if !fresh {
+        let _ = w.hide();
+        return;
+    }
+    let w_logical = width.clamp(80.0, 1600.0);
+    let h_logical = height.clamp(24.0, 320.0);
+    let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let scale = m.scale_factor();
+        let work = m.work_area();
+        let (mw, mh) = (w_logical * scale, h_logical * scale);
+        let left = work.position.x as f64;
+        let top = work.position.y as f64;
+        let right = left + work.size.width as f64;
+        let bottom = top + work.size.height as f64;
+        let margin = 24.0 * scale;
+        let center_x = left + (work.size.width as f64 - mw) / 2.0;
+        let (x, y) = match position.as_str() {
+            "top-left" => (left + margin, top + margin),
+            "top-right" => (right - mw - margin, top + margin),
+            "bottom-left" => (left + margin, bottom - mh - margin),
+            "bottom-center" => (center_x, bottom - mh - margin),
+            "bottom-right" => (right - mw - margin, bottom - mh - margin),
+            _ => (center_x, top + margin),
+        };
+        let _ = w.set_position(tauri::LogicalPosition::new(x / scale, y / scale));
+    }
+    let _ = w.show();
+}
+
 /// 输入状态可视指示（见规划 7.3-⑬）：状态变化时刷新托盘提示，并按需显示 / 隐藏悬浮指示窗。
 ///
 /// 由状态机定时器线程调用，**必须在配置读锁与 `Engine` 锁之外**：这里要动托盘图标、建窗口、
@@ -2222,6 +2424,12 @@ fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
 #[tauri::command]
 fn get_status_payload(state: tauri::State<'_, KadaState>) -> Option<StatusPayload> {
     state.status.lock().unwrap().clone()
+}
+
+/// 读取最近一次按键回显载荷（回显窗懒创建后，前端加载时调用兜底渲染）。
+#[tauri::command]
+fn get_keycast_payload(state: tauri::State<'_, KadaState>) -> Option<KeycastPayload> {
+    state.keycast.lock().unwrap().clone()
 }
 
 // ---- 快捷键提示框（常显速查浮窗，见规划 7.3-㊳） ----
@@ -5189,9 +5397,11 @@ pub fn run() {
             get_run_records,
             get_unread,
             get_toast_payload,
-            get_status_payload,
+              get_status_payload,
+              get_keycast_payload,
             take_pending_gesture,
             hud_ready,
+            keycast_ready,
             get_hints_state,
             hints_ready,
             hints_move,
@@ -5237,6 +5447,8 @@ pub fn run() {
             // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let engine = Arc::new(Mutex::new(Engine::new()));
+            // 按键回显（EXT-12）的唯一一块共享状态：钩子回调写、定时器线程读并推浮窗。
+            let keycast_feed: Arc<Mutex<Option<KeycastFeed>>> = Arc::new(Mutex::new(None));
 
             // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发、
             // 也没有启用的鼠标手势就不挂，缩小全局拦截面）。运行中配置变化由状态机
@@ -5255,9 +5467,11 @@ pub fn run() {
                 let unread = unread.clone();
                 let runs = runs.clone();
                 let engine = engine.clone();
+                let keycast_feed = keycast_feed.clone();
                 let mut last_tap: Option<Instant> = None;
                 input::start(move |ev: input::KeyEvent| {
-                    let ev = to_ev(&ev);
+                    let raw = ev;
+                    let ev = to_ev(&raw);
                     // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
                     {
                         let mut g = r.lock().unwrap();
@@ -5301,6 +5515,9 @@ pub fn run() {
                     if guard.settings.ignore_fullscreen && input::foreground_fullscreen() {
                         return input::HookAction::Allow;
                     }
+                    // 按键回显（EXT-12）：走到这里说明没被暂停 / 排除 / 全屏暂停拦下，
+                    // 记录物理按键（注入事件不会进回调，天然不自我回显）。
+                    note_keycast(&keycast_feed, &guard.settings.keycast, &raw);
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
                             app_handle.clone(),
@@ -5408,6 +5625,7 @@ pub fn run() {
                 paused_until.clone(),
                 rec.clone(),
                 cfg_stale.clone(),
+                keycast_feed.clone(),
                 app.handle().clone(),
             );
 
@@ -5438,8 +5656,10 @@ pub fn run() {
                 tray: Mutex::new(None),
                 tray_base: base_icon.clone(),
                 tray_unread: unread_icon,
-                toast: Arc::new(Mutex::new(None)),
-                status: Arc::new(Mutex::new(None)),
+                  toast: Arc::new(Mutex::new(None)),
+                  status: Arc::new(Mutex::new(None)),
+                  keycast: Arc::new(Mutex::new(None)),
+                  keycast_until: Mutex::new(None),
                 pending_gesture: Arc::new(Mutex::new(None)),
                 hints_tray: Mutex::new(None),
                 pause_tray: Mutex::new(None),

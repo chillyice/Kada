@@ -2761,6 +2761,44 @@ body:has(.hud-box) {
   border-color: rgba(214, 164, 66, 0.55);
 }
 
+/* 按键回显浮层（keycast 窗口，独立小浮窗；EXT-12） */
+/* 同 toast / hud：transparent 窗口的 body 必须透明，否则会显示成实心深色矩形 */
+body:has(.keycast-box) {
+  background: transparent;
+}
+
+/* 外层只负责在窗口里居中；窗口尺寸由后端按 `.keycast-box` 量出来的宽高设置。 */
+.keycast-box {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.18s ease;
+}
+
+.keycast-box.is-fading {
+  opacity: 0;
+}
+
+/* 抬起态稍微淡一点，让按下 / 抬起一眼能分开（箭头本身由后端文案给出）。 */
+.keycast-box.is-up {
+  opacity: 0.72;
+}
+
+.keycast-text {
+  padding: 6px 18px;
+  background: var(--float-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.65);
+}
+
 /* 快捷键提示框（hints 窗口，独立常显浮窗；见规划 7.3-㊳） */
 /* 同 toast / hud：transparent 窗口的 body 必须透明，否则会显示成实心深色矩形 */
 body:has(.hints-panel) {

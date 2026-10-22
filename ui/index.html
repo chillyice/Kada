@@ -495,6 +495,68 @@
                 </details>
               </section>
 
+              <!-- 按键回显（EXT-12）：默认关。浮窗不可激活、鼠标穿透；暂停 / 全屏暂停 /
+                   排除程序命中时都不显示，注入事件也不会自我回显。 -->
+              <section class="set-card" id="keycast-card">
+                <div class="set-card-head"><span>按键回显</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">显示当前按键</span>
+                      <span class="set-sub">在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示</span>
+                    </span>
+                    <input type="checkbox" id="set-keycast" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">文字颜色</span>
+                      <span class="set-sub">按键文字与方向箭头的颜色</span>
+                    </span>
+                    <input type="color" id="set-keycast-color" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">位置</span>
+                      <span class="set-sub">回显浮层贴哪个屏幕边角（主显示器工作区）</span>
+                    </span>
+                    <select id="set-keycast-position">
+                      <option value="top-left">左上</option>
+                      <option value="top-center">顶部居中</option>
+                      <option value="top-right">右上</option>
+                      <option value="bottom-left">左下</option>
+                      <option value="bottom-center">底部居中</option>
+                      <option value="bottom-right">右下</option>
+                    </select>
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">字号</span>
+                      <span class="set-sub">文字大小（像素，12~72）</span>
+                    </span>
+                    <input type="number" id="set-keycast-font-size" min="12" max="72" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">停留时间</span>
+                      <span class="set-sub">最后一次按键后停留多久再淡出（毫秒，200~10000）</span>
+                    </span>
+                    <input type="number" id="set-keycast-hide-ms" min="200" max="10000" step="50" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">忽略单字符</span>
+                      <span class="set-sub">正常打字的单字符键（字母 / 数字 / 标点）不显示，只在组合键与功能键时出现，避免刷屏</span>
+                    </span>
+                    <input type="checkbox" id="set-keycast-ignore-single" class="toggle" />
+                  </label>
+                </div>
+                <details class="hint-fold">
+                  <summary>按键回显怎么用</summary>
+                  <p class="hint">打开后每次物理按键都会浮一条「组合键 + ↓（按下）/ ↑（抬起）」。它只是看板：不可点击、鼠标直接穿透、永不抢焦点，也不会让前台切换复位输入状态。</p>
+                  <p class="hint">暂停快捷键、全屏程序自动暂停、全局排除程序命中时都不显示；Kada 自己注入的按键也不会回显。</p>
+                </details>
+              </section>
+
               <!-- 输入层环境：厂商软件把按键 divert 走后，钩子看不到这次按下（规划 7.2-㊽）。
                    探测在后台 Rust 侧做（进程表 / 注册表），这里只显示结论 + 一个总开关。 -->
               <section class="set-card">

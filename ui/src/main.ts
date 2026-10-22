@@ -220,9 +220,21 @@ type Settings = {
   gesture_label_font_size?: number;
   /** 手势结果标签相对末端的偏移（像素，0~200）。缺字段按后端默认 16。 */
   gesture_label_offset?: number;
-  /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
-  gesture_fail_color?: string;
-};
+    /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
+    gesture_fail_color?: string;
+    /**
+     * 屏幕按键回显（EXT-12）：当前按键 + 修饰键组合的浮层。缺字段 = 关（后端
+     * `Keycast::default`）；外观字段缺省时按后端默认回落。
+     */
+    keycast?: {
+      enabled: boolean;
+      color?: string;
+      position?: string;
+      font_size?: number;
+      hide_ms?: number;
+      ignore_single_char?: boolean;
+    };
+  };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
@@ -5393,6 +5405,21 @@ function syncSettings() {
   );
   (document.getElementById("set-gesture-fail-color") as HTMLInputElement).value =
     cfg.settings.gesture_fail_color ?? "#ff5f56";
+  // 按键回显（EXT-12）：缺字段 = 关；外观回落后端默认（与 `Keycast::default` 一致）。
+  const keycast = cfg.settings.keycast;
+  (document.getElementById("set-keycast") as HTMLInputElement).checked = keycast?.enabled === true;
+  (document.getElementById("set-keycast-color") as HTMLInputElement).value =
+    keycast?.color ?? "#ffd9cf";
+  (document.getElementById("set-keycast-position") as HTMLSelectElement).value =
+    keycast?.position ?? "top-center";
+  (document.getElementById("set-keycast-font-size") as HTMLInputElement).value = String(
+    keycast?.font_size ?? 32,
+  );
+  (document.getElementById("set-keycast-hide-ms") as HTMLInputElement).value = String(
+    keycast?.hide_ms ?? 1200,
+  );
+  (document.getElementById("set-keycast-ignore-single") as HTMLInputElement).checked =
+    keycast?.ignore_single_char !== false;
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -5791,6 +5818,52 @@ function bindSettings() {
   const gestureFailColor = document.getElementById("set-gesture-fail-color") as HTMLInputElement;
   gestureFailColor.addEventListener("change", () => {
     cfg.settings.gesture_fail_color = gestureFailColor.value;
+    void save();
+  });
+  // 按键回显（EXT-12）：整组外观跟着开关一起落进 `settings.keycast`（缺省字段由后端补）。
+  const keycast = (): NonNullable<Settings["keycast"]> =>
+    (cfg.settings.keycast ??= {
+      enabled: false,
+      color: "#ffd9cf",
+      position: "top-center",
+      font_size: 32,
+      hide_ms: 1200,
+      ignore_single_char: true,
+    });
+  const keycastEnabled = document.getElementById("set-keycast") as HTMLInputElement;
+  keycastEnabled.addEventListener("change", () => {
+    keycast().enabled = keycastEnabled.checked;
+    void save();
+  });
+  const keycastColor = document.getElementById("set-keycast-color") as HTMLInputElement;
+  keycastColor.addEventListener("change", () => {
+    keycast().color = keycastColor.value;
+    void save();
+  });
+  const keycastPosition = document.getElementById("set-keycast-position") as HTMLSelectElement;
+  keycastPosition.addEventListener("change", () => {
+    keycast().position = keycastPosition.value;
+    void save();
+  });
+  const keycastFontSize = document.getElementById("set-keycast-font-size") as HTMLInputElement;
+  keycastFontSize.addEventListener("change", () => {
+    const v = Math.min(72, Math.max(12, Math.floor(Number(keycastFontSize.value) || 32)));
+    keycastFontSize.value = String(v);
+    keycast().font_size = v;
+    void save();
+  });
+  const keycastHideMs = document.getElementById("set-keycast-hide-ms") as HTMLInputElement;
+  keycastHideMs.addEventListener("change", () => {
+    const v = Math.min(10000, Math.max(200, Math.floor(Number(keycastHideMs.value) || 1200)));
+    keycastHideMs.value = String(v);
+    keycast().hide_ms = v;
+    void save();
+  });
+  const keycastIgnoreSingle = document.getElementById(
+    "set-keycast-ignore-single",
+  ) as HTMLInputElement;
+  keycastIgnoreSingle.addEventListener("change", () => {
+    keycast().ignore_single_char = keycastIgnoreSingle.checked;
     void save();
   });
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
@@ -7713,6 +7786,61 @@ async function bootstrapHints() {
   await listen<Config>("config-changed", (e) => render(e.payload));
 }
 
+// 按键回显浮层（独立窗口，加载 index.html#keycast，EXT-12）：
+// 后端每来一条物理按键就推一次，这里只画文字 + 按停留时间淡出；显示 / 隐藏与定位由后端管。
+type KeycastPayload = {
+  text: string;
+  down: boolean;
+  color: string;
+  font_size: number;
+  hide_ms: number;
+};
+
+async function bootstrapKeycast(preview = false) {
+  document.querySelector(".layout")?.remove();
+  document.querySelector("#result-modal")?.remove();
+  document.querySelector("#save-status")?.remove();
+
+  const box = el("div", "keycast-box");
+  const text = el("div", "keycast-text");
+  box.append(text);
+  document.body.append(box);
+  let fadeTimer: number | undefined;
+  const render = (p: KeycastPayload) => {
+    text.textContent = p.text;
+    text.style.color = p.color;
+    text.style.fontSize = `${p.font_size}px`;
+    box.classList.toggle("is-up", !p.down);
+    box.classList.remove("is-fading");
+    // 量完内容再回报尺寸：窗口按内容大小贴边角（与 hud / hints 同一个套路）。
+    // 注意量的是 `.keycast-text` 而不是铺满窗口的 `.keycast-box`（后者 inset:0，
+    // 量出来永远是当前窗口大小，窗口就永远缩不回去）。
+    requestAnimationFrame(() => {
+      const rect = text.getBoundingClientRect();
+      void invoke("keycast_ready", {
+        width: Math.ceil(rect.width) + 16,
+        height: Math.ceil(rect.height) + 16,
+      }).catch(() => {});
+    });
+    if (fadeTimer) window.clearTimeout(fadeTimer);
+    // 隐藏由后端到点执行；这里只提前淡出，避免「啪」一下消失。
+    fadeTimer = window.setTimeout(
+      () => box.classList.add("is-fading"),
+      Math.max(0, p.hide_ms - 180),
+    );
+  };
+  await listen<KeycastPayload>("keycast", (e) => render(e.payload));
+  // 首次懒创建后补一次拉取：第一次按键建窗要几百毫秒，emit 会早于监听器注册
+  // （与 hud / toast 同一个套路）。
+  const pending = await invoke<KeycastPayload | null>("get_keycast_payload").catch(() => null);
+  if (pending) {
+    render(pending);
+  } else if (preview) {
+    // 纯浏览器直开（`index.html#keycast`）给一份样例，方便调样式。
+    render({ text: "Ctrl+Alt+K ↓", down: true, color: "#ffd9cf", font_size: 32, hide_ms: 1200 });
+  }
+}
+
 // 手势轨迹浮层（独立窗口，加载 index.html#gesture，EXT-02）：
 // 画的时候背后端每帧推轨迹点，这里只画线 + 末端箭头；松手后显示动作名 / 失败色。
 // 窗口本身不可激活、鼠标穿透，显示与隐藏全由后端控制。
@@ -7809,6 +7937,11 @@ if (location.hash === "#toast") {
   void bootstrapToast();
 } else if (location.hash === "#gesture") {
   void bootstrapGesture();
+} else if (location.hash === "#keycast") {
+  // 纯浏览器直开时给一份样例载荷（壳内自动跳过），方便调样式。
+  const preview = !("__TAURI_INTERNALS__" in window);
+  installBrowserMock();
+  void bootstrapKeycast(preview);
 } else if (location.hash === "#hud") {
   // 演示模式只在没有 Tauri 壳时生效（`index.html#hud` 纯浏览器直开时给一份样例载荷，
   // 方便调样式；壳内自动跳过）。触发气泡那边不装，因为它没有可预览的静态内容。
