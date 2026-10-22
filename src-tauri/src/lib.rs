@@ -3591,19 +3591,6 @@ fn set_tray_unread(app: &tauri::AppHandle, unread: bool) {
 // 动作执行引擎（run_action / run_os / run_app / run_cmd / transform_case 等）
 // 已迁出到 `kada-actions` crate；壳层通过 `kada_actions::run_actions` 调用。
 
-/// 托盘图标：荧光 K（`icons/tray*.png`，编译期解码成 RGBA，运行时无需 image 特性）。
-/// 32px 给 Windows / Linux；macOS 菜单栏上限 22pt，用 44px 版保住 2x 清晰度。
-#[cfg(target_os = "macos")]
-const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray-macos.png");
-#[cfg(not(target_os = "macos"))]
-const TRAY_ICON: tauri::image::Image<'static> = tauri::include_image!("./icons/tray.png");
-// `include_image!` 在宏里读文件，rustc 不会自动登记这个依赖；这行 include_bytes! 让 cargo
-// 记住图标文件，改图后才会重编（否则沿用上次展开进 OUT_DIR 的旧像素）。
-#[cfg(target_os = "macos")]
-const _: &[u8] = include_bytes!("../icons/tray-macos.png");
-#[cfg(not(target_os = "macos"))]
-const _: &[u8] = include_bytes!("../icons/tray.png");
-
 /// 在图标右上角叠加一个红色圆点（未读标记），返回新图像。
 fn with_red_dot(icon: &tauri::image::Image<'_>) -> tauri::image::Image<'static> {
     let w = icon.width() as usize;
@@ -6144,10 +6131,11 @@ pub fn run() {
             // 「配置被整份换掉」的旗标：监听线程置位，状态机定时器线程消费（见 spawn_engine_ticker）。
             let cfg_stale = Arc::new(AtomicBool::new(false));
 
-            // 托盘图标：荧光 K（与窗口/任务栏的应用图标分开，托盘单独一个视觉）。
-            // 32px 给 Windows / Linux；macOS 菜单栏最高 22pt，用 44px 版（2x）。
-            // 基础 + 带红点（未读态）；转为 owned 以存入 state。
-            let base_icon: Option<tauri::image::Image<'static>> = Some(TRAY_ICON);
+            // 托盘图标：基础 + 带红点（未读态）。转为 owned 以存入 state。
+            let base_icon: Option<tauri::image::Image<'static>> =
+                app.default_window_icon().map(|img| {
+                    tauri::image::Image::new_owned(img.rgba().to_vec(), img.width(), img.height())
+                });
             let unread_icon = base_icon.as_ref().map(with_red_dot);
 
             // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
