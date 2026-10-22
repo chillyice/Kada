@@ -24,6 +24,11 @@ type OsOperation =
 type SystemOperation = { op: "switch_desktop"; direction: DesktopDirection };
 /** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
 type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
+/** 剪贴板动作（类型 `clipboard`，EXT-15）：v1 只处理文本。 */
+type ClipboardOperation =
+  | { op: "set_clipboard"; text: string }
+  | { op: "get_clipboard"; var: string }
+  | { op: "tempstr"; text: string };
 type Condition =
   | { kind: "exists"; path: string }
   | { kind: "not_exists"; path: string }
@@ -57,6 +62,7 @@ type Action =
   | { type: "keys"; keys: string[]; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
+  | { type: "clipboard"; operation: ClipboardOperation; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "system"; operation: SystemOperation; description?: string }
   | { type: "window"; operation: { op: WindowOperation }; description?: string }
@@ -421,6 +427,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "os", label: tr("文件/目录") },
   { value: "system", label: tr("操作系统") },
   { value: "window", label: tr("窗口操作") },
+  { value: "clipboard", label: tr("剪贴板") },
   { value: "keys", label: tr("按键组合") },
   { value: "mouse", label: tr("鼠标操作") },
   { value: "pause_ms", label: tr("延迟") },
@@ -436,6 +443,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   script: "📜",
   keys: "⌨️",
   mouse: "🖱️",
+  clipboard: "📋",
   pause_ms: "⏱️",
   os: "📁",
   system: "🖥️",
@@ -468,6 +476,10 @@ function actionVarWrites(a: Action): string[] {
         : [];
     case "app":
       return a.operation.op === "status" && a.operation.var.trim()
+        ? [a.operation.var.trim()]
+        : [];
+    case "clipboard":
+      return a.operation.op === "get_clipboard" && a.operation.var.trim()
         ? [a.operation.var.trim()]
         : [];
     // 分组只是容器：数据流标签按成员汇总（一眼看出整组写/读了什么）。
@@ -508,6 +520,9 @@ function actionVarReads(a: Action): string[] {
       if ("args" in o) texts.push(...o.args);
       break;
     }
+    case "clipboard":
+      if (a.operation.op !== "get_clipboard") texts.push(a.operation.text);
+      break;
     case "open_url":
       texts.push(a.url);
       break;
@@ -620,6 +635,25 @@ const WINDOW_OPS: { value: WindowOperation; label: string }[] = [
   { value: "close_same_app", label: tr("关闭同类窗口") },
 ];
 
+// ---- 剪贴板动作的子操作（EXT-15）----
+const CLIPBOARD_OPS: { value: ClipboardOperation["op"]; label: string }[] = [
+  { value: "set_clipboard", label: tr("写入剪贴板") },
+  { value: "get_clipboard", label: tr("读取剪贴板到变量") },
+  { value: "tempstr", label: tr("临时文本（粘贴后恢复）") },
+];
+
+function newClipboardOp(op: ClipboardOperation["op"]): ClipboardOperation {
+  switch (op) {
+    case "set_clipboard":
+      return { op, text: "" };
+    case "get_clipboard":
+      return { op, var: "clip" };
+    case "tempstr":
+      return { op, text: "" };
+  }
+  return { op: "set_clipboard", text: "" };
+}
+
 function newOsOp(op: OsOperation["op"]): OsOperation {  switch (op) {
     case "copy":
       return { op, source: "", dest: "" };
@@ -703,6 +737,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "keys", keys: [] };
     case "mouse":
       return { type: "mouse", op: newMouseOp("move") };
+    case "clipboard":
+      return { type: "clipboard", operation: { op: "set_clipboard", text: "" } };
     case "pause_ms":
       return { type: "pause_ms", ms: 0 };
     case "os":
@@ -792,6 +828,16 @@ function actionHasContent(a: Action): boolean {
       return a.keys.length > 0;
     case "mouse":
       return a.op.op === "click" || a.op.dx !== 0 || a.op.dy !== 0;
+    case "clipboard":
+      // 写入空文本 = 清空剪贴板，是完整操作；读取要有变量名，临时文本要有内容。
+      switch (a.operation.op) {
+        case "set_clipboard":
+          return true;
+        case "get_clipboard":
+          return a.operation.var.trim().length > 0;
+        case "tempstr":
+          return a.operation.text.trim().length > 0;
+      }
     case "pause_ms":
       return a.ms > 0;
     case "os":
@@ -867,6 +913,18 @@ function windowSummary(op: WindowOperation): string {
       return tr("关闭当前窗口的同类窗口");
   }
   return "";
+}
+
+/** 剪贴板动作的摘要。 */
+function clipboardSummary(op: ClipboardOperation): string {
+  switch (op.op) {
+    case "set_clipboard":
+      return op.text ? trt`写入剪贴板：${op.text}` : tr("清空剪贴板");
+    case "get_clipboard":
+      return trt`读取剪贴板 → ${op.var}`;
+    case "tempstr":
+      return op.text ? trt`临时文本：${op.text}` : tr("临时文本");
+  }
 }
 
 function condSummary(c: Condition): string {  switch (c.kind) {
@@ -957,6 +1015,8 @@ function actionSummary(a: Action): string {
       return trt`按键：${a.keys.join("+")}`;
     case "mouse":
       return mouseSummary(a.op);
+    case "clipboard":
+      return clipboardSummary(a.operation);
     case "pause_ms":
       return trt`延迟 ${a.ms}ms`;
     case "os":
@@ -4363,6 +4423,21 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "clipboard") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of CLIPBOARD_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation.op;
+    sel.addEventListener("change", () => {
+      a.operation = newClipboardOp(sel.value as ClipboardOperation["op"]);
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "mouse") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const o of MOUSE_OPS) {
@@ -4826,6 +4901,46 @@ function actionFields(
     }
     body.append(line);
     body.append(mouseRecordButton(rerender, ctx));
+  } else if (a.type === "clipboard") {
+    const op = a.operation;
+    if (op.op === "get_clipboard") {
+      const line = el("div", "action-line");
+      const vname = el("input", "action-input") as HTMLInputElement;
+      vname.type = "text";
+      vname.value = op.var;
+      vname.placeholder = tr("变量名，如 clip");
+      vname.addEventListener("input", () => {
+        op.var = vname.value.trim();
+      });
+      line.append(
+        el("span", "unit-hint", tr("变量名")),
+        vname,
+        helpIcon(
+          tr("把剪贴板里的文本存进该变量；剪贴板为空或只有图片时这一步会失败。后续动作可用 {clip} 引用。"),
+        ),
+      );
+      body.append(line);
+    } else {
+      const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
+      ta.value = op.text;
+      ta.placeholder =
+        op.op === "set_clipboard"
+          ? tr("要写入剪贴板的文本（支持 {变量名} 占位符；留空 = 清空剪贴板）")
+          : tr("要临时粘贴的文本（支持 {变量名} 占位符）");
+      ta.addEventListener("input", () => {
+        op.text = ta.value;
+      });
+      body.append(ta);
+      body.append(
+        el(
+          "div",
+          "unit-hint",
+          op.op === "set_clipboard"
+            ? tr("写入系统剪贴板，不会粘贴；之后用 Ctrl+V / ⌘V 或「粘贴」动作使用。")
+            : tr("写入剪贴板后立即粘贴到当前焦点，再恢复原来的剪贴板文本（图片不恢复；图片剪贴板列为后续）。"),
+        ),
+      );
+    }
   } else if (a.type === "pause_ms") {
     const line = el("div", "action-line");
     const num = el("input", "action-input") as HTMLInputElement;

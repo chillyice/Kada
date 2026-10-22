@@ -1133,6 +1133,28 @@ pub enum MouseOp {
     Scroll { dx: i32, dy: i32 },
 }
 
+/// 剪贴板动作（[`Action::Clipboard`]，EXT-15）：v1 只处理文本（图片剪贴板列在规划后续）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ClipboardOperation {
+    /// 把文本写入系统剪贴板（支持 `{变量}` 占位符；空文本 = 清空剪贴板）。
+    SetClipboard {
+        #[serde(default)]
+        text: String,
+    },
+    /// 读取剪贴板文本到变量 `var`；剪贴板里没有文本时执行失败。
+    GetClipboard {
+        #[serde(default)]
+        var: String,
+    },
+    /// 临时文本：写入剪贴板 → 粘贴到当前焦点 → 恢复原剪贴板（只恢复文本内容）。
+    #[serde(rename = "tempstr")]
+    TempStr {
+        #[serde(default)]
+        text: String,
+    },
+}
+
 /// `serde` 的 `skip_serializing_if` 帮手：`false` 的布尔字段不落盘——默认值写进 JSON 只是噪音
 /// （配置、导出卡带、分享出去的卡带都会带上）。
 fn is_false(v: &bool) -> bool {
@@ -1173,6 +1195,8 @@ pub enum Action {
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
     Mouse { op: MouseOp, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 剪贴板动作（EXT-15）：写入 / 读取文本到变量 / 临时文本（粘贴后恢复原剪贴板）。
+    Clipboard { operation: ClipboardOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 动作分组：**纯粹的组织结构**，成员按顺序执行（等价于把它们直接摊在这一层）。
     /// 只影响编辑页的展示与执行记录的分层（成员记录挂在分组这一步下面），不改执行语义；
     /// 可嵌套（分组里还能放分组 / 条件判断 / 并行执行）。
@@ -1256,7 +1280,6 @@ impl Action {
             k.parse::<Key>().map_err(|e| format!("{label}「{k}」无效：{e}"))?;
             Ok::<(), String>(())
         };
-        #[cfg(feature = "automation")]
         let non_empty = |label: &str, v: &str| {
             if v.trim().is_empty() {
                 return Err(format!("{label}不能为空"));
@@ -1265,6 +1288,12 @@ impl Action {
         };
         match self {
             Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            Action::Clipboard { operation, .. } => match operation {
+                // 空文本 = 清空剪贴板，是合法操作。
+                ClipboardOperation::SetClipboard { .. } => Ok(()),
+                ClipboardOperation::GetClipboard { var } => non_empty("变量名", var),
+                ClipboardOperation::TempStr { text } => non_empty("文本", text),
+            },
             Action::Mouse { op, .. } => match op {
                 MouseOp::Move { dx, dy } | MouseOp::Scroll { dx, dy } => {
                     if *dx == 0 && *dy == 0 {
@@ -4976,6 +5005,60 @@ mod new_action_and_folder_tests {
         let json = serde_json::to_string(&a).unwrap();
         assert!(json.contains(r#""op":"maximize_restore""#), "{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+    }
+
+    /// 剪贴板动作（EXT-15）：配置 / 卡带里的形状是
+    /// `{"type":"clipboard","operation":{"op":"set_clipboard","text":"..."}}`；
+    /// `tempstr` 用短名（不是 `temp_str`），与规划里的写法一致。
+    #[test]
+    fn clipboard_action_json_roundtrip_and_validate() {
+        let a: Action = serde_json::from_str(
+            r#"{"type":"clipboard","operation":{"op":"set_clipboard","text":"hi"}}"#,
+        )
+        .unwrap();
+        assert!(a.validate().is_ok());
+        assert!(matches!(
+            a,
+            Action::Clipboard {
+                operation: ClipboardOperation::SetClipboard { .. },
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""op":"set_clipboard""#), "{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+
+        let temp: Action =
+            serde_json::from_str(r#"{"type":"clipboard","operation":{"op":"tempstr","text":"x"}}"#)
+                .unwrap();
+        assert!(temp.validate().is_ok());
+        assert!(matches!(
+            temp,
+            Action::Clipboard {
+                operation: ClipboardOperation::TempStr { .. },
+                ..
+            }
+        ));
+
+        // 空文本清空剪贴板是合法操作；读取剪贴板必须给变量名；临时文本不能为空。
+        assert!(Action::Clipboard {
+            operation: ClipboardOperation::SetClipboard { text: String::new() },
+            description: None,
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Clipboard {
+            operation: ClipboardOperation::GetClipboard { var: " ".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Clipboard {
+            operation: ClipboardOperation::TempStr { text: String::new() },
+            description: None,
+        }
+        .validate()
+        .is_err());
     }
 
     /// `masked` 只影响展示，但它是配置字段，得守住三件事：老配置（没这个键）读成「不隐藏」、

@@ -26,7 +26,8 @@ use kada_actions::{
 };
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, keycast_text, matches,
-    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, Config, Conflict,
+    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, ClipboardOperation,
+    Config, Conflict,
     IndexEntry, Key, Keycast, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
     ShortcutItem, SnippetPick, TextExpansion, TextInjectMode, TriggerContext, Vars,
     DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
@@ -2014,8 +2015,8 @@ fn finish_run(
     set_tray_unread(app, true);
 }
 
-/// 这串动作里有没有「往目标程序注入输入」的动作（Text / Keys / Mouse，以及注入切换键的
-/// `System::SwitchDesktop`，含 If / Parallel 分支内的）。
+/// 这串动作里有没有「往目标程序注入输入」的动作（Text / Keys / Mouse / 临时文本，以及注入
+/// 切换键的 `System::SwitchDesktop`，含 If / Parallel 分支内的）。
 ///
 /// 修饰键没松时只有这类动作会被污染（见 [`fire`]），命令 / 文件 / 应用类照常执行；
 /// 静态过一遍链足够准，If / Parallel 的嵌套两路都算「可能有」。
@@ -2023,6 +2024,11 @@ fn finish_run(
 fn injects_keys(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Text { .. } | Action::Keys { .. } | Action::Mouse { .. } => true,
+        // 「临时文本」走剪贴板粘贴，会发出 Ctrl+V / ⌘V；写入 / 读取剪贴板本身不注入。
+        Action::Clipboard {
+            operation: ClipboardOperation::TempStr { .. },
+            ..
+        } => true,
         Action::Group { actions, .. } => injects_keys(actions),
         // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
         // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
@@ -3365,6 +3371,18 @@ mod tests {
             description: None,
         }];
         assert!(injects_keys(&mouse));
+
+        // 「临时文本」走剪贴板粘贴（发 Ctrl+V），要等；只写 / 读剪贴板不注入，不用等。
+        let temp = vec![Action::Clipboard {
+            operation: kada_core::ClipboardOperation::TempStr { text: "x".into() },
+            description: None,
+        }];
+        assert!(injects_keys(&temp));
+        let set_clip = vec![Action::Clipboard {
+            operation: kada_core::ClipboardOperation::SetClipboard { text: "x".into() },
+            description: None,
+        }];
+        assert!(!injects_keys(&set_clip));
 
         // 命令 / 暂停不受修饰键影响，不该白等 300ms。
         let plain = vec![

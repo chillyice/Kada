@@ -28,15 +28,17 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod abort;
 
-use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, TextMode, Vars};
+use kada_core::{
+    substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, TextInjectMode, TextMode,
+    TextValue, Value, Vars,
+};
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, TextValue,
-    Value, WindowOperation,
+    AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -312,6 +314,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Keys { .. } => "keys",
         Action::PauseMs { .. } => "pause_ms",
         Action::Mouse { .. } => "mouse",
+        Action::Clipboard { .. } => "clipboard",
         Action::Group { .. } => "group",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "command",
@@ -627,6 +630,7 @@ fn action_label(action: &Action) -> &'static str {
         Action::Keys { .. } => "按键注入失败",
         Action::PauseMs { .. } => "暂停失败",
         Action::Mouse { .. } => "鼠标模拟失败",
+        Action::Clipboard { .. } => "剪贴板操作失败",
         Action::Group { .. } => "分组执行失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
@@ -739,6 +743,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::Keys { keys, .. } => format!("按下 {}", keys.join("+")),
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
+        Action::Clipboard { operation, .. } => clipboard_body(operation, vars),
         Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
         Action::Command { command, .. }
@@ -773,6 +778,27 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => window_body(operation),
+    }
+}
+
+/// 剪贴板动作摘要（消息中心「命令」一栏）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn clipboard_body(op: &ClipboardOperation, vars: &Vars) -> String {
+    match op {
+        ClipboardOperation::SetClipboard { text } => {
+            let t = substitute_vars(text, vars);
+            if t.is_empty() {
+                "清空剪贴板".into()
+            } else {
+                format!("写入剪贴板 {}", preview(&t))
+            }
+        }
+        ClipboardOperation::GetClipboard { var } => {
+            format!("读取剪贴板 → {}", var.trim())
+        }
+        ClipboardOperation::TempStr { text } => {
+            format!("临时文本 {}", preview(&substitute_vars(text, vars)))
+        }
     }
 }
 
@@ -888,7 +914,8 @@ fn action_description(action: &Action) -> Option<&str> {
         Action::Text { description, .. }
         | Action::Keys { description, .. }
         | Action::PauseMs { description, .. }
-        | Action::Mouse { description, .. } => description.as_deref(),
+        | Action::Mouse { description, .. }
+        | Action::Clipboard { description, .. } => description.as_deref(),
         // 分组没有 `description`：用户填的 `name` 就是这一步的标题。
         Action::Group { name, .. } => {
             let n = name.trim();
@@ -989,6 +1016,30 @@ fn run_action(
             let _inj = lock_inject(ctx);
             simulate::mouse(op).map_err(|e| e.to_string())?;
         }
+        Action::Clipboard { operation, .. } => match operation {
+            ClipboardOperation::SetClipboard { text } => {
+                let text = substitute_vars(text, vars);
+                simulate::set_clipboard_text(&text)
+                    .map_err(|e| format!("写入剪贴板失败：{e}"))?;
+            }
+            ClipboardOperation::GetClipboard { var } => {
+                let var = var.trim();
+                if var.is_empty() {
+                    return Err("变量名不能为空".into());
+                }
+                let text = simulate::get_clipboard_text()
+                    .map_err(|e| format!("读取剪贴板失败：{e}"))?;
+                vars.insert(var.to_string(), Value::Text(TextValue { text, exit_code: None }));
+            }
+            ClipboardOperation::TempStr { text } => {
+                // 持链内注入锁：写剪贴板 → 粘贴 → 恢复必须原子，否则并行的另一成员会
+                // 覆盖剪贴板（或读到刚写进去的内容）。
+                let _inj = lock_inject(ctx);
+                let text = substitute_vars(text, vars);
+                simulate::type_text(&text)
+                    .map_err(|e| format!("临时文本粘贴失败：{e}"))?;
+            }
+        },
         // 长等待也要能被中止：一次 `PauseMs` 可以是几十秒，睡死在里面的话「停止」要等到
         // 它自然睡醒才生效（用户看到的是「点了停止还在继续」）。切成小片睡，每片查一次。
         Action::PauseMs { ms, .. } => {
@@ -2753,6 +2804,40 @@ mod tests {
         };
         let summary = super::action_summary(&plain, &BTreeMap::new());
         assert!(summary.contains("hello"), "未隐藏的文本照旧展示：{summary}");
+    }
+
+    /// 剪贴板动作三类的摘要：写入要代入变量、空文本说明是清空、读取写出变量名、
+    /// 临时文本要能认出是哪一步（执行记录里只看类型分不清）。
+    #[test]
+    fn clipboard_summary_covers_three_ops() {
+        let _g = abort::test_lock();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert("who".into(), Value::Text("Kada".into()));
+
+        let set = Action::Clipboard {
+            operation: ClipboardOperation::SetClipboard { text: "hi {who}".into() },
+            description: None,
+        };
+        let s = super::action_summary(&set, &vars);
+        assert!(s.contains("写入剪贴板 hi Kada"), "{s}");
+
+        let clear = Action::Clipboard {
+            operation: ClipboardOperation::SetClipboard { text: String::new() },
+            description: None,
+        };
+        assert!(super::action_summary(&clear, &vars).contains("清空剪贴板"));
+
+        let get = Action::Clipboard {
+            operation: ClipboardOperation::GetClipboard { var: "clip".into() },
+            description: None,
+        };
+        assert!(super::action_summary(&get, &vars).contains("读取剪贴板 → clip"));
+
+        let temp = Action::Clipboard {
+            operation: ClipboardOperation::TempStr { text: "hi".into() },
+            description: None,
+        };
+        assert!(super::action_summary(&temp, &vars).contains("临时文本 hi"));
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。

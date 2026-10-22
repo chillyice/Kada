@@ -458,6 +458,12 @@ pub fn get_clipboard_text() -> io::Result<String> {
     cb.get_text().map_err(io::Error::other)
 }
 
+/// 把文本写入系统剪贴板（剪贴板动作「写入剪贴板」；空文本 = 清空）。
+pub fn set_clipboard_text(text: &str) -> io::Result<()> {
+    let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
+    cb.set_text(text.to_string()).map_err(io::Error::other)
+}
+
 /// 等待物理按下的修饰键全部释放（最多 `timeout_ms` 毫秒）。
 ///
 /// 触发带修饰键的快捷键（如 `Ctrl+Alt+T`）时，Ctrl/Alt 仍被物理按住；若此时直接注入

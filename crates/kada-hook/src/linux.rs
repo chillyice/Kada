@@ -1034,6 +1034,12 @@ pub mod simulate {
         cb.get_text().map_err(io::Error::other)
     }
 
+    /// 把文本写入系统剪贴板（剪贴板动作「写入剪贴板」；空文本 = 清空）。
+    pub fn set_clipboard_text(text: &str) -> io::Result<()> {
+        let mut cb = arboard::Clipboard::new().map_err(io::Error::other)?;
+        cb.set_text(text.to_string()).map_err(io::Error::other)
+    }
+
     /// Linux 版无需等待修饰键释放：物理键盘被 evdev 独占抓取（`EVIOCGRAB`），目标程序
     /// 看不到物理修饰键、只看到注入的虚拟设备事件，不存在「修饰键污染注入」的问题。
     /// 占位接口与 Windows 对齐（`fire` 两平台统一调用）。

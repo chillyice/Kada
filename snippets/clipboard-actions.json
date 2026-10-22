@@ -1,10 +1,10 @@
 {
   "kada_snippet": {
     "version": 1,
-    "name": "剪贴板动作（复制 / 粘贴 / 转大小写）",
-    "description": "剪贴板相关的现成动作：用 Keys 发 Ctrl+C / Ctrl+V，或用「文本 → 转大写 / 转小写」把选中内容整体改写。全平台可用。",
+    "name": "剪贴板动作（写入 / 读取 / 临时文本 / 复制粘贴）",
+    "description": "剪贴板相关的现成动作：写入固定文本、读取剪贴板到变量、临时文本（粘贴后恢复原剪贴板），以及用 Keys 发 Ctrl+C / Ctrl+V、用「文本 → 转大写 / 转小写」整体改写选中内容。全平台可用（v1 只处理文本，图片剪贴板后续）。",
     "author": "Kada",
-    "tags": ["剪贴板", "复制", "粘贴", "Keys", "常用动作"]
+    "tags": ["剪贴板", "写入", "读取", "临时文本", "复制", "粘贴", "Keys", "常用动作"]
   },
   "shortcuts": [
     {
@@ -26,6 +26,34 @@
       "description": "文本动作的「转大写」模式：读当前选中（没有选中就读剪贴板），整段转大写后粘贴回原处。",
       "triggers": ["Ctrl+Alt+6"],
       "actions": [{ "type": "text", "text": "", "mode": "to_upper" }],
+      "enabled": true
+    },
+    {
+      "name": "剪贴板：写入固定文本",
+      "description": "把固定文本写进剪贴板（不粘贴）；支持 {变量名} 占位符，留空文本等于清空剪贴板。",
+      "triggers": ["Ctrl+Shift+7"],
+      "actions": [
+        { "type": "clipboard", "operation": { "op": "set_clipboard", "text": "Kada 剪贴板动作" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "剪贴板：内容回显到当前窗口",
+      "description": "读取剪贴板文本到变量 clip，再用文本动作把内容写出来（演示 GetClipboard + {变量}）。剪贴板为空或只有图片时读取会失败。",
+      "triggers": ["Ctrl+Shift+8"],
+      "actions": [
+        { "type": "clipboard", "operation": { "op": "get_clipboard", "var": "clip" } },
+        { "type": "text", "text": "剪贴板内容：{clip}", "mode": "input" }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "剪贴板：临时文本（粘贴后恢复）",
+      "description": "把固定文本临时放进剪贴板并立即粘贴到当前焦点，随后恢复原来的剪贴板文本。",
+      "triggers": ["Ctrl+Shift+9"],
+      "actions": [
+        { "type": "clipboard", "operation": { "op": "tempstr", "text": "—— 来自 Kada" } }
+      ],
       "enabled": true
     }
   ]
