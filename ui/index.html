@@ -409,6 +409,27 @@
                     </span>
                     <textarea id="set-gesture-exclude" rows="3" spellcheck="false" placeholder="photoshop.exe&#10;*blender*"></textarea>
                   </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">起手距离</span>
+                      <span class="set-sub">光标移动超过这个距离才算开始画手势（像素，1~50）；调大能防手抖误触</span>
+                    </span>
+                    <input type="number" id="set-gesture-start-distance" min="1" max="50" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">停顿超时</span>
+                      <span class="set-sub">画到一半停住超过这么久就放弃这次手势、按未命中回放右键（毫秒，500~3000）</span>
+                    </span>
+                    <input type="number" id="set-gesture-timeout" min="500" max="3000" step="50" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">识别灵敏度</span>
+                      <span class="set-sub">一段方向至少移动这么多像素才被识别（4~40）；数值越小越灵敏，轻轻一划就成段，也更容易把手抖当成方向</span>
+                    </span>
+                    <input type="number" id="set-gesture-min-segment" min="4" max="40" step="1" />
+                  </label>
                 </div>
                 <details class="hint-fold">
                   <summary>鼠标手势怎么用</summary>

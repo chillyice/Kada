@@ -5275,6 +5275,16 @@ function syncSettings() {
     cfg.settings.experimental === true;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
     (cfg.settings.gesture_exclude ?? []).join("\n");
+  // 手势参数（EXT-01）：缺字段按后端 serde default 显示，避免老配置显示成 0。
+  (document.getElementById("set-gesture-start-distance") as HTMLInputElement).value = String(
+    cfg.settings.gesture_start_distance ?? 22,
+  );
+  (document.getElementById("set-gesture-timeout") as HTMLInputElement).value = String(
+    cfg.settings.gesture_timeout_ms ?? 1500,
+  );
+  (document.getElementById("set-gesture-min-segment") as HTMLInputElement).value = String(
+    cfg.settings.gesture_min_segment ?? 16,
+  );
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -5599,6 +5609,29 @@ function bindSettings() {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
+    void save();
+  });
+  // 手势参数（EXT-01）：三个数都是「手改 JSON 也允许」的值，这里按界面建议范围钳一下，
+  // 免得存进去一个 0 把识别弄坏。失焦 / 回车时落盘。
+  const gestureStart = document.getElementById("set-gesture-start-distance") as HTMLInputElement;
+  gestureStart.addEventListener("change", () => {
+    const v = Math.min(50, Math.max(1, Math.floor(Number(gestureStart.value) || 22)));
+    gestureStart.value = String(v);
+    cfg.settings.gesture_start_distance = v;
+    void save();
+  });
+  const gestureTimeout = document.getElementById("set-gesture-timeout") as HTMLInputElement;
+  gestureTimeout.addEventListener("change", () => {
+    const v = Math.min(3000, Math.max(500, Math.floor(Number(gestureTimeout.value) || 1500)));
+    gestureTimeout.value = String(v);
+    cfg.settings.gesture_timeout_ms = v;
+    void save();
+  });
+  const gestureMinSegment = document.getElementById("set-gesture-min-segment") as HTMLInputElement;
+  gestureMinSegment.addEventListener("change", () => {
+    const v = Math.min(40, Math.max(4, Math.floor(Number(gestureMinSegment.value) || 16)));
+    gestureMinSegment.value = String(v);
+    cfg.settings.gesture_min_segment = v;
     void save();
   });
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
