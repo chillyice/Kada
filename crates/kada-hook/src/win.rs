@@ -668,6 +668,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     crate::gesture::on_move((ms.pt.x, ms.pt.y));
                     // 触发角（EXT-10）：同样只做纯坐标判断，执行由壳层开线程。
                     crate::hotcorner::on_move((ms.pt.x, ms.pt.y));
+                    // 边缘滚动（EXT-11）：移动只负责「离开后重新武装」，触发靠滚轮。
+                    crate::wheel_edge::on_move((ms.pt.x, ms.pt.y));
                 }
                 _ => {}
             }
@@ -686,7 +688,16 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
 /// 左右键、移动一律放行（不纳入键模型，避免全局误拦截点击）。滚轮见 [`swallow_wheel`]。
 fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
     if wparam == WM_MOUSEWHEEL {
-        return swallow_wheel(ms);
+        // 判定顺序：**滚轮快捷键优先**。这一格命中快捷键 / 改键并被吞掉时，边缘滚动
+        // 不再处理；没绑、条件不成立、未到一格（放行）才轮到边缘滚动。
+        if swallow_wheel(ms) {
+            return true;
+        }
+        // 边缘滚动（EXT-11）：贴边且本次停留还没触发 → 交给壳层执行动作。**不吞滚轮**
+        // （页面 / 列表照常滚），与触发角同一口径——真正执行与否由壳层判全屏 / 排除程序，
+        // 钩子层拿不到这些信息，吞了就会把该让路的滚动也吃掉。
+        crate::wheel_edge::on_wheel((ms.pt.x, ms.pt.y));
+        return false;
     }
     // mouseData 高 16 位承载 X 按钮号：1 = XBUTTON1（后退/MB4），2 = XBUTTON2（前进/MB5）。
     let x_button = |ms: &MSLLHOOKSTRUCT| ms.mouseData >> 16;

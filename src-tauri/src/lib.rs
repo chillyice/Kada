@@ -926,10 +926,13 @@ fn spawn_engine_ticker(
         let mut last_wheel: Option<bool> = None;
         // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
         let mut last_gesture: Option<bool> = None;
-        // 触发角（EXT-10）：上一次推给钩子层的「总闸 + 四角开关 + 显示器矩形」。
-        // 显示器几何每 ~3 秒重取一次（热插拔 / 改分辨率），其余时候用上次的。
+        // 触发角（EXT-10）/ 边缘滚动（EXT-11）：上一次推给钩子层的「总闸 + 四角/四边开关
+        // + 显示器矩形」。显示器几何每 ~3 秒重取一次（热插拔 / 改分辨率），两者共用。
         type HotCornerPush = (bool, [bool; 4], Vec<(i32, i32, i32, i32)>);
         let mut last_hot_corners: Option<HotCornerPush> = None;
+        let mut last_wheel_edges: Option<HotCornerPush> = None;
+        let mut last_monitors: Vec<(i32, i32, i32, i32)> = Vec::new();
+        let mut last_edge_on = false;
         let mut hot_corner_tick: u32 = 0;
         // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
         // 外部改配置都能改它，这里是唯一一处常驻且拿得到最新配置的地方）。
@@ -1020,12 +1023,14 @@ fn spawn_engine_ticker(
                 kada_hook::gesture::set_enabled(gesture_on);
                 last_gesture = Some(gesture_on);
             }
-            // 触发角（EXT-10）：总闸 + 四角开关 + 显示器矩形推给钩子层（钩子回调里只做
-            // 纯坐标判断）。显示器几何在启用时每 ~3 秒重取一次，热插拔 / 改分辨率能跟上。
+            // 触发角（EXT-10）/ 边缘滚动（EXT-11）：总闸 + 四角/四边开关 + 显示器矩形推给
+            // 钩子层（回调里只做纯坐标判断）。两者共用同一份显示器几何，任一启用就按 ~3 秒
+            // 重取一次，热插拔 / 改分辨率能跟上。
             hot_corner_tick = hot_corner_tick.wrapping_add(1);
-            let (hot_on, hot_flags) = {
+            let (hot_on, hot_flags, wheel_on, wheel_flags) = {
                 let g = cfg.read().unwrap();
                 let hc = &g.settings.hot_corners;
+                let we = &g.settings.wheel_edges;
                 (
                     g.settings.experimental && hc.any_enabled(),
                     [
@@ -1034,14 +1039,13 @@ fn spawn_engine_ticker(
                         hc.bottom_left.enabled,
                         hc.bottom_right.enabled,
                     ],
+                    g.settings.experimental && we.any_enabled(),
+                    [we.top.enabled, we.bottom.enabled, we.left.enabled, we.right.enabled],
                 )
             };
-            let refetch = hot_on
-                && (hot_corner_tick % 50 == 0
-                    || match last_hot_corners.as_ref() {
-                        Some((on, flags, _)) => !*on || *flags != hot_flags,
-                        None => true,
-                    });
+            let any_edge = hot_on || wheel_on;
+            let refetch =
+                any_edge && (hot_corner_tick % 50 == 0 || !last_edge_on || last_monitors.is_empty());
             let monitors = if refetch {
                 app.available_monitors()
                     .unwrap_or_default()
@@ -1058,15 +1062,19 @@ fn spawn_engine_ticker(
                     })
                     .collect()
             } else {
-                last_hot_corners
-                    .as_ref()
-                    .map(|(_, _, m)| m.clone())
-                    .unwrap_or_default()
+                last_monitors.clone()
             };
-            let next = (hot_on, hot_flags, monitors);
-            if last_hot_corners.as_ref() != Some(&next) {
-                kada_hook::hotcorner::configure(next.0, next.1, next.2.clone());
-                last_hot_corners = Some(next);
+            last_monitors = monitors.clone();
+            last_edge_on = any_edge;
+            let next_hot = (hot_on, hot_flags, monitors.clone());
+            if last_hot_corners.as_ref() != Some(&next_hot) {
+                kada_hook::hotcorner::configure(next_hot.0, next_hot.1, next_hot.2.clone());
+                last_hot_corners = Some(next_hot);
+            }
+            let next_wheel = (wheel_on, wheel_flags, monitors);
+            if last_wheel_edges.as_ref() != Some(&next_wheel) {
+                kada_hook::wheel_edge::configure(next_wheel.0, next_wheel.1, next_wheel.2.clone());
+                last_wheel_edges = Some(next_wheel);
             }
             // 托盘「暂停快捷键触发」的勾选对齐：设置页勾选、外部改配置、托盘自身点击都汇总到
             // 这一处比对（点菜单时 CheckMenuItem 已自动翻转，这里把状态钉死到真实配置值）。
@@ -2061,6 +2069,83 @@ fn handle_hot_corner(
         runs,
         actions,
         format!("触发角 {name}"),
+        name,
+        action_timeout,
+        text_mode,
+        None,
+    );
+}
+
+/// 边缘滚动（EXT-11）：注册出口。回调在钩子线程上跑，这里只开线程做后续（不建窗 / 不 IO）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn spawn_wheel_edge_listener(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+) {
+    kada_hook::wheel_edge::set_sink(Some(Arc::new(move |edge| {
+        let app = app.clone();
+        let cfg = cfg.clone();
+        let results = results.clone();
+        let unread = unread.clone();
+        let runs = runs.clone();
+        std::thread::spawn(move || handle_wheel_edge(app, cfg, results, unread, runs, edge));
+    })));
+}
+
+/// 一次边缘滚动的收尾：全屏 / 排除程序与手势同口径让路；命中就交给 `fire`。
+///
+/// 钩子层**没有吞滚轮**，所以这里没有回放逻辑。触发时抓前台窗口由 `fire` 在调用线程上做。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn handle_wheel_edge(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+    edge: kada_hook::wheel_edge::Edge,
+) {
+    let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
+        let g = cfg.read().unwrap();
+        let we = &g.settings.wheel_edges;
+        let (entry, fallback) = match edge {
+            kada_hook::wheel_edge::Edge::Top => (&we.top, "上边缘"),
+            kada_hook::wheel_edge::Edge::Bottom => (&we.bottom, "下边缘"),
+            kada_hook::wheel_edge::Edge::Left => (&we.left, "左边缘"),
+            kada_hook::wheel_edge::Edge::Right => (&we.right, "右边缘"),
+        };
+        (
+            g.settings.experimental && we.enabled && entry.enabled,
+            g.settings.action_timeout_ms,
+            g.settings.text_inject_mode,
+            g.settings.gesture_exclude.clone(),
+            g.settings.exclude_apps.clone(),
+            entry.actions.clone(),
+            entry.label(fallback),
+        )
+    };
+    // 没配动作 = 半条配置，什么也不做（滚轮本来就放行了）。
+    if !on || actions.is_empty() {
+        return;
+    }
+    // 全屏 / 排除程序：与手势同口径，整条让路。
+    if input::foreground_fullscreen() {
+        return;
+    }
+    let fetch = || input::frontmost_context();
+    let ctx = TriggerContext::lazy(&fetch, None);
+    if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        return;
+    }
+    fire(
+        app,
+        results,
+        unread,
+        runs,
+        actions,
+        format!("边缘滚动 {name}"),
         name,
         action_timeout,
         text_mode,
@@ -5074,6 +5159,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             background_input: false,
             shell_actions: false,
             hot_corners: false,
+            wheel_edges: false,
             ..Default::default()
         }
     }
@@ -5093,6 +5179,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             background_input: false,
             shell_actions: false,
             hot_corners: false,
+            wheel_edges: false,
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -5110,6 +5197,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             background_input: false,
             shell_actions: false,
             hot_corners: false,
+            wheel_edges: false,
             ..Default::default()
         }
     }
@@ -6294,6 +6382,16 @@ pub fn run() {
             // 触发角（EXT-10）：出口在钩子线程上，只开线程；开不开与四角开关由定时器线程推。
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_hot_corner_listener(
+                app.handle().clone(),
+                config.clone(),
+                results.clone(),
+                unread.clone(),
+                runs.clone(),
+            );
+
+            // 边缘滚动（EXT-11）：同样只注册出口，触发判定在钩子里。
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            spawn_wheel_edge_listener(
                 app.handle().clone(),
                 config.clone(),
                 results.clone(),

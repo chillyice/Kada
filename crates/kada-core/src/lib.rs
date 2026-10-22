@@ -2196,6 +2196,78 @@ impl HotCorners {
     }
 }
 
+/// 边缘滚动（EXT-11）的一条边：是否启用、展示名、滚轮触发后执行的动作链。
+///
+/// 与触发角一样复用 [`Action`] 与壳层 `fire` 链路（步骤上报 / 执行记录 / 注入锁 /
+/// 超时中止全部继承）。缺字段 = 关闭。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct WheelEdge {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 边名（列表 / 气泡展示用）；空 = 用方位名（上边缘 / 下边缘 / 左边缘 / 右边缘）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// 触发后按顺序执行的动作。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+}
+
+impl WheelEdge {
+    /// 展示名：有名字用名字，否则退回方位名。
+    pub fn label(&self, fallback: &str) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            fallback.to_string()
+        } else {
+            name.to_string()
+        }
+    }
+}
+
+/// 边缘滚动（EXT-11）：光标贴在屏幕四边时滚轮触发动作。四边各自启用 / 命名 / 配动作，
+/// 同一份四边配置应用到每台显示器的对应边。
+///
+/// **默认关**（缺字段即关，老配置照常读）。触发判定在钩子层（纯坐标状态机，
+/// `kada-hook::wheel_edge`），执行在壳层；只在 Windows 落地，其余平台走
+/// [`PlatformCaps::wheel_edges`] 软冲突。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WheelEdges {
+    /// 总开关。关掉只是不触发，四边配置保留。
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub top: WheelEdge,
+    #[serde(default)]
+    pub bottom: WheelEdge,
+    #[serde(default)]
+    pub left: WheelEdge,
+    #[serde(default)]
+    pub right: WheelEdge,
+}
+
+impl Default for WheelEdges {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            top: WheelEdge::default(),
+            bottom: WheelEdge::default(),
+            left: WheelEdge::default(),
+            right: WheelEdge::default(),
+        }
+    }
+}
+
+impl WheelEdges {
+    /// 总开关开着、且至少一条边启用——钩子层据此决定要不要装鼠标钩子 / 判定边缘。
+    pub fn any_enabled(&self) -> bool {
+        self.enabled
+            && (self.top.enabled
+                || self.bottom.enabled
+                || self.left.enabled
+                || self.right.enabled)
+    }
+}
+
 /// 复制快捷菜单的一个条目：动作 / 子菜单 / 分割线。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2419,6 +2491,9 @@ pub struct Settings {
     /// 触发角（EXT-10）：光标碰到屏幕四角执行动作，见 [`HotCorners`]。缺字段 = 关闭。
     #[serde(default)]
     pub hot_corners: HotCorners,
+    /// 边缘滚动（EXT-11）：光标贴屏幕四边时滚轮触发动作，见 [`WheelEdges`]。缺字段 = 关闭。
+    #[serde(default)]
+    pub wheel_edges: WheelEdges,
 }
 
 /// 鼠标手势起手距离的缺省值（像素）。
@@ -2520,6 +2595,7 @@ impl Default for Settings {
             keycast: Keycast::default(),
             clipboard_menu: ClipboardMenu::default(),
             hot_corners: HotCorners::default(),
+            wheel_edges: WheelEdges::default(),
         }
     }
 }
@@ -2597,6 +2673,8 @@ pub struct PlatformCaps {
     pub shell_actions: bool,
     /// 触发角（[`HotCorners`]）是否可用。目前只有 Windows 接了鼠标钩子。
     pub hot_corners: bool,
+    /// 边缘滚动（[`WheelEdges`]）是否可用。目前只有 Windows 接了鼠标钩子。
+    pub wheel_edges: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2612,6 +2690,7 @@ impl Default for PlatformCaps {
             background_input: true,
             shell_actions: true,
             hot_corners: true,
+            wheel_edges: true,
         }
     }
 }
@@ -2628,6 +2707,7 @@ impl PlatformCaps {
             && self.background_input
             && self.shell_actions
             && self.hot_corners
+            && self.wheel_edges
     }
 }
 
@@ -3225,6 +3305,17 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         });
     }
 
+    // 边缘滚动（EXT-11）：同触发角口径，只有 Windows 接了鼠标钩子。
+    if !caps.wheel_edges && cfg.settings.wheel_edges.any_enabled() {
+        out.push(Conflict {
+            severity: Severity::Warn,
+            platform: true,
+            message: "边缘滚动在当前平台用不了（只有 Windows 接了鼠标钩子），配置保留但不会触发"
+                .into(),
+            name: String::new(),
+        });
+    }
+
     for r in &cfg.remaps {
         if !r.enabled {
             continue;
@@ -3453,6 +3544,7 @@ pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
     config_uses_mouse(cfg)
         || (cfg.settings.experimental && gesture_enabled(cfg))
         || (cfg.settings.experimental && cfg.settings.hot_corners.any_enabled())
+        || (cfg.settings.experimental && cfg.settings.wheel_edges.any_enabled())
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
@@ -4244,6 +4336,25 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
         corner.actions = kept;
+    }
+
+    // 边缘滚动（EXT-11）：四边动作逐个校验，口径同触发角。
+    for (fallback, edge) in [
+        ("上边缘", &mut out.settings.wheel_edges.top),
+        ("下边缘", &mut out.settings.wheel_edges.bottom),
+        ("左边缘", &mut out.settings.wheel_edges.left),
+        ("右边缘", &mut out.settings.wheel_edges.right),
+    ] {
+        let label = edge.label(fallback);
+        edge.name = edge.name.trim().to_string();
+        let mut kept = Vec::new();
+        for a in &edge.actions {
+            match a.validate() {
+                Ok(()) => kept.push(a.clone()),
+                Err(e) => ignored.push(format!("边缘滚动「{label}」的某个动作已忽略：{e}")),
+            }
+        }
+        edge.actions = kept;
     }
 
     // 唤醒键：无法解析成单键时清空（关闭快速唤醒），不拖垮整份配置。
@@ -7127,6 +7238,7 @@ mod platform_caps_tests {
             background_input: false,
             shell_actions: false,
             hot_corners: false,
+            wheel_edges: false,
             ..Default::default()
         }
     }
@@ -7149,6 +7261,7 @@ mod platform_caps_tests {
             background_input: false,
             shell_actions: false,
             hot_corners: false,
+            wheel_edges: false,
         }
     }
 
@@ -7857,5 +7970,86 @@ mod hot_corner_tests {
         assert_eq!(clean.settings.hot_corners.top_left.name, "左上");
         assert_eq!(clean.settings.hot_corners.top_left.actions.len(), 1);
         assert!(ignored.iter().any(|m| m.contains("触发角")));
+    }
+
+    /// 老配置缺 `wheel_edges`：默认关，四边都没有动作。
+    #[test]
+    fn old_config_without_wheel_edges_gets_defaults() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert!(!old.settings.wheel_edges.enabled);
+        assert!(!old.settings.wheel_edges.any_enabled());
+        assert!(old.settings.wheel_edges.top.actions.is_empty());
+    }
+
+    /// 四边开关 / 名字 / 动作能原样往返（空名 / 空动作不落盘）。
+    #[test]
+    fn wheel_edges_roundtrip() {
+        let cfg = Config {
+            settings: Settings {
+                wheel_edges: WheelEdges {
+                    enabled: true,
+                    top: WheelEdge {
+                        enabled: true,
+                        name: "音量".into(),
+                        actions: vec![text("a")],
+                    },
+                    left: WheelEdge {
+                        enabled: true,
+                        name: "".into(),
+                        actions: vec![text("b")],
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.settings.wheel_edges, cfg.settings.wheel_edges);
+        assert_eq!(back.settings.wheel_edges.left.label("左边缘"), "左边缘");
+    }
+
+    /// 边缘滚动启用 → 要装鼠标钩子，但 `config_uses_mouse` 不受影响（不误报厂商接管）。
+    #[test]
+    fn wheel_edges_need_mouse_hook_but_not_uses_mouse() {
+        let mut cfg = Config::default();
+        cfg.settings.experimental = true;
+        cfg.settings.wheel_edges.enabled = true;
+        cfg.settings.wheel_edges.right.enabled = true;
+        assert!(config_needs_mouse_hook(&cfg));
+        assert!(!config_uses_mouse(&cfg));
+        // 总闸关掉 → 不装。
+        cfg.settings.experimental = false;
+        assert!(!config_needs_mouse_hook(&cfg));
+    }
+
+    /// 非 Windows 平台给一条平台 Warn，不拦保存。
+    #[test]
+    fn wheel_edges_flagged_where_unsupported() {
+        let mut cfg = Config::default();
+        assert!(detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() })
+            .is_empty());
+        cfg.settings.wheel_edges.enabled = true;
+        cfg.settings.wheel_edges.bottom.enabled = true;
+        let hits = detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() });
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].platform);
+        assert!(hits[0].message.contains("边缘滚动"));
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    /// 清洗只摘掉坏动作，边名去空白。
+    #[test]
+    fn sanitize_drops_bad_wheel_edge_actions() {
+        let mut cfg = Config::default();
+        cfg.settings.wheel_edges.left.name = "  桌面  ".into();
+        cfg.settings.wheel_edges.left.actions = vec![
+            text("ok"),
+            Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+        ];
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.settings.wheel_edges.left.name, "桌面");
+        assert_eq!(clean.settings.wheel_edges.left.actions.len(), 1);
+        assert!(ignored.iter().any(|m| m.contains("边缘滚动")));
     }
 }

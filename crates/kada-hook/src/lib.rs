@@ -25,6 +25,7 @@ pub mod gesture;
 
 /// 触发角（EXT-10）：平台无关的坐标状态机 + 出口，执行在壳层做。
 pub mod hotcorner;
+pub mod wheel_edge;
 
 pub use kada_core::{
     format_shortcut, key_name, matches, Key, Modifier, MouseButton, RawEvent, Shortcut,

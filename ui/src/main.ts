@@ -263,6 +263,11 @@ type Settings = {
      * `HotCorners::default`）；同一份四角配置应用到每台显示器的对应角。
      */
     hot_corners?: HotCorners;
+    /**
+     * 边缘滚动（EXT-11）：光标贴屏幕四边时滚轮触发动作。缺字段 = 关（后端
+     * `WheelEdges::default`）；同一份四边配置应用到每台显示器的对应边。
+     */
+    wheel_edges?: WheelEdges;
   };
 /**
  * 复制快捷菜单（EXT-13）：见后端 `ClipboardMenu`。条目数组顺序即显示顺序。
@@ -276,6 +281,10 @@ type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntr
 type HotCorner = { enabled: boolean; name?: string; actions: Action[] };
 type HotCornerKey = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 type HotCorners = { enabled: boolean } & Record<HotCornerKey, HotCorner>;
+/** 边缘滚动的一条边（后端 `WheelEdge`）。 */
+type WheelEdge = { enabled: boolean; name?: string; actions: Action[] };
+type WheelEdgeKey = "top" | "bottom" | "left" | "right";
+type WheelEdges = { enabled: boolean } & Record<WheelEdgeKey, WheelEdge>;
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
@@ -5886,8 +5895,8 @@ function hotCornerOf(key: HotCornerKey): HotCorner {
 }
 
 // 设置页里的动作编辑器：一行一个动作（类型下拉 + 子类型 + 字段），与主编辑页共用
-// `actionSubtypeSelect` / `actionFields`，不另造一套动作表单。
-function hotCornerActionsEditor(actions: Action[], rerender: () => void): HTMLElement {
+// `actionSubtypeSelect` / `actionFields`，不另造一套动作表单。触发角 / 边缘滚动共用。
+function settingsActionsEditor(actions: Action[], rerender: () => void): HTMLElement {
   const box = el("div", "menu-editor-list");
   actions.forEach((action, i) => {
     const item = el("div", "menu-editor-entry");
@@ -5940,7 +5949,42 @@ function renderHotCornerActions(key: HotCornerKey) {
     renderHotCornerActions(key);
     void save();
   };
-  host.replaceChildren(hotCornerActionsEditor(hotCornerOf(key).actions, rerender));
+  host.replaceChildren(settingsActionsEditor(hotCornerOf(key).actions, rerender));
+}
+
+// ---- 边缘滚动（EXT-11） ----
+const WHEEL_EDGE_KEYS: WheelEdgeKey[] = ["top", "bottom", "left", "right"];
+
+// 老配置缺字段时补齐结构（后端 serde default 也是全关）。
+function wheelEdges(): WheelEdges {
+  return (cfg.settings.wheel_edges ??= {
+    enabled: false,
+    top: { enabled: false, name: "", actions: [] },
+    bottom: { enabled: false, name: "", actions: [] },
+    left: { enabled: false, name: "", actions: [] },
+    right: { enabled: false, name: "", actions: [] },
+  });
+}
+
+function wheelEdgeOf(key: WheelEdgeKey): WheelEdge {
+  const all = wheelEdges();
+  let entry = all[key];
+  if (!entry) entry = all[key] = { enabled: false, name: "", actions: [] };
+  // 后端序列化会跳过空的 name / actions（`skip_serializing_if`），这里补齐再给编辑器用。
+  if (typeof entry.name !== "string") entry.name = "";
+  if (!Array.isArray(entry.actions)) entry.actions = [];
+  return entry;
+}
+
+// 某条边的动作编辑区：结构变化后只重画这一块（设置页其余部分不动）。
+function renderWheelEdgeActions(key: WheelEdgeKey) {
+  const host = document.getElementById(`wheel-edge-actions-${key}`);
+  if (!host) return;
+  const rerender = () => {
+    renderWheelEdgeActions(key);
+    void save();
+  };
+  host.replaceChildren(settingsActionsEditor(wheelEdgeOf(key).actions, rerender));
 }
 
 function syncSettings() {
@@ -6053,6 +6097,16 @@ function syncSettings() {
     (document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement).value =
       entry.name ?? "";
     renderHotCornerActions(key);
+  }
+  // 边缘滚动（EXT-11）：同样缺字段 = 关；四边启用 / 名字 / 动作都回显。
+  const edges = wheelEdges();
+  (document.getElementById("set-wheel-edges") as HTMLInputElement).checked = edges.enabled;
+  for (const key of WHEEL_EDGE_KEYS) {
+    const entry = wheelEdgeOf(key);
+    (document.getElementById(`set-wheel-edge-${key}`) as HTMLInputElement).checked = entry.enabled;
+    (document.getElementById(`set-wheel-edge-name-${key}`) as HTMLInputElement).value =
+      entry.name ?? "";
+    renderWheelEdgeActions(key);
   }
 }
 
@@ -6616,6 +6670,24 @@ function bindSettings() {
     const name = document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement;
     name.addEventListener("change", () => {
       hotCornerOf(key).name = name.value.trim();
+      void save();
+    });
+  }
+  // 边缘滚动（EXT-11）：总闸 + 四边的启用 / 名字；动作编辑区同样直接写进配置后落盘。
+  const wheelEdgesEnabled = document.getElementById("set-wheel-edges") as HTMLInputElement;
+  wheelEdgesEnabled.addEventListener("change", () => {
+    wheelEdges().enabled = wheelEdgesEnabled.checked;
+    void save();
+  });
+  for (const key of WHEEL_EDGE_KEYS) {
+    const toggle = document.getElementById(`set-wheel-edge-${key}`) as HTMLInputElement;
+    toggle.addEventListener("change", () => {
+      wheelEdgeOf(key).enabled = toggle.checked;
+      void save();
+    });
+    const name = document.getElementById(`set-wheel-edge-name-${key}`) as HTMLInputElement;
+    name.addEventListener("change", () => {
+      wheelEdgeOf(key).name = name.value.trim();
       void save();
     });
   }

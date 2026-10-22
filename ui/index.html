@@ -577,8 +577,80 @@
                 </details>
               </section>
 
-              <!-- 按键回显（EXT-12）：默认关。浮窗不可激活、鼠标穿透；暂停 / 全屏暂停 /
-                   排除程序命中时都不显示，注入事件也不会自我回显。 -->
+              <!-- 边缘滚动（EXT-11）：默认关。光标贴屏幕四边时滚动滚轮执行动作；四边独立启用 /
+                   命名 / 配动作。判定在钩子层（纯坐标），执行走 fire 链路。同一份配置应用到每台
+                   显示器的对应边；全屏 / 排除程序与鼠标手势同口径让路，不吞滚轮。 -->
+              <section class="set-card" id="wheel-edges-card">
+                <div class="set-card-head"><span>边缘滚动</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">启用边缘滚动</span>
+                      <span class="set-sub">光标贴在屏幕边缘时滚动滚轮执行对应动作；一次停留只触发一次，离开边缘后重新武装。不吞滚轮</span>
+                    </span>
+                    <input type="checkbox" id="set-wheel-edges" class="toggle" />
+                  </label>
+                  <div class="hot-corner">
+                    <div class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">上边缘</span>
+                        <span class="set-sub">光标贴在屏幕上边缘时滚动滚轮，执行下面的动作</span>
+                      </span>
+                      <span class="set-controls hot-corner-controls">
+                        <input type="text" id="set-wheel-edge-name-top" class="hot-corner-name" placeholder="名称（可选）" />
+                        <input type="checkbox" id="set-wheel-edge-top" class="toggle" />
+                      </span>
+                    </div>
+                    <div class="hot-corner-actions" id="wheel-edge-actions-top"></div>
+                  </div>
+                  <div class="hot-corner">
+                    <div class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">下边缘</span>
+                        <span class="set-sub">光标贴在屏幕下边缘时滚动滚轮，执行下面的动作</span>
+                      </span>
+                      <span class="set-controls hot-corner-controls">
+                        <input type="text" id="set-wheel-edge-name-bottom" class="hot-corner-name" placeholder="名称（可选）" />
+                        <input type="checkbox" id="set-wheel-edge-bottom" class="toggle" />
+                      </span>
+                    </div>
+                    <div class="hot-corner-actions" id="wheel-edge-actions-bottom"></div>
+                  </div>
+                  <div class="hot-corner">
+                    <div class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">左边缘</span>
+                        <span class="set-sub">光标贴在屏幕左边缘时滚动滚轮，执行下面的动作</span>
+                      </span>
+                      <span class="set-controls hot-corner-controls">
+                        <input type="text" id="set-wheel-edge-name-left" class="hot-corner-name" placeholder="名称（可选）" />
+                        <input type="checkbox" id="set-wheel-edge-left" class="toggle" />
+                      </span>
+                    </div>
+                    <div class="hot-corner-actions" id="wheel-edge-actions-left"></div>
+                  </div>
+                  <div class="hot-corner">
+                    <div class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">右边缘</span>
+                        <span class="set-sub">光标贴在屏幕右边缘时滚动滚轮，执行下面的动作</span>
+                      </span>
+                      <span class="set-controls hot-corner-controls">
+                        <input type="text" id="set-wheel-edge-name-right" class="hot-corner-name" placeholder="名称（可选）" />
+                        <input type="checkbox" id="set-wheel-edge-right" class="toggle" />
+                      </span>
+                    </div>
+                    <div class="hot-corner-actions" id="wheel-edge-actions-right"></div>
+                  </div>
+                </div>
+                <details class="hint-fold">
+                  <summary>边缘滚动怎么用</summary>
+                  <p class="hint">四边各自启用、各自命名、各配一串动作（与快捷键同一套动作，支持命令 / 打开程序 / 按键等）。<strong>同一份配置应用到每台显示器的对应边</strong>；判定用屏幕物理坐标，不按工作区裁掉任务栏。</p>
+                  <p class="hint">贴着一边滚轮<strong>只触发一次</strong>；离开边缘一段距离后回来再滚才会再触发。滚轮本身<strong>照常滚动</strong>（不吞键）；如果某一格已经被滚轮快捷键接走，边缘滚动不再重复处理。全屏程序（游戏 / 视频 / F11）与「手势排除程序」「这些程序里不启用 Kada」命中的程序里一律让路。</p>
+                  <p class="hint">当前只有 Windows 支持；macOS / Linux 上配置保留但不会触发（冲突提示里会说明）。</p>
+                </details>
+              </section>
+
               <section class="set-card" id="keycast-card">
                 <div class="set-card-head"><span>按键回显</span></div>
                 <div class="set-rows">

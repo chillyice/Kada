@@ -126,6 +126,13 @@ const DEMO_CONFIG = {
       bottom_left: { enabled: false, name: "", actions: [] },
       bottom_right: { enabled: false, name: "", actions: [] },
     },
+    wheel_edges: {
+      enabled: false,
+      top: { enabled: false, name: "", actions: [] },
+      bottom: { enabled: false, name: "", actions: [] },
+      left: { enabled: false, name: "", actions: [] },
+      right: { enabled: false, name: "", actions: [] },
+    },
   },
   gestures: [],
 };
