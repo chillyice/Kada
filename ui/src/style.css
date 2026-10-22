@@ -4386,11 +4386,12 @@ html[data-theme="crt"]:has(.layout)::after {
   transition-timing-function: ease-out;
 }
 
-/* 星屑层：钉在字标右上角外沿（38px 盒的 top 9px / right 0），0×0 的定位点。 */
+/* 星屑层：钉在最后一个 a 的右上角（38px 盒的 top 10px / right 0，正好是 18px 字顶），
+   0×0 的定位点；射线与星星都从这里起笔。 */
 [data-theme="crt"] .brand-burst {
   display: block;
   position: absolute;
-  top: 9px;
+  top: 10px;
   right: 0;
   width: 0;
   height: 0;
@@ -4412,51 +4413,51 @@ html[data-theme="crt"]:has(.layout)::after {
     drop-shadow(0 0 5px color-mix(in srgb, currentColor 65%, transparent));
 }
 
-/* 三颗星：4.5 / 5 / 3.5px，4 角 / 5 角 / 4 角。
-   起点落在射线扇面**之内**（半径 4.5 / 8.5 / 8.8px，方向 -28° / -75° / -35°），
-   与射线只错开一点、允许部分方向重叠；三颗星彼此错位，不叠在同一处。 */
+/* 三颗星：9 / 10 / 7px（比上一版大一倍），4 角 / 5 角 / 4 角。
+   起点紧挨最后那个 a 的右上角（半径 3~4.8px，方向 -18° / -50° / -85°），
+   仍落在射线扇面之内；三颗星靠方向与出场时序错开。 */
 [data-theme="crt"] .bz-s1 {
-  left: 0.84px;
-  top: -3.89px;
-  width: 4.5px;
-  height: 4.5px;
-  --dx: 3.97px;
-  --dy: -2.11px;
+  left: -1.65px;
+  top: -5.43px;
+  width: 9px;
+  height: 9px;
+  --dx: 5.71px;
+  --dy: -1.85px;
   clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
   animation-duration: 470ms;
-  animation-delay: 20ms;
-}
-
-[data-theme="crt"] .bz-s2 {
-  left: -0.3px;
-  top: -10.71px;
-  width: 5px;
-  height: 5px;
-  --dx: 1.16px;
-  --dy: -4.35px;
-  /* 一颗冷色星，免得右上角糊成一片黄。 */
-  color: var(--crt-cyan);
-  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
-  animation-duration: 530ms;
-  animation-delay: 60ms;
-}
-
-[data-theme="crt"] .bz-s3 {
-  left: 5.46px;
-  top: -6.8px;
-  width: 3.5px;
-  height: 3.5px;
-  --dx: 3.44px;
-  --dy: -2.41px;
-  /* 暖白芯，比纯黄更「亮」一点。 */
-  color: color-mix(in srgb, var(--crt-yellow) 55%, #fff);
-  clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
-  animation-duration: 400ms;
   animation-delay: 0ms;
 }
 
-/* 三根放射线：起点各不相同（沿各自方向从角点外移 0.9~2.4px 处起笔），
-   但都落在以角点为心的三条射线上，所以仍然互不相交。 */
+[data-theme="crt"] .bz-s2 {
+  left: -2.3px;
+  top: -8.22px;
+  width: 10px;
+  height: 10px;
+  --dx: 5.33px;
+  --dy: -6.36px;
+  /* 一颗冷色星，免得右上角糊成一片黄。 */
+  color: var(--crt-cyan);
+  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+  animation-duration: 560ms;
+  animation-delay: 90ms;
+}
+
+[data-theme="crt"] .bz-s3 {
+  left: -3.08px;
+  top: -8.28px;
+  width: 7px;
+  height: 7px;
+  --dx: 0.5px;
+  --dy: -5.68px;
+  /* 暖白芯，比纯黄更「亮」一点。 */
+  color: color-mix(in srgb, var(--crt-yellow) 55%, #fff);
+  clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
+  animation-duration: 440ms;
+  animation-delay: 180ms;
+}
+
+/* 三根放射线：起点各不相同（沿各自方向从最后一个 a 的右上角外移 0.5~1.1px），
+   都落在以该角为心的三条射线上，所以互不相交；长度不统一，最长 4.6px（上一版 7px 的 2/3）。 */
 [data-theme="crt"] .bz-ray {
   height: 1px;
   background: linear-gradient(
@@ -4473,27 +4474,27 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .bz-r1 {
   --ang: -20deg;
-  left: 1.32px;
-  top: -0.48px;
-  width: 7px;
+  left: 0.47px;
+  top: -0.17px;
+  width: 4.6px;
   animation-duration: 340ms;
   animation-delay: 0ms;
 }
 
 [data-theme="crt"] .bz-r2 {
   --ang: -50deg;
-  left: 1.54px;
-  top: -1.84px;
-  width: 6.5px;
+  left: 0.71px;
+  top: -0.84px;
+  width: 3.6px;
   animation-duration: 280ms;
   animation-delay: 55ms;
 }
 
 [data-theme="crt"] .bz-r3 {
   --ang: -80deg;
-  left: 0.16px;
-  top: -0.89px;
-  width: 7px;
+  left: 0.12px;
+  top: -0.69px;
+  width: 4.1px;
   animation-duration: 320ms;
   animation-delay: 105ms;
 }
