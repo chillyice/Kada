@@ -34,7 +34,10 @@ use kada_core::{substitute_vars, Action, FrontmostContext, Key, TextInjectMode, 
 use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
-use kada_core::{AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, TextValue, Value};
+use kada_core::{
+    AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, TextValue,
+    Value, WindowOperation,
+};
 
 #[cfg(target_os = "linux")]
 use kada_hook::linux::simulate;
@@ -189,6 +192,9 @@ pub struct TriggerCtx<'a> {
     pub frontmost: Option<&'a FrontmostContext>,
     /// 触发键来自哪台设备（Linux evdev 设备名）；Windows / macOS 恒 `None`。
     pub device: Option<&'a str>,
+    /// 触发那一刻的前台窗口句柄（EXT-14「当前窗口」动作的目标）。仅 Windows 抓取，其余
+    /// 平台恒 `None`——目标取「触发时」而不是执行时，动作链里先切了前台也不影响它。
+    pub window: Option<isize>,
 }
 
 /// 一次动作链的执行上下文：整条链共享（触发现场 / 超时 / 中止代数快照）。
@@ -323,6 +329,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::If { .. } => "if",
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "parallel",
+        #[cfg(feature = "automation")]
+        Action::Window { .. } => "window",
     }
 }
 
@@ -677,6 +685,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::If { .. } => "条件判断失败",
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "并行执行失败",
+        #[cfg(feature = "automation")]
+        Action::Window { .. } => "窗口操作失败",
     }
 }
 
@@ -761,6 +771,24 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::If { .. } => "条件判断".into(),
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
+        #[cfg(feature = "automation")]
+        Action::Window { operation, .. } => window_body(operation),
+    }
+}
+
+/// 当前窗口动作摘要（消息中心「命令」一栏）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn window_body(op: &WindowOperation) -> String {
+    match op {
+        WindowOperation::MaximizeRestore => "最大化 / 还原当前窗口".into(),
+        WindowOperation::Minimize => "最小化当前窗口".into(),
+        WindowOperation::ToggleTopmost => "切换当前窗口置顶".into(),
+        WindowOperation::Center => "当前窗口居中".into(),
+        WindowOperation::Close => "关闭当前窗口".into(),
+        WindowOperation::CloseSameApp => "关闭当前窗口的同类窗口".into(),
     }
 }
 
@@ -883,7 +911,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::OpenUrl { description, .. }
         | Action::Script { description, .. }
         | Action::If { description, .. }
-        | Action::Parallel { description, .. } => description.as_deref(),
+        | Action::Parallel { description, .. }
+        | Action::Window { description, .. } => description.as_deref(),
     }
 }
 
@@ -1114,6 +1143,11 @@ fn run_action(
             return Err("内部错误：并行执行动作应在运行器内处理".into());
         }
         #[cfg(feature = "automation")]
+        Action::Window { operation, .. } => {
+            // 目标窗口是**触发时**抓的句柄（`ctx.t.window`），所以链里先切前台也不影响它。
+            kada_hook::window_action(ctx.t.window, hook_window_action(*operation))?;
+        }
+        #[cfg(feature = "automation")]
         Action::Script {
             path,
             interpreter,
@@ -1147,6 +1181,23 @@ fn run_action(
         }
     }
     Ok(None)
+}
+
+/// 核心模型的操作 → 钩子层的窗口操作（两份枚举各管一层：core 管配置形状，hook 管实现）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn hook_window_action(op: WindowOperation) -> kada_hook::WindowAction {
+    use kada_hook::WindowAction as H;
+    match op {
+        WindowOperation::MaximizeRestore => H::MaximizeRestore,
+        WindowOperation::Minimize => H::Minimize,
+        WindowOperation::ToggleTopmost => H::ToggleTopmost,
+        WindowOperation::Center => H::Center,
+        WindowOperation::Close => H::Close,
+        WindowOperation::CloseSameApp => H::CloseSameApp,
+    }
 }
 
 /// 执行一个文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
@@ -2092,6 +2143,7 @@ mod tests {
             name: "测试宏",
             frontmost: None,
             device: None,
+            window: None,
         }
     }
 

@@ -38,6 +38,20 @@
       ]
     },
     {
+      "name": "当前窗口动作（关闭 / 最大化 / 置顶）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/current-window.json",
+      "description": "对触发那一刻的前台窗口直接操作，不按程序名匹配、不激活窗口：关闭、最大化 / 还原、置顶切换、居中、关闭同类窗口。示例用 F5 / F11 / F12，按需改触发键即可。目前仅 Windows 支持。",
+      "author": "Kada",
+      "tags": [
+        "窗口",
+        "当前窗口",
+        "关闭",
+        "最大化",
+        "置顶",
+        "常用动作"
+      ]
+    },
+    {
       "name": "剪贴板动作（复制 / 粘贴 / 转大小写）",
       "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/clipboard-actions.json",
       "description": "剪贴板相关的现成动作：用 Keys 发 Ctrl+C / Ctrl+V，或用「文本 → 转大写 / 转小写」把选中内容整体改写。全平台可用。",

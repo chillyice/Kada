@@ -779,6 +779,42 @@ pub enum SystemOperation {
     },
 }
 
+/// 当前窗口动作（[`Action::Window`]，EXT-14）：对**触发那一刻的前台窗口**执行操作，
+/// 不按程序名匹配、也不激活窗口（不抢焦点）。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum WindowOperation {
+    /// 最大化 / 还原（按当前是否最大化切换）。
+    #[default]
+    MaximizeRestore,
+    /// 最小化。
+    Minimize,
+    /// 置顶切换（最前层 ↔ 普通层）。
+    ToggleTopmost,
+    /// 在所在显示器的工作区里居中（最大化 / 最小化时先还原）。
+    Center,
+    /// 关闭（发送关闭请求，让目标程序自己走保存 / 确认流程）。
+    Close,
+    /// 关闭同类窗口：目标窗口所在进程的全部顶层窗口。
+    CloseSameApp,
+}
+
+#[cfg(feature = "automation")]
+impl WindowOperation {
+    /// 中文短标签（动作摘要 / 执行记录 / 界面下拉共用一套说法）。
+    pub fn label(self) -> &'static str {
+        match self {
+            WindowOperation::MaximizeRestore => "最大化 / 还原",
+            WindowOperation::Minimize => "最小化",
+            WindowOperation::ToggleTopmost => "置顶切换",
+            WindowOperation::Center => "居中",
+            WindowOperation::Close => "关闭",
+            WindowOperation::CloseSameApp => "关闭同类窗口",
+        }
+    }
+}
+
 #[cfg(feature = "automation")]
 fn default_var() -> String {
     "file".into()
@@ -1202,6 +1238,15 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// 当前窗口动作（EXT-14）：对触发那一刻的前台窗口最大化 / 还原、最小化、置顶切换、
+    /// 居中、关闭、关闭同类窗口。目标窗口在触发时抓取（手势路径同理），**不激活窗口**。
+    /// 目前只有 Windows 实现，其它平台执行时报「不支持」（冲突检测同时标软冲突）。
+    #[cfg(feature = "automation")]
+    Window {
+        operation: WindowOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
 }
 
 impl Action {
@@ -1314,6 +1359,9 @@ impl Action {
                 }
                 Ok(())
             }
+            // 窗口动作没有必填字段（操作有缺省值），恒可执行；平台支持与否由冲突检测标出。
+            #[cfg(feature = "automation")]
+            Action::Window { .. } => Ok(()),
         }
     }
 }
@@ -2139,6 +2187,8 @@ pub struct PlatformCaps {
     /// 「设备是」类条件是否可用（不可用时恒不成立，`If` 恒走 `otherwise`）。目前仅 Linux
     /// evdev 能给出真实设备标识，Windows / macOS 拿不到设备。
     pub device_conditions: bool,
+    /// 「当前窗口」动作（[`Action::Window`]）是否可用。目前只有 Windows 有前台窗口句柄。
+    pub window_actions: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2149,6 +2199,7 @@ impl Default for PlatformCaps {
             inject_unsupported: BTreeSet::new(),
             frontmost_conditions: true,
             device_conditions: true,
+            window_actions: true,
         }
     }
 }
@@ -2160,6 +2211,7 @@ impl PlatformCaps {
             && self.inject_unsupported.is_empty()
             && self.frontmost_conditions
             && self.device_conditions
+            && self.window_actions
     }
 }
 
@@ -2657,6 +2709,30 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        #[cfg(feature = "automation")]
+        if !caps.window_actions && uses_window_action(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「当前窗口」动作在当前平台用不了（只有 Windows 实现了前台窗口操作），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
+    }
+
+    // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
+    #[cfg(feature = "automation")]
+    if !caps.window_actions {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_window_action(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「当前窗口」动作在当前平台用不了（只有 Windows 实现了前台窗口操作），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
     }
 
     for r in &cfg.remaps {
@@ -2977,6 +3053,21 @@ fn scan_actions_platform(
             _ => {}
         }
     }
+}
+
+/// 动作树里有没有「当前窗口」动作（`If` / `Parallel` / 分组递归进去）。
+/// 基础版没有这个动作类型，恒 false。
+#[cfg(feature = "automation")]
+fn uses_window_action(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Window { .. } => true,
+        Action::Group { actions, .. } => uses_window_action(actions),
+        Action::If {
+            then, otherwise, ..
+        } => uses_window_action(then) || uses_window_action(otherwise),
+        Action::Parallel { actions, .. } => uses_window_action(actions),
+        _ => false,
+    })
 }
 
 /// 常见系统快捷键（Windows，中性键名：`Meta` = Win / ⌘ 键）+ 用途说明。
@@ -4727,6 +4818,27 @@ mod new_action_and_folder_tests {
             .is_err());
     }
 
+    /// 「当前窗口」动作（EXT-14）：配置 / 卡带里的形状是
+    /// `{"type":"window","operation":{"op":"close"}}`（与 App / System 的 `op` 口径一致）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn window_action_json_roundtrip_and_validate() {
+        let a: Action =
+            serde_json::from_str(r#"{"type":"window","operation":{"op":"maximize_restore"}}"#)
+                .unwrap();
+        assert!(a.validate().is_ok());
+        assert!(matches!(
+            a,
+            Action::Window {
+                operation: WindowOperation::MaximizeRestore,
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains(r#""op":"maximize_restore""#), "{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+    }
+
     /// `masked` 只影响展示，但它是配置字段，得守住三件事：老配置（没这个键）读成「不隐藏」、
     /// 标记了隐藏的能落盘并原样读回、默认值 `false` 不落盘（配置与导出卡带里不留噪音）。
     /// 不断言「注入行为」，因为 `masked` 本就不参与执行（见 `Action::Text` 的字段注释）。
@@ -6107,7 +6219,11 @@ mod platform_caps_tests {
     /// 用它的测试全是 automation 专属（条件类），基础版编译时一并消失，故同样门控。
     #[cfg(feature = "automation")]
     fn linux_caps() -> PlatformCaps {
-        PlatformCaps { frontmost_conditions: false, ..Default::default() }
+        PlatformCaps {
+            frontmost_conditions: false,
+            window_actions: false,
+            ..Default::default()
+        }
     }
 
     /// macOS 口径的 caps：F21~F24 无对应键码，监听与注入都不行（媒体键已随 7.1-㊹ 支持）。
@@ -6123,6 +6239,7 @@ mod platform_caps_tests {
             inject_unsupported: keys,
             frontmost_conditions: true,
             device_conditions: false,
+            window_actions: false,
         }
     }
 
@@ -6223,6 +6340,36 @@ mod platform_caps_tests {
         assert!(hits[0].message.contains("恒不成立"));
         // 支持设备条件的平台（Linux / Windows，本例用默认）零提示。
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    /// 「当前窗口」动作在缺这套能力的平台上标软冲突（快捷键与手势两条路径都要覆盖）；
+    /// 支持的平台上零提示。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn window_action_flagged_where_unsupported() {
+        let action = Action::Window {
+            operation: WindowOperation::Close,
+            description: None,
+        };
+        let cfg = Config {
+            shortcuts: vec![shortcut("w", "Ctrl+K", vec![action.clone()])],
+            gestures: vec![crate::gesture::Gesture {
+                pattern: "DR".into(),
+                actions: vec![action],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        // Windows 口径：零提示。
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+        for caps in [macos_caps(), linux_caps()] {
+            let hits = detect_conflicts(&cfg, &caps);
+            assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
+            assert!(hits.iter().all(|c| c.platform));
+            assert!(hits.iter().all(|c| c.severity == Severity::Warn));
+            assert!(hits.iter().all(|c| c.message.contains("当前窗口")));
+        }
     }
 
     #[cfg(feature = "automation")]

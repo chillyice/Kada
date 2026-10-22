@@ -1389,6 +1389,13 @@ fn fire(
     // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Linux evdev / Windows
     // Raw Input 有真值，macOS 恒 None（见 7.2-㊷）。
     let device = input::current_device();
+    // 触发那一刻的前台窗口（EXT-14「当前窗口」动作的目标）：必须在**调用线程**上抓，
+    // 放进下面 spawn 的线程就晚了一拍（动作链还没跑，但前台可能已经变了）。
+    // 只在 Windows 抓：macOS / Linux 没实现这个动作族，白付一次前台查询没必要。
+    #[cfg(target_os = "windows")]
+    let window = input::foreground_window();
+    #[cfg(not(target_os = "windows"))]
+    let window = None;
     std::thread::spawn(move || {
         // 触发带修饰键的快捷键（如 Ctrl+Alt+T）时修饰键仍物理按住，此时注入按键会被
         // 污染成 Ctrl+Alt+<键>（粘贴 Ctrl+V 变成 Ctrl+Alt+V）。只对真正注入按键的链
@@ -1438,6 +1445,7 @@ fn fire(
             name: &name,
             frontmost: frontmost.as_ref(),
             device: device.as_deref(),
+            window,
         };
         let status = run_actions(
             &mut rep,
@@ -4249,6 +4257,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
         // 前台条件 false；设备条件可用（DeviceIs 在 Linux 真生效），故只覆盖前台。
         kada_core::PlatformCaps {
             frontmost_conditions: false,
+            window_actions: false,
             ..Default::default()
         }
     }
@@ -4263,6 +4272,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             inject_unsupported: keys,
             frontmost_conditions: true,
             device_conditions: false,
+            window_actions: false,
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -4276,6 +4286,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
     {
         kada_core::PlatformCaps {
             device_conditions: false,
+            window_actions: false,
             ..Default::default()
         }
     }
@@ -4757,6 +4768,7 @@ const BASIC_EXAMPLE_SNIPPETS: &[&str] = &[
 #[cfg(feature = "automation")]
 const AUTOMATION_EXAMPLE_SNIPPETS: &[&str] = &[
     include_str!("../../snippets/window-actions.json"),
+    include_str!("../../snippets/current-window.json"),
     include_str!("../../snippets/search-web.json"),
     include_str!("../../snippets/file-actions.json"),
 ];

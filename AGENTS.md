@@ -59,6 +59,11 @@
 - **动作执行前必须 `wait_modifiers_released`**（≤300ms 轮询）等物理修饰键释放，否则注入会被仍按住的触发修饰键污染；**新增注入类动作要同步壳层 `injects_keys`**（否则不多等这一下）并接入链内注入锁
 - **提权窗口注入**：**新增注入路径必须经 `deliver()`**（失败回落本地）；钩子线程标 `local_only`（回调里不许有带等待的 IPC）；提权通道只放行本用户 + 双向身份校验、**只许有注入类 op**、断开或父进程退出即退
 
+### 1.5a 当前窗口动作（`Action::Window`，EXT-14｜说明书 §3）
+
+- 目标 = **触发那一刻**的前台窗口（`TriggerCtx.window` 在 `fire()` 调用线程抓，快捷键 / 手势同一链），**不按程序名匹配**；链里先切前台也不换目标
+- 所有操作**不激活、不抢焦点**（`SWP_NOACTIVATE`、不调 `SetForegroundWindow`）；关闭发 `WM_CLOSE`，**不 taskkill**；macOS / Linux **报错 + `PlatformCaps.window_actions` 软冲突**，不许静默失败
+
 ### 1.6 状态机与复位（`src-tauri/src/engine.rs`｜架构设计 §3.2 / §3.15 / §3.16 / §3.22）
 
 - 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`

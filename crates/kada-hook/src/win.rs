@@ -63,7 +63,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 
 use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
 
-use crate::{MouseRecord, MouseRecordKind, WindowOp};
+use crate::{MouseRecord, MouseRecordKind, WindowAction, WindowOp};
 
 pub mod agent;
 pub mod hidpp;
@@ -1320,6 +1320,155 @@ pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
                 force_foreground(hwnd);
             }
         }
+    }
+    Ok(())
+}
+
+/// 对触发时抓到的前台窗口执行操作（EXT-14）：**不激活、不抢焦点**——所有分支都不调
+/// `SetForegroundWindow` / `ShowWindow(SW_ACTIVATE)`。
+pub fn window_action(hwnd: isize, op: WindowAction) -> Result<(), String> {
+    let hwnd = HWND(hwnd as *mut c_void);
+    if !unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        return Err("目标窗口已关闭".into());
+    }
+    unsafe {
+        match op {
+            WindowAction::MaximizeRestore => {
+                let zoomed = IsZoomed(hwnd).as_bool();
+                let _ = ShowWindow(hwnd, if zoomed { SW_RESTORE } else { SW_MAXIMIZE });
+            }
+            WindowAction::Minimize => {
+                let _ = ShowWindow(hwnd, SW_MINIMIZE);
+            }
+            WindowAction::ToggleTopmost => {
+                let topmost = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST.0 != 0;
+                let after = if topmost {
+                    HWND_NOTOPMOST
+                } else {
+                    HWND_TOPMOST
+                };
+                SetWindowPos(
+                    hwnd,
+                    Some(after),
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+                .map_err(|e| format!("置顶切换失败：{e}"))?;
+            }
+            WindowAction::Center => center_window(hwnd)?,
+            WindowAction::Close => {
+                PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0))
+                    .map_err(|e| format!("发送关闭请求失败：{e}"))?;
+            }
+            WindowAction::CloseSameApp => close_same_app(hwnd)?,
+        }
+    }
+    Ok(())
+}
+
+/// 在窗口所在显示器的工作区里居中；最大化 / 最小化时先还原（尺寸取 `rcNormalPosition`，
+/// 它保存的是还原态大小，不受当前最大化影响）。
+unsafe fn center_window(hwnd: HWND) -> Result<(), String> {
+    if IsIconic(hwnd).as_bool() || IsZoomed(hwnd).as_bool() {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+    }
+    let mut wp = WINDOWPLACEMENT {
+        length: size_of::<WINDOWPLACEMENT>() as u32,
+        ..Default::default()
+    };
+    let (mut w, mut h) = (0i32, 0i32);
+    if GetWindowPlacement(hwnd, &mut wp).is_ok() {
+        w = wp.rcNormalPosition.right - wp.rcNormalPosition.left;
+        h = wp.rcNormalPosition.bottom - wp.rcNormalPosition.top;
+    }
+    if w <= 0 || h <= 0 {
+        let mut wr = RECT::default();
+        if GetWindowRect(hwnd, &mut wr).is_err() {
+            return Err("读不到窗口尺寸".into());
+        }
+        w = wr.right - wr.left;
+        h = wr.bottom - wr.top;
+    }
+    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if monitor.0.is_null() {
+        return Err("找不到窗口所在的显示器".into());
+    }
+    let mut mi = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+        return Err("读不到显示器工作区".into());
+    }
+    let work = mi.rcWork;
+    let x = work.left + ((work.right - work.left) - w) / 2;
+    let y = work.top + ((work.bottom - work.top) - h) / 2;
+    SetWindowPos(
+        hwnd,
+        None,
+        x,
+        y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+    )
+    .map_err(|e| format!("居中失败：{e}"))
+}
+
+/// 关闭目标窗口所在进程的全部顶层窗口（同一程序的多窗口 / 多文档）。
+unsafe fn close_same_app(hwnd: HWND) -> Result<(), String> {
+    let mut pid = 0u32;
+    GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return Err("取不到目标窗口的进程".into());
+    }
+
+    struct Search {
+        pid: u32,
+        found: Vec<HWND>,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = &mut *(lparam.0 as *mut Search);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        // 托盘辅助窗 / 对话框不算「同类窗口」：与「主窗口」同一口径。
+        if let Ok(owner) = GetWindow(hwnd, GW_OWNER) {
+            if !owner.0.is_null() {
+                return TRUE;
+            }
+        }
+        if GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32 & WS_EX_TOOLWINDOW.0 != 0 {
+            return TRUE;
+        }
+        let mut wpid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut wpid));
+        if wpid == search.pid {
+            search.found.push(hwnd);
+        }
+        TRUE
+    }
+
+    let mut search = Search {
+        pid,
+        found: Vec::new(),
+    };
+    let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
+    if search.found.is_empty() {
+        return Err("没有找到同类窗口".into());
+    }
+    let mut sent = 0;
+    for w in search.found {
+        if PostMessageW(Some(w), WM_CLOSE, WPARAM(0), LPARAM(0)).is_ok() {
+            sent += 1;
+        }
+    }
+    if sent == 0 {
+        return Err("发送关闭请求失败".into());
     }
     Ok(())
 }

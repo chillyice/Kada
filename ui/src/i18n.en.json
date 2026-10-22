@@ -746,5 +746,17 @@
   "结果标签相对轨迹末端的偏移（像素，0~200）": "Offset of the result label from the trail end in pixels (0–200)",
   "失败颜色": "Failure color",
   "手势未匹配时轨迹与标签的颜色": "Color of the trail and label when a gesture does not match",
-  "未匹配 {0}": "No match: {0}"
+  "未匹配 {0}": "No match: {0}",
+  "窗口操作": "Window actions",
+  "最大化 / 还原": "Maximize / restore",
+  "最大化 / 还原当前窗口": "Maximize / restore the current window",
+  "最小化当前窗口": "Minimize the current window",
+  "置顶切换": "Toggle always-on-top",
+  "切换当前窗口置顶": "Toggle always-on-top for the current window",
+  "居中": "Center",
+  "当前窗口居中": "Center the current window",
+  "关闭同类窗口": "Close same-app windows",
+  "关闭当前窗口": "Close the current window",
+  "关闭当前窗口的同类窗口": "Close all windows of the current app",
+  "作用对象是触发那一刻的前台窗口，不会激活或切换窗口。目前仅 Windows 支持，其它平台会标平台冲突并在执行时报错。": "Acts on the foreground window at the moment of the trigger, without activating or switching windows. Currently Windows only; other platforms show a platform conflict and fail at run time."
 }

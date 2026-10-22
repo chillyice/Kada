@@ -22,6 +22,8 @@ type OsOperation =
   | { op: "get_file_props"; path: string; var: string };
 /** 操作系统动作的子操作（动作类型 `system`）——与文件/目录是两类，别混。 */
 type SystemOperation = { op: "switch_desktop"; direction: DesktopDirection };
+/** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
+type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
 type Condition =
   | { kind: "exists"; path: string }
   | { kind: "not_exists"; path: string }
@@ -57,6 +59,7 @@ type Action =
   | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "system"; operation: SystemOperation; description?: string }
+  | { type: "window"; operation: { op: WindowOperation }; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
@@ -405,6 +408,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "open_url", label: tr("打开网址") },
   { value: "os", label: tr("文件/目录") },
   { value: "system", label: tr("操作系统") },
+  { value: "window", label: tr("窗口操作") },
   { value: "keys", label: tr("按键组合") },
   { value: "mouse", label: tr("鼠标操作") },
   { value: "pause_ms", label: tr("延迟") },
@@ -423,6 +427,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   pause_ms: "⏱️",
   os: "📁",
   system: "🖥️",
+  window: "🪟",
   app: "🚀",
   open_url: "🌐",
   if: "🔀",
@@ -593,8 +598,17 @@ function newSystemOp(op: SystemOperation["op"]): SystemOperation {
   return { op: "switch_desktop", direction: "next" };
 }
 
-function newOsOp(op: OsOperation["op"]): OsOperation {
-  switch (op) {
+// ---- 当前窗口动作的子操作（EXT-14）----
+const WINDOW_OPS: { value: WindowOperation; label: string }[] = [
+  { value: "maximize_restore", label: tr("最大化 / 还原") },
+  { value: "minimize", label: tr("最小化") },
+  { value: "toggle_topmost", label: tr("置顶切换") },
+  { value: "center", label: tr("居中") },
+  { value: "close", label: tr("关闭") },
+  { value: "close_same_app", label: tr("关闭同类窗口") },
+];
+
+function newOsOp(op: OsOperation["op"]): OsOperation {  switch (op) {
     case "copy":
       return { op, source: "", dest: "" };
     case "cut":
@@ -683,6 +697,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "os", operation: newOsOp("copy") };
     case "system":
       return { type: "system", operation: newSystemOp("switch_desktop") };
+    case "window":
+      return { type: "window", operation: { op: "maximize_restore" } };
     case "app":
       return { type: "app", operation: newAppOp("launch") };
     case "open_url":
@@ -771,6 +787,8 @@ function actionHasContent(a: Action): boolean {
     // 没有要填的字段（方向有默认值），新建出来就是可执行的。
     case "system":
       return true;
+    case "window":
+      return true;
     case "app":
       return appHasContent(a.operation);
     case "open_url":
@@ -820,8 +838,26 @@ function systemSummary(o: SystemOperation): string {
   return "";
 }
 
-function condSummary(c: Condition): string {
-  switch (c.kind) {
+/** 当前窗口动作的摘要。 */
+function windowSummary(op: WindowOperation): string {
+  switch (op) {
+    case "maximize_restore":
+      return tr("最大化 / 还原当前窗口");
+    case "minimize":
+      return tr("最小化当前窗口");
+    case "toggle_topmost":
+      return tr("切换当前窗口置顶");
+    case "center":
+      return tr("当前窗口居中");
+    case "close":
+      return tr("关闭当前窗口");
+    case "close_same_app":
+      return tr("关闭当前窗口的同类窗口");
+  }
+  return "";
+}
+
+function condSummary(c: Condition): string {  switch (c.kind) {
     case "exists":
       return trt`路径存在：${c.path}`;
     case "not_exists":
@@ -915,6 +951,8 @@ function actionSummary(a: Action): string {
       return osSummary(a.operation);
     case "system":
       return systemSummary(a.operation);
+    case "window":
+      return windowSummary(a.operation.op);
     case "app":
       return appSummary(a.operation);
     case "open_url":
@@ -4298,6 +4336,21 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "window") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of WINDOW_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation.op;
+    sel.addEventListener("change", () => {
+      a.operation = { op: sel.value as WindowOperation };
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "mouse") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const o of MOUSE_OPS) {
@@ -4856,6 +4909,10 @@ function actionFields(
         tr("切换虚拟桌面（不是切换显示器）。Windows：Win+Ctrl+←/→；macOS：⌃←/→；Linux（GNOME）：Super+PageUp/PageDown。");
       body.append(hint);
     }
+  } else if (a.type === "window") {
+    const hint = el("div", "unit-hint");
+    hint.textContent = tr("作用对象是触发那一刻的前台窗口，不会激活或切换窗口。目前仅 Windows 支持，其它平台会标平台冲突并在执行时报错。");
+    body.append(hint);
   } else if (a.type === "app") {
     const op = a.operation;
     if (op.op === "launch" || op.op === "restart") {

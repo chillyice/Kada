@@ -1,0 +1,38 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "当前窗口动作（关闭 / 最大化 / 置顶）",
+    "description": "对触发那一刻的前台窗口直接操作，不按程序名匹配、不激活窗口：关闭、最大化 / 还原、置顶切换、居中、关闭同类窗口。示例用 F5 / F11 / F12，按需改触发键即可。目前仅 Windows 支持。",
+    "author": "Kada",
+    "tags": ["窗口", "当前窗口", "关闭", "最大化", "置顶", "常用动作"]
+  },
+  "shortcuts": [
+    {
+      "name": "窗口：关闭当前窗口",
+      "description": "给触发时的前台窗口发关闭请求（目标程序自己走保存 / 确认流程）。",
+      "triggers": ["F5"],
+      "actions": [
+        { "type": "window", "operation": { "op": "close" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "窗口：最大化 / 还原当前窗口",
+      "description": "同一个触发键按当前状态切换：没最大化就最大化，已最大化就还原。",
+      "triggers": ["F11"],
+      "actions": [
+        { "type": "window", "operation": { "op": "maximize_restore" } }
+      ],
+      "enabled": true
+    },
+    {
+      "name": "窗口：当前窗口置顶切换",
+      "description": "把当前窗口切到最前层（始终置顶）或切回普通层，不改变焦点。",
+      "triggers": ["F12"],
+      "actions": [
+        { "type": "window", "operation": { "op": "toggle_topmost" } }
+      ],
+      "enabled": true
+    }
+  ]
+}

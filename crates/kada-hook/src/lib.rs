@@ -125,6 +125,45 @@ pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
 }
 
 
+/// 当前窗口动作的操作（[`window_action`]，EXT-14）。与 [`WindowOp`]（按程序名找主窗口）
+/// 分开：这里的作用对象是**触发那一刻抓到的前台窗口**，且**一律不激活、不抢焦点**。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowAction {
+    /// 最大化 / 还原（按当前是否最大化切换）。
+    MaximizeRestore,
+    /// 最小化。
+    Minimize,
+    /// 置顶切换（`WS_EX_TOPMOST` 开关），不改变前后顺序里的激活状态。
+    ToggleTopmost,
+    /// 在所在显示器工作区里居中（最大化 / 最小化时先还原）。
+    Center,
+    /// 关闭（`WM_CLOSE`，让目标程序自己走保存 / 确认流程）。
+    Close,
+    /// 关闭同类窗口：目标窗口所在进程的全部顶层窗口。
+    CloseSameApp,
+}
+
+/// 对触发时抓到的前台窗口执行操作。
+///
+/// `hwnd` 是壳层在触发那一刻用 [`win::foreground_window`] 抓的窗口句柄（Windows 为真
+/// `HWND`；壳层在其它平台恒传 `None`）。**只有 Windows 实现**：macOS / Linux 返回明确
+/// 错误（不静默失败），配置里用到时冲突检测同时标软冲突。
+pub fn window_action(hwnd: Option<isize>, op: WindowAction) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let hwnd = hwnd.ok_or_else(|| {
+            "取不到前台窗口（前台是 Kada 自己的窗口，或当前没有前台窗口）".to_string()
+        })?;
+        win::window_action(hwnd, op)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (hwnd, op);
+        Err("「当前窗口」动作目前只支持 Windows".into())
+    }
+}
+
+
 /// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
 /// 「往提权窗口注入」。
 ///
