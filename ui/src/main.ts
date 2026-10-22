@@ -7084,7 +7084,7 @@ function bind() {
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
     b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
   });
-  bindBrandLogo();
+  startBrandLogoLoop();
 
   renderThanks();
 
@@ -7483,44 +7483,37 @@ async function switchSection(tab: Section) {
   switchSectionNow(tab);
 }
 
-// 品牌字标：按下四字一起沉进屏幕，松开回弹并向右上迸出星屑 / 射线。
-// 形态与节奏都在 CSS（`.is-pressed` / `.is-burst`），这里只管按压状态与重播放。
-function bindBrandLogo() {
+// 品牌字标：固定节奏的自动演示——亮一会儿，四字一起按下，再回弹并迸出星屑。
+// 纯装饰，不响应鼠标；系统开了「减少动态效果」就整段不跑，只留静止的发光字。
+function startBrandLogoLoop() {
   const brand = document.querySelector<HTMLElement>(".rail-brand");
   if (!brand) return;
-  // 与 CSS 里最长一支动画（530ms）+ 延迟（105ms）对齐，留一点余量。
+  if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) return;
+  // 整拍 6s：按下 240ms → 回弹 + 星屑（760ms 内播完）→ 余下时间静止微闪。
+  const CYCLE_MS = 6000;
+  const PRESS_MS = 240;
   const BURST_MS = 760;
-  let pressed = false;
-  let burstTimer = 0;
 
-  const release = (burst: boolean) => {
-    if (!pressed) return;
-    pressed = false;
-    brand.classList.remove("is-pressed");
-    if (!burst) return;
-    // 同一个类名连点两次要能重播放：先摘掉、强制一次样式计算，再挂回去。
-    brand.classList.remove("is-burst");
-    void brand.offsetWidth;
-    brand.classList.add("is-burst");
-    window.clearTimeout(burstTimer);
-    burstTimer = window.setTimeout(() => brand.classList.remove("is-burst"), BURST_MS);
+  const beat = () => {
+    brand.classList.add("is-pressed");
+    window.setTimeout(() => {
+      brand.classList.remove("is-pressed");
+      // 每次先摘类、强制一次样式计算再挂回，星屑动画才会从头重播。
+      brand.classList.remove("is-burst");
+      void brand.offsetWidth;
+      brand.classList.add("is-burst");
+      window.setTimeout(() => brand.classList.remove("is-burst"), BURST_MS);
+    }, PRESS_MS);
+    window.setTimeout(beat, CYCLE_MS);
   };
 
-  brand.addEventListener("pointerdown", (e) => {
-    if (e.button !== 0) return;
-    pressed = true;
-    brand.classList.add("is-pressed");
-    try {
-      // 指针捕获后拖动中松手也算这次按压的收尾；不支持时退回 pointerleave。
-      brand.setPointerCapture(e.pointerId);
-    } catch {
-      /* 捕获不可用不影响观感，交给 pointerleave 兜底。 */
-    }
-  });
-  brand.addEventListener("pointerup", () => release(true));
-  brand.addEventListener("pointercancel", () => release(false));
-  brand.addEventListener("pointerleave", (e) => {
-    if (!brand.hasPointerCapture?.(e.pointerId)) release(false);
+  // 首屏先亮 1.5 秒再按第一下，别一进界面就是暗的。
+  window.setTimeout(beat, 1500);
+
+  // 窗口最小化 / 隐藏时定时器会被节流，可能正好卡在「按下」那一帧；
+  // 回到前台先清掉中间态，别让字标停在暗色上等下一拍。
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) brand.classList.remove("is-pressed", "is-burst");
   });
 }
 

@@ -4298,8 +4298,7 @@ html[data-theme="crt"]:has(.layout)::after {
 
 /* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标。
    静止时四字各发荧光，偶尔按 K → d → 左 a → 右 a 的次序短促熄一下；
-   按下时四字一起往屏幕里沉一点、荧光熄灭只剩暗淡本色；
-   松开回弹的同时，右上角迸出两三颗星与三根短射线（星 / 线的落点与时机都错开）。
+   之后自动把四字一起按进屏幕、再弹回来，右上角同时迸出两三颗星与三根短射线。
    星屑层是字标的兄弟节点，不跟着 skewX 斜切——星的形状与射线角度才可控。 */
 .brand-word,
 .brand-burst {
@@ -4318,7 +4317,7 @@ html[data-theme="crt"]:has(.layout)::after {
   border: 0;
   /* 星屑要飞出 38px 盒边界，别被裁掉。 */
   overflow: visible;
-  /* 这是个按下会动的按钮状元素，别让拖拽顺手把字选蓝。 */
+  /* 字标是纯展示元素，拖窗口 / 划选时别把字选蓝。 */
   user-select: none;
   text-shadow:
     0 0 2px var(--accent),
@@ -4362,10 +4361,12 @@ html[data-theme="crt"]:has(.layout)::after {
 [data-theme="crt"] .brand-word > .bw {
   position: relative;
   color: var(--bw-c);
+  /* 三层辉光：近圈收紧笔画、中圈摊开、外圈留一层远光，整枚字标更「亮着」。 */
   text-shadow:
-    0 0 2px color-mix(in srgb, var(--bw-c) 85%, transparent),
-    0 0 7px color-mix(in srgb, var(--bw-c) 55%, transparent);
-  /* 松开的手感：轻微过冲再落回原位（按下时另用一套更快的过渡）。 */
+    0 0 2px var(--bw-c),
+    0 0 8px color-mix(in srgb, var(--bw-c) 80%, transparent),
+    0 0 16px color-mix(in srgb, var(--bw-c) 40%, transparent);
+  /* 回弹的手感：轻微过冲再落回原位（按下时另用一套更快的过渡）。 */
   transition:
     transform 190ms cubic-bezier(0.2, 1.7, 0.45, 1),
     color 130ms ease-out,
@@ -4406,29 +4407,33 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .bz-star {
   background: currentColor;
-  filter: drop-shadow(0 0 2px currentColor);
+  filter:
+    drop-shadow(0 0 2px currentColor)
+    drop-shadow(0 0 5px color-mix(in srgb, currentColor 65%, transparent));
 }
 
-/* 三颗星：7 / 5 / 4px，4 角 / 5 角 / 4 角，射出方向与时长各不相同。 */
+/* 三颗星：4.5 / 5 / 3.5px，4 角 / 5 角 / 4 角。
+   起点都落在射线扇面之外的间隙里（半径 10.5~14px > 射线最长 8.4px），
+   因此星与线在整段动画里都不重叠；三颗星彼此也分处三个扇区。 */
 [data-theme="crt"] .bz-s1 {
-  left: 0;
-  top: 0;
-  width: 7px;
-  height: 7px;
-  --dx: 10px;
-  --dy: -8px;
+  left: 6.8px;
+  top: -8.6px;
+  width: 4.5px;
+  height: 4.5px;
+  --dx: 2px;
+  --dy: -1.8px;
   clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
   animation-duration: 470ms;
   animation-delay: 20ms;
 }
 
 [data-theme="crt"] .bz-s2 {
-  left: 2px;
-  top: -2px;
+  left: 4.3px;
+  top: -17px;
   width: 5px;
   height: 5px;
-  --dx: 5px;
-  --dy: -11px;
+  --dx: 2.5px;
+  --dy: -4px;
   /* 一颗冷色星，免得右上角糊成一片黄。 */
   color: var(--crt-cyan);
   clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
@@ -4437,54 +4442,59 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 [data-theme="crt"] .bz-s3 {
-  left: -2px;
-  top: 3px;
-  width: 4px;
-  height: 4px;
-  --dx: 13px;
-  --dy: -3px;
+  left: 8.7px;
+  top: -2.1px;
+  width: 3.5px;
+  height: 3.5px;
+  --dx: 0.8px;
+  --dy: -0.3px;
+  /* 暖白芯，比纯黄更「亮」一点。 */
+  color: color-mix(in srgb, var(--crt-yellow) 55%, #fff);
   clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
   animation-duration: 400ms;
   animation-delay: 0ms;
 }
 
-/* 三根放射线：以右上角为原点，-18° / -42° / -66° 扇开，长度与起点各错开一点。 */
+/* 三根放射线：三根共用同一个原点（left/top = 0，transform-origin 都是左端），
+   只靠角度扇开（-20° / -50° / -80°），因此除了原点之外不会交叉。 */
 [data-theme="crt"] .bz-ray {
   left: 0;
   top: 0;
   height: 1px;
-  background: linear-gradient(90deg, transparent, currentColor 30%, currentColor);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, currentColor 70%, #fff) 30%,
+    color-mix(in srgb, currentColor 70%, #fff)
+  );
   transform-origin: 0 50%;
-  box-shadow: 0 0 3px color-mix(in srgb, currentColor 55%, transparent);
+  box-shadow:
+    0 0 4px color-mix(in srgb, currentColor 75%, transparent),
+    0 0 8px color-mix(in srgb, currentColor 35%, transparent);
 }
 
 [data-theme="crt"] .bz-r1 {
-  --ang: -18deg;
-  width: 9px;
-  top: -1px;
+  --ang: -20deg;
+  width: 7px;
   animation-duration: 340ms;
   animation-delay: 0ms;
 }
 
 [data-theme="crt"] .bz-r2 {
-  --ang: -42deg;
-  width: 7px;
-  left: -2px;
-  top: 1px;
+  --ang: -50deg;
+  width: 6px;
   animation-duration: 280ms;
   animation-delay: 55ms;
 }
 
 [data-theme="crt"] .bz-r3 {
-  --ang: -66deg;
-  width: 8px;
-  left: 1px;
-  top: 2px;
+  --ang: -80deg;
+  width: 7px;
   animation-duration: 320ms;
   animation-delay: 105ms;
 }
 
-/* 只有松开那一下才让星屑真的动起来。 */
+/* 自动循环里进入迸射阶段时才让星屑真的动起来。 */
 [data-theme="crt"] .rail-brand.is-burst .bz-star {
   animation-name: crt-star-fly;
   animation-timing-function: cubic-bezier(0.15, 0.75, 0.3, 1);
@@ -4723,9 +4733,11 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
     0 0 8px color-mix(in srgb, var(--accent) 35%, transparent);
 }
 
-/* 四色字标在浅底上也把外扩收小，深色字的 4px 全色辉光会显脏。 */
+/* 四色字标在浅底上把外扩收一点（深色字的远光会显脏），但保留两层让字「亮着」。 */
 [data-theme="crt"][data-crt="light"] .brand-word > .bw {
-  text-shadow: 0 0 3px color-mix(in srgb, var(--bw-c) 35%, transparent);
+  text-shadow:
+    0 0 2px color-mix(in srgb, var(--bw-c) 55%, transparent),
+    0 0 8px color-mix(in srgb, var(--bw-c) 28%, transparent);
 }
 
 /* 浅底上「暗淡的本色」要往暗里混（混白会淡到看不见），并显式摘掉辉光——
@@ -4736,7 +4748,18 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 }
 
 [data-theme="crt"][data-crt="light"] .bz-star {
-  filter: drop-shadow(0 0 1px color-mix(in srgb, currentColor 40%, transparent));
+  filter:
+    drop-shadow(0 0 1.5px color-mix(in srgb, currentColor 60%, transparent))
+    drop-shadow(0 0 4px color-mix(in srgb, currentColor 30%, transparent));
+}
+
+/* 暖白星在浅底上会消失，浅色档退回深黄。 */
+[data-theme="crt"][data-crt="light"] .bz-s3 {
+  color: var(--crt-yellow);
+}
+
+[data-theme="crt"][data-crt="light"] .bz-ray {
+  box-shadow: 0 0 3px color-mix(in srgb, currentColor 45%, transparent);
 }
 
 /* 浅底上「强调色 / 动作类型色当文字用」会偏淡：与浅色主题同一条口径，往正文混 30%。 */
