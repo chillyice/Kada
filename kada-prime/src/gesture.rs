@@ -55,7 +55,7 @@ pub fn pattern_from_points(points: &[(i32, i32)], min_segment: i32) -> String {
     out
 }
 
-/// 配置里的方向串归一化：支持 U/D/L/R、斜向两字母、箭头，以及 MouseInc 风格的
+/// 配置里的方向串归一化：支持 U/D/L/R、斜向两字母、箭头，以及兼容词形
 /// `UP` / `DOWN` / `UPLEFT` 这类单词。
 pub fn normalize_pattern(s: &str) -> String {
     let mut t = s.trim().to_uppercase();
@@ -214,7 +214,7 @@ mod tests {
 
     #[test]
     fn multi_segment_pattern() {
-        // 下 → 右 → 上 → 左（MouseInc 的四边形贴图手势）
+        // 下 → 右 → 上 → 左（四边形贴图手势）
         let pts = line(&[
             (0, 0),
             (0, 40),

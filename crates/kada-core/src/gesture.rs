@@ -85,7 +85,7 @@ pub fn dist(a: (i32, i32), b: (i32, i32)) -> i32 {
 
 /// 方向串归一化：只保留 `U`/`D`/`L`/`R` 四个字母，斜向写成两个字母（`UR`）。
 ///
-/// 认得箭头（`↑` `↓` `←` `→` `↗`…）与 MouseInc 风格的单词（`UP` / `DOWN` /
+/// 认得箭头（`↑` `↓` `←` `→` `↗`…）与兼容词形（`UP` / `DOWN` /
 /// `UPRIGHT`…）——用户从别的工具搬配置时不用逐条改写。
 pub fn normalize_pattern(s: &str) -> String {
     let mut t = s.trim().to_uppercase();

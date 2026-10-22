@@ -2,7 +2,7 @@
 name = "kada-prime"
 version = "0.1.0"
 edition = "2021"
-description = "Kada' — MouseInc 鼠标手势 / 滚轮快捷键试验台"
+description = "Kada' — 鼠标手势 / 滚轮快捷键试验台"
 
 # 独立于 Kada workspace：Kada' 是单独的实验软件，不参与主项目的构建与测试。
 [workspace]
