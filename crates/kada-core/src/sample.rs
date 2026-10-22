@@ -4,7 +4,7 @@
 //! 目录 / 层用固定 id：重复载入时合并按判重跳过，不会翻倍。
 
 use crate::{
-    Action, Config, Folder, Layer, MouseButton, MouseOp, Remap, ShortcutItem, TextExpansion, TextMode,
+    Action, Config, Folder, KeysMode, Layer, MouseButton, MouseOp, Remap, ShortcutItem, TextExpansion, TextMode,
 };
 #[cfg(feature = "automation")]
 use crate::{Condition, Shell};
@@ -239,6 +239,7 @@ pub fn sample_config() -> Config {
         &["Ctrl+Alt+S"],
         vec![Action::Keys {
             keys: vec!["Ctrl".into(), "Shift".into(), "S".into()],
+            mode: KeysMode::Tap,
             description: None,
         }],
     ));

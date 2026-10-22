@@ -1120,17 +1120,39 @@ pub enum MouseButton {
     Forward,
 }
 
-/// 鼠标模拟操作（[`Action::Mouse`]，规划 7.1-㊱）：坐标与滚轮量都是**相对**值。
+/// 鼠标模拟操作（[`Action::Mouse`]，规划 7.1-㊱ / EXT-16）。
+///
+/// `Move` / `Scroll` 的坐标与滚轮量是**相对**值；`MoveTo` 是**绝对**屏幕坐标
+/// （主显示器左上角 = `(0,0)`，多屏可为负；Windows 为物理像素、macOS 为点）。
 /// 移动 / 滚动不改按键状态；点击作用在**当前**光标位置，故常见用法是先 `Move` 再 `Click`。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum MouseOp {
     /// 光标相对当前位置移动 `(dx, dy)` 像素（屏幕坐标系：右下为正）。
     Move { dx: i32, dy: i32 },
+    /// 光标移动到绝对屏幕坐标 `(x, y)`（主显示器左上角为原点，多屏可为负）。
+    /// 目前 Windows / macOS 实现；Linux 执行时明确报错（平台软冲突）。
+    MoveTo { x: i32, y: i32 },
+    /// 光标移动到**本次手势的起点**（右键按下点）。只对鼠标手势触发有意义；
+    /// 快捷键 / 录制等路径没有起点，执行时报错。
+    MoveToOrigin,
     /// 在当前光标位置点击一下（按下 + 抬起）。
     Click { #[serde(default)] button: MouseButton },
     /// 滚轮滚动：`dy>0` 上滚 / `dy<0` 下滚、`dx` 为横向滚轮（单位「格」）。
     Scroll { dx: i32, dy: i32 },
+}
+
+/// 「按键组合」动作的注入方式（EXT-16）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum KeysMode {
+    /// 按下 → 稍停 → 逆序抬起（默认；老配置缺这个字段即此）。
+    #[default]
+    Tap,
+    /// 只按下并保持，链结束时自动抬起（也可后面用 `Release` 显式抬起）。
+    Press,
+    /// 抬起（逆序）；用于配合前面的 `Press` 做「按住 → 做别的 → 松开」。
+    Release,
 }
 
 /// 剪贴板动作（[`Action::Clipboard`]，EXT-15）：v1 只处理文本（图片剪贴板列在规划后续）。
@@ -1161,6 +1183,11 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+/// `serde` 帮手：默认的 `tap` 不落盘（老配置与新配置的普通按键动作保持同一形状）。
+fn is_tap_mode(m: &KeysMode) -> bool {
+    matches!(m, KeysMode::Tap)
+}
+
 /// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1189,8 +1216,9 @@ pub enum Action {
     /// 在文件管理器中打开某个目录。（旧版动作，加载时自动迁移为 `Os::OpenFolder`。）
     #[cfg(feature = "automation")]
     OpenFolder { path: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
-    /// 同时按下若干键（组合键，如 ["Ctrl","C"]；单键即点按）。
-    Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 按键动作：`tap` 按下再松开（默认）；`press` 只按下并保持到链结束 / 显式抬起；
+    /// `release` 抬起（逆序）。按住类按键在失败 / 中止 / 输入复位时也会自动抬起。
+    Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "is_tap_mode")] mode: KeysMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 暂停 ms 毫秒。
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
@@ -1301,7 +1329,7 @@ impl Action {
                     }
                     Ok(())
                 }
-                MouseOp::Click { .. } => Ok(()),
+                MouseOp::MoveTo { .. } | MouseOp::MoveToOrigin | MouseOp::Click { .. } => Ok(()),
             },
             Action::Group { actions, .. } => {
                 for a in actions {
@@ -2356,6 +2384,9 @@ pub struct PlatformCaps {
     pub device_conditions: bool,
     /// 「当前窗口」动作（[`Action::Window`]）是否可用。目前只有 Windows 有前台窗口句柄。
     pub window_actions: bool,
+    /// 鼠标绝对移动（[`MouseOp::MoveTo`] / [`MouseOp::MoveToOrigin`]）是否可用。
+    /// Linux 拿不到可靠的全局屏幕范围（尤其 Wayland），暂不支持。
+    pub mouse_absolute: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2367,6 +2398,7 @@ impl Default for PlatformCaps {
             frontmost_conditions: true,
             device_conditions: true,
             window_actions: true,
+            mouse_absolute: true,
         }
     }
 }
@@ -2379,6 +2411,7 @@ impl PlatformCaps {
             && self.frontmost_conditions
             && self.device_conditions
             && self.window_actions
+            && self.mouse_absolute
     }
 }
 
@@ -2885,6 +2918,14 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        if !caps.mouse_absolute && uses_absolute_move(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
@@ -2896,6 +2937,18 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「当前窗口」动作在当前平台用不了（只有 Windows 实现了前台窗口操作），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
+    }
+    if !caps.mouse_absolute {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_absolute_move(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
                     name: g.label(),
                 });
             }
@@ -3233,6 +3286,24 @@ fn uses_window_action(actions: &[Action]) -> bool {
             then, otherwise, ..
         } => uses_window_action(then) || uses_window_action(otherwise),
         Action::Parallel { actions, .. } => uses_window_action(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有绝对鼠标移动（`MoveTo` / `MoveToOrigin`），`If` / `Parallel` / 分组递归。
+fn uses_absolute_move(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Mouse {
+            op: MouseOp::MoveTo { .. } | MouseOp::MoveToOrigin,
+            ..
+        } => true,
+        Action::Group { actions, .. } => uses_absolute_move(actions),
+        #[cfg(feature = "automation")]
+        Action::If {
+            then, otherwise, ..
+        } => uses_absolute_move(then) || uses_absolute_move(otherwise),
+        #[cfg(feature = "automation")]
+        Action::Parallel { actions, .. } => uses_absolute_move(actions),
         _ => false,
     })
 }
@@ -3993,7 +4064,7 @@ mod config_tests {
             Action::Powershell { command: "Get-Date".into(), show_output: true, var: "".into(), description: None },
             Action::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()], description: None },
             Action::OpenFolder { path: "C:\\Users".into(), description: None },
-            Action::Keys { keys: vec!["Ctrl".into(), "C".into()], description: None },
+            Action::Keys { keys: vec!["Ctrl".into(), "C".into()], mode: KeysMode::Tap, description: None },
             Action::PauseMs { ms: 100, description: None },
         ];
         for a in &actions {
@@ -4004,10 +4075,23 @@ mod config_tests {
         assert_eq!(back, actions);
 
         // 坏键名 / 空组合 / 空命令必被拒绝
-        assert!(Action::Keys { keys: vec!["NotAKey".into()], description: None }.validate().is_err());
-        assert!(Action::Keys { keys: vec![], description: None }.validate().is_err());
+        assert!(Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }.validate().is_err());
+        assert!(Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None }.validate().is_err());
         assert!(Action::Cmd { command: "  ".into(), show_output: false, var: "".into(), description: None }.validate().is_err());
         assert!(Action::Launch { program: "".into(), args: vec![], description: None }.validate().is_err());
+
+        // EXT-16：默认 tap 不落盘（旧配置形状不变），press / release 正常往返。
+        let tap = Action::Keys { keys: vec!["Ctrl".into()], mode: KeysMode::Tap, description: None };
+        let json = serde_json::to_string(&tap).unwrap();
+        assert!(!json.contains("mode"), "默认 tap 不该写进 JSON：{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), tap);
+
+        for mode in [KeysMode::Press, KeysMode::Release] {
+            let a = Action::Keys { keys: vec!["Ctrl".into()], mode, description: None };
+            let json = serde_json::to_string(&a).unwrap();
+            assert!(json.contains("\"mode\":\"press\"") || json.contains("\"mode\":\"release\""));
+            assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+        }
     }
 
     /// 鼠标模拟动作（7.1-㊱）：序列化往返、点击缺省左键、全 0 偏移被拒（不依赖 automation）。
@@ -4015,6 +4099,8 @@ mod config_tests {
     fn mouse_action_roundtrip_and_validate() {
         let actions = vec![
             Action::Mouse { op: MouseOp::Move { dx: 10, dy: -5 }, description: None },
+            Action::Mouse { op: MouseOp::MoveTo { x: -1920, y: 1080 }, description: None },
+            Action::Mouse { op: MouseOp::MoveToOrigin, description: None },
             Action::Mouse { op: MouseOp::Click { button: MouseButton::Middle }, description: None },
             Action::Mouse {
                 op: MouseOp::Scroll { dx: 0, dy: 3 },
@@ -4673,7 +4759,7 @@ mod os_and_sanitize_tests {
         assert!(Action::Parallel { actions: vec![], description: None }.validate().is_ok());
         // 嵌套成员非法 → 递归拒绝。
         assert!(Action::Parallel {
-            actions: vec![Action::Keys { keys: vec!["NotAKey".into()], description: None }],
+            actions: vec![Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }],
             description: None,
         }
         .validate()
@@ -4713,7 +4799,7 @@ mod os_and_sanitize_tests {
             name: "外层".into(),
             actions: vec![Action::Group {
                 name: "内层".into(),
-                actions: vec![Action::Keys { keys: vec!["NotAKey".into()], description: None }],
+                actions: vec![Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }],
             }],
         }
         .validate()
@@ -4919,7 +5005,7 @@ mod os_and_sanitize_tests {
                 triggers: vec!["Ctrl+K".into(), "F9 J".into(), "F&J".into()],
                 actions: vec![
                     Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
-                    Action::Keys { keys: vec!["Ctrl".into(), "S".into()], description: None },
+                    Action::Keys { keys: vec!["Ctrl".into(), "S".into()], mode: KeysMode::Tap, description: None },
                     Action::PauseMs { ms: 100, description: None },
                 ],
                 enabled: true,
@@ -6533,6 +6619,7 @@ mod platform_caps_tests {
         PlatformCaps {
             frontmost_conditions: false,
             window_actions: false,
+            mouse_absolute: false,
             ..Default::default()
         }
     }
@@ -6551,6 +6638,7 @@ mod platform_caps_tests {
             frontmost_conditions: true,
             device_conditions: false,
             window_actions: false,
+            mouse_absolute: true,
         }
     }
 
@@ -6683,10 +6771,35 @@ mod platform_caps_tests {
         }
     }
 
+    /// 鼠标绝对移动在 Linux 标软冲突（快捷键与手势都扫）；Windows / macOS 零提示。
     #[cfg(feature = "automation")]
     #[test]
-    fn nested_if_frontmost_also_flagged() {
+    fn absolute_mouse_flagged_on_linux_only() {
+        let action = Action::Mouse {
+            op: MouseOp::MoveToOrigin,
+            description: None,
+        };
         let cfg = Config {
+            shortcuts: vec![shortcut("m", "Ctrl+K", vec![action.clone()])],
+            gestures: vec![crate::gesture::Gesture {
+                pattern: "DR".into(),
+                actions: vec![action],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+        assert!(detect_conflicts(&cfg, &macos_caps()).is_empty());
+        let hits = detect_conflicts(&cfg, &linux_caps());
+        assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
+        assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+        assert!(hits.iter().all(|c| c.message.contains("鼠标绝对移动")));
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn nested_if_frontmost_also_flagged() {        let cfg = Config {
             shortcuts: vec![shortcut(
                 "s",
                 "F9",
@@ -6721,6 +6834,7 @@ mod platform_caps_tests {
                     vec![Action::Parallel {
                         actions: vec![Action::Keys {
                             keys: vec!["F21".into()],
+                            mode: KeysMode::Tap,
                             description: None,
                         }],
                         description: None,
@@ -6805,7 +6919,7 @@ mod platform_caps_tests {
             shortcuts: vec![shortcut(
                 "s",
                 "Ctrl+K",
-                vec![Action::Keys { keys: vec!["F21".into(), "Enter".into()], description: None }],
+                vec![Action::Keys { keys: vec!["F21".into(), "Enter".into()], mode: KeysMode::Tap, description: None }],
             )],
             ..Default::default()
         };
@@ -6821,7 +6935,7 @@ mod platform_caps_tests {
             shortcuts: vec![shortcut(
                 "s",
                 "F22",
-                vec![Action::Keys { keys: vec!["F23".into()], description: None }],
+                vec![Action::Keys { keys: vec!["F23".into()], mode: KeysMode::Tap, description: None }],
             )],
             ..Default::default()
         };

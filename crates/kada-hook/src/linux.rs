@@ -974,6 +974,11 @@ pub mod simulate {
                     events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, *dy));
                 }
             }
+            MouseOp::MoveTo { .. } | MouseOp::MoveToOrigin => {
+                return Err(io::Error::other(
+                    "Linux 暂不支持鼠标绝对移动（拿不到可靠的全局屏幕范围）",
+                ))
+            }
             MouseOp::Scroll { dx, dy } => {
                 if *dy != 0 {
                     events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_WHEEL.0, *dy));

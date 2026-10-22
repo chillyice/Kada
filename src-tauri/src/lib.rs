@@ -21,8 +21,8 @@ use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
 use kada_actions::{
-    abort as actions_abort, run_actions, ActionStep, CommandResult, Reporter, RunOptions,
-    RunRecord, RunStatus, TriggerCtx,
+    abort as actions_abort, release_held_keys, run_actions, ActionStep, CommandResult, Reporter,
+    RunOptions, RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, keycast_text, matches,
@@ -954,6 +954,9 @@ fn spawn_engine_ticker(
                 } else {
                     let mut engine = engine.lock().unwrap();
                     if let Some(reason) = reason {
+                        // 动作链按住的键也要收回（EXT-16）：输入复位意味着「与物理键盘断过
+                        // 一次线」，`Keys press` 留下的修饰键不收回就会一直粘在系统里。
+                        release_held_keys();
                         // 只在真的丢掉了状态时留痕：复位本身是无声兜底（用户此刻没有动作可做），
                         // 进消息中心只会变成噪音。
                         if engine.reset(&mut SimulatedInject) {
@@ -1372,6 +1375,7 @@ fn fire(
     name: String,
     timeout_ms: u64,
     text_mode: TextInjectMode,
+    origin: Option<(i32, i32)>,
 ) {
     // 气泡窗口首次懒创建较慢（WebView 冷启动），放后台线程，避免阻塞钩子回调——
     // WH_KEYBOARD_LL 回调超时会被系统摘除，导致后续快捷键/改键/热串全部失效。
@@ -1460,6 +1464,7 @@ fn fire(
             frontmost: frontmost.as_ref(),
             device: device.as_deref(),
             window,
+            origin,
         };
         let status = run_actions(
             &mut rep,
@@ -1917,6 +1922,8 @@ fn handle_gesture(
         name,
         action_timeout,
         text_mode,
+        // 手势起点 = 右键按下点（EXT-16「移动到手势起点」）；快捷键路径没有起点。
+        stroke.points.first().copied(),
     );
 }
 
@@ -2058,6 +2065,7 @@ fn fire(
     _name: String,
     _timeout_ms: u64,
     _text_mode: TextInjectMode,
+    _origin: Option<(i32, i32)>,
 ) {
     // 无钩子即无触发入口，本分支不会运行（macOS 占位）。
 }
@@ -2884,7 +2892,7 @@ fn show_main_window(app: &tauri::AppHandle) {
         raise_main_window(&w);
         return;
     }
-    match tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+    let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
         .title("咔哒 Kada")
         .inner_size(860.0, 560.0)
         // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
@@ -3085,6 +3093,7 @@ impl Recorder {
                 if !keys.is_empty() {
                     self.actions.push(Action::Keys {
                         keys,
+                        mode: kada_core::KeysMode::Tap,
                         description: None,
                     });
                 }
@@ -3102,6 +3111,7 @@ impl Recorder {
                 .collect();
             self.actions.push(Action::Keys {
                 keys,
+                mode: kada_core::KeysMode::Tap,
                 description: None,
             });
         }
@@ -3374,6 +3384,7 @@ mod tests {
         }];
         let keys = vec![Action::Keys {
             keys: vec!["Ctrl".into(), "C".into()],
+            mode: kada_core::KeysMode::Tap,
             description: None,
         }];
         assert!(injects_keys(&text));
@@ -5247,6 +5258,7 @@ fn run_entry(
         name,
         timeout_ms,
         text_mode,
+        None,
     );
 }
 
@@ -5563,6 +5575,7 @@ pub fn run() {
                             name,
                             action_timeout,
                             text_mode,
+                            None,
                         );
                     };
                     let Some(ev) = engine.lock().unwrap().step(
@@ -5591,6 +5604,7 @@ pub fn run() {
                                 name,
                                 action_timeout,
                                 text_mode,
+                                None,
                             );
                             input::HookAction::Block
                         }

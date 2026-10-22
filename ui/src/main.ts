@@ -55,12 +55,15 @@ type Shell = "cmd" | "powershell";
 type MouseButton = "left" | "right" | "middle" | "back" | "forward";
 type MouseOp =
   | { op: "move"; dx: number; dy: number }
+  | { op: "move_to"; x: number; y: number }
+  | { op: "move_to_origin" }
   | { op: "click"; button: MouseButton }
   | { op: "scroll"; dx: number; dy: number };
+type KeysMode = "tap" | "press" | "release";
 type Action =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
   | { type: "command"; shell: Shell; command: string; show_output: boolean; hide_window?: boolean; var: string; description?: string }
-  | { type: "keys"; keys: string[]; description?: string }
+  | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "clipboard"; operation: ClipboardOperation; description?: string }
@@ -710,6 +713,8 @@ function newAppOp(op: AppOperation["op"]): AppOperation {
 // ---- 鼠标动作的子操作（移动 / 点击 / 滚轮） ----
 const MOUSE_OPS: { value: MouseOp["op"]; label: string }[] = [
   { value: "move", label: tr("移动光标") },
+  { value: "move_to", label: tr("移动到绝对坐标") },
+  { value: "move_to_origin", label: tr("移动到手势起点") },
   { value: "click", label: tr("点击") },
   { value: "scroll", label: tr("滚轮滚动") },
 ];
@@ -718,6 +723,10 @@ function newMouseOp(op: MouseOp["op"]): MouseOp {
   switch (op) {
     case "move":
       return { op, dx: 100, dy: 0 };
+    case "move_to":
+      return { op, x: 0, y: 0 };
+    case "move_to_origin":
+      return { op };
     case "click":
       return { op, button: "left" };
     case "scroll":
@@ -735,7 +744,7 @@ function newAction(type: Action["type"]): Action {
     case "script":
       return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
     case "keys":
-      return { type: "keys", keys: [] };
+      return { type: "keys", keys: [], mode: "tap" };
     case "mouse":
       return { type: "mouse", op: newMouseOp("move") };
     case "clipboard":
@@ -828,7 +837,13 @@ function actionHasContent(a: Action): boolean {
     case "keys":
       return a.keys.length > 0;
     case "mouse":
-      return a.op.op === "click" || a.op.dx !== 0 || a.op.dy !== 0;
+      return (
+        a.op.op === "click" ||
+        a.op.op === "move_to_origin" ||
+        a.op.op === "move_to" ||
+        a.op.dx !== 0 ||
+        a.op.dy !== 0
+      );
     case "clipboard":
       // 写入空文本 = 清空剪贴板，是完整操作；读取要有变量名，临时文本要有内容。
       switch (a.operation.op) {
@@ -987,6 +1002,10 @@ function mouseSummary(op: MouseOp): string {
   switch (op.op) {
     case "move":
       return trt`鼠标移动 (${op.dx}, ${op.dy})`;
+    case "move_to":
+      return trt`鼠标移动到 (${op.x}, ${op.y})`;
+    case "move_to_origin":
+      return tr("鼠标移动到手势起点");
     case "click":
       return trt`鼠标点击${MOUSE_BUTTON_LABELS[op.button]}`;
     case "scroll":
@@ -1013,6 +1032,8 @@ function actionSummary(a: Action): string {
       return trt`脚本：${target}${v}`;
     }
     case "keys":
+      if (a.mode === "press") return trt`按住：${a.keys.join("+")}`;
+      if (a.mode === "release") return trt`抬起：${a.keys.join("+")}`;
       return trt`按键：${a.keys.join("+")}`;
     case "mouse":
       return mouseSummary(a.op);
@@ -4817,6 +4838,21 @@ function actionFields(
       }
     }
     const line = el("div", "action-line");
+    const mode = el("select", "action-input") as HTMLSelectElement;
+    for (const [value, label] of [
+      ["tap", tr("点按（按下后松开）")],
+      ["press", tr("按住（保持到链结束）")],
+      ["release", tr("抬起")],
+    ] as [KeysMode, string][]) {
+      const o = el("option") as HTMLOptionElement;
+      o.value = value;
+      o.textContent = label;
+      mode.append(o);
+    }
+    mode.value = a.mode ?? "tap";
+    mode.addEventListener("change", () => {
+      a.mode = mode.value as KeysMode;
+    });
     const keys = el("input", "action-input") as HTMLInputElement;
     keys.type = "text";
     keys.value = a.keys.join("+");
@@ -4856,11 +4892,33 @@ function actionFields(
       }, btn);
     });
     line.append(keys, cap);
-    body.append(line);
+    body.append(mode, line);
   } else if (a.type === "mouse") {
     const op = a.op;
     const line = el("div", "action-line");
-    if (op.op === "move" || op.op === "scroll") {
+    if (op.op === "move_to") {
+      const x = el("input", "action-input") as HTMLInputElement;
+      x.type = "number";
+      x.value = String(op.x);
+      x.placeholder = tr("横坐标");
+      x.addEventListener("input", () => {
+        op.x = intIn(x.value, -100000, 0, 100000);
+      });
+      const y = el("input", "action-input") as HTMLInputElement;
+      y.type = "number";
+      y.value = String(op.y);
+      y.placeholder = tr("纵坐标");
+      y.addEventListener("input", () => {
+        op.y = intIn(y.value, -100000, 0, 100000);
+      });
+      line.append(
+        x,
+        y,
+        el("span", "unit-hint", tr("绝对屏幕坐标，主屏左上角为 (0,0)，多屏可为负")),
+      );
+    } else if (op.op === "move_to_origin") {
+      line.append(el("span", "unit-hint", tr("移动到本次手势的起点（仅手势触发可用）")));
+    } else if (op.op === "move" || op.op === "scroll") {
       const dx = el("input", "action-input") as HTMLInputElement;
       dx.type = "number";
       dx.value = String(op.dx);
@@ -8045,6 +8103,7 @@ async function bootstrapGesture() {
     render(e.payload, e.payload.matched, e.payload.label, e.payload.pattern),
   );
 }
+
 // ---- 自绘标题栏（主窗口）----
 // 壳层把主窗口设成 `decorations(false)`（macOS 走 Overlay，红绿灯由系统画），标题区由这里补。
 // 拖动 / 双击最大化不在这里做：Tauri 内建的 `data-tauri-drag-region` 脚本接管，且会自动跳过
@@ -8067,7 +8126,6 @@ const WIN_ICONS = {
   restore: '<rect x="2.5" y="4" width="6" height="6"/><path d="M4.5 2.5h5v5"/>',
   close: '<path d="M3 3l6 6M9 3l-6 6"/>',
 };
-  mountTitlebar();
 
 function winIcon(paths: string): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -8177,7 +8235,6 @@ function mountTitlebar() {
   }
 }
 
-
 // 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。五个窗口共用这段。
 applyTheme(loadTheme());
 
@@ -8200,6 +8257,7 @@ if (location.hash === "#toast") {
   installBrowserMock();
   void bootstrapHints();
 } else {
+  mountTitlebar();
   installBrowserMock();
   bind();
   bindMessages();

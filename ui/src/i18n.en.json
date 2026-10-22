@@ -796,5 +796,18 @@
   "正常打字的单字符键（字母 / 数字 / 标点）不显示，只在组合键与功能键时出现，避免刷屏": "Hide single-character keys (letters / digits / punctuation) typed on their own; show them only in combinations or for function keys, to avoid flooding the screen",
   "按键回显怎么用": "How key echo works",
   "打开后每次物理按键都会浮一条「组合键 + ↓（按下）/ ↑（抬起）」。它只是看板：不可点击、鼠标直接穿透、永不抢焦点，也不会让前台切换复位输入状态。": "Once enabled, every physical key press shows a “combination + ↓ (down) / ↑ (up)” overlay. It is display-only: click-through, never focuses, and never triggers an input-state reset on foreground changes.",
-  "暂停快捷键、全屏程序自动暂停、全局排除程序命中时都不显示；Kada 自己注入的按键也不会回显。": "Hidden while shortcuts are paused, while a fullscreen app pauses input, and in globally excluded apps. Keys injected by Kada are never echoed."
+  "暂停快捷键、全屏程序自动暂停、全局排除程序命中时都不显示；Kada 自己注入的按键也不会回显。": "Hidden while shortcuts are paused, while a fullscreen app pauses input, and in globally excluded apps. Keys injected by Kada are never echoed.",
+  "移动到绝对坐标": "Move to absolute position",
+  "移动到手势起点": "Move to gesture origin",
+  "点按（按下后松开）": "Tap (press and release)",
+  "按住（保持到链结束）": "Hold (until the chain ends)",
+  "抬起": "Release",
+  "横坐标": "X",
+  "纵坐标": "Y",
+  "绝对屏幕坐标，主屏左上角为 (0,0)，多屏可为负": "Absolute screen coordinates; the primary display's top-left is (0,0), and values can be negative on multi-monitor setups",
+  "移动到本次手势的起点（仅手势触发可用）": "Move to the origin of this gesture (only available for gesture triggers)",
+  "鼠标移动到 ({0}, {1})": "Mouse move to ({0}, {1})",
+  "鼠标移动到手势起点": "Mouse move to gesture origin",
+  "按住：{0}": "Hold: {0}",
+  "抬起：{0}": "Release: {0}"
 }

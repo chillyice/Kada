@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod abort;
 
 use kada_core::{
-    substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, TextInjectMode, TextMode,
-    TextValue, Value, Vars,
+    substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, TextInjectMode,
+    TextMode, TextValue, Value, Vars,
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -197,6 +197,9 @@ pub struct TriggerCtx<'a> {
     /// 触发那一刻的前台窗口句柄（EXT-14「当前窗口」动作的目标）。仅 Windows 抓取，其余
     /// 平台恒 `None`——目标取「触发时」而不是执行时，动作链里先切了前台也不影响它。
     pub window: Option<isize>,
+    /// 触发那一刻的鼠标位置（EXT-16「移动到手势起点」）。只有鼠标手势路径填（右键按下点），
+    /// 快捷键 / 录制 / 托盘等路径恒 `None`；`MoveToOrigin` 拿不到时执行报错。
+    pub origin: Option<(i32, i32)>,
 }
 
 /// 一次动作链的执行上下文：整条链共享（触发现场 / 超时 / 中止代数快照）。
@@ -216,6 +219,9 @@ struct Ctx<'a> {
     start: Instant,
     /// 动作序号发号器（并行成员各起线程，靠原子计数保证 id 唯一）。
     step_seq: AtomicU64,
+    /// 按住作用域发号器（EXT-16）：一条链 / 一个串行化的并行组各一个作用域，
+    /// `Keys press` 登记到当前作用域，作用域结束 / 失败 / 中止时整批抬起。
+    scope_seq: AtomicU64,
     /// 链内注入串行锁（规划 7.2-㉞）：注入类动作（文本 / 按键 / 鼠标）持锁执行，保证
     /// 并行分组的成员之间注入不交错、剪贴板不被并发覆盖。单线程链无竞争，取锁零代价。
     inject_lock: Mutex<()>,
@@ -230,6 +236,11 @@ impl Ctx<'_> {
     /// 发一个新动作 id。
     fn next_step_id(&self) -> u64 {
         self.step_seq.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// 发一个新的按住作用域 id。
+    fn next_scope(&self) -> u64 {
+        self.scope_seq.fetch_add(1, Ordering::Relaxed)
     }
 }
 
@@ -262,9 +273,12 @@ pub fn run_actions(
         run_id,
         start: Instant::now(),
         step_seq: AtomicU64::new(0),
+        scope_seq: AtomicU64::new(1),
         inject_lock: Mutex::new(()),
     };
-    run_chain(rep, actions, &ctx, vars, last_copied, None, 0);
+    let scope = ctx.next_scope();
+    let _held = HeldScope(scope);
+    run_chain(rep, actions, &ctx, vars, last_copied, scope, None, 0);
     if abort::aborted(ctx.gen) {
         RunStatus::Aborted
     } else {
@@ -365,6 +379,99 @@ fn lock_inject<'c>(ctx: &'c Ctx<'_>) -> std::sync::MutexGuard<'c, ()> {
     ctx.inject_lock.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 动作链按住的键（EXT-16）：`(作用域 id, 键)`。全局登记是为了让输入复位（前台切换 /
+/// 设备拔出 / 钩子重装 / 配置整份换掉）能从壳层一次性收回——那时已经拿不到某条链的 `Ctx`。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+static HELD_KEYS: Mutex<Vec<(u64, Key)>> = Mutex::new(Vec::new());
+
+/// 按下一个键并登记到作用域。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn hold_key(scope: u64, key: Key) {
+    HELD_KEYS.lock().unwrap().push((scope, key));
+    simulate::down(key);
+}
+
+/// 抬起一个键并从作用域注销（注销最近一次登记，同一键按两次也只抬一次）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn unhold_key(scope: u64, key: Key) {
+    {
+        let mut held = HELD_KEYS.lock().unwrap();
+        if let Some(i) = held.iter().rposition(|(s, k)| *s == scope && *k == key) {
+            held.remove(i);
+        }
+    }
+    simulate::up(key);
+}
+
+/// 抬起某个作用域里仍按着的键（逆序），并清空登记。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn release_scope(scope: u64) {
+    let mut keys: Vec<Key> = Vec::new();
+    {
+        let mut held = HELD_KEYS.lock().unwrap();
+        let mut i = 0;
+        // 作用域内的按键很少（通常 1~3 个），O(n²) 的 remove 比额外分配一份映射更省事。
+        while i < held.len() {
+            if held[i].0 == scope {
+                keys.push(held.remove(i).1);
+            } else {
+                i += 1;
+            }
+        }
+    }
+    for k in keys.into_iter().rev() {
+        simulate::up(k);
+    }
+}
+
+/// 输入复位时收回所有仍被动作链按住的键（壳层在 `Engine::reset` 同一处调用）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+pub fn release_held_keys() {
+    let keys: Vec<Key> = {
+        let mut held = HELD_KEYS.lock().unwrap();
+        held.drain(..).map(|(_, k)| k).collect()
+    };
+    for k in keys.into_iter().rev() {
+        simulate::up(k);
+    }
+}
+
+/// 没有输入注入后端的平台：没有按住状态可收。
+#[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+pub fn release_held_keys() {}
+
+/// 作用域守卫：无论正常收尾、失败提前返回还是 panic，都把该作用域按住的键抬起来。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+struct HeldScope(u64);
+
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+impl Drop for HeldScope {
+    fn drop(&mut self) {
+        release_scope(self.0);
+    }
+}
+
+/// 动作树里有没有 `Keys` 的按下 / 抬起（含嵌套 `If` / `Parallel` / 分组）。
+/// 有的话并行组不能真并发：注入锁只保证单步不交错，不保证成员顺序（会出「先松后按」）。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn has_key_lifecycle(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Keys {
+            mode: KeysMode::Press | KeysMode::Release,
+            ..
+        } => true,
+        Action::Group { actions, .. } => has_key_lifecycle(actions),
+        Action::If {
+            then, otherwise, ..
+        } => has_key_lifecycle(then) || has_key_lifecycle(otherwise),
+        Action::Parallel { actions, .. } => has_key_lifecycle(actions),
+        _ => false,
+    })
+}
+
 /// 动作链的实际执行（`If` 分支递归时复用同一 [`Ctx`]：超时与中止代数整链共享）。
 /// `parent` / `lane` 是本层动作在流水线里的位置：所属容器节点 id 与并行成员序号。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -375,6 +482,7 @@ fn run_chain(
     ctx: &Ctx,
     vars: &mut Vars,
     last_copied: &mut Option<String>,
+    scope: u64,
     parent: Option<u64>,
     lane: usize,
 ) {
@@ -382,6 +490,7 @@ fn run_chain(
         // 中止在执行前判一次：正在跑的进程由 `run_with_limits` 的轮询杀掉，这里保证
         // 「剩余动作不再执行」——否则点停止后还会继续注入按键 / 启动程序。
         if abort::aborted(ctx.gen) {
+            release_scope(scope);
             rep.commit(abort_result(ctx));
             rep.on_step(abort_step(ctx));
             return;
@@ -392,7 +501,7 @@ fn run_chain(
         } = action
         {
             let id = step.id;
-            run_chain(rep, members, ctx, vars, last_copied, Some(id), 0);
+            run_chain(rep, members, ctx, vars, last_copied, scope, Some(id), 0);
             step.status = if abort::aborted(ctx.gen) {
                 "abort".into()
             } else {
@@ -402,6 +511,7 @@ fn run_chain(
             rep.on_step(step);
             // 成员链已因中止收尾并记过一条结果，别在外层再记一遍。
             if abort::aborted(ctx.gen) {
+                release_scope(scope);
                 return;
             }
             continue;
@@ -423,6 +533,7 @@ fn run_chain(
                 ctx,
                 vars,
                 last_copied,
+                scope,
                 Some(id),
                 0,
             );
@@ -435,6 +546,7 @@ fn run_chain(
             rep.on_step(step);
             // 分支里已经因中止收尾过（并记了一条结果）：外层别再记一遍。
             if abort::aborted(ctx.gen) {
+                release_scope(scope);
                 return;
             }
             continue;
@@ -456,13 +568,14 @@ fn run_chain(
             // 并行组被中止：`run_parallel` 已滤掉成员级的中止结果，这里统一补记一条再收尾
             // （若只是 `continue`，下一轮顶部的中止判定会再记一条，变成两条）。
             if abort::aborted(ctx.gen) {
+                release_scope(scope);
                 rep.commit(abort_result(ctx));
                 rep.on_step(abort_step(ctx));
                 return;
             }
             continue;
         }
-        match run_action(action, ctx, vars, last_copied) {
+        match run_action(action, ctx, vars, last_copied, scope) {
             Ok(Some(result)) => {
                 // 非零退出码与「被超时 / 中止强杀」（原因写在 stderr 前缀里）都算失败。
                 let failed = result.exit_code.is_some_and(|c| c != 0)
@@ -483,6 +596,9 @@ fn run_chain(
                 // 失败同样进消息中心：此前只写 stderr 日志，而发布版是没有控制台的 GUI 程序，
                 // 用户看到的现象就是「按了没反应」——注入失败、路径不存在、程序起不来全都查不到原因。
                 eprintln!("动作执行失败: {e}");
+                // 失败就把当前作用域里按住的键收回来：不让 `Ctrl` 之类的修饰键粘在系统里，
+                // 也不让后续动作误以为自己还处在「按住」状态。
+                release_scope(scope);
                 let failure = failure_result(action, ctx, vars, &e);
                 step.stderr = failure.stderr.clone();
                 step.status = "error".into();
@@ -504,6 +620,10 @@ fn run_chain(
 /// 顺序提交：`Reporter` 不是 `Sync`，不能跨线程共享；成员级的中止结果在此滤掉，由调用方
 /// 统一补记一条（否则 N 个成员各记一条）。注入类成员之间仍由链内注入锁串行（见 [`Ctx::inject_lock`]），
 /// 真正并发的是命令 / 脚本 / 文件 / 延迟这类非注入步骤。
+///
+/// **含按键按下 / 抬起时退化为串行**（EXT-16）：注入锁只保证单步不交错，不保证成员顺序，
+/// 「按下左键 → 移动 → 松开左键」拆成三个并行成员可能按 B→C→A 跑。只要任一成员（含嵌套）
+/// 用到 `KeysMode::Press / Release`，整组按声明顺序执行，保证 A→B→C。
 #[cfg(all(
     feature = "automation",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
@@ -516,8 +636,42 @@ fn run_parallel(
     last_copied: &mut Option<String>,
     parent: u64,
 ) {
+    let serial = members.iter().any(|m| has_key_lifecycle(std::slice::from_ref(m)));
     // 每个成员：私有 vars / last_copied 快照 + 本地结果表。
-    let outs: Vec<(Vars, Option<String>, Vec<CommandResult>, Vec<ActionStep>)> =
+    let outs: Vec<(Vars, Option<String>, Vec<CommandResult>, Vec<ActionStep>)> = if serial {
+        // 串行组共用一个按住作用域：`Press` 在成员 0、`Release` 在成员 2 也能跨成员保持。
+        let gscope = ctx.next_scope();
+        let _held = HeldScope(gscope);
+        members
+            .iter()
+            .enumerate()
+            .map(|(i, m)| {
+                let mut member_vars = vars.clone();
+                let mut member_copy = last_copied.clone();
+                let mut local: Vec<CommandResult> = Vec::new();
+                let mut local_steps: Vec<ActionStep> = Vec::new();
+                {
+                    let mut collect = |r: CommandResult| local.push(r);
+                    let mut collect_step = |s: ActionStep| local_steps.push(s);
+                    let mut local_rep = Reporter {
+                        commit: &mut collect,
+                        on_step: &mut collect_step,
+                    };
+                    run_chain(
+                        &mut local_rep,
+                        std::slice::from_ref(m),
+                        ctx,
+                        &mut member_vars,
+                        &mut member_copy,
+                        gscope,
+                        Some(parent),
+                        i,
+                    );
+                }
+                (member_vars, member_copy, local, local_steps)
+            })
+            .collect()
+    } else {
         std::thread::scope(|scope| {
             let handles: Vec<_> = members
                 .iter()
@@ -528,6 +682,10 @@ fn run_parallel(
                     scope.spawn(move || {
                         let mut local: Vec<CommandResult> = Vec::new();
                         let mut local_steps: Vec<ActionStep> = Vec::new();
+                        // 真并行的成员各用一个作用域：某个成员失败时只收回它自己按住的键，
+                        // 不会误伤外层 / 兄弟成员（含按下动作的组已走上面的串行分支）。
+                        let member_scope = ctx.next_scope();
+                        let _held = HeldScope(member_scope);
                         {
                             let mut collect = |r: CommandResult| local.push(r);
                             let mut collect_step = |s: ActionStep| local_steps.push(s);
@@ -542,6 +700,7 @@ fn run_parallel(
                                 ctx,
                                 &mut member_vars,
                                 &mut member_copy,
+                                member_scope,
                                 Some(parent),
                                 i,
                             );
@@ -556,7 +715,8 @@ fn run_parallel(
                 .into_iter()
                 .map(|h| h.join().unwrap_or_default())
                 .collect()
-        });
+        })
+    };
     for (member_vars, member_copy, results, steps) in outs {
         for r in results {
             if r.kind == "abort" {
@@ -740,7 +900,11 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             TextMode::ToUpper => "把选中/剪贴板文本转为大写".into(),
             TextMode::ToLower => "把选中/剪贴板文本转为小写".into(),
         },
-        Action::Keys { keys, .. } => format!("按下 {}", keys.join("+")),
+        Action::Keys { keys, mode, .. } => match mode {
+            KeysMode::Tap => format!("按下 {}", keys.join("+")),
+            KeysMode::Press => format!("按住 {}", keys.join("+")),
+            KeysMode::Release => format!("抬起 {}", keys.join("+")),
+        },
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
         Action::Clipboard { operation, .. } => clipboard_body(operation, vars),
@@ -823,6 +987,8 @@ fn window_body(op: &WindowOperation) -> String {
 fn mouse_body(op: &MouseOp) -> String {
     match op {
         MouseOp::Move { dx, dy } => format!("鼠标移动 ({dx}, {dy})"),
+        MouseOp::MoveTo { x, y } => format!("鼠标移动到 ({x}, {y})"),
+        MouseOp::MoveToOrigin => "鼠标移动到手势起点".into(),
         MouseOp::Click { button } => {
             let b = match button {
                 MouseButton::Left => "左键",
@@ -973,6 +1139,7 @@ fn run_action(
     ctx: &Ctx,
     vars: &mut Vars,
     last_copied: &mut Option<String>,
+    scope: u64,
 ) -> Result<Option<CommandResult>, String> {
     match action {
         Action::Group { .. } => {
@@ -994,7 +1161,7 @@ fn run_action(
                 }
             }
         }
-        Action::Keys { keys, .. } => {
+        Action::Keys { keys, mode, .. } => {
             // 持链内注入锁：down…up 必须成对，不能被别的成员插进来（插进来目标程序收到的是
             // 一个混合组合键）。
             let _inj = lock_inject(ctx);
@@ -1002,18 +1169,43 @@ fn run_action(
                 .iter()
                 .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
                 .collect::<Result<_, _>>()?;
-            // 全部按下 → 稍停 → 逆序松开
-            for k in &ks {
-                simulate::down(*k);
-            }
-            std::thread::sleep(Duration::from_millis(30));
-            for k in ks.iter().rev() {
-                simulate::up(*k);
+            match mode {
+                KeysMode::Tap => {
+                    // 全部按下 → 稍停 → 逆序松开
+                    for k in &ks {
+                        simulate::down(*k);
+                    }
+                    std::thread::sleep(Duration::from_millis(30));
+                    for k in ks.iter().rev() {
+                        simulate::up(*k);
+                    }
+                }
+                KeysMode::Press => {
+                    for k in &ks {
+                        hold_key(scope, *k);
+                    }
+                }
+                KeysMode::Release => {
+                    for k in ks.iter().rev() {
+                        unhold_key(scope, *k);
+                    }
+                }
             }
         }
         Action::Mouse { op, .. } => {
             // 持链内注入锁：点击是「按下 + 抬起」一对，不能被别的成员插进来。
             let _inj = lock_inject(ctx);
+            // 「移动到手势起点」在动作层解析：平台注入只认具体坐标，提权协议也不用带 origin。
+            let resolved;
+            let op = if matches!(op, MouseOp::MoveToOrigin) {
+                let (x, y) = ctx.t.origin.ok_or_else(|| {
+                    "「移动到手势起点」只适用于鼠标手势触发；快捷键 / 录制等路径没有起点".to_string()
+                })?;
+                resolved = MouseOp::MoveTo { x, y };
+                &resolved
+            } else {
+                op
+            };
             simulate::mouse(op).map_err(|e| e.to_string())?;
         }
         Action::Clipboard { operation, .. } => match operation {
@@ -2195,6 +2387,7 @@ mod tests {
             frontmost: None,
             device: None,
             window: None,
+            origin: None,
         }
     }
 
@@ -2208,6 +2401,7 @@ mod tests {
             run_id: None,
             start: Instant::now(),
             step_seq: AtomicU64::new(0),
+            scope_seq: AtomicU64::new(1),
             inject_lock: Mutex::new(()),
         }
     }
@@ -2670,6 +2864,7 @@ mod tests {
         let actions = vec![
             Action::Keys {
                 keys: vec!["NotAKey".into()],
+                mode: KeysMode::Tap,
                 description: None,
             },
             failing_delete(None),
@@ -2892,6 +3087,45 @@ mod tests {
     }
 
     // ---- 并行动作（规划 7.2-㉞） ----
+
+    /// EXT-16：含按键按下 / 抬起（含嵌套）的并行组必须退化为串行，否则顺序可能反过来。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn key_lifecycle_forces_parallel_to_serial() {
+        let tap = Action::Keys {
+            keys: vec!["Ctrl".into()],
+            mode: KeysMode::Tap,
+            description: None,
+        };
+        let press = Action::Keys {
+            keys: vec!["Ctrl".into()],
+            mode: KeysMode::Press,
+            description: None,
+        };
+        assert!(!has_key_lifecycle(&[tap.clone()]));
+        assert!(!has_key_lifecycle(&[Action::Group {
+            name: String::new(),
+            actions: vec![Action::Parallel {
+                actions: vec![tap],
+                description: None,
+            }],
+        }]));
+        assert!(has_key_lifecycle(&[Action::Group {
+            name: String::new(),
+            actions: vec![Action::Parallel {
+                actions: vec![press.clone()],
+                description: None,
+            }],
+        }]));
+        assert!(has_key_lifecycle(&[Action::If {
+            condition: kada_core::Condition::Exists {
+                path: ".".into()
+            },
+            then: vec![press],
+            otherwise: vec![],
+            description: None,
+        }]));
+    }
 
     /// 非注入步骤（延迟 / 命令）在并行组里必须真正重叠：两个 1.5s 延迟应约 1.5s 完成，
     /// 而不是串行的 3s。

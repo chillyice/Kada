@@ -1571,14 +1571,27 @@ pub mod simulate {
         }
     }
 
-    /// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱）。
-    /// 移动与滚轮都是**相对**量（移动 = 当前坐标 + 增量）；点击作用在当前光标位置。
+    /// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱ / EXT-16）。
+    /// `Move` 与滚轮是**相对**量（移动 = 当前坐标 + 增量）；`MoveTo` 是绝对全局坐标
+    /// （主显示器左上角为原点、多屏可为负，单位点）；点击作用在当前光标位置。
     pub fn mouse(op: &MouseOp) -> io::Result<()> {
         match op {
             MouseOp::Move { dx, dy } => {
                 let p = current_pos();
                 let target = CGPoint::new(p.x + f64::from(*dx), p.y + f64::from(*dy));
                 post_mouse_at(CGEventType::MouseMoved, target, 0)?;
+            }
+            MouseOp::MoveTo { x, y } => {
+                post_mouse_at(
+                    CGEventType::MouseMoved,
+                    CGPoint::new(f64::from(*x), f64::from(*y)),
+                    0,
+                )?;
+            }
+            MouseOp::MoveToOrigin => {
+                return Err(io::Error::other(
+                    "「移动到手势起点」需要在动作层解析出坐标，不能直接注入",
+                ))
             }
             MouseOp::Click { button } => {
                 let (down, up, num) = match button {

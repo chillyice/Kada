@@ -151,6 +151,8 @@ fn encode_op(op: &Op) -> String {
         Op::Down(k) => format!("down {}", key_name(*k)),
         Op::Up(k) => format!("up {}", key_name(*k)),
         Op::Mouse(MouseOp::Move { dx, dy }) => format!("mouse move {dx} {dy}"),
+        Op::Mouse(MouseOp::MoveTo { x, y }) => format!("mouse moveto {x} {y}"),
+        Op::Mouse(MouseOp::MoveToOrigin) => "mouse moveto-origin".to_string(),
         Op::Mouse(MouseOp::Scroll { dx, dy }) => format!("mouse scroll {dx} {dy}"),
         Op::Mouse(MouseOp::Click { button }) => format!("mouse click {}", button_name(*button)),
         // 文本按 UTF-8 字节的十六进制走：文本里的空格 / 换行不能直接上线（协议按行分帧）。
@@ -174,6 +176,8 @@ fn decode_op(line: &str) -> Option<Op> {
         },
         "mouse" => match it.next()? {
             "move" => Op::Mouse(MouseOp::Move { dx: num(&mut it)?, dy: num(&mut it)? }),
+            "moveto" => Op::Mouse(MouseOp::MoveTo { x: num(&mut it)?, y: num(&mut it)? }),
+            "moveto-origin" => Op::Mouse(MouseOp::MoveToOrigin),
             "scroll" => Op::Mouse(MouseOp::Scroll { dx: num(&mut it)?, dy: num(&mut it)? }),
             "click" => Op::Mouse(MouseOp::Click { button: button_from(it.next()?)? }),
             _ => return None,
@@ -1010,6 +1014,8 @@ mod tests {
         let ops = [
             Op::Mouse(MouseOp::Move { dx: 15, dy: -8 }),
             Op::Mouse(MouseOp::Move { dx: 0, dy: 0 }),
+            Op::Mouse(MouseOp::MoveTo { x: -1920, y: 1080 }),
+            Op::Mouse(MouseOp::MoveToOrigin),
             Op::Mouse(MouseOp::Scroll { dx: -3, dy: 120 }),
             Op::Mouse(MouseOp::Click { button: MouseButton::Left }),
             Op::Mouse(MouseOp::Click { button: MouseButton::Right }),

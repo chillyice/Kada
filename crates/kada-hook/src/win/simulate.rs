@@ -14,7 +14,10 @@ use std::io;
 use std::time::Duration;
 
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetForegroundWindow, GetSystemMetrics, GetWindowThreadProcessId, SM_CXVIRTUALSCREEN,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+};
 
 use kada_core::{Key, MouseButton, MouseOp};
 
@@ -294,8 +297,8 @@ fn chord_ops(keys: &[Key]) -> Vec<Op> {
     ops
 }
 
-/// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱）。
-/// 移动与滚轮都是**相对**量；点击作用在当前光标位置。
+/// 鼠标模拟：移动 / 点击 / 滚轮（[`kada_core::MouseOp`]，7.1-㊱ / EXT-16）。
+/// 相对移动与滚轮是相对量；`MoveTo` 是绝对屏幕坐标（主显示器左上角为原点、多屏可为负）。
 pub fn mouse(op: &MouseOp) -> io::Result<()> {
     deliver(&[Op::Mouse(op.clone())])
 }
@@ -304,6 +307,14 @@ pub fn mouse(op: &MouseOp) -> io::Result<()> {
 fn mouse_local(op: &MouseOp) -> io::Result<()> {
     match op {
         MouseOp::Move { dx, dy } => send_mouse(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE))?,
+        MouseOp::MoveTo { x, y } => {
+            send_mouse(absolute_mouse_input(*x, *y, virtual_screen()))?
+        }
+        MouseOp::MoveToOrigin => {
+            return Err(io::Error::other(
+                "「移动到手势起点」需要在动作层解析出坐标，不能直接注入",
+            ))
+        }
         MouseOp::Scroll { dx, dy } => {
             // WHEEL_DELTA = 120：mouseData 是「格数 × 120」的带符号值（负数按补码传）。
             if *dy != 0 {
@@ -332,6 +343,44 @@ fn mouse_local(op: &MouseOp) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// 虚拟屏幕（所有显示器并集）的物理像素范围：`(left, top, width, height)`。
+/// 主显示器左上角是 `(0, 0)`，左侧 / 上方的副屏坐标为负。
+fn virtual_screen() -> (i32, i32, i32, i32) {
+    unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
+            GetSystemMetrics(SM_CXVIRTUALSCREEN),
+            GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        )
+    }
+}
+
+/// 构造一个绝对定位的鼠标事件（纯函数，可单测）。
+///
+/// `SendInput` 的绝对坐标是 0..=65535 的归一化值，且原点在**虚拟屏幕**左上角：
+/// 先减去 `left/top`，再按 `width-1 / height-1` 缩放；越界坐标夹到屏幕边缘。
+fn absolute_mouse_input(x: i32, y: i32, screen: (i32, i32, i32, i32)) -> INPUT {
+    let (left, top, width, height) = screen;
+    let nx = absolute_axis(x, left, width);
+    let ny = absolute_axis(y, top, height);
+    mouse_input(
+        nx,
+        ny,
+        0,
+        MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+    )
+}
+
+/// 单个轴 → 0..=65535 的归一化值。
+fn absolute_axis(value: i32, origin: i32, size: i32) -> i32 {
+    if size <= 1 {
+        return 0;
+    }
+    let rel = (i64::from(value) - i64::from(origin)) * 65535 / (i64::from(size) - 1);
+    rel.clamp(0, 65535) as i32
 }
 
 /// 滚轮格数 → `mouseData`（带符号值按 u32 补码，`SendInput` 会原样读回 i32）。
@@ -635,5 +684,24 @@ mod tests {
         assert_eq!(wheel_data(-1) as i32, -120, "向下滚是负值（补码）");
         let sc = mi(&mouse_input(0, 0, wheel_data(-3), MOUSEEVENTF_WHEEL));
         assert_eq!(sc.mouseData as i32, -360);
+    }
+
+    /// 绝对移动：虚拟屏幕可含负坐标（副屏在左 / 上方），归一化后必须落在 0..=65535。
+    #[test]
+    fn absolute_move_normalizes_virtual_screen() {
+        let screen = (-1920, -200, 3840, 1280);
+        assert_eq!(absolute_axis(-1920, -1920, 3840), 0);
+        assert_eq!(absolute_axis(1919, -1920, 3840), 65535);
+        let center = absolute_axis(0, -1920, 3840);
+        assert!((center - 32768).abs() < 64, "主显示器左上角大致在正中：{center}");
+        assert_eq!(absolute_axis(-5000, -1920, 3840), 0, "越界夹到左边缘");
+        assert_eq!(absolute_axis(9999, -1920, 3840), 65535, "越界夹到右边缘");
+
+        let mi = |i: &INPUT| unsafe { i.Anonymous.mi };
+        let mv = mi(&absolute_mouse_input(0, 0, screen));
+        assert_eq!(
+            mv.dwFlags,
+            MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK
+        );
     }
 }
