@@ -198,6 +198,12 @@ type Settings = {
    * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
    */
   gesture_exclude?: string[];
+  /**
+   * 全局排除程序（每行一个进程名）：命中的程序里所有 Kada 触发一律不生效
+   * （快捷键 / 改键 / 文本扩展 / 手势）。语义同 `when` 的前台应用
+   * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
+   */
+  exclude_apps?: string[];
   /** 手势轨迹颜色（`#RRGGBB`）。缺字段按后端默认 `#4c9aff`。 */
   gesture_trail_color?: string;
   /** 手势轨迹线宽（像素，1~20）。缺字段按后端默认 5。 */
@@ -5296,6 +5302,8 @@ function syncSettings() {
     cfg.settings.experimental === true;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
     (cfg.settings.gesture_exclude ?? []).join("\n");
+  (document.getElementById("set-exclude-apps") as HTMLTextAreaElement).value =
+    (cfg.settings.exclude_apps ?? []).join("\n");
   // 手势参数（EXT-01）：缺字段按后端 serde default 显示，避免老配置显示成 0。
   (document.getElementById("set-gesture-start-distance") as HTMLInputElement).value = String(
     cfg.settings.gesture_start_distance ?? 22,
@@ -5641,6 +5649,15 @@ function bindSettings() {
   const gestureExclude = document.getElementById("set-gesture-exclude") as HTMLTextAreaElement;
   gestureExclude.addEventListener("change", () => {
     cfg.settings.gesture_exclude = gestureExclude.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    void save();
+  });
+  // 全局排除程序（EXT-04）：命中的程序里所有触发都不生效，与手势专用列表独立。
+  const excludeApps = document.getElementById("set-exclude-apps") as HTMLTextAreaElement;
+  excludeApps.addEventListener("change", () => {
+    cfg.settings.exclude_apps = excludeApps.value
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);

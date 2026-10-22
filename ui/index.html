@@ -389,6 +389,20 @@
                 </details>
               </section>
 
+              <!-- 全局排除程序（EXT-04）：命中的程序里所有 Kada 触发一律不生效。 -->
+              <section class="set-card" id="exclude-apps-card">
+                <div class="set-card-head"><span>全局排除程序</span></div>
+                <div class="set-rows">
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">这些程序里不启用 Kada</span>
+                      <span class="set-sub">命中的程序里所有触发都不生效：快捷键 / 改键 / 文本扩展 / 鼠标手势一律放行，不吞键也不执行动作（手势仍按未命中回放右键）。每行一个进程名，支持 * / ? 通配、不区分大小写；与下面的「手势排除程序」独立。</span>
+                    </span>
+                    <textarea id="set-exclude-apps" rows="4" spellcheck="false" placeholder="game.exe&#10;*remote*desktop*"></textarea>
+                  </label>
+                </div>
+              </section>
+
               <!-- 实验功能（规划 7.2-MG）：新功能总开关。
                    默认**关**；关掉 → 入口隐藏（快捷键页不出现「鼠标操作」这一类）+ 行为不生效，
                    配置保留（重新打开即恢复）。鼠标功能本身的设置在「快捷键」页的「鼠标操作」分类里做。 -->

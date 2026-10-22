@@ -1680,13 +1680,14 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
             if points.len() < 2 {
                 continue;
             }
-            let (visual, start_distance, on, exclude) = {
+            let (visual, start_distance, on, exclude, exclude_apps) = {
                 let g = cfg.read().unwrap();
                 (
                     gesture_visual_of(&g.settings),
                     g.settings.gesture_start_distance,
                     g.settings.experimental && kada_core::gesture_enabled(&g),
                     g.settings.gesture_exclude.clone(),
+                    g.settings.exclude_apps.clone(),
                 )
             };
             if !on {
@@ -1708,12 +1709,12 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                     suppressed = true;
                     continue;
                 }
-                if !exclude.is_empty() {
-                    if let Some(front) = input::frontmost_context() {
-                        if kada_core::app_excluded(&exclude, &front.process_name) {
-                            suppressed = true;
-                            continue;
-                        }
+                if !exclude.is_empty() || !exclude_apps.is_empty() {
+                    let fetch = || input::frontmost_context();
+                    let ctx = TriggerContext::lazy(&fetch, None);
+                    if ctx.app_excluded(&exclude) || ctx.app_excluded(&exclude_apps) {
+                        suppressed = true;
+                        continue;
                     }
                 }
                 let Some(w) = ensure_gesture_overlay(&app) else {
@@ -1779,7 +1780,16 @@ fn handle_gesture(
     runs: Arc<Mutex<Vec<RunRecord>>>,
     stroke: kada_hook::gesture::Stroke,
 ) {
-    let (on, start_distance, min_segment, gesture_timeout, action_timeout, text_mode, exclude) = {
+    let (
+        on,
+        start_distance,
+        min_segment,
+        gesture_timeout,
+        action_timeout,
+        text_mode,
+        exclude,
+        exclude_apps,
+    ) = {
         let g = cfg.read().unwrap();
         (
             g.settings.experimental && kada_core::gesture_enabled(&g),
@@ -1789,6 +1799,7 @@ fn handle_gesture(
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
+            g.settings.exclude_apps.clone(),
         )
     };
     if !on {
@@ -1803,15 +1814,14 @@ fn handle_gesture(
         replay_right_click();
         return;
     }
-    // 排除程序（规划 7.2-MG 余项）：前台命中就整条不接管，右键原样回放。
-    if !exclude.is_empty() {
-        if let Some(front) = input::frontmost_context() {
-            if kada_core::app_excluded(&exclude, &front.process_name) {
-                hide_gesture_overlay(&app);
-                replay_right_click();
-                return;
-            }
-        }
+    // 排除程序：全局列表（EXT-04）与手势专用列表命中都整条不接管，右键原样回放。
+    // 同一份上下文供后面的 `when` 复用，一次手势最多查一次前台。
+    let fetch = || input::frontmost_context();
+    let ctx = TriggerContext::lazy(&fetch, None);
+    if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        hide_gesture_overlay(&app);
+        replay_right_click();
+        return;
     }
     // 位移没超过起手距离 = 普通右键点击（不是手势）；画太久 = 这次手势作废。两种都补回右键。
     let first = stroke.points.first().copied().unwrap_or((0, 0));
@@ -1834,9 +1844,7 @@ fn handle_gesture(
     }
     let matched = {
         let g = cfg.read().unwrap();
-        // `when` 门控（前台应用 / 窗口标题 / 设备）：前台惰性查询，只有真配了条件才查。
-        let fetch = || input::frontmost_context();
-        let ctx = TriggerContext::lazy(&fetch, None);
+        // `when` 门控复用上面已建好的上下文（排除判定若查过前台就已缓存，不再查询）。
         kada_core::find_gesture(&g, &pattern, &ctx).map(|hit| (hit.label(), hit.actions.clone()))
     };
     let Some((name, actions)) = matched else {
@@ -5209,6 +5217,11 @@ pub fn run() {
                     let device = input::current_device();
                     let fetch_frontmost = || input::frontmost_context();
                     let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());
+                    // 全局排除列表（EXT-04）：命中的程序里所有触发一律不生效——不吞键、
+                    // 不执行动作（含文本扩展）。判定在共享入口、每个事件最多查一次前台。
+                    if when_ctx.app_excluded(&guard.settings.exclude_apps) {
+                        return input::HookAction::Allow;
+                    }
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
                             app_handle.clone(),

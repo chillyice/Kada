@@ -837,12 +837,25 @@ impl<'a> TriggerContext<'a> {
     }
 
     /// 当前前台上下文（固定值优先；否则首次调用时查询并缓存）。
-    #[cfg(feature = "automation")]
     fn frontmost(&self) -> Option<&FrontmostContext> {
         if let Some(f) = self.fixed {
             return Some(f);
         }
         self.cached.get_or_init(|| self.fetch.and_then(|f| f())).as_ref()
+    }
+
+    /// 当前前台进程名（惰性；无前台时 `None`）。全局排除列表在基础版也要用。
+    pub fn frontmost_process(&self) -> Option<&str> {
+        self.frontmost().map(|f| f.process_name.as_str())
+    }
+
+    /// 当前前台是否命中排除列表（空列表 / 查不到前台 = 不排除）。
+    /// 语义同 `when` 的前台应用：不区分大小写、`*`/`?` 通配、否则子串。
+    pub fn app_excluded(&self, patterns: &[String]) -> bool {
+        !patterns.is_empty()
+            && self
+                .frontmost_process()
+                .is_some_and(|name| gesture::app_excluded(patterns, name))
     }
 
     /// `when` 条件是否满足（`None` = 无门控，恒真）。触发时无变量，`vars` 为空表。
@@ -1933,6 +1946,12 @@ pub struct Settings {
     /// 程序留的（规划 7.2-MG 余项）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gesture_exclude: Vec<String>,
+    /// **全局排除程序**（每行一个进程名）：命中的程序里所有 Kada 触发一律不生效
+    /// （快捷键 / 改键 / 文本扩展 / 手势），既不吞键也不执行动作；手势仍按未命中口径
+    /// 回放右键。语义同 `gesture_exclude` 与 `when` 的「前台应用」：不区分大小写、
+    /// 含 `*`/`?` 走通配、否则子串。空 = 不排除。与 `gesture_exclude`（只排手势）独立。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_apps: Vec<String>,
     /// 手势轨迹颜色（`#RRGGBB`）。
     #[serde(default = "default_gesture_trail_color")]
     pub gesture_trail_color: String,
@@ -2039,6 +2058,7 @@ impl Default for Settings {
             gesture_timeout_ms: default_gesture_timeout_ms(),
             gesture_min_segment: default_gesture_min_segment(),
             gesture_exclude: Vec::new(),
+            exclude_apps: Vec::new(),
             gesture_trail_color: default_gesture_trail_color(),
             gesture_trail_width: default_gesture_trail_width(),
             gesture_label_font_size: default_gesture_label_font_size(),
@@ -3504,14 +3524,15 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
     }
 
-    // 手势排除列表：去空白、丢空行（手写的多行文本常带尾随空行）。
-    out.settings.gesture_exclude = out
-        .settings
-        .gesture_exclude
-        .iter()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // 排除列表：去空白、丢空行（手写的多行文本常带尾随空行）。
+    let clean_list = |list: &[String]| {
+        list.iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+    };
+    out.settings.gesture_exclude = clean_list(&out.settings.gesture_exclude);
+    out.settings.exclude_apps = clean_list(&out.settings.exclude_apps);
 
     // 手势视觉（EXT-02）：颜色只收 `#RGB` / `#RRGGBB`（非法回落默认，避免把任意字符串
     // 塞进 CSS）；数值钳到界面可调范围，手改 JSON 写 0 / 负数不至于把浮层弄没。
@@ -6351,6 +6372,18 @@ mod platform_caps_tests {
         };
         assert!(r.when_matches(&TriggerContext::fixed(None, Some("AT keyboard"))));
         assert!(!r.when_matches(&TriggerContext::fixed(None, None)));
+    }
+
+    #[test]
+    fn trigger_context_checks_global_exclude_list() {
+        let chrome =
+            FrontmostContext { process_name: "Photoshop.exe".into(), window_title: "PS".into() };
+        let ctx = TriggerContext::fixed(Some(&chrome), None);
+        assert!(ctx.app_excluded(&["photoshop.exe".into()]));
+        assert!(ctx.app_excluded(&["*shop*".into()]));
+        assert!(!ctx.app_excluded(&["notepad.exe".into()]));
+        assert!(!ctx.app_excluded(&[]), "空列表不排除");
+        assert!(!TriggerContext::empty().app_excluded(&["photoshop.exe".into()]));
     }
 
     #[cfg(feature = "automation")]
