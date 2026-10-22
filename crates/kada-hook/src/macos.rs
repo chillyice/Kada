@@ -1208,6 +1208,16 @@ fn running_diverters() -> Vec<String> {
         .collect()
 }
 
+/// 正在运行的外部工具 id（与 [`kada_core::EXTERNAL_TOOLS`] 的进程片段做小写子串比对）。
+pub fn running_tools() -> Vec<String> {
+    let names = process_names();
+    kada_core::EXTERNAL_TOOLS
+        .iter()
+        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|t| t.id.to_string())
+        .collect()
+}
+
 /// 全部进程的可执行路径基名（小写）。
 ///
 /// 先走 `proc_pidpath` 拿完整路径（取基名，如 `.../logioptionsplus_agent`）；别的用户的

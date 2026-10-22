@@ -936,5 +936,13 @@
   "没画出方向：再画长一点": "No direction detected: draw a bit longer",
   "重画": "Redraw",
   "确认录入": "Confirm",
-  "已录入方向串 {0}，记得保存": "Recorded pattern {0}; remember to save"
+  "已录入方向串 {0}，记得保存": "Recorded pattern {0}; remember to save",
+  "外部工具": "External tools",
+  "截图（已移除）": "Screenshot (removed)",
+  "截图动作已移除（执行会报错）：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认。": "The screenshot action has been removed (it now fails). Use the mouse gesture instead: hold the right button, draw a loop, release, then left-click to confirm.",
+  "外部工具能力目前只做「探测到在跑就出现在动作里」：执行会明确报「尚未接入」，不会真的调用它。": "External tool capabilities are detection-only for now: they appear when the tool is running, and execution fails loudly with “not connected” instead of calling it.",
+  "右键圈选截图": "Right-drag lasso screenshot",
+  "按住右键绕一圈，松开后画面冻结、左键点击确认，包围盒截图写进剪贴板。不需要配置手势条目；按 Esc / 右键取消。目前仅 Windows。": "Hold the right button and draw a loop; on release the screen freezes, then left-click to confirm and copy the bounding box to the clipboard. No gesture entry needed; Esc or right-click cancels. Windows only for now.",
+  "{0}：{1}（未接入）": "{0}: {1} (not connected)",
+  "{0} · {1}（未检测到）": "{0} · {1} (not detected)"
 }

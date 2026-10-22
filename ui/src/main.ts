@@ -35,9 +35,17 @@ type ClipboardOperation =
   | { op: "set_clipboard"; text: string }
   | { op: "get_clipboard"; var: string }
   | { op: "tempstr"; text: string };
-/** 截图 / 贴图（类型 `capture`，EXT-20）。 */
+/** 旧截图动作（功能已移除，只为老配置还能渲染）。 */
 type CaptureOperation = "full_screen" | "region" | "window";
 type CaptureOutput = "clipboard" | "file" | "pin";
+/** 外部工具（探测到进程在跑才出现；执行目前只报「尚未接入」）。 */
+type ExternalCapability = { id: string; name: string };
+type ExternalTool = {
+  id: string;
+  name: string;
+  processes: string[];
+  capabilities: ExternalCapability[];
+};
 /** 显示器亮度（类型 `brightness`，EXT-22）。 */
 type BrightnessOperation = "up" | "down" | "restore";
 /** 算法动作（类型 `transform`，EXT-18）：base64 / URL 编解码、哈希。 */
@@ -94,6 +102,7 @@ type Action =
   | { type: "system"; operation: SystemOperation; description?: string }
   | { type: "window"; operation: { op: WindowOperation }; description?: string }
   | { type: "capture"; operation: CaptureOperation; output: CaptureOutput; path: string; description?: string }
+  | { type: "tool"; tool: string; capability: string; description?: string }
   | { type: "brightness"; operation: BrightnessOperation; step: number; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
@@ -231,6 +240,11 @@ type Settings = {
    * 缺字段按后端默认 16。
    */
   gesture_min_segment?: number;
+  /**
+   * 右键圈选截图（自带手势）：绕一圈松手后左键确认，包围盒写剪贴板。
+   * 缺字段按后端默认 `true`（总闸 experimental 仍管着）。
+   */
+  gesture_screenshot?: boolean;
   /**
    * 手势排除程序（每行一个进程名）：命中的程序里不接管右键。语义同 `when` 的前台应用
    * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
@@ -486,7 +500,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "open_url", label: tr("打开网址") },
   { value: "os", label: tr("文件/目录") },
   { value: "system", label: tr("操作系统") },
-  { value: "capture", label: tr("截图") },
+  { value: "tool", label: tr("外部工具") },
   { value: "brightness", label: tr("亮度") },
   { value: "keys", label: tr("按键组合") },
   { value: "mouse", label: tr("鼠标操作") },
@@ -501,6 +515,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
 const REMOVED_TYPE_LABELS: Partial<Record<Action["type"], string>> = {
   clipboard: tr("剪贴板（已移除）"),
   transform: tr("算法（已移除）"),
+  capture: tr("截图（已移除）"),
   send_to: tr("后台发送（已并入操作系统）"),
   window: tr("窗口操作（已并入应用）"),
 };
@@ -520,6 +535,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   system: "🖥️",
   window: "🪟",
   capture: "📸",
+  tool: "🧩",
   brightness: "🔆",
   app: "🚀",
   open_url: "🌐",
@@ -537,11 +553,15 @@ function actionTypeLabel(t: Action["type"]): string {
   return ACTION_TYPE_LABELS[t];
 }
 
-/** 动作类型下拉的可选项：亮度（EXT-22）挂实验功能总闸，关着时不给新建入口。 */
-function actionTypeChoices(): typeof ACTION_TYPES {
-  return mouseFeaturesEnabled()
+/** 动作类型下拉的可选项：亮度挂实验功能总闸；外部工具没探测到在跑时不给新建入口。 */
+function actionTypeChoices(includeTool = false): typeof ACTION_TYPES {
+  let list = mouseFeaturesEnabled()
     ? ACTION_TYPES
     : ACTION_TYPES.filter((t) => t.value !== "brightness");
+  if (runningTools.length === 0 && !includeTool) {
+    list = list.filter((t) => t.value !== "tool");
+  }
+  return list;
 }
 
 // ---- 变量流向（可视化编排的数据流标签） ----
@@ -894,6 +914,10 @@ function newAction(type: Action["type"]): Action {
       return { type: "window", operation: { op: "maximize_restore" } };
     case "capture":
       return { type: "capture", operation: "full_screen", output: "clipboard", path: "" };
+    case "tool": {
+      const t = runningTools[0];
+      return { type: "tool", tool: t?.id ?? "", capability: t?.capabilities[0]?.id ?? "" };
+    }
     case "brightness":
       return { type: "brightness", operation: "up", step: 10 };
     case "app":
@@ -1019,6 +1043,8 @@ function actionHasContent(a: Action): boolean {
       return true;
     case "capture":
       return a.output !== "file" || a.path.trim().length > 0;
+    case "tool":
+      return a.tool.trim().length > 0 && a.capability.trim().length > 0;
     case "brightness":
       return a.operation === "restore" || (a.step >= 1 && a.step <= 100);
     case "app":
@@ -1233,6 +1259,11 @@ function actionSummary(a: Action): string {
           : (CAPTURE_OUTPUTS.find((o) => o.value === a.output)?.label ?? a.output);
       return trt`截图：${op} → ${out}`;
     }
+    case "tool": {
+      const t = runningTools.find((x) => x.id === a.tool);
+      const cap = t?.capabilities.find((c) => c.id === a.capability);
+      return trt`${t?.name ?? a.tool}：${cap?.name ?? a.capability}（未接入）`;
+    }
     case "brightness": {
       const op = BRIGHTNESS_OPS.find((o) => o.value === a.operation)?.label ?? a.operation;
       return a.operation === "restore" ? tr("亮度：恢复原始值") : trt`亮度：${op} ${a.step}`;
@@ -1295,6 +1326,8 @@ let entryTab: EntryTab = "work";
 let recording = false;
 let mouseRecording = false;
 let conflicts: Conflict[] = [];
+/** 本机正在运行的外部工具（后端探测进程名；动作类型里据此出现对应能力）。 */
+let runningTools: ExternalTool[] = [];
 let search = "";
 let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
 let runs: RunRecord[] = []; // 执行记录（最新在前）：一次触发一条
@@ -1390,8 +1423,17 @@ const KEY_OPTIONS = [
 ];
 
 // ---- IPC ----
+async function refreshRunningTools(): Promise<void> {
+  try {
+    runningTools = await invoke<ExternalTool[]>("running_tools");
+  } catch {
+    runningTools = [];
+  }
+}
+
 async function load() {
   cfg = await invoke<Config>("get_config");
+  await refreshRunningTools();
   messages = await invoke<CommandResult[]>("get_command_results");
   runs = await invoke<RunRecord[]>("get_run_records");
   unread = await invoke<boolean>("get_unread");
@@ -2415,7 +2457,7 @@ function marketCard(e: IndexEntry): HTMLElement {
 
 // 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
 function actionCanRun(a: Action): boolean {
-  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "capture" || a.type === "brightness")
+  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "brightness")
     return true;
   if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
   if (a.type === "parallel") return a.actions.some(actionCanRun);
@@ -4365,14 +4407,14 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   const typePick = el("select", "action-type-name") as HTMLSelectElement;
   typePick.title = tr("点击切换动作类型");
   typePick.setAttribute("aria-label", tr("动作类型"));
-  for (const t of actionTypeChoices()) {
+  for (const t of actionTypeChoices(a.type === "tool")) {
     const o = el("option") as HTMLOptionElement;
     o.value = t.value;
     o.textContent = t.label;
     typePick.append(o);
   }
   // 已移除 / 已合并的类型仍要能在老配置里看到并改走，不给它一个空下拉。
-  if (!actionTypeChoices().some((t) => t.value === a.type)) {
+  if (!actionTypeChoices(a.type === "tool").some((t) => t.value === a.type)) {
     const o = el("option") as HTMLOptionElement;
     o.value = a.type;
     o.textContent = actionTypeLabel(a.type);
@@ -4830,6 +4872,32 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     sel.value = a.operation;
     sel.addEventListener("change", () => {
       a.operation = sel.value as CaptureOperation;
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "tool") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const t of runningTools) {
+      for (const c of t.capabilities) {
+        const opt = el("option") as HTMLOptionElement;
+        opt.value = `${t.id}\u0000${c.id}`;
+        opt.textContent = `${t.name} · ${c.name}`;
+        sel.append(opt);
+      }
+    }
+    // 工具已经退出 / 老配置里的条目：仍要把当前值显示出来，改选才换。
+    if (![...sel.options].some((o) => o.value === `${a.tool}\u0000${a.capability}`)) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = `${a.tool}\u0000${a.capability}`;
+      opt.textContent = trt`${a.tool} · ${a.capability}（未检测到）`;
+      sel.append(opt);
+    }
+    sel.value = `${a.tool}\u0000${a.capability}`;
+    sel.addEventListener("change", () => {
+      const [tool, capability] = sel.value.split("\u0000");
+      a.tool = tool ?? "";
+      a.capability = capability ?? "";
       rerender();
     });
     return sel;
@@ -5648,38 +5716,13 @@ function actionFields(
     const hint = el("div", "unit-hint");
     hint.textContent = tr("作用对象是触发那一刻的前台窗口，不会激活或切换窗口。目前仅 Windows 支持，其它平台会标平台冲突并在执行时报错。");
     body.append(hint);
-  } else if (a.type === "capture") {
-    const line = el("div", "action-line");
-    const label = el("span", "unit-label", tr("输出到"));
-    const sel = el("select", "action-input") as HTMLSelectElement;
-    for (const o of CAPTURE_OUTPUTS) {
-      const opt = el("option") as HTMLOptionElement;
-      opt.value = o.value;
-      opt.textContent = o.label;
-      sel.append(opt);
-    }
-    sel.value = a.output;
-    sel.addEventListener("change", () => {
-      a.output = sel.value as CaptureOutput;
-      rerender();
-    });
-    line.append(label, sel);
-    body.append(line);
-    if (a.output === "file") {
-      body.append(
-        pathField(a.path, (v) => (a.path = v), { file: true, label: tr("保存路径") }),
-      );
-      body.append(
-        el("div", "unit-hint", tr("v1 只存 PNG；没写扩展名会自动补 .png。路径支持 {变量}。")),
-      );
-    }
-    if (a.operation === "region") {
-      body.append(
-        el("div", "unit-hint", tr("按下触发键后整块屏幕会冻结，拖拽框选；按 Esc 或右键取消（不算失败）。")),
-      );
-    }
+  } else if (a.type === "tool") {
     body.append(
-      el("div", "unit-hint", tr("目前仅 Windows 支持（GDI）；贴图是临时浮窗，拖拽移动、右键关闭，重启不恢复。")),
+      el("div", "unit-hint", tr("外部工具能力目前只做「探测到在跑就出现在动作里」：执行会明确报「尚未接入」，不会真的调用它。")),
+    );
+  } else if (a.type === "capture") {
+    body.append(
+      el("div", "unit-hint", tr("截图动作已移除（执行会报错）：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认。")),
     );
   } else if (a.type === "brightness") {
     if (a.operation !== "restore") {
@@ -6207,7 +6250,7 @@ function menuEntryEditor(
     const typeSel = el("select", "action-type-name") as HTMLSelectElement;
     typeSel.title = tr("点击切换动作类型");
     typeSel.setAttribute("aria-label", tr("动作类型"));
-    for (const t of actionTypeChoices()) {
+    for (const t of actionTypeChoices(action.type === "tool")) {
       const o = el("option") as HTMLOptionElement;
       o.value = t.value;
       o.textContent = t.label;
@@ -6304,7 +6347,7 @@ function settingsActionsEditor(actions: Action[], rerender: () => void): HTMLEle
     const typeSel = el("select", "action-type-name") as HTMLSelectElement;
     typeSel.title = tr("点击切换动作类型");
     typeSel.setAttribute("aria-label", tr("动作类型"));
-    for (const t of actionTypeChoices()) {
+    for (const t of actionTypeChoices(action.type === "tool")) {
       const o = el("option") as HTMLOptionElement;
       o.value = t.value;
       o.textContent = t.label;
@@ -6427,6 +6470,8 @@ function syncSettings() {
   // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
   (document.getElementById("set-experimental") as HTMLInputElement).checked =
     cfg.settings.experimental === true;
+  (document.getElementById("set-gesture-screenshot") as HTMLInputElement).checked =
+    cfg.settings.gesture_screenshot !== false;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
     (cfg.settings.gesture_exclude ?? []).join("\n");
   (document.getElementById("set-exclude-apps") as HTMLTextAreaElement).value =
@@ -6815,6 +6860,13 @@ function bindSettings() {
     cfg.settings.experimental = experimental.checked;
     // 改完重画列表：快捷键页里「鼠标操作」那一类的显隐由它决定。
     void save().then(() => render());
+  });
+  const gestureScreenshot = document.getElementById(
+    "set-gesture-screenshot",
+  ) as HTMLInputElement;
+  gestureScreenshot.addEventListener("change", () => {
+    cfg.settings.gesture_screenshot = gestureScreenshot.checked;
+    void save();
   });
   // 手势排除程序：每行一个（后端清洗会 trim 并丢空行），失焦时落盘。
   const gestureExclude = document.getElementById("set-gesture-exclude") as HTMLTextAreaElement;
@@ -9375,10 +9427,18 @@ if (location.hash === "#toast") {
   installBrowserMock();
   bind();
   bindMessages();
+  // 回到窗口时重新扫一遍外部工具：用户可能刚把比特口袋 / 自动化助手打开。
+  // 只有「在跑的工具集合」真的变了才重画，避免每次切窗口都重置编辑区。
+  window.addEventListener("focus", () => {
+    const before = runningTools.map((t) => t.id).join(",");
+    void refreshRunningTools().then(() => {
+      if (runningTools.map((t) => t.id).join(",") !== before) render();
+    });
+  });
   void (async () => {
     await initEvents();
     await load();
-    // 冷启动：主窗口刚建好时 `gesture-add` 事件早于监听器，靠后端暂存补一次（同 toast 套路）。
+    // 启动后如果不在刚进入时 `gesture-add` 事件已过期，这里补取一次（同 toast 那条路径）。
     void openPendingGesture();
   })();
 }

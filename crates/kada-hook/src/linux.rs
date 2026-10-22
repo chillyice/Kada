@@ -184,6 +184,16 @@ fn running_diverters() -> Vec<String> {
         .collect()
 }
 
+/// 正在运行的外部工具 id（与 [`kada_core::EXTERNAL_TOOLS`] 的进程片段做小写子串比对）。
+pub fn running_tools() -> Vec<String> {
+    let names = process_names();
+    kada_core::EXTERNAL_TOOLS
+        .iter()
+        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|t| t.id.to_string())
+        .collect()
+}
+
 /// `/proc` 里所有进程的可执行名（小写）。
 ///
 /// 三处都收：`comm`（内核记的进程名）、`cmdline` 的**前两个参数**的基名。后两个是给

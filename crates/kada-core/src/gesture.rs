@@ -139,6 +139,49 @@ pub fn pattern_from_points(points: &[(i32, i32)], min_segment: i32) -> String {
     out
 }
 
+/// 轨迹是否绕成一个圈，返回包围盒 `(左, 上, 右, 下)`（屏幕坐标）。
+///
+/// 判据是**绕包围盒中心的有向转角**累计超过 270°——手画的圈不必首尾贴合，椭的、歪的
+/// 都算；来回折线 / 八字（正负抵消）不算。盒子任一边小于 16px 也不算（防手抖点一下）。
+pub fn lasso_bbox(points: &[(i32, i32)]) -> Option<(i32, i32, i32, i32)> {
+    if points.len() < 8 {
+        return None;
+    }
+    let (mut l, mut t, mut r, mut b) = (i32::MAX, i32::MAX, i32::MIN, i32::MIN);
+    for &(x, y) in points {
+        l = l.min(x);
+        t = t.min(y);
+        r = r.max(x);
+        b = b.max(y);
+    }
+    if r - l < 16 || b - t < 16 {
+        return None;
+    }
+    let (cx, cy) = ((l + r) as f64 / 2.0, (t + b) as f64 / 2.0);
+    let mut turn = 0.0f64;
+    for pair in points.windows(2) {
+        let (ax, ay) = (pair[0].0 as f64 - cx, pair[0].1 as f64 - cy);
+        let (bx, by) = (pair[1].0 as f64 - cx, pair[1].1 as f64 - cy);
+        let cross = ax * by - ay * bx;
+        // 正对穿中心（共线反向）时 atan2 会把 180° 记成同一符号，来回直线就会被误判成圈；
+        // 共线没有「转弯」，直接不计。
+        if cross.abs() < 1e-9 {
+            continue;
+        }
+        turn += cross.atan2(ax * bx + ay * by);
+    }
+    if turn.abs() >= std::f64::consts::PI * 1.5 {
+        Some((l, t, r, b))
+    } else {
+        None
+    }
+}
+
+/// 手势采集是否该开：有配置好的手势，或开了「圈选截图」（自带手势，不需要配置条目）。
+pub fn gesture_capture_enabled(cfg: &Config) -> bool {
+    gesture_enabled(cfg) || cfg.settings.gesture_screenshot
+}
+
 fn direction(a: (i32, i32), b: (i32, i32)) -> Option<&'static str> {
     let dx = (b.0 - a.0) as f64;
     let dy = (b.1 - a.1) as f64;
@@ -228,6 +271,35 @@ mod tests {
         assert_eq!(pattern_from_points(&pts, 16), "DRUL");
         let diag = [(0, 0), (20, 20), (40, 40), (60, 60)];
         assert_eq!(pattern_from_points(&diag, 16), "DR");
+    }
+
+    #[test]
+    fn lasso_bbox_accepts_a_loop_and_rejects_zigzag() {
+        // 近似圆的 16 个点（半径 40，中心 100,100）。
+        let circle: Vec<(i32, i32)> = (0..16)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 16.0;
+                ((100.0 + 40.0 * a.cos()) as i32, (100.0 + 40.0 * a.sin()) as i32)
+            })
+            .collect();
+        assert_eq!(lasso_bbox(&circle), Some((60, 60, 140, 140)));
+
+        // 来回画一条横线：绕中心转角正负抵消，不算圈。
+        let zigzag = [(0, 0), (100, 0), (0, 0), (100, 0), (0, 0), (100, 0), (0, 0), (100, 0)];
+        assert_eq!(lasso_bbox(&zigzag), None);
+
+        // 太小 / 点太少都不算。
+        assert_eq!(lasso_bbox(&[(0, 0), (5, 0), (5, 5), (0, 5)]), None);
+    }
+
+    #[test]
+    fn gesture_capture_turns_on_with_lasso_screenshot() {
+        let mut cfg = Config::default();
+        cfg.settings.experimental = true;
+        cfg.settings.gesture_screenshot = false;
+        assert!(!gesture_capture_enabled(&cfg));
+        cfg.settings.gesture_screenshot = true;
+        assert!(gesture_capture_enabled(&cfg));
     }
 
     #[test]

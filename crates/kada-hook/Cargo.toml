@@ -21,8 +21,6 @@ arboard = "3"
 # 只有 win.rs 用得到：按 `cfg(windows)` 声明，免得 Linux / macOS 也去编一个用不上的
 # Windows 绑定（它在非 Windows 目标上编不过）。
 [target.'cfg(windows)'.dependencies]
-# 截图 / 贴图（EXT-20）：PNG 编码。`image` 本就在依赖树里（tauri），这里只开 png feature。
-image = { version = "0.25", default-features = false, features = ["png"] }
 hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
 windows = { version = "0.61", features = [
     "Win32_Devices_Display",
@@ -31,7 +29,6 @@ windows = { version = "0.61", features = [
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
-    "Win32_Storage_Xps",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
     "Win32_System_LibraryLoader",

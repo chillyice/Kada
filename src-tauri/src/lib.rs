@@ -25,8 +25,9 @@ use kada_actions::{
     RunOptions, RunRecord, RunStatus, TriggerCtx,
 };
 use kada_core::{
-    config_needs_mouse_hook, detect_conflicts, diagnose_input_env, keycast_text, matches,
-    parse_snippet_index, sanitize_config, snippet, snippet_title, Action, ClipboardMenu,
+    config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
+    keycast_text, matches, parse_snippet_index, sanitize_config, snippet, snippet_title, Action,
+    ClipboardMenu,
     ClipboardOperation, Config, Conflict, IndexEntry, Key, Keycast, MenuEntry, Modifier, RawEvent,
     Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetPick, TextExpansion, TextInjectMode,
     TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
@@ -994,7 +995,7 @@ fn spawn_engine_ticker(
                     guard.settings.elevated_inject,
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
                     // → 右键完全放行（回到系统行为，一个字节都不多吞）。
-                    guard.settings.experimental && kada_core::gesture_enabled(&guard),
+                    guard.settings.experimental && gesture_capture_enabled(&guard),
                     guard.settings.keycast.clone(),
                 )
             };
@@ -1789,7 +1790,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 (
                     gesture_visual_of(&g.settings),
                     g.settings.gesture_start_distance,
-                    g.settings.experimental && kada_core::gesture_enabled(&g),
+                    g.settings.experimental && gesture_capture_enabled(&g),
                     g.settings.gesture_exclude.clone(),
                     g.settings.exclude_apps.clone(),
                 )
@@ -1889,6 +1890,7 @@ fn handle_gesture(
         start_distance,
         min_segment,
         gesture_timeout,
+        screenshot,
         action_timeout,
         text_mode,
         exclude,
@@ -1896,10 +1898,11 @@ fn handle_gesture(
     ) = {
         let g = cfg.read().unwrap();
         (
-            g.settings.experimental && kada_core::gesture_enabled(&g),
+            g.settings.experimental && gesture_capture_enabled(&g),
             g.settings.gesture_start_distance,
             g.settings.gesture_min_segment,
             g.settings.gesture_timeout_ms,
+            g.settings.gesture_screenshot,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
@@ -1941,67 +1944,98 @@ fn handle_gesture(
         replay_right_click();
         return;
     }
+    // 圈选截图是**自带手势**：轨迹绕成圈就截包围盒，不需要配置条目。配置好的手势优先，
+    // 没匹配上再走这里；画圈不受手势超时限制（大圈画慢一点很常见）。
+    let lasso = screenshot
+        .then(|| kada_core::lasso_bbox(&stroke.points))
+        .flatten();
+    let matched = if stroke.elapsed_ms > gesture_timeout {
+        None
+    } else {
+        let g = cfg.read().unwrap();
+        // `when` 门控复用上面已建好的上下文（排除判定若查过前台就已缓存，不再查询）。
+        kada_core::find_gesture(&g, &pattern, &ctx).map(|hit| (hit.label(), hit.actions.clone()))
+    };
+    if let Some((name, actions)) = matched {
+        // 配了手势但没配动作 = 半条配置：这时**不执行**（执行空链等于把右键吞了），
+        // 按「没命中」处理、把右键补回去。
+        if actions.is_empty() {
+            eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
+            show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
+            show_toast_note(
+                &app,
+                &format!("手势 {pattern} 没有动作"),
+                "右键已补回。给这条「鼠标操作」配上动作才会执行。",
+            );
+            replay_right_click();
+            return;
+        }
+        show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
+        fire(
+            app,
+            results,
+            unread,
+            runs,
+            actions,
+            format!("手势 {pattern}"),
+            name,
+            action_timeout,
+            text_mode,
+            // 手势起点 = 右键按下点（EXT-16「移动到手势起点」）；快捷键路径没有起点。
+            stroke.points.first().copied(),
+        );
+        return;
+    }
+    if lasso.is_some() {
+        run_lasso_capture(&app, &stroke.points);
+        return;
+    }
     if stroke.elapsed_ms > gesture_timeout {
         show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern);
         replay_right_click();
         return;
     }
-    let matched = {
-        let g = cfg.read().unwrap();
-        // `when` 门控复用上面已建好的上下文（排除判定若查过前台就已缓存，不再查询）。
-        kada_core::find_gesture(&g, &pattern, &ctx).map(|hit| (hit.label(), hit.actions.clone()))
-    };
-    let Some((name, actions)) = matched else {
-        eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
-        // **看得见的反馈**：没匹配上时除了把右键补回去，还要告诉用户「你画的这个方向串
-        // 叫 DRUR」——否则界面毫无反应，用户只会以为功能坏了（试验台也是这么提示的：
-        // 照抄方向串进配置就能用）。弹气泡，不进消息中心（避免每次误拖都留一条）。
-        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
-        show_toast_note(
-            &app,
-            &format!("手势未匹配：{pattern}"),
-            "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
-        );
-        replay_right_click();
-        // EXT-03 手势添加模式：唤出主窗口并打开「新增鼠标操作」，方向串预填成刚画的这条。
-        // 只开界面、不执行任何动作；右键已在上面补回。
-        if let Some(state) = app.try_state::<KadaState>() {
-            state.pending_gesture.lock().unwrap().replace(pattern);
-        }
-        let add_app = app.clone();
-        std::thread::spawn(move || {
-            show_main_window(&add_app);
-            let _ = add_app.emit("gesture-add", ());
-        });
-        return;
-    };
-    // 配了手势但没配动作 = 半条配置：这时**不执行**（执行空链等于把右键吞了），
-    // 按「没命中」处理、把右键补回去。
-    if actions.is_empty() {
-        eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
-        show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
-        show_toast_note(
-            &app,
-            &format!("手势 {pattern} 没有动作"),
-            "右键已补回。给这条「鼠标操作」配上动作才会执行。",
-        );
-        replay_right_click();
-        return;
-    }
-    show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
-    fire(
-        app,
-        results,
-        unread,
-        runs,
-        actions,
-        format!("手势 {pattern}"),
-        name,
-        action_timeout,
-        text_mode,
-        // 手势起点 = 右键按下点（EXT-16「移动到手势起点」）；快捷键路径没有起点。
-        stroke.points.first().copied(),
+    eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
+    // **看得见的反馈**：没匹配上时除了把右键补回去，还要告诉用户「你画的这个方向串
+    // 叫 DRUR」——否则界面毫无反应，用户只会以为功能坏了（试验台也是这么提示的：
+    // 照抄方向串进配置就能用）。弹气泡，不进消息中心（避免每次误拖都留一条）。
+    show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+    show_toast_note(
+        &app,
+        &format!("手势未匹配：{pattern}"),
+        "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
     );
+    replay_right_click();
+    // EXT-03 手势添加模式：唤出主窗口并打开「新增鼠标操作」，方向串预填成刚画的这条。
+    // 只开界面、不执行任何动作；右键已在上面补回。
+    if let Some(state) = app.try_state::<KadaState>() {
+        state.pending_gesture.lock().unwrap().replace(pattern);
+    }
+    let add_app = app.clone();
+    std::thread::spawn(move || {
+        show_main_window(&add_app);
+        let _ = add_app.emit("gesture-add", ());
+    });
+}
+
+/// 圈选截图收尾：收起手势预览 → 冻结画面等左键确认 → 写图片剪贴板。
+/// 钩子线程已经把右键处理完了，这里在独立线程上可以阻塞等用户点击。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn run_lasso_capture(app: &tauri::AppHandle, points: &[(i32, i32)]) {
+    hide_gesture_overlay(app);
+    // 浮层隐藏是异步的，等一拍再冻结，免得把手势轨迹画进截图。
+    std::thread::sleep(Duration::from_millis(80));
+    match kada_hook::capture_lasso(points) {
+        Ok(Some(img)) => {
+            let (w, h) = (img.width, img.height);
+            match kada_hook::set_clipboard_image(&img) {
+                Ok(()) => show_toast_note(app, &format!("已框选截图 {w}×{h}"), "已复制到剪贴板"),
+                Err(e) => show_toast_note(app, "截图失败", &e),
+            }
+        }
+        Ok(None) => {}
+        Err(e) => show_toast_note(app, "截图失败", &e),
+    }
 }
 
 /// 触发角（EXT-10）：注册出口。回调在钩子线程上跑，这里只开线程做后续（不建窗 / 不 IO）。
@@ -5179,7 +5213,6 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            screenshot: false,
             brightness: false,
             ..Default::default()
         }
@@ -5201,7 +5234,6 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            screenshot: false,
             brightness: false,
         }
     }
@@ -5221,7 +5253,6 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            screenshot: false,
             brightness: false,
             ..Default::default()
         }
@@ -5354,6 +5385,18 @@ fn input_env_report(config: Config) -> InputEnvReport {
         hvci: env.hvci,
         hidpp_supported: kada_hook::hidpp::supported(),
     }
+}
+
+/// 本机正在运行的外部工具（目录见 [`kada_core::EXTERNAL_TOOLS`]）。
+/// 只做进程名探测：动作里先出现占位，执行会明确报「尚未接入」。
+#[tauri::command]
+fn running_tools() -> Vec<kada_core::ExternalToolInfo> {
+    let ids = kada_hook::platform_running_tools();
+    kada_core::EXTERNAL_TOOLS
+        .iter()
+        .filter(|t| ids.iter().any(|id| id == t.id))
+        .cloned()
+        .collect()
 }
 
 // ---- 罗技 HID++ 解锁（`docs/底层输入能力规划.md` 档位 C）----
@@ -6099,6 +6142,7 @@ pub fn run() {
             set_config,
             get_conflicts,
             input_env_report,
+            running_tools,
             hidpp_status,
             hidpp_unlock,
             elevated_status,

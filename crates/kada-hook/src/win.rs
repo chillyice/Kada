@@ -1012,6 +1012,16 @@ fn running_diverters() -> Vec<String> {
         .collect()
 }
 
+/// 正在运行的外部工具 id（与 [`kada_core::EXTERNAL_TOOLS`] 的进程片段做小写子串比对）。
+pub fn running_tools() -> Vec<String> {
+    let names = process_names();
+    kada_core::EXTERNAL_TOOLS
+        .iter()
+        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .map(|t| t.id.to_string())
+        .collect()
+}
+
 /// 当前所有进程的可执行文件名（小写，带 `.exe`）。取不到就返回空表。
 ///
 /// 只读快照里的 `szExeFile`，不逐个 `OpenProcess` 查镜像路径：基本名足够匹配，而逐个打开

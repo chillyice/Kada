@@ -38,8 +38,8 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, BrightnessOperation, CaptureOperation, CaptureOutput, DesktopDirection,
-    FileObject, OsOperation, Shell, SystemOperation, WindowOperation,
+    AppOperation, BrightnessOperation, DesktopDirection, FileObject, OsOperation, Shell,
+    SystemOperation, WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -359,6 +359,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Window { .. } => "window",
         #[cfg(feature = "automation")]
         Action::Capture { .. } => "capture",
+        #[cfg(feature = "automation")]
+        Action::Tool { .. } => "tool",
         #[cfg(feature = "automation")]
         Action::Brightness { .. } => "brightness",
     }
@@ -791,24 +793,6 @@ fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> Command
     }
 }
 
-/// 截图落盘路径：没写扩展名（或不是 `.png`）时补 `.png`——v1 只输出 PNG。
-#[cfg(all(
-    any(target_os = "windows", target_os = "linux", target_os = "macos"),
-    feature = "automation"
-))]
-fn png_path(path: &str) -> String {
-    let p = path.trim();
-    let is_png = std::path::Path::new(p)
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
-    if is_png {
-        p.to_string()
-    } else {
-        format!("{p}.png")
-    }
-}
-
 /// 失败记录的展示标签（消息中心 tab 上「标签 · 名称」的左半）。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_label(action: &Action) -> &'static str {
@@ -905,7 +889,9 @@ fn action_label(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Window { .. } => "窗口操作失败",
         #[cfg(feature = "automation")]
-        Action::Capture { .. } => "截图失败",
+        Action::Capture { .. } => "截图已移除",
+        #[cfg(feature = "automation")]
+        Action::Tool { .. } => "外部工具未接入",
         #[cfg(feature = "automation")]
         Action::Brightness { .. } => "亮度调节失败",
     }
@@ -1011,31 +997,30 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => window_body(operation),
         #[cfg(feature = "automation")]
-        Action::Capture { operation, output, path, .. } => {
-            capture_body(*operation, *output, path, vars)
-        }
+        Action::Capture { .. } => "截图（已移除，改用右键画圈截图）".into(),
+        #[cfg(feature = "automation")]
+        Action::Tool { tool, capability, .. } => tool_body(tool, capability),
         #[cfg(feature = "automation")]
         Action::Brightness { operation, step, .. } => brightness_body(*operation, *step),
     }
 }
 
-/// 截图动作摘要（消息中心「命令」一栏 / 执行记录标题）。
+/// 外部工具动作摘要（目录里查展示名，查不到就退回 id）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
-fn capture_body(
-    operation: CaptureOperation,
-    output: CaptureOutput,
-    path: &str,
-    vars: &Vars,
-) -> String {
-    let target = format!("截取{}", operation.label());
-    match output {
-        CaptureOutput::Clipboard => format!("{target} → 剪贴板"),
-        CaptureOutput::Pin => format!("{target} → 贴图"),
-        CaptureOutput::File => format!("{target} → {}", substitute_vars(path, vars)),
-    }
+fn tool_body(tool: &str, capability: &str) -> String {
+    let Some(info) = kada_core::external_tool(tool) else {
+        return format!("{tool}：{capability}（未接入）");
+    };
+    let cap = info
+        .capabilities
+        .iter()
+        .find(|c| c.id == capability)
+        .map(|c| c.name)
+        .unwrap_or(capability);
+    format!("{}：{}（未接入）", info.name, cap)
 }
 
 /// 亮度动作摘要。
@@ -1330,6 +1315,7 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Parallel { description, .. }
         | Action::Window { description, .. }
         | Action::Capture { description, .. }
+        | Action::Tool { description, .. }
         | Action::Brightness { description, .. } => description.as_deref(),
     }
 }
@@ -1650,55 +1636,19 @@ fn run_action(
             kada_hook::window_action(ctx.t.window, hook_window_action(*operation))?;
         }
         #[cfg(feature = "automation")]
-        Action::Capture { operation, output, path, .. } => {
-            let target = match operation {
-                CaptureOperation::FullScreen => kada_hook::CaptureTarget::FullScreen,
-                CaptureOperation::Region => kada_hook::CaptureTarget::Region,
-                CaptureOperation::Window => kada_hook::CaptureTarget::Window,
-            };
-            // 区域截图时用户按 Esc / 右键 = 取消，不算失败。
-            let Some(img) = kada_hook::capture_screen(target, ctx.t.window)? else {
-                return Ok(None);
-            };
-            let (w, h) = (img.width, img.height);
-            let (what, msg) = match output {
-                CaptureOutput::Clipboard => {
-                    kada_hook::set_clipboard_image(&img)?;
-                    (
-                        format!("截取{} → 剪贴板", operation.label()),
-                        format!("已截取{}并写入剪贴板（{w}×{h}）", operation.label()),
-                    )
-                }
-                CaptureOutput::File => {
-                    let p = png_path(&substitute_vars(path, vars));
-                    kada_hook::save_png_image(&img, &p)?;
-                    (
-                        format!("截取{} → {p}", operation.label()),
-                        format!("已保存截图 {p}（{w}×{h}）"),
-                    )
-                }
-                CaptureOutput::Pin => {
-                    kada_hook::pin_image(img)?;
-                    (
-                        format!("截取{} → 贴图", operation.label()),
-                        format!("已贴图（{w}×{h}），右键关闭"),
-                    )
-                }
-            };
-            return Ok(Some(CommandResult {
-                kind: "capture".into(),
-                label: "截图".into(),
-                command: what,
-                // 截图成功也记一条：执行记录里能看到尺寸 / 落点，失败由统一路径记。
-                stdout: msg,
-                stderr: String::new(),
-                exit_code: None,
-                show_output: false,
-                trigger: ctx.t.trigger.into(),
-                name: ctx.t.name.into(),
-                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                run_id: ctx.run_id,
-            }));
+        Action::Capture { .. } => {
+            return Err("截图动作已移除：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认".into());
+        }
+        #[cfg(feature = "automation")]
+        Action::Tool { tool, capability, .. } => {
+            let name = kada_core::external_tool(tool).map(|t| t.name).unwrap_or(tool.as_str());
+            let cap = kada_core::external_tool(tool)
+                .and_then(|t| t.capabilities.iter().find(|c| c.id == capability))
+                .map(|c| c.name)
+                .unwrap_or(capability.as_str());
+            return Err(format!(
+                "「{name}」的能力「{cap}」尚未接入：现在只能识别到它在运行，还不能替它执行"
+            ));
         }
         #[cfg(feature = "automation")]
         Action::Brightness { operation, step, .. } => {
@@ -3483,25 +3433,16 @@ mod tests {
     /// 截图 / 亮度摘要：执行记录里要看得出「截了什么 / 存到哪 / 调了多少」。
     #[cfg(feature = "automation")]
     #[test]
-    fn capture_and_brightness_summary_show_target_and_sink() {
+    fn tool_and_brightness_summary_show_target_and_sink() {
         let vars = BTreeMap::new();
-        let capture = Action::Capture {
-            operation: CaptureOperation::Window,
-            output: CaptureOutput::File,
-            path: "D:\\shots\\{name}.png".into(),
+        let tool = Action::Tool {
+            tool: "bit-pouch".into(),
+            capability: "open".into(),
             description: None,
         };
-        assert_eq!(super::action_kind(&capture), "capture");
-        let s = super::action_summary(&capture, &vars);
-        assert!(s.contains("当前窗口") && s.contains("D:\\shots\\{name}.png"), "{s}");
-
-        let pin = Action::Capture {
-            operation: CaptureOperation::Region,
-            output: CaptureOutput::Pin,
-            path: String::new(),
-            description: None,
-        };
-        assert!(super::action_summary(&pin, &vars).contains("贴图"));
+        assert_eq!(super::action_kind(&tool), "tool");
+        let s = super::action_summary(&tool, &vars);
+        assert!(s.contains("比特口袋") && s.contains("打开") && s.contains("未接入"), "{s}");
 
         let bright = Action::Brightness {
             operation: BrightnessOperation::Down,
@@ -3517,15 +3458,6 @@ mod tests {
             description: None,
         };
         assert!(super::action_summary(&restore, &vars).contains("恢复"));
-    }
-
-    /// 截图落盘路径：没写扩展名 / 不是 png 时补 `.png`（v1 只输出 PNG）。
-    #[cfg(feature = "automation")]
-    #[test]
-    fn png_path_appends_extension() {
-        assert_eq!(super::png_path("D:\\a"), "D:\\a.png");
-        assert_eq!(super::png_path("D:\\a.PNG"), "D:\\a.PNG");
-        assert_eq!(super::png_path("D:\\a.png"), "D:\\a.png");
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。

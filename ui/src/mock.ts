@@ -73,16 +73,13 @@ const DEMO_CONFIG = {
       ],
     },
     {
-      name: "截图当前窗口并调低亮度",
-      description: "截图 / 亮度示例",
+      name: "调低亮度",
+      description: "亮度示例（截图已改为鼠标右键画圈）",
       folder: null,
       layer: null,
       triggers: ["Ctrl+Alt+U"],
       enabled: true,
-      actions: [
-        { type: "capture", operation: "window", output: "pin", path: "" },
-        { type: "brightness", operation: "down", step: 10 },
-      ],
+      actions: [{ type: "brightness", operation: "down", step: 10 }],
     },
   ],
   remaps: [
@@ -304,6 +301,17 @@ export function installBrowserMock() {
             hvci: true,
             hidpp_supported: true,
           };
+        case "running_tools":
+          // 演示数据：浏览器里没有进程表，给一个「比特口袋在跑」的假结果，好让外部工具
+          // 动作类型的渲染路径能在纯浏览器里验收。
+          return [
+            {
+              id: "bit-pouch",
+              name: "比特口袋",
+              processes: ["bit-pouch"],
+              capabilities: [{ id: "open", name: "打开" }],
+            },
+          ];
         case "hidpp_status":
           // 演示数据：一台接收器后面的 MX 鼠标，两个侧键被 Options+ divert——这正是
           // 「中键能用、侧键不能用」的实际形态，解锁前后的两套渲染都能在浏览器里看到。

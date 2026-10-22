@@ -159,7 +159,8 @@ pub mod sample;
 /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。纯逻辑，识别在壳层做。
 mod gesture;
 pub use gesture::{
-    app_excluded, find_gesture, gesture_enabled, normalize_pattern, pattern_from_points, Gesture,
+    app_excluded, find_gesture, gesture_capture_enabled, gesture_enabled, lasso_bbox,
+    normalize_pattern, pattern_from_points, Gesture,
 };
 
 mod parse {
@@ -823,7 +824,51 @@ impl WindowOperation {
     }
 }
 
-/// 截图目标（[`Action::Capture`]，EXT-20）：整块虚拟屏幕 / 用户框选区域 / 触发那一刻的前台窗口。
+/// 外部工具的一个能力（占位）：目录里先列出能做什么，真正接入前执行会明确报错。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ExternalCapability {
+    /// 稳定 id（配置里存它）。
+    pub id: &'static str,
+    /// 展示名。
+    pub name: &'static str,
+}
+
+/// 本机能对接的外部工具（按进程名探测是否在运行）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ExternalToolInfo {
+    /// 稳定 id（配置里存它）。
+    pub id: &'static str,
+    /// 展示名。
+    pub name: &'static str,
+    /// 进程名匹配片段：与进程可执行名（小写）做子串匹配。
+    pub processes: &'static [&'static str],
+    /// 工具能力（当前都是占位，执行只报「尚未接入」）。
+    pub capabilities: &'static [ExternalCapability],
+}
+
+/// 已知外部工具目录。**只登记、不假装已接通**：探测到进程在跑时界面才出现对应动作，
+/// 执行时明确报「尚未接入」，不会静默失败。
+pub const EXTERNAL_TOOLS: &[ExternalToolInfo] = &[
+    ExternalToolInfo {
+        id: "bit-pouch",
+        name: "比特口袋",
+        processes: &["bit-pouch", "bitpouch", "比特口袋"],
+        capabilities: &[ExternalCapability { id: "open", name: "打开" }],
+    },
+    ExternalToolInfo {
+        id: "auto-assistant",
+        name: "自动化助手",
+        processes: &["automation-assistant", "auto-assistant", "autoassistant", "自动化助手"],
+        capabilities: &[ExternalCapability { id: "run", name: "运行" }],
+    },
+];
+
+/// 按 id 找外部工具；找不到返回 `None`。
+pub fn external_tool(id: &str) -> Option<&'static ExternalToolInfo> {
+    EXTERNAL_TOOLS.iter().find(|t| t.id == id)
+}
+
+/// 旧「截图」动作的目标（只为读得动老配置保留；功能已移除，执行会报错）。
 #[cfg(feature = "automation")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -831,25 +876,13 @@ pub enum CaptureOperation {
     /// 全部显示器拼成的虚拟屏幕。
     #[default]
     FullScreen,
-    /// 冻结整块虚拟屏幕后让用户框选；Esc / 右键取消。
+    /// 冻结整块虚拟屏幕后让用户框选。
     Region,
-    /// 触发那一刻的前台窗口（`TriggerCtx.window`，与「当前窗口」动作同口径）。
+    /// 触发那一刻的前台窗口。
     Window,
 }
 
-#[cfg(feature = "automation")]
-impl CaptureOperation {
-    /// 中文短标签（动作摘要 / 界面下拉共用一套说法）。
-    pub fn label(self) -> &'static str {
-        match self {
-            CaptureOperation::FullScreen => "全屏",
-            CaptureOperation::Region => "区域",
-            CaptureOperation::Window => "当前窗口",
-        }
-    }
-}
-
-/// 截图结果出口（[`Action::Capture`]）：写剪贴板 / 存 PNG 文件 / 贴图浮窗。
+/// 旧「截图」动作的出口（只为读得动老配置保留）。
 #[cfg(feature = "automation")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -857,22 +890,10 @@ pub enum CaptureOutput {
     /// 写进系统剪贴板（图片）。
     #[default]
     Clipboard,
-    /// 存成 PNG；路径在 `Action::Capture.path`，支持 `{变量}`。
+    /// 存成 PNG。
     File,
-    /// 贴图（透明置顶浮窗，临时态，重启不恢复）。
+    /// 贴图浮窗。
     Pin,
-}
-
-#[cfg(feature = "automation")]
-impl CaptureOutput {
-    /// 中文短标签。
-    pub fn label(self) -> &'static str {
-        match self {
-            CaptureOutput::Clipboard => "剪贴板",
-            CaptureOutput::File => "存文件",
-            CaptureOutput::Pin => "贴图",
-        }
-    }
 }
 
 /// 显示器亮度调节方向（[`Action::Brightness`]，EXT-22）。
@@ -1309,13 +1330,13 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
-/// `serde` 帮手：截图目标的默认值不落盘。
+/// `serde` 帮手：旧截图动作的缺省字段不落盘（只为老配置形状稳定）。
 #[cfg(feature = "automation")]
 fn is_default_capture_op(v: &CaptureOperation) -> bool {
     matches!(v, CaptureOperation::FullScreen)
 }
 
-/// `serde` 帮手：截图出口的默认值不落盘。
+/// `serde` 帮手：旧截图动作的缺省出口不落盘。
 #[cfg(feature = "automation")]
 fn is_default_capture_output(v: &CaptureOutput) -> bool {
     matches!(v, CaptureOutput::Clipboard)
@@ -1457,17 +1478,27 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    /// 截图 / 贴图（EXT-20）：全屏 / 区域 / 当前窗口，结果进剪贴板、存 PNG 或贴图。
-    /// 只有 Windows 实现 GDI 抓图；其它平台执行报错并由冲突检测标平台缺失。
+    /// 旧「截图」动作：**功能已移除**，只为读得动老配置保留；执行会明确报错，
+    /// 界面也不再提供新建入口（截图改为鼠标手势：右键画圈 + 左键确认）。
     #[cfg(feature = "automation")]
     Capture {
         #[serde(default, skip_serializing_if = "is_default_capture_op")]
         operation: CaptureOperation,
         #[serde(default, skip_serializing_if = "is_default_capture_output")]
         output: CaptureOutput,
-        /// `output = file` 时的目标路径（支持 `{变量}`；扩展名不带 `.png` 时自动补上）。
         #[serde(default, skip_serializing_if = "String::is_empty")]
         path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 外部工具能力（占位）：`tool` / `capability` 对应 [`EXTERNAL_TOOLS`] 的 id。
+    /// 目前只做「探测到工具在运行 → 动作里出现」，执行会明确报「尚未接入」。
+    #[cfg(feature = "automation")]
+    Tool {
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        tool: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        capability: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1626,13 +1657,11 @@ impl Action {
             #[cfg(feature = "automation")]
             Action::Window { .. } => Ok(()),
             #[cfg(feature = "automation")]
-            Action::Capture { output, path, .. } => {
-                if matches!(output, CaptureOutput::File) {
-                    non_empty("保存路径", path)?;
-                    if path.contains("{}") {
-                        return Err("保存路径里的变量名不能为空".into());
-                    }
-                }
+            Action::Capture { .. } => Ok(()),
+            #[cfg(feature = "automation")]
+            Action::Tool { tool, capability, .. } => {
+                non_empty("外部工具", tool)?;
+                non_empty("工具能力", capability)?;
                 Ok(())
             }
             #[cfg(feature = "automation")]
@@ -2624,6 +2653,11 @@ pub struct Settings {
     /// 鼠标手势的方向量化**段长**（像素）：一段方向至少这么长，抖动自己被吸收掉。
     #[serde(default = "default_gesture_min_segment")]
     pub gesture_min_segment: i32,
+    /// **右键圈选截图**（自带手势，不需要配置条目）：按住右键绕一圈、松手后冻结画面，
+    /// 左键点击确认 → 包围盒截图写进剪贴板。缺字段取 `true`（总闸 `experimental` 仍管着）。
+    /// 目前只在 Windows 实现（GDI），其它平台画圈会提示不支持。
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub gesture_screenshot: bool,
     /// 鼠标手势的**排除程序**（每行一个进程名）：命中的程序里不接管右键，手势完全不生效
     /// （右键回放）。语义与 `when` 的「前台应用」一致：不区分大小写、含 `*`/`?` 走通配、
     /// 否则子串匹配。空 = 不排除。给游戏 / CAD / 远程桌面这类「右键拖拽本来是正常操作」的
@@ -2761,6 +2795,7 @@ impl Default for Settings {
             gesture_start_distance: default_gesture_start_distance(),
             gesture_timeout_ms: default_gesture_timeout_ms(),
             gesture_min_segment: default_gesture_min_segment(),
+            gesture_screenshot: true,
             gesture_exclude: Vec::new(),
             exclude_apps: Vec::new(),
             ignore_fullscreen: false,
@@ -2852,8 +2887,6 @@ pub struct PlatformCaps {
     pub hot_corners: bool,
     /// 边缘滚动（[`WheelEdges`]）是否可用。目前只有 Windows 接了鼠标钩子。
     pub wheel_edges: bool,
-    /// 截图 / 贴图（[`Action::Capture`]）是否可用。目前只有 Windows 用 GDI 实现。
-    pub screenshot: bool,
     /// 显示器亮度（[`Action::Brightness`]）是否可用。目前只有 Windows 走 DDC/CI。
     pub brightness: bool,
 }
@@ -2872,7 +2905,6 @@ impl Default for PlatformCaps {
             shell_actions: true,
             hot_corners: true,
             wheel_edges: true,
-            screenshot: true,
             brightness: true,
         }
     }
@@ -2891,7 +2923,6 @@ impl PlatformCaps {
             && self.shell_actions
             && self.hot_corners
             && self.wheel_edges
-            && self.screenshot
             && self.brightness
     }
 }
@@ -3425,15 +3456,6 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             });
         }
         #[cfg(feature = "automation")]
-        if !caps.screenshot && uses_capture(&s.actions) {
-            out.push(Conflict {
-                severity: Severity::Warn,
-                platform: true,
-                message: "「截图 / 贴图」当前平台用不了（只有 Windows 用 GDI 实现），执行到这一步会失败".into(),
-                name: name_of(s),
-            });
-        }
-        #[cfg(feature = "automation")]
         if !caps.brightness && uses_brightness(&s.actions) {
             out.push(Conflict {
                 severity: Severity::Warn,
@@ -3490,19 +3512,6 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标」当前平台用不了（只有 Windows 实现），执行到这一步会失败".into(),
-                    name: g.label(),
-                });
-            }
-        }
-    }
-    #[cfg(feature = "automation")]
-    if !caps.screenshot {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_capture(&g.actions) {
-                out.push(Conflict {
-                    severity: Severity::Warn,
-                    platform: true,
-                    message: "「截图 / 贴图」当前平台用不了（只有 Windows 用 GDI 实现），执行到这一步会失败".into(),
                     name: g.label(),
                 });
             }
@@ -3771,7 +3780,7 @@ fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
 /// 一堆没装那类软件、或只用手势的用户平白收到「鼠标键被接管」的提示。
 pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
     config_uses_mouse(cfg)
-        || (cfg.settings.experimental && gesture_enabled(cfg))
+        || (cfg.settings.experimental && gesture_capture_enabled(cfg))
         || (cfg.settings.experimental && cfg.settings.hot_corners.any_enabled())
         || (cfg.settings.experimental && cfg.settings.wheel_edges.any_enabled())
 }
@@ -3937,18 +3946,6 @@ fn uses_shell_actions(actions: &[Action]) -> bool {
             then, otherwise, ..
         } => uses_shell_actions(then) || uses_shell_actions(otherwise),
         Action::Parallel { actions, .. } => uses_shell_actions(actions),
-        _ => false,
-    })
-}
-
-/// 动作树里有没有截图 / 贴图动作（`If` / `Parallel` / 分组递归进去）。
-#[cfg(feature = "automation")]
-fn uses_capture(actions: &[Action]) -> bool {
-    actions.iter().any(|a| match a {
-        Action::Capture { .. } => true,
-        Action::Group { actions, .. } => uses_capture(actions),
-        Action::If { then, otherwise, .. } => uses_capture(then) || uses_capture(otherwise),
-        Action::Parallel { actions, .. } => uses_capture(actions),
         _ => false,
     })
 }
@@ -5961,40 +5958,42 @@ mod new_action_and_folder_tests {
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
     }
 
-    /// 截图 / 贴图（EXT-20）：缺省字段（全屏 / 剪贴板 / 空路径）不落盘；
-    /// 存文件必须有路径，空变量名在保存前拦下。
+    /// 旧截图动作还能解析（老配置不能因为功能移除就打不开）。
     #[cfg(feature = "automation")]
     #[test]
-    fn capture_action_json_roundtrip_and_validate() {
-        let a: Action = serde_json::from_str(r#"{"type":"capture"}"#).unwrap();
+    fn legacy_capture_action_still_parses() {
+        let a: Action =
+            serde_json::from_str(r#"{"type":"capture","operation":"region","output":"file","path":"D:\\a.png"}"#)
+                .unwrap();
         assert!(matches!(
             a,
             Action::Capture {
-                operation: CaptureOperation::FullScreen,
-                output: CaptureOutput::Clipboard,
+                operation: CaptureOperation::Region,
+                output: CaptureOutput::File,
                 ..
             }
         ));
-        assert!(a.validate().is_ok());
-        let json = serde_json::to_string(&a).unwrap();
-        assert_eq!(json, r#"{"type":"capture"}"#);
-        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+        assert_eq!(serde_json::to_string(&a).unwrap().contains(r#""type":"capture""#), true);
+    }
 
-        let region: Action = serde_json::from_str(
-            r#"{"type":"capture","operation":"region","output":"file","path":"D:\\shot"}"#,
-        )
-        .unwrap();
-        assert!(region.validate().is_ok());
-        let bad: Action = serde_json::from_str(
-            r#"{"type":"capture","output":"file","path":""}"#,
-        )
-        .unwrap();
-        assert!(bad.validate().is_err());
-        let bad_var: Action = serde_json::from_str(
-            r#"{"type":"capture","output":"file","path":"D:\\{}.png"}"#,
-        )
-        .unwrap();
-        assert!(bad_var.validate().is_err());
+    /// 外部工具占位动作：工具 / 能力都不许为空；目录里的 id 能查到展示名。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn tool_action_validate_and_catalog() {
+        let a: Action =
+            serde_json::from_str(r#"{"type":"tool","tool":"bit-pouch","capability":"open"}"#)
+                .unwrap();
+        assert!(matches!(a, Action::Tool { .. }));
+        assert!(a.validate().is_ok());
+        assert_eq!(external_tool("bit-pouch").unwrap().name, "比特口袋");
+        assert_eq!(external_tool("bit-pouch").unwrap().capabilities[0].name, "打开");
+
+        let empty: Action = serde_json::from_str(r#"{"type":"tool"}"#).unwrap();
+        assert!(empty.validate().is_err());
+        let unknown: Action = serde_json::from_str(r#"{"type":"tool","tool":"x","capability":"y"}"#)
+            .unwrap();
+        assert!(unknown.validate().is_ok());
+        assert!(external_tool("x").is_none());
     }
 
     /// 亮度（EXT-22）：默认方向 / 步长不落盘；步长限 1~100，恢复不看步长。
@@ -7625,7 +7624,6 @@ mod platform_caps_tests {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            screenshot: false,
             brightness: false,
         }
     }

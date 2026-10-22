@@ -171,15 +171,24 @@ pub fn window_action(hwnd: Option<isize>, op: WindowAction) -> Result<(), String
 }
 
 
-/// 截图目标（EXT-20）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CaptureTarget {
-    /// 整块虚拟屏幕（全部显示器拼合）。
-    FullScreen,
-    /// 冻结整屏后让用户框选；`Ok(None)` = 用户取消。
-    Region,
-    /// 触发那一刻的前台窗口句柄（Windows `HWND`）。
-    Window,
+/// 本机正在运行的外部工具 id（`kada_core::EXTERNAL_TOOLS` 的子集）。
+pub fn platform_running_tools() -> Vec<String> {
+    #[cfg(windows)]
+    {
+        win::running_tools()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::running_tools()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::running_tools()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        Vec::new()
+    }
 }
 
 /// 一张抓到的图（RGBA8，行序从上到下）。
@@ -204,42 +213,21 @@ pub enum BrightnessOp {
     Restore,
 }
 
-/// 截图（EXT-20）。只有 Windows 用 GDI 实现；其它平台返回明确错误。
-/// `window` 是壳层在**触发那一刻**抓的前台窗口句柄（`TriggerCtx.window`），
-/// `CaptureTarget::Window` 用它，不在执行时重新抓前台。
-pub fn capture_screen(
-    target: CaptureTarget,
-    window: Option<isize>,
-) -> Result<Option<CapturedImage>, String> {
+/// 右键圈选截图：冻结整屏 → 画出用户刚才画的圈 → 等左键确认 → 裁包围盒。
+/// `Ok(None)` = 用户按 Esc / 右键取消。目前只有 Windows 用 GDI 实现。
+pub fn capture_lasso(points: &[(i32, i32)]) -> Result<Option<CapturedImage>, String> {
     #[cfg(windows)]
     {
-        match target {
-            CaptureTarget::FullScreen => win_capture::capture_full_screen().map(Some),
-            CaptureTarget::Region => win_capture::capture_region(),
-            CaptureTarget::Window => win_capture::capture_window(window).map(Some),
-        }
+        win_capture::capture_lasso(points)
     }
     #[cfg(not(windows))]
     {
-        let _ = (target, window);
-        Err("「截图 / 贴图」目前只支持 Windows".into())
+        let _ = points;
+        Err("「圈选截图」目前只支持 Windows".into())
     }
 }
 
-/// 把截图存成 PNG（EXT-20）：同目录临时文件 → rename，目标已存在时留 `.bak`。
-pub fn save_png_image(img: &CapturedImage, path: &str) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        win_capture::save_png(img, path)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = (img, path);
-        Err("「截图」目前只支持 Windows".into())
-    }
-}
-
-/// 把截图写进系统图片剪贴板（EXT-20）。
+/// 把截图写进系统图片剪贴板（圈选截图的唯一出口）。
 pub fn set_clipboard_image(img: &CapturedImage) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -248,20 +236,7 @@ pub fn set_clipboard_image(img: &CapturedImage) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = img;
-        Err("「截图」目前只支持 Windows".into())
-    }
-}
-
-/// 贴图（EXT-20）：置顶、不激活的临时浮窗（拖拽移动，右键关闭）。
-pub fn pin_image(img: CapturedImage) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        win_capture::pin_image(img)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = img;
-        Err("「贴图」目前只支持 Windows".into())
+        Err("「圈选截图」目前只支持 Windows".into())
     }
 }
 
