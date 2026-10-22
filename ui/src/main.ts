@@ -3314,7 +3314,7 @@ function openDetail(
   i: number,
   isNew = false,
   folderId: string | null = null,
-  seed?: { name?: string | null; description?: string | null },
+  seed?: { name?: string | null; description?: string | null; pattern?: string | null },
 ) {
   draft = null;
   remapDraft = null;
@@ -3358,6 +3358,7 @@ function openDetail(
       : deepClone((cfg.gestures ?? [])[i]);
     if (isNew && seed) {
       gestureDraft.name = seed.name ?? null;
+      if (seed.pattern) gestureDraft.pattern = seed.pattern;
     }
     fillGestureEditor();
   }
@@ -3728,6 +3729,16 @@ async function requestNew(kind: ListKind, folderId: string | null = null) {
   const tab = KIND_SECTION[kind];
   if (section !== tab) switchSectionNow(tab, { keepList: true });
   openDetail(-1, true, folderId);
+}
+
+// EXT-03 手势添加模式：未匹配手势时后端暂存方向串并唤出主窗口（见 handle_gesture），
+// 这里取走并开一条「新增鼠标操作」草稿，方向串预填成刚画出的那条。
+async function openPendingGesture() {
+  const pattern = await invoke<string | null>("take_pending_gesture").catch(() => null);
+  if (!pattern || !mouseFeaturesEnabled()) return;
+  if (!(await confirmLeaveDraft())) return;
+  if (section !== "gestures") switchSectionNow("gestures", { keepList: true });
+  openDetail(-1, true, null, { pattern });
 }
 
 // 取消 / ×  关闭编辑页：同样是「离开」，走同一道守卫。
@@ -7297,6 +7308,8 @@ async function initEvents() {
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);
   });
+  // EXT-03：未匹配手势时后端暂存方向串并唤出主窗口（见 handle_gesture），这里补一次取件。
+  await listen("gesture-add", () => void openPendingGesture());
   // 应用内别的窗口写盘后广播（`set_config` / 导入 / 提示框窗口拖了位置调了滚轮 / 托盘暂停）：
   // 只跟上「本界面不是唯一写入者」的那几块——它们在别处被改过，本界面手上这份已经旧了，
   // 下次保存会把旧值写回去（拖好的位置、调好的透明度、托盘刚切的暂停被打回原形）。
@@ -7724,5 +7737,7 @@ if (location.hash === "#toast") {
   void (async () => {
     await initEvents();
     await load();
+    // 冷启动：主窗口刚建好时 `gesture-add` 事件早于监听器，靠后端暂存补一次（同 toast 套路）。
+    void openPendingGesture();
   })();
 }

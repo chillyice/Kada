@@ -462,6 +462,9 @@ struct KadaState {
     toast: Arc<Mutex<Option<ToastPayload>>>,
     /// 最近一次输入状态指示的载荷（懒创建状态指示窗时，供前端加载后兜底读取）。
     status: Arc<Mutex<Option<StatusPayload>>>,
+    /// 未匹配手势待添加的方向串（EXT-03）：主窗口可能是刚被唤出的，事件会早于前端监听器，
+    /// 所以先落这里，前端加载后 `take_pending_gesture` 取走。
+    pending_gesture: Arc<Mutex<Option<String>>>,
     /// 托盘图标（用于运行时叠 / 去红点）。
     tray: Mutex<Option<TrayIcon>>,
     /// 托盘基础图标（无红点）。
@@ -1848,6 +1851,16 @@ fn handle_gesture(
             "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
         );
         replay_right_click();
+        // EXT-03 手势添加模式：唤出主窗口并打开「新增鼠标操作」，方向串预填成刚画的这条。
+        // 只开界面、不执行任何动作；右键已在上面补回。
+        if let Some(state) = app.try_state::<KadaState>() {
+            state.pending_gesture.lock().unwrap().replace(pattern);
+        }
+        let add_app = app.clone();
+        std::thread::spawn(move || {
+            show_main_window(&add_app);
+            let _ = add_app.emit("gesture-add", ());
+        });
         return;
     };
     // 配了手势但没配动作 = 半条配置：这时**不执行**（执行空链等于把右键吞了），
@@ -5027,6 +5040,12 @@ fn get_toast_payload(state: tauri::State<'_, KadaState>) -> Option<ToastPayload>
     state.toast.lock().unwrap().clone()
 }
 
+/// 取走未匹配手势的方向串（EXT-03）：主界面据此打开「新增鼠标操作」并预填。
+#[tauri::command]
+fn take_pending_gesture(state: tauri::State<'_, KadaState>) -> Option<String> {
+    state.pending_gesture.lock().unwrap().take()
+}
+
 /// 标记全部已读（熄灭红点，还原托盘图标）。
 #[tauri::command]
 fn mark_results_read(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
@@ -5090,6 +5109,7 @@ pub fn run() {
             get_unread,
             get_toast_payload,
             get_status_payload,
+            take_pending_gesture,
             hud_ready,
             get_hints_state,
             hints_ready,
@@ -5328,6 +5348,7 @@ pub fn run() {
                 tray_unread: unread_icon,
                 toast: Arc::new(Mutex::new(None)),
                 status: Arc::new(Mutex::new(None)),
+                pending_gesture: Arc::new(Mutex::new(None)),
                 hints_tray: Mutex::new(None),
                 pause_tray: Mutex::new(None),
                 hints_placed: AtomicBool::new(false),
