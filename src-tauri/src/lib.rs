@@ -1463,6 +1463,282 @@ fn fire(
     });
 }
 
+/// 手势浮层窗口的视觉参数（EXT-02），随预览 / 结果事件一起发给前端。
+#[derive(Clone, Serialize)]
+struct GestureVisual {
+    trail_color: String,
+    trail_width: i32,
+    label_font_size: i32,
+    label_offset: i32,
+    fail_color: String,
+}
+
+#[derive(Clone, Serialize)]
+struct GesturePreviewPayload {
+    #[serde(flatten)]
+    visual: GestureVisual,
+    /// 窗口本地物理坐标（前端按 `scale` 换算成 CSS 像素）。
+    points: Vec<(i32, i32)>,
+    scale: f64,
+}
+
+#[derive(Clone, Serialize)]
+struct GestureResultPayload {
+    #[serde(flatten)]
+    visual: GestureVisual,
+    points: Vec<(i32, i32)>,
+    scale: f64,
+    matched: bool,
+    label: String,
+    pattern: String,
+}
+
+/// 结果展示序号：新一次手势 / 新结果会把它推进，旧的隐藏定时器据此让位。
+static GESTURE_VISUAL_SERIAL: AtomicU64 = AtomicU64::new(0);
+
+/// 手势浮层窗口名（`index.html#gesture`）。
+const GESTURE_WINDOW: &str = "gesture";
+
+fn gesture_visual_of(s: &Settings) -> GestureVisual {
+    GestureVisual {
+        trail_color: s.gesture_trail_color.clone(),
+        trail_width: s.gesture_trail_width,
+        label_font_size: s.gesture_label_font_size,
+        label_offset: s.gesture_label_offset,
+        fail_color: s.gesture_fail_color.clone(),
+    }
+}
+
+/// 按需创建手势轨迹浮层：铺满虚拟屏幕、透明、不激活、鼠标穿透。
+///
+/// **必须 `focusable(false)` + `set_ignore_cursor_events(true)`**：它能覆盖整个桌面，
+/// 一旦能被激活就会抢前台 → `ResetWatch` 误判复位；鼠标穿透保证画手势时事件照常落到
+/// 下面的窗口。同 toast / hud 的建窗约束，见 AGENTS §1.7。
+fn ensure_gesture_overlay(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
+        return Some(w);
+    }
+    let w = match tauri::WebviewWindowBuilder::new(
+        app,
+        GESTURE_WINDOW,
+        tauri::WebviewUrl::App("index.html#gesture".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .focusable(false)
+    .inner_size(1.0, 1.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("创建手势浮层失败: {e}");
+            return None;
+        }
+    };
+    let _ = w.set_ignore_cursor_events(true);
+    // 铺满虚拟屏幕（多显示器取并集；坐标用物理像素，与钩子轨迹同一口径）。
+    let mut min = (i32::MAX, i32::MAX);
+    let mut max = (i32::MIN, i32::MIN);
+    if let Ok(monitors) = app.available_monitors() {
+        for m in monitors {
+            let p = m.position();
+            let s = m.size();
+            min.0 = min.0.min(p.x);
+            min.1 = min.1.min(p.y);
+            max.0 = max.0.max(p.x.saturating_add(s.width as i32));
+            max.1 = max.1.max(p.y.saturating_add(s.height as i32));
+        }
+    }
+    if min.0 < max.0 && min.1 < max.1 {
+        let _ = w.set_position(tauri::PhysicalPosition::new(min.0, min.1));
+        let _ = w.set_size(tauri::PhysicalSize::new(
+            (max.0 - min.0) as u32,
+            (max.1 - min.1) as u32,
+        ));
+    }
+    Some(w)
+}
+
+/// 浮层窗口左上角（物理像素）与该窗口的缩放系数。
+fn gesture_window_geom(app: &tauri::AppHandle) -> Option<((i32, i32), f64)> {
+    let w = app.get_webview_window(GESTURE_WINDOW)?;
+    let pos = w.outer_position().ok()?;
+    let scale = w.scale_factor().ok()?;
+    Some(((pos.x, pos.y), scale))
+}
+
+fn local_gesture_points(points: &[(i32, i32)], origin: (i32, i32)) -> Vec<(i32, i32)> {
+    points
+        .iter()
+        .map(|p| (p.0 - origin.0, p.1 - origin.1))
+        .collect()
+}
+
+/// 收起浮层，并让旧的隐藏定时器失效。
+fn hide_gesture_overlay(app: &tauri::AppHandle) {
+    GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
+        let _ = w.hide();
+    }
+}
+
+/// 展示一次手势结果（命中 = 动作名；未命中 = 失败色）。窗口隐藏交给延时线程。
+fn show_gesture_result(
+    app: &tauri::AppHandle,
+    cfg: &Arc<RwLock<Config>>,
+    points: &[(i32, i32)],
+    matched: bool,
+    label: String,
+    pattern: String,
+) {
+    if points.len() < 2 {
+        return;
+    }
+    let newly = app.get_webview_window(GESTURE_WINDOW).is_none();
+    if ensure_gesture_overlay(app).is_none() {
+        return;
+    }
+    let Some((origin, scale)) = gesture_window_geom(app) else {
+        return;
+    };
+    let visual = {
+        let g = cfg.read().unwrap();
+        gesture_visual_of(&g.settings)
+    };
+    let payload = GestureResultPayload {
+        visual,
+        points: local_gesture_points(points, origin),
+        scale,
+        matched,
+        label,
+        pattern,
+    };
+    let serial = GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
+    let app = app.clone();
+    std::thread::spawn(move || {
+        // 刚建的窗口要等前端加载完监听器，否则第一个事件会丢（toast 用拉取兜底，
+        // 这里只是短暂提示，等一拍再发更省事）。
+        if newly {
+            std::thread::sleep(Duration::from_millis(180));
+        }
+        if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial {
+            return;
+        }
+        if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
+            let _ = w.show();
+            let _ = w.emit("gesture-result", &payload);
+        }
+        std::thread::sleep(Duration::from_millis(900));
+        if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) == serial {
+            if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
+                let _ = w.hide();
+            }
+        }
+    });
+}
+
+/// 轨迹预览线程：按帧读钩子里的轨迹点，够起手距离才亮出浮层。
+///
+/// 钩子回调里只记点，**不往这里推**（回调超会被系统摘钩子）；这里轮询快照，
+/// 只在点数变化时发事件（16ms 一帧，跟手不刷屏）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
+    std::thread::spawn(move || {
+        let mut was_drawing = false;
+        let mut shown = false;
+        let mut suppressed = false;
+        let mut last_len = usize::MAX;
+        loop {
+            let interval = if kada_hook::gesture::enabled() { 16 } else { 120 };
+            std::thread::sleep(Duration::from_millis(interval));
+            if !kada_hook::gesture::drawing() {
+                was_drawing = false;
+                shown = false;
+                suppressed = false;
+                last_len = usize::MAX;
+                continue;
+            }
+            if !was_drawing {
+                was_drawing = true;
+                shown = false;
+                suppressed = false;
+                last_len = usize::MAX;
+            }
+            if suppressed {
+                continue;
+            }
+            let points = kada_hook::gesture::points();
+            if points.len() < 2 {
+                continue;
+            }
+            let (visual, start_distance, on, exclude) = {
+                let g = cfg.read().unwrap();
+                (
+                    gesture_visual_of(&g.settings),
+                    g.settings.gesture_start_distance,
+                    g.settings.experimental && kada_core::gesture_enabled(&g),
+                    g.settings.gesture_exclude.clone(),
+                )
+            };
+            if !on {
+                suppressed = true;
+                continue;
+            }
+            if !shown {
+                let first = points[0];
+                let moved = points
+                    .iter()
+                    .map(|p| (p.0 - first.0).abs() + (p.1 - first.1).abs())
+                    .max()
+                    .unwrap_or(0);
+                if moved < start_distance {
+                    continue;
+                }
+                // 与 `handle_gesture` 同一口径：全屏 / 排除程序里不接管，也不画浮层。
+                if input::foreground_fullscreen() {
+                    suppressed = true;
+                    continue;
+                }
+                if !exclude.is_empty() {
+                    if let Some(front) = input::frontmost_context() {
+                        if kada_core::app_excluded(&exclude, &front.process_name) {
+                            suppressed = true;
+                            continue;
+                        }
+                    }
+                }
+                let Some(w) = ensure_gesture_overlay(&app) else {
+                    suppressed = true;
+                    continue;
+                };
+                let _ = w.show();
+                GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed);
+                shown = true;
+            }
+            if points.len() == last_len {
+                continue;
+            }
+            last_len = points.len();
+            if let Some((origin, scale)) = gesture_window_geom(&app) {
+                let payload = GesturePreviewPayload {
+                    visual,
+                    points: local_gesture_points(&points, origin),
+                    scale,
+                };
+                if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
+                    let _ = w.emit("gesture-preview", &payload);
+                }
+            }
+        }
+    });
+}
+
 /// 鼠标手势（规划 7.2-MG）：注册轨迹出口。
 ///
 /// 回调**在钩子线程上**跑（低层钩子回调超会被系统静默摘掉），所以这里只做
@@ -1475,6 +1751,7 @@ fn spawn_gesture_listener(
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
 ) {
+    let (overlay_app, overlay_cfg) = (app.clone(), cfg.clone());
     kada_hook::gesture::set_sink(Some(Arc::new(move |stroke| {
         let app = app.clone();
         let cfg = cfg.clone();
@@ -1483,6 +1760,7 @@ fn spawn_gesture_listener(
         let runs = runs.clone();
         std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke));
     })));
+    spawn_gesture_overlay(overlay_app, overlay_cfg);
 }
 
 /// 一次手势的收尾：识别 → 命中就执行动作；**没命中（或压根没画出轨迹）就把右键补回来**。
@@ -1511,12 +1789,14 @@ fn handle_gesture(
         )
     };
     if !on {
+        hide_gesture_overlay(&app);
         replay_right_click();
         return;
     }
     // 全屏程序自动暂停（规划 7.2-MG 余项⑤）：游戏 / 视频 / 远程桌面里右键拖拽本来就是正常
     // 操作，整条不接管、右键原样回放。判据见 `kada_hook::win::foreground_fullscreen`。
     if input::foreground_fullscreen() {
+        hide_gesture_overlay(&app);
         replay_right_click();
         return;
     }
@@ -1524,6 +1804,7 @@ fn handle_gesture(
     if !exclude.is_empty() {
         if let Some(front) = input::frontmost_context() {
             if kada_core::app_excluded(&exclude, &front.process_name) {
+                hide_gesture_overlay(&app);
                 replay_right_click();
                 return;
             }
@@ -1537,11 +1818,17 @@ fn handle_gesture(
         .map(|p| (p.0 - first.0).abs() + (p.1 - first.1).abs())
         .max()
         .unwrap_or(0);
-    if moved < start_distance || stroke.elapsed_ms > gesture_timeout {
+    let pattern = kada_core::pattern_from_points(&stroke.points, min_segment);
+    if moved < start_distance {
+        hide_gesture_overlay(&app);
         replay_right_click();
         return;
     }
-    let pattern = kada_core::pattern_from_points(&stroke.points, min_segment);
+    if stroke.elapsed_ms > gesture_timeout {
+        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern);
+        replay_right_click();
+        return;
+    }
     let matched = {
         let g = cfg.read().unwrap();
         // `when` 门控（前台应用 / 窗口标题 / 设备）：前台惰性查询，只有真配了条件才查。
@@ -1554,6 +1841,7 @@ fn handle_gesture(
         // **看得见的反馈**：没匹配上时除了把右键补回去，还要告诉用户「你画的这个方向串
         // 叫 DRUR」——否则界面毫无反应，用户只会以为功能坏了（试验台也是这么提示的：
         // 照抄方向串进配置就能用）。弹气泡，不进消息中心（避免每次误拖都留一条）。
+        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
         show_toast_note(
             &app,
             &format!("手势未匹配：{pattern}"),
@@ -1566,6 +1854,7 @@ fn handle_gesture(
     // 按「没命中」处理、把右键补回去。
     if actions.is_empty() {
         eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
+        show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
         show_toast_note(
             &app,
             &format!("手势 {pattern} 没有动作"),
@@ -1574,6 +1863,7 @@ fn handle_gesture(
         replay_right_click();
         return;
     }
+    show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
     fire(
         app,
         results,

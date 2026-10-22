@@ -198,6 +198,16 @@ type Settings = {
    * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
    */
   gesture_exclude?: string[];
+  /** 手势轨迹颜色（`#RRGGBB`）。缺字段按后端默认 `#4c9aff`。 */
+  gesture_trail_color?: string;
+  /** 手势轨迹线宽（像素，1~20）。缺字段按后端默认 5。 */
+  gesture_trail_width?: number;
+  /** 手势结果标签字号（像素，8~48）。缺字段按后端默认 14。 */
+  gesture_label_font_size?: number;
+  /** 手势结果标签相对末端的偏移（像素，0~200）。缺字段按后端默认 16。 */
+  gesture_label_offset?: number;
+  /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
+  gesture_fail_color?: string;
 };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
@@ -5285,6 +5295,20 @@ function syncSettings() {
   (document.getElementById("set-gesture-min-segment") as HTMLInputElement).value = String(
     cfg.settings.gesture_min_segment ?? 16,
   );
+  // 手势视觉（EXT-02）：颜色用取色器，数值同样回落后端默认。
+  (document.getElementById("set-gesture-trail-color") as HTMLInputElement).value =
+    cfg.settings.gesture_trail_color ?? "#4c9aff";
+  (document.getElementById("set-gesture-trail-width") as HTMLInputElement).value = String(
+    cfg.settings.gesture_trail_width ?? 5,
+  );
+  (document.getElementById("set-gesture-label-font-size") as HTMLInputElement).value = String(
+    cfg.settings.gesture_label_font_size ?? 14,
+  );
+  (document.getElementById("set-gesture-label-offset") as HTMLInputElement).value = String(
+    cfg.settings.gesture_label_offset ?? 16,
+  );
+  (document.getElementById("set-gesture-fail-color") as HTMLInputElement).value =
+    cfg.settings.gesture_fail_color ?? "#ff5f56";
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -5632,6 +5656,42 @@ function bindSettings() {
     const v = Math.min(40, Math.max(4, Math.floor(Number(gestureMinSegment.value) || 16)));
     gestureMinSegment.value = String(v);
     cfg.settings.gesture_min_segment = v;
+    void save();
+  });
+  // 手势视觉（EXT-02）：颜色是 `#rrggbb`，数值范围与后端 sanitize 一致。
+  const gestureTrailColor = document.getElementById("set-gesture-trail-color") as HTMLInputElement;
+  gestureTrailColor.addEventListener("change", () => {
+    cfg.settings.gesture_trail_color = gestureTrailColor.value;
+    void save();
+  });
+  const gestureTrailWidth = document.getElementById("set-gesture-trail-width") as HTMLInputElement;
+  gestureTrailWidth.addEventListener("change", () => {
+    const v = Math.min(20, Math.max(1, Math.floor(Number(gestureTrailWidth.value) || 5)));
+    gestureTrailWidth.value = String(v);
+    cfg.settings.gesture_trail_width = v;
+    void save();
+  });
+  const gestureLabelFont = document.getElementById(
+    "set-gesture-label-font-size",
+  ) as HTMLInputElement;
+  gestureLabelFont.addEventListener("change", () => {
+    const v = Math.min(48, Math.max(8, Math.floor(Number(gestureLabelFont.value) || 14)));
+    gestureLabelFont.value = String(v);
+    cfg.settings.gesture_label_font_size = v;
+    void save();
+  });
+  const gestureLabelOffset = document.getElementById(
+    "set-gesture-label-offset",
+  ) as HTMLInputElement;
+  gestureLabelOffset.addEventListener("change", () => {
+    const v = Math.min(200, Math.max(0, Math.floor(Number(gestureLabelOffset.value) || 16)));
+    gestureLabelOffset.value = String(v);
+    cfg.settings.gesture_label_offset = v;
+    void save();
+  });
+  const gestureFailColor = document.getElementById("set-gesture-fail-color") as HTMLInputElement;
+  gestureFailColor.addEventListener("change", () => {
+    cfg.settings.gesture_fail_color = gestureFailColor.value;
     void save();
   });
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
@@ -7552,11 +7612,102 @@ async function bootstrapHints() {
   await listen<Config>("config-changed", (e) => render(e.payload));
 }
 
-// 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。四个窗口共用这段。
+// 手势轨迹浮层（独立窗口，加载 index.html#gesture，EXT-02）：
+// 画的时候背后端每帧推轨迹点，这里只画线 + 末端箭头；松手后显示动作名 / 失败色。
+// 窗口本身不可激活、鼠标穿透，显示与隐藏全由后端控制。
+type GestureVisual = {
+  trail_color: string;
+  trail_width: number;
+  label_font_size: number;
+  label_offset: number;
+  fail_color: string;
+};
+type GesturePreviewPayload = GestureVisual & {
+  points: [number, number][];
+  scale: number;
+};
+type GestureResultPayload = GesturePreviewPayload & {
+  matched: boolean;
+  label: string;
+  pattern: string;
+};
+
+async function bootstrapGesture() {
+  document.querySelector(".layout")?.remove();
+  document.querySelector("#result-modal")?.remove();
+  document.querySelector("#save-status")?.remove();
+
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "gesture-overlay");
+  const line = document.createElementNS(SVG_NS, "polyline");
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke-linecap", "round");
+  line.setAttribute("stroke-linejoin", "round");
+  const arrow = document.createElementNS(SVG_NS, "polygon");
+  svg.append(line, arrow);
+  const label = el("div", "gesture-label");
+  document.body.append(svg, label);
+
+  const render = (
+    p: GesturePreviewPayload,
+    matched: boolean | null,
+    name = "",
+    pattern = "",
+  ) => {
+    const color = matched === false ? p.fail_color : p.trail_color;
+    const pts = p.points.map(
+      ([x, y]) => [x / (p.scale || 1), y / (p.scale || 1)] as [number, number],
+    );
+    line.setAttribute("stroke", color);
+    line.setAttribute("stroke-width", String(p.trail_width));
+    line.setAttribute("points", pts.map(([x, y]) => `${x},${y}`).join(" "));
+
+    const last = pts[pts.length - 1];
+    const prev = pts[pts.length - 2];
+    if (last && prev) {
+      const dx = last[0] - prev[0];
+      const dy = last[1] - prev[1];
+      const len = Math.hypot(dx, dy) || 1;
+      const size = 10 + p.trail_width * 1.5;
+      const bx = last[0] - (dx / len) * size * 1.6;
+      const by = last[1] - (dy / len) * size * 1.6;
+      const px = (-dy / len) * size * 0.6;
+      const py = (dx / len) * size * 0.6;
+      arrow.setAttribute("fill", color);
+      arrow.setAttribute(
+        "points",
+        `${last[0]},${last[1]} ${bx + px},${by + py} ${bx - px},${by - py}`,
+      );
+      arrow.style.display = "";
+    } else {
+      arrow.style.display = "none";
+    }
+
+    const text = matched === null ? "" : matched ? name : trt`未匹配 ${pattern}`;
+    label.textContent = text;
+    label.style.display = text ? "block" : "none";
+    label.style.color = color;
+    label.style.fontSize = `${p.label_font_size}px`;
+    if (last) {
+      label.style.left = `${last[0] + p.label_offset}px`;
+      label.style.top = `${last[1] + p.label_offset}px`;
+    }
+  };
+
+  await listen<GesturePreviewPayload>("gesture-preview", (e) => render(e.payload, null));
+  await listen<GestureResultPayload>("gesture-result", (e) =>
+    render(e.payload, e.payload.matched, e.payload.label, e.payload.pattern),
+  );
+}
+
+// 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。五个窗口共用这段。
 applyTheme(loadTheme());
 
 if (location.hash === "#toast") {
   void bootstrapToast();
+} else if (location.hash === "#gesture") {
+  void bootstrapGesture();
 } else if (location.hash === "#hud") {
   // 演示模式只在没有 Tauri 壳时生效（`index.html#hud` 纯浏览器直开时给一份样例载荷，
   // 方便调样式；壳内自动跳过）。触发气泡那边不装，因为它没有可预览的静态内容。

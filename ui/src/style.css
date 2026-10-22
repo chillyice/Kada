@@ -2667,6 +2667,30 @@ body:has(.toast-bubble) {
   display: none;
 }
 
+/* 手势轨迹浮层（gesture 窗口，EXT-02）：透明窗口 + 全屏 SVG 折线 + 结果标签。
+   窗口本身鼠标穿透、不可激活，这里只负责画。 */
+body:has(.gesture-overlay) {
+  background: transparent;
+  overflow: hidden;
+}
+
+.gesture-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.gesture-label {
+  position: fixed;
+  pointer-events: none;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85);
+}
+
 /* 输入状态悬浮指示（hud 窗口，独立小浮层；见规划 7.3-⑬） */
 /* 同 toast：hud 也是 transparent 窗口，body 必须透明，否则会显示成实心深色矩形 */
 body:has(.hud-box) {

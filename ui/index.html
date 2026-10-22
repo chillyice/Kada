@@ -430,6 +430,41 @@
                     </span>
                     <input type="number" id="set-gesture-min-segment" min="4" max="40" step="1" />
                   </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">轨迹颜色</span>
+                      <span class="set-sub">画手势时轨迹线与末端箭头的颜色</span>
+                    </span>
+                    <input type="color" id="set-gesture-trail-color" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">轨迹宽度</span>
+                      <span class="set-sub">轨迹线宽（像素，1~20）</span>
+                    </span>
+                    <input type="number" id="set-gesture-trail-width" min="1" max="20" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">结果字号</span>
+                      <span class="set-sub">命中 / 未命中标签的字号（像素，8~48）</span>
+                    </span>
+                    <input type="number" id="set-gesture-label-font-size" min="8" max="48" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">标签偏移</span>
+                      <span class="set-sub">结果标签相对轨迹末端的偏移（像素，0~200）</span>
+                    </span>
+                    <input type="number" id="set-gesture-label-offset" min="0" max="200" step="1" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">失败颜色</span>
+                      <span class="set-sub">手势未匹配时轨迹与标签的颜色</span>
+                    </span>
+                    <input type="color" id="set-gesture-fail-color" />
+                  </label>
                 </div>
                 <details class="hint-fold">
                   <summary>鼠标手势怎么用</summary>

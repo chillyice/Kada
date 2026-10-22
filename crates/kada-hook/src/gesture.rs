@@ -84,6 +84,19 @@ pub fn reset() {
     t.last = (0, 0);
 }
 
+/// 当前是否正在画（右键按住中）。浮层按这个开关显示 / 收起。
+pub fn drawing() -> bool {
+    enabled() && TRACKER.lock().unwrap().down
+}
+
+/// 取一份当前轨迹快照（屏幕坐标、y 向下）。浮层预览用；**不要**在钩子回调里调。
+pub fn points() -> Vec<(i32, i32)> {
+    if !enabled() {
+        return Vec::new();
+    }
+    TRACKER.lock().unwrap().points.clone()
+}
+
 /// 右键按下：返回 `true` = 这一下应当被吞掉。
 pub fn on_right_down(pt: (i32, i32)) -> bool {
     if !enabled() {

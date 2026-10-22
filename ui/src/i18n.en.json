@@ -729,5 +729,16 @@
   "＋ 新建层": "+ New layer",
   "＋ 添加动作": "+ Add action",
   "；已开启自动更新，也会在长时间空闲或下次启动时自动安装": "; auto update is on, so it also installs after long idle or on next launch",
-  "；已开启自动更新，也会在长时间空闲时自动安装": "; auto update is on, so it also installs after long idle"
+  "；已开启自动更新，也会在长时间空闲时自动安装": "; auto update is on, so it also installs after long idle",
+  "轨迹颜色": "Trail color",
+  "画手势时轨迹线与末端箭头的颜色": "Color of the trail and end arrow while drawing a gesture",
+  "轨迹宽度": "Trail width",
+  "轨迹线宽（像素，1~20）": "Trail line width in pixels (1–20)",
+  "结果字号": "Result font size",
+  "命中 / 未命中标签的字号（像素，8~48）": "Font size of the hit / miss label in pixels (8–48)",
+  "标签偏移": "Label offset",
+  "结果标签相对轨迹末端的偏移（像素，0~200）": "Offset of the result label from the trail end in pixels (0–200)",
+  "失败颜色": "Failure color",
+  "手势未匹配时轨迹与标签的颜色": "Color of the trail and label when a gesture does not match",
+  "未匹配 {0}": "No match: {0}"
 }

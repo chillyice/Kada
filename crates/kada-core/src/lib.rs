@@ -1933,6 +1933,21 @@ pub struct Settings {
     /// 程序留的（规划 7.2-MG 余项）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub gesture_exclude: Vec<String>,
+    /// 手势轨迹颜色（`#RRGGBB`）。
+    #[serde(default = "default_gesture_trail_color")]
+    pub gesture_trail_color: String,
+    /// 手势轨迹线宽（像素）。
+    #[serde(default = "default_gesture_trail_width")]
+    pub gesture_trail_width: i32,
+    /// 手势结果标签字号（像素）。
+    #[serde(default = "default_gesture_label_font_size")]
+    pub gesture_label_font_size: i32,
+    /// 手势结果标签相对末端的偏移（像素）。
+    #[serde(default = "default_gesture_label_offset")]
+    pub gesture_label_offset: i32,
+    /// 手势未命中时的失败色（`#RRGGBB`）。
+    #[serde(default = "default_gesture_fail_color")]
+    pub gesture_fail_color: String,
 }
 
 /// 鼠标手势起手距离的缺省值（像素）。
@@ -1948,6 +1963,31 @@ pub fn default_gesture_timeout_ms() -> u64 {
 /// 鼠标手势方向段长的缺省值（像素）。
 pub fn default_gesture_min_segment() -> i32 {
     16
+}
+
+/// 手势轨迹颜色的缺省值。
+pub fn default_gesture_trail_color() -> String {
+    "#4c9aff".to_string()
+}
+
+/// 手势轨迹线宽的缺省值（像素）。
+pub fn default_gesture_trail_width() -> i32 {
+    5
+}
+
+/// 手势结果标签字号的缺省值（像素）。
+pub fn default_gesture_label_font_size() -> i32 {
+    14
+}
+
+/// 手势结果标签偏移的缺省值（像素）。
+pub fn default_gesture_label_offset() -> i32 {
+    16
+}
+
+/// 手势失败色的缺省值。
+pub fn default_gesture_fail_color() -> String {
+    "#ff5f56".to_string()
 }
 
 /// `snippet_index_url` 的缺省值（供 serde 与 [`Settings::default`] 共用）。
@@ -1999,6 +2039,11 @@ impl Default for Settings {
             gesture_timeout_ms: default_gesture_timeout_ms(),
             gesture_min_segment: default_gesture_min_segment(),
             gesture_exclude: Vec::new(),
+            gesture_trail_color: default_gesture_trail_color(),
+            gesture_trail_width: default_gesture_trail_width(),
+            gesture_label_font_size: default_gesture_label_font_size(),
+            gesture_label_offset: default_gesture_label_offset(),
+            gesture_fail_color: default_gesture_fail_color(),
         }
     }
 }
@@ -3468,7 +3513,36 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         .filter(|s| !s.is_empty())
         .collect();
 
+    // 手势视觉（EXT-02）：颜色只收 `#RGB` / `#RRGGBB`（非法回落默认，避免把任意字符串
+    // 塞进 CSS）；数值钳到界面可调范围，手改 JSON 写 0 / 负数不至于把浮层弄没。
+    out.settings.gesture_trail_color = normalize_hex_color(
+        &out.settings.gesture_trail_color,
+        &default_gesture_trail_color(),
+    );
+    out.settings.gesture_fail_color = normalize_hex_color(
+        &out.settings.gesture_fail_color,
+        &default_gesture_fail_color(),
+    );
+    out.settings.gesture_trail_width = out.settings.gesture_trail_width.clamp(1, 20);
+    out.settings.gesture_label_font_size = out.settings.gesture_label_font_size.clamp(8, 48);
+    out.settings.gesture_label_offset = out.settings.gesture_label_offset.clamp(0, 200);
+
     (out, ignored)
+}
+
+/// 归一化 `#RGB` / `#RRGGBB`；不合法时回落到 `fallback`。
+fn normalize_hex_color(raw: &str, fallback: &str) -> String {
+    let hex = raw.trim().trim_start_matches('#');
+    let valid = matches!(hex.len(), 3 | 6) && hex.chars().all(|c| c.is_ascii_hexdigit());
+    if !valid {
+        return fallback.to_string();
+    }
+    let expanded: String = if hex.len() == 3 {
+        hex.chars().flat_map(|c| [c, c]).collect()
+    } else {
+        hex.to_string()
+    };
+    format!("#{}", expanded.to_ascii_lowercase())
 }
 
 #[cfg(test)]
@@ -4067,6 +4141,27 @@ mod os_and_sanitize_tests {
         let (clean, ignored) = sanitize_config(&bad);
         assert_eq!(clean.settings.wake_key, None);
         assert!(ignored.iter().any(|m| m.contains("唤醒键")));
+    }
+
+    #[test]
+    fn sanitize_gesture_visual_clamps_and_fixes_colors() {
+        let cfg = Config {
+            settings: Settings {
+                gesture_trail_color: " #ABC ".into(),
+                gesture_fail_color: "not-a-color".into(),
+                gesture_trail_width: 0,
+                gesture_label_font_size: 999,
+                gesture_label_offset: -5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let (clean, _) = sanitize_config(&cfg);
+        assert_eq!(clean.settings.gesture_trail_color, "#aabbcc");
+        assert_eq!(clean.settings.gesture_fail_color, default_gesture_fail_color());
+        assert_eq!(clean.settings.gesture_trail_width, 1);
+        assert_eq!(clean.settings.gesture_label_font_size, 48);
+        assert_eq!(clean.settings.gesture_label_offset, 0);
     }
 
     #[test]
