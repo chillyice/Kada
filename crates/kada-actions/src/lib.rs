@@ -29,8 +29,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub mod abort;
 
 use kada_core::{
-    substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, TextInjectMode,
-    TextMode, TextValue, Value, Vars,
+    substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, SendPayload,
+    TextInjectMode, TextMode, TextValue, Value, Vars,
 };
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -326,6 +326,7 @@ fn action_kind(action: &Action) -> &'static str {
     match action {
         Action::Text { .. } => "text",
         Action::Keys { .. } => "keys",
+        Action::SendTo { .. } => "send_to",
         Action::PauseMs { .. } => "pause_ms",
         Action::Mouse { .. } => "mouse",
         Action::Clipboard { .. } => "clipboard",
@@ -788,6 +789,7 @@ fn action_label(action: &Action) -> &'static str {
         } => "文本注入失败",
         Action::Text { .. } => "大小写转换失败",
         Action::Keys { .. } => "按键注入失败",
+        Action::SendTo { .. } => "后台发送失败",
         Action::PauseMs { .. } => "暂停失败",
         Action::Mouse { .. } => "鼠标模拟失败",
         Action::Clipboard { .. } => "剪贴板操作失败",
@@ -904,6 +906,14 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             KeysMode::Tap => format!("按下 {}", keys.join("+")),
             KeysMode::Press => format!("按住 {}", keys.join("+")),
             KeysMode::Release => format!("抬起 {}", keys.join("+")),
+        },
+        Action::SendTo { target, payload, .. } => match payload {
+            SendPayload::Keys { keys } => {
+                format!("后台发送按键 {} → {}", keys.join("+"), sub(target))
+            }
+            SendPayload::Text { text } => {
+                format!("后台发送文本 {} → {}", preview(&sub(text)), sub(target))
+            }
         },
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
@@ -1079,6 +1089,7 @@ fn action_description(action: &Action) -> Option<&str> {
     match action {
         Action::Text { description, .. }
         | Action::Keys { description, .. }
+        | Action::SendTo { description, .. }
         | Action::PauseMs { description, .. }
         | Action::Mouse { description, .. }
         | Action::Clipboard { description, .. } => description.as_deref(),
@@ -1189,6 +1200,25 @@ fn run_action(
                     for k in ks.iter().rev() {
                         unhold_key(scope, *k);
                     }
+                }
+            }
+        }
+        Action::SendTo { target, payload, .. } => {
+            // 持链内注入锁：与前台注入动作保持同一顺序，链内输入步骤不交错。
+            // 注意它不是 SendInput，物理修饰键不会污染它，所以壳层不把它算进 `injects_keys`。
+            let _inj = lock_inject(ctx);
+            let target = substitute_vars(target, vars);
+            match payload {
+                SendPayload::Keys { keys } => {
+                    let ks: Vec<Key> = keys
+                        .iter()
+                        .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
+                        .collect::<Result<_, _>>()?;
+                    kada_hook::send_to_window(&target, kada_hook::WindowInput::Keys(&ks))?;
+                }
+                SendPayload::Text { text } => {
+                    let text = substitute_vars(text, vars);
+                    kada_hook::send_to_window(&target, kada_hook::WindowInput::Text(&text))?;
                 }
             }
         }

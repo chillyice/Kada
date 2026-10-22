@@ -60,10 +60,14 @@ type MouseOp =
   | { op: "click"; button: MouseButton }
   | { op: "scroll"; dx: number; dy: number };
 type KeysMode = "tap" | "press" | "release";
+type SendPayload =
+  | { kind: "keys"; keys: string[] }
+  | { kind: "text"; text: string };
 type Action =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
   | { type: "command"; shell: Shell; command: string; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
+  | { type: "send_to"; target: string; payload: SendPayload; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
   | { type: "clipboard"; operation: ClipboardOperation; description?: string }
@@ -446,6 +450,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "window", label: tr("窗口操作") },
   { value: "clipboard", label: tr("剪贴板") },
   { value: "keys", label: tr("按键组合") },
+  { value: "send_to", label: tr("后台发送") },
   { value: "mouse", label: tr("鼠标操作") },
   { value: "pause_ms", label: tr("延迟") },
   { value: "if", label: tr("条件判断") },
@@ -459,6 +464,7 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   command: "💻",
   script: "📜",
   keys: "⌨️",
+  send_to: "📨",
   mouse: "🖱️",
   clipboard: "📋",
   pause_ms: "⏱️",
@@ -542,6 +548,10 @@ function actionVarReads(a: Action): string[] {
       break;
     case "open_url":
       texts.push(a.url);
+      break;
+    case "send_to":
+      texts.push(a.target);
+      if (a.payload.kind === "text") texts.push(a.payload.text);
       break;
     case "if": {
       const c = a.condition;
@@ -758,6 +768,8 @@ function newAction(type: Action["type"]): Action {
       return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
     case "keys":
       return { type: "keys", keys: [], mode: "tap" };
+    case "send_to":
+      return { type: "send_to", target: "", payload: { kind: "keys", keys: [] } };
     case "mouse":
       return { type: "mouse", op: newMouseOp("move") };
     case "clipboard":
@@ -849,6 +861,11 @@ function actionHasContent(a: Action): boolean {
       return a.path.trim().length > 0;
     case "keys":
       return a.keys.length > 0;
+    case "send_to":
+      return (
+        a.target.trim().length > 0 &&
+        (a.payload.kind === "keys" ? a.payload.keys.length > 0 : true)
+      );
     case "mouse":
       return (
         a.op.op === "click" ||
@@ -1048,6 +1065,12 @@ function actionSummary(a: Action): string {
       if (a.mode === "press") return trt`按住：${a.keys.join("+")}`;
       if (a.mode === "release") return trt`抬起：${a.keys.join("+")}`;
       return trt`按键：${a.keys.join("+")}`;
+    case "send_to": {
+      const to = a.target || tr("未设目标窗口");
+      return a.payload.kind === "keys"
+        ? trt`后台发送按键 ${a.payload.keys.join("+")} → ${to}`
+        : trt`后台发送文本 ${a.payload.text} → ${to}`;
+    }
     case "mouse":
       return mouseSummary(a.op);
     case "clipboard":
@@ -4473,6 +4496,25 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     });
     return sel;
   }
+  if (a.type === "send_to") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const [value, label] of [
+      ["keys", tr("按键")],
+      ["text", tr("文本")],
+    ] as [SendPayload["kind"], string][]) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = value;
+      opt.textContent = label;
+      sel.append(opt);
+    }
+    sel.value = a.payload.kind;
+    sel.addEventListener("change", () => {
+      a.payload =
+        sel.value === "keys" ? { kind: "keys", keys: [] } : { kind: "text", text: "" };
+      rerender();
+    });
+    return sel;
+  }
   if (a.type === "mouse") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const o of MOUSE_OPS) {
@@ -4906,6 +4948,59 @@ function actionFields(
     });
     line.append(keys, cap);
     body.append(mode, line);
+  } else if (a.type === "send_to") {
+    body.append(
+      el(
+        "div",
+        "unit-hint",
+        tr("把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。"),
+      ),
+    );
+    const targetLine = el("div", "action-line");
+    const target = el("input", "action-input") as HTMLInputElement;
+    target.type = "text";
+    target.value = a.target;
+    target.placeholder = tr("目标窗口：进程名或标题关键字，如 chrome.exe / 记事本");
+    target.addEventListener("input", () => {
+      a.target = target.value;
+    });
+    targetLine.append(el("span", "unit-hint", tr("目标窗口")), target);
+    body.append(targetLine);
+
+    if (a.payload.kind === "keys") {
+      const line = el("div", "action-line");
+      const keys = el("input", "action-input") as HTMLInputElement;
+      keys.type = "text";
+      keys.value = a.payload.keys.join("+");
+      keys.placeholder = tr("如 Ctrl+S");
+      keys.addEventListener("input", () => {
+        a.payload = {
+          kind: "keys",
+          keys: keys.value
+            .split("+")
+            .map((x) => x.trim())
+            .filter(Boolean),
+        };
+      });
+      const cap = el("button", undefined, tr("录入")) as HTMLButtonElement;
+      cap.addEventListener("click", (e) => {
+        const btn = e.currentTarget as HTMLButtonElement;
+        startCapture((combo) => {
+          a.payload = { kind: "keys", keys: combo.split("+") };
+          keys.value = combo;
+        }, btn);
+      });
+      line.append(keys, cap);
+      body.append(line);
+    } else {
+      const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
+      ta.value = a.payload.text;
+      ta.placeholder = tr("要发送的文本（支持 {变量名} 占位符）……");
+      ta.addEventListener("input", () => {
+        a.payload = { kind: "text", text: ta.value };
+      });
+      body.append(ta);
+    }
   } else if (a.type === "mouse") {
     const op = a.op;
     const line = el("div", "action-line");

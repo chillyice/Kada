@@ -835,5 +835,16 @@
   "搜索选中文字": "Search selected text",
   "转换": "Convert",
   "转成大写": "Uppercase",
-  "转成小写": "Lowercase"
+  "转成小写": "Lowercase",
+  "后台发送": "Send to background",
+  "按键": "Keys",
+  "文本": "Text",
+  "未设目标窗口": "no target window",
+  "目标窗口": "Target window",
+  "目标窗口：进程名或标题关键字，如 chrome.exe / 记事本": "Target window: process name or title keyword, e.g. chrome.exe / Notepad",
+  "如 Ctrl+S": "e.g. Ctrl+S",
+  "要发送的文本（支持 {变量名} 占位符）……": "Text to send (supports {variable} placeholders)…",
+  "后台发送按键 {0} → {1}": "Send keys {0} → {1}",
+  "后台发送文本 {0} → {1}": "Send text {0} → {1}",
+  "把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。": "Sends keys or text to a non-foreground window without activating or focusing it. The target matches a process name or window-title keyword (case-insensitive, * and ? supported); the topmost match wins. Windows only; browsers / Electron / UWP / games / elevated windows usually ignore these messages, and it never falls back to foreground injection."
 }

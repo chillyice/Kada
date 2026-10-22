@@ -411,7 +411,7 @@ fn elevated_foreground() -> Option<String> {
 
 /// 本进程是不是提权运行的（结果在进程生命周期内不变）。Kada 本体正常是非提权的；
 /// 万一它以管理员身份启动，前台再高的完整性级别也够得着，就无需再转一道。
-fn self_elevated() -> bool {
+pub(crate) fn self_elevated() -> bool {
     match SELF_ELEVATED.load(Ordering::Relaxed) {
         1 => false,
         2 => true,
@@ -424,7 +424,7 @@ fn self_elevated() -> bool {
 }
 
 /// 某个进程是否提权（`TokenElevation`）。查不到返回 `None`（保护进程等），由调用方定夺。
-fn process_elevated(pid: u32) -> Option<bool> {
+pub(crate) fn process_elevated(pid: u32) -> Option<bool> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
     let mut token = HANDLE::default();
     let opened = unsafe { OpenProcessToken(handle, TOKEN_QUERY, &mut token) };

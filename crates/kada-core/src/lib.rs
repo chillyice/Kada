@@ -1142,6 +1142,22 @@ pub enum MouseOp {
     Scroll { dx: i32, dy: i32 },
 }
 
+/// 「后台发送」动作的内容（EXT-16 二阶段）：发给非前台窗口的按键组合或文本。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SendPayload {
+    /// 按键组合（按顺序按下、逆序抬起）。
+    Keys {
+        #[serde(default)]
+        keys: Vec<String>,
+    },
+    /// 原样文本（支持 `{变量}` 占位符，执行时替换）。
+    Text {
+        #[serde(default)]
+        text: String,
+    },
+}
+
 /// 「按键组合」动作的注入方式（EXT-16）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1219,6 +1235,12 @@ pub enum Action {
     /// 按键动作：`tap` 按下再松开（默认）；`press` 只按下并保持到链结束 / 显式抬起；
     /// `release` 抬起（逆序）。按住类按键在失败 / 中止 / 输入复位时也会自动抬起。
     Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "is_tap_mode")] mode: KeysMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 向**非前台**窗口发送按键 / 文本（EXT-16 二阶段）：Windows 用 `PostMessage`，全程不激活、
+    /// 不抢焦点，也不回落到前台注入。`target` 匹配进程名或窗口标题（忽略大小写，含 `*`/`?`
+    /// 走通配，否则子串）；多个命中取 Z 序最上层。只有 Windows 实现，其它平台执行时报错并由
+    /// 冲突检测标平台缺失。目标程序靠 Raw Input / 焦点 / IME 收键时（Chromium、UWP、游戏、
+    /// 提权窗口）通常收不到——这是 `PostMessage` 的固有限制，不是回退前台的信号。
+    SendTo { target: String, payload: SendPayload, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 暂停 ms 毫秒。
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
@@ -1355,6 +1377,21 @@ impl Action {
                 }
                 for k in keys {
                     check_key("组合键", k)?;
+                }
+                Ok(())
+            }
+            Action::SendTo { target, payload, .. } => {
+                non_empty("目标窗口", target)?;
+                match payload {
+                    SendPayload::Keys { keys } => {
+                        if keys.is_empty() {
+                            return Err("后台发送的按键组合不能为空".into());
+                        }
+                        for k in keys {
+                            check_key("后台发送", k)?;
+                        }
+                    }
+                    SendPayload::Text { .. } => {}
                 }
                 Ok(())
             }
@@ -2469,6 +2506,8 @@ pub struct PlatformCaps {
     /// 鼠标绝对移动（[`MouseOp::MoveTo`] / [`MouseOp::MoveToOrigin`]）是否可用。
     /// Linux 拿不到可靠的全局屏幕范围（尤其 Wayland），暂不支持。
     pub mouse_absolute: bool,
+    /// 「后台发送」动作（[`Action::SendTo`]）是否可用。只有 Windows 用 `PostMessage` 实现。
+    pub background_input: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2481,6 +2520,7 @@ impl Default for PlatformCaps {
             device_conditions: true,
             window_actions: true,
             mouse_absolute: true,
+            background_input: true,
         }
     }
 }
@@ -2494,6 +2534,7 @@ impl PlatformCaps {
             && self.device_conditions
             && self.window_actions
             && self.mouse_absolute
+            && self.background_input
     }
 }
 
@@ -3008,6 +3049,14 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        if !caps.background_input && uses_background_input(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「后台发送」动作在当前平台用不了（只有 Windows 用 PostMessage 实现），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
@@ -3031,6 +3080,18 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
+    }
+    if !caps.background_input {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_background_input(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「后台发送」动作在当前平台用不了（只有 Windows 用 PostMessage 实现），执行到这一步会失败".into(),
                     name: g.label(),
                 });
             }
@@ -3386,6 +3447,21 @@ fn uses_absolute_move(actions: &[Action]) -> bool {
         } => uses_absolute_move(then) || uses_absolute_move(otherwise),
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => uses_absolute_move(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有「后台发送」动作（`If` / `Parallel` / 分组递归进去）。
+fn uses_background_input(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::SendTo { .. } => true,
+        Action::Group { actions, .. } => uses_background_input(actions),
+        #[cfg(feature = "automation")]
+        Action::If {
+            then, otherwise, ..
+        } => uses_background_input(then) || uses_background_input(otherwise),
+        #[cfg(feature = "automation")]
+        Action::Parallel { actions, .. } => uses_background_input(actions),
         _ => false,
     })
 }
@@ -4197,6 +4273,45 @@ mod config_tests {
         );
     }
 
+    #[test]
+    fn send_to_validates_target_and_keys() {
+        let ok = Action::SendTo {
+            target: "chrome.exe".into(),
+            payload: SendPayload::Text { text: "hi".into() },
+            description: None,
+        };
+        assert!(ok.validate().is_ok());
+        // 空目标 / 空按键 / 坏键名都拒绝；空文本是合法（无输出）。
+        assert!(Action::SendTo {
+            target: "  ".into(),
+            payload: SendPayload::Text { text: "hi".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::SendTo {
+            target: "chrome.exe".into(),
+            payload: SendPayload::Keys { keys: vec![] },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::SendTo {
+            target: "chrome.exe".into(),
+            payload: SendPayload::Keys { keys: vec!["NotAKey".into()] },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        assert!(Action::SendTo {
+            target: "chrome.exe".into(),
+            payload: SendPayload::Text { text: String::new() },
+            description: None,
+        }
+        .validate()
+        .is_ok());
+    }
+
     #[cfg(feature = "automation")]
     #[test]
     fn actions_json_roundtrip_and_validate() {
@@ -4207,6 +4322,16 @@ mod config_tests {
             Action::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()], description: None },
             Action::OpenFolder { path: "C:\\Users".into(), description: None },
             Action::Keys { keys: vec!["Ctrl".into(), "C".into()], mode: KeysMode::Tap, description: None },
+            Action::SendTo {
+                target: "notepad.exe".into(),
+                payload: SendPayload::Keys { keys: vec!["Ctrl".into(), "S".into()] },
+                description: None,
+            },
+            Action::SendTo {
+                target: "记事本".into(),
+                payload: SendPayload::Text { text: "hi {name}".into() },
+                description: None,
+            },
             Action::PauseMs { ms: 100, description: None },
         ];
         for a in &actions {
@@ -6826,6 +6951,7 @@ mod platform_caps_tests {
             frontmost_conditions: false,
             window_actions: false,
             mouse_absolute: false,
+            background_input: false,
             ..Default::default()
         }
     }
@@ -6845,6 +6971,7 @@ mod platform_caps_tests {
             device_conditions: false,
             window_actions: false,
             mouse_absolute: true,
+            background_input: false,
         }
     }
 
@@ -7001,6 +7128,32 @@ mod platform_caps_tests {
         assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
         assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
         assert!(hits.iter().all(|c| c.message.contains("鼠标绝对移动")));
+    }
+
+    #[test]
+    fn background_input_flagged_where_unsupported() {
+        let action = Action::SendTo {
+            target: "notepad.exe".into(),
+            payload: SendPayload::Keys { keys: vec!["Ctrl".into(), "S".into()] },
+            description: None,
+        };
+        let cfg = Config {
+            shortcuts: vec![shortcut("s", "Ctrl+K", vec![action.clone()])],
+            gestures: vec![crate::gesture::Gesture {
+                pattern: "DR".into(),
+                actions: vec![action],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+        for caps in [macos_caps(), linux_caps()] {
+            let hits = detect_conflicts(&cfg, &caps);
+            assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
+            assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+            assert!(hits.iter().all(|c| c.message.contains("后台发送")));
+        }
     }
 
     #[cfg(feature = "automation")]

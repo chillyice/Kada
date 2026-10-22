@@ -1369,6 +1369,183 @@ pub fn window_action(hwnd: isize, op: WindowAction) -> Result<(), String> {
     Ok(())
 }
 
+/// 把按键 / 文本发给一个**非前台**窗口（EXT-16 二阶段）：`PostMessage`，不激活、不抢焦点。
+///
+/// 目标按进程名 / 窗口标题匹配（复用 `app_excluded` 的通配 / 子串语义），多个命中取
+/// `EnumWindows` 的 Z 序第一个。命中顶层窗后再下钻到该线程的焦点子窗（编辑控件必须发给它，
+/// 发顶层框没用）。目标恰好是当前前台时**直接报错**：前台输入只走既有的 `simulate`。
+///
+/// 已知限制见 [`crate::send_to_window`] 的说明（Chromium / UWP / 游戏 / 提权窗口收不到）。
+pub fn send_to_window(target: &str, input: crate::WindowInput<'_>) -> Result<(), String> {
+    let pattern = target.trim();
+    if pattern.is_empty() {
+        return Err("目标窗口不能为空".into());
+    }
+    let top = find_target_window(pattern)?;
+    let foreground = unsafe { GetForegroundWindow() };
+    if !foreground.0.is_null() && foreground == top {
+        return Err(
+            "目标窗口就是当前前台窗口；前台输入请用普通「文本 / 按键组合」动作".into()
+        );
+    }
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(top, Some(&mut pid)) };
+    if pid != 0 && !agent::self_elevated() && agent::process_elevated(pid).unwrap_or(false) {
+        return Err("目标窗口是提权窗口（UIPI 会拦下后台消息），「后台发送」暂不支持".into());
+    }
+    let target = focused_child(top);
+    match input {
+        crate::WindowInput::Keys(keys) => post_keys(target, keys),
+        crate::WindowInput::Text(text) => post_text(target, text),
+    }
+}
+
+/// 按进程名 / 窗口标题找顶层窗口；`EnumWindows` 的顺序就是 Z 序，取第一个命中。
+fn find_target_window(pattern: &str) -> Result<HWND, String> {
+    struct Search {
+        pattern: String,
+        own_pid: u32,
+        found: Option<HWND>,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = &mut *(lparam.0 as *mut Search);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_TOOLWINDOW.0 != 0 {
+            return TRUE;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == search.own_pid {
+            return TRUE;
+        }
+        let patterns = std::slice::from_ref(&search.pattern);
+        let process = process_name_of(pid).unwrap_or_default();
+        if !process.is_empty() && kada_core::app_excluded(patterns, &process) {
+            search.found = Some(hwnd);
+            return FALSE;
+        }
+        let mut title_buf = [0u16; 512];
+        let title_len = GetWindowTextW(hwnd, &mut title_buf);
+        let title = String::from_utf16_lossy(&title_buf[..title_len.max(0) as usize]);
+        if !title.is_empty() && kada_core::app_excluded(patterns, &title) {
+            search.found = Some(hwnd);
+            return FALSE;
+        }
+        TRUE
+    }
+
+    let mut search = Search {
+        pattern: pattern.to_string(),
+        own_pid: unsafe { GetCurrentProcessId() },
+        found: None,
+    };
+    let _ = unsafe {
+        EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize))
+    };
+    search.found.ok_or_else(|| {
+        format!("没有找到匹配「{pattern}」的窗口（匹配进程名或窗口标题，忽略大小写）")
+    })
+}
+
+/// 目标顶层窗所属线程当前的焦点子窗（同属这棵窗口树才用）；取不到就发顶层。
+fn focused_child(top: HWND) -> HWND {
+    let tid = unsafe { GetWindowThreadProcessId(top, None) };
+    if tid == 0 {
+        return top;
+    }
+    let mut info = GUITHREADINFO {
+        cbSize: size_of::<GUITHREADINFO>() as u32,
+        ..Default::default()
+    };
+    if unsafe { GetGUIThreadInfo(tid, &mut info) }.is_err() {
+        return top;
+    }
+    let focus = info.hwndFocus;
+    if focus.0.is_null() {
+        return top;
+    }
+    (unsafe { GetAncestor(focus, GA_ROOT) } == top).then_some(focus).unwrap_or(top)
+}
+
+/// 发送按键组合：按顺序按下 → 逆序抬起。鼠标键 / 滚轮不在 `PostMessage` 的语义内，明确报错。
+fn post_keys(hwnd: HWND, keys: &[Key]) -> Result<(), String> {
+    if keys.iter().any(|k| {
+        matches!(
+            k,
+            Key::MouseMiddle | Key::MouseBack | Key::MouseForward | Key::WheelUp | Key::WheelDown
+        )
+    }) {
+        return Err("「后台发送」不支持鼠标键 / 滚轮".into());
+    }
+
+    let mut downs: Vec<(u16, isize)> = Vec::new();
+    for k in keys {
+        let Some(vk) = key_to_vk(*k) else {
+            release_downs(hwnd, &downs);
+            return Err(format!("键「{}」没有可用的虚拟键码", kada_core::key_name(*k)));
+        };
+        let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
+        let extended = simulate::is_extended_key(*k);
+        if let Err(e) = post(hwnd, WM_KEYDOWN, vk, key_lparam(scan, extended, false)) {
+            release_downs(hwnd, &downs);
+            return Err(e);
+        }
+        downs.push((vk, key_lparam(scan, extended, true)));
+    }
+    for (vk, lp) in downs.into_iter().rev() {
+        post(hwnd, WM_KEYUP, vk, lp)?;
+    }
+    Ok(())
+}
+
+/// 发送文本：每个 UTF-16 码元一条 `WM_CHAR`（不支持粘贴，也不经键盘布局）。
+fn post_text(hwnd: HWND, text: &str) -> Result<(), String> {
+    for unit in text_units(text) {
+        post(hwnd, WM_CHAR, unit, 1)?;
+    }
+    Ok(())
+}
+
+/// 文本 → `WM_CHAR` 的 `wParam` 序列：`\r` 丢掉（`\r\n` 只发一次回车），`\n` 换成 `\r`。
+fn text_units(text: &str) -> Vec<u16> {
+    text.encode_utf16()
+        .filter_map(|unit| match unit {
+            0x0D => None,
+            0x0A => Some(0x0D),
+            u => Some(u),
+        })
+        .collect()
+}
+
+/// `WM_KEYDOWN` / `WM_KEYUP` 的 `lParam`：重复计数 1 + 扫描码 + 扩展位 + 抬起位（纯函数，可单测）。
+fn key_lparam(scan: u16, extended: bool, up: bool) -> isize {
+    let mut lp = 1isize | ((scan as isize) << 16);
+    if extended {
+        lp |= 1 << 24;
+    }
+    if up {
+        lp |= (1 << 30) | (1 << 31);
+    }
+    lp
+}
+
+/// 中途失败时把已按下的键补抬起，别让目标程序以为它们还按着。
+fn release_downs(hwnd: HWND, downs: &[(u16, isize)]) {
+    for (vk, lp) in downs.iter().rev() {
+        let _ = post(hwnd, WM_KEYUP, *vk, *lp);
+    }
+}
+
+fn post(hwnd: HWND, msg: u32, wparam: u16, lparam: isize) -> Result<(), String> {
+    unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam as usize), LPARAM(lparam)) }.map_err(
+        |e| format!("后台发送失败：目标窗口拒绝消息（可能是提权窗口 / 窗口已关闭）：{e}"),
+    )
+}
+
 /// 在窗口所在显示器的工作区里居中；最大化 / 最小化时先还原（尺寸取 `rcNormalPosition`，
 /// 它保存的是还原态大小，不受当前最大化影响）。
 unsafe fn center_window(hwnd: HWND) -> Result<(), String> {
@@ -2030,5 +2207,28 @@ mod tests {
             session_locked(),
         );
         unsafe { WTSFreeMemory(buf.0 as *mut c_void) };
+    }
+
+    /// 后台发送的按键 `lParam`：重复计数 1 + 扫描码 + 扩展位 / 抬起位（EXT-16 二阶段）。
+    #[test]
+    fn post_key_lparam_shape() {
+        let down = key_lparam(0x1E, false, false);
+        assert_eq!(down & 0xFFFF, 1, "重复计数 = 1");
+        assert_eq!((down >> 16) & 0xFF, 0x1E, "扫描码在 bit16..23");
+        assert_eq!(down & (1 << 24), 0, "普通键不带扩展位");
+        assert_eq!(down & (1 << 30) | down & (1 << 31), 0, "按下没有转换 / 抬起位");
+
+        let up = key_lparam(0x48, true, true);
+        assert_ne!(up & (1 << 24), 0, "扩展键带扩展位");
+        assert_ne!(up & (1 << 30), 0, "抬起带 previous-state 位");
+        assert_ne!(up & (1 << 31), 0, "抬起带 transition 位");
+    }
+
+    /// 后台发送的文本：`\r\n` 只发一次回车，`\n` 转 `\r`，控制码之外的 UTF-16 原样。
+    #[test]
+    fn post_text_units_normalize_newlines() {
+        assert_eq!(text_units("a\r\nb\n\t"), vec!['a' as u16, 0x0D, 'b' as u16, 0x0D, 0x09]);
+        assert_eq!(text_units("咔"), "咔".encode_utf16().collect::<Vec<_>>());
+        assert!(text_units("").is_empty());
     }
 }

@@ -3754,6 +3754,17 @@ mod tests {
         assert!(injects_keys(&text));
         assert!(injects_keys(&keys));
 
+        // 后台发送走 PostMessage，不受物理修饰键影响：不算 injects_keys，否则会白等 300ms
+        // 甚至因超时把整条链跳过。
+        let send_to = vec![Action::SendTo {
+            target: "notepad.exe".into(),
+            payload: kada_core::SendPayload::Keys {
+                keys: vec!["Ctrl".into(), "S".into()],
+            },
+            description: None,
+        }];
+        assert!(!injects_keys(&send_to));
+
         // 鼠标模拟也注入输入：物理修饰键没松时同样会变成 Ctrl+点击 / 拖拽，等它释放。
         let mouse = vec![Action::Mouse {
             op: kada_core::MouseOp::Click {
@@ -4916,6 +4927,8 @@ fn platform_caps() -> kada_core::PlatformCaps {
         kada_core::PlatformCaps {
             frontmost_conditions: false,
             window_actions: false,
+            mouse_absolute: false,
+            background_input: false,
             ..Default::default()
         }
     }
@@ -4931,6 +4944,8 @@ fn platform_caps() -> kada_core::PlatformCaps {
             frontmost_conditions: true,
             device_conditions: false,
             window_actions: false,
+            mouse_absolute: true,
+            background_input: false,
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -4945,6 +4960,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
         kada_core::PlatformCaps {
             device_conditions: false,
             window_actions: false,
+            background_input: false,
             ..Default::default()
         }
     }

@@ -164,6 +164,37 @@ pub fn window_action(hwnd: Option<isize>, op: WindowAction) -> Result<(), String
 }
 
 
+/// 「后台发送」的内容（[`send_to_window`]，EXT-16 二阶段）。
+pub enum WindowInput<'a> {
+    /// 按键组合：按顺序按下、逆序抬起。
+    Keys(&'a [kada_core::Key]),
+    /// 原样文本。
+    Text(&'a str),
+}
+
+/// 把按键 / 文本发给一个**非前台**窗口，全程不激活、不抢焦点（EXT-16 二阶段）。
+///
+/// `target` 匹配进程名或窗口标题（忽略大小写，含 `*`/`?` 走通配、否则子串；多个命中取
+/// Z 序最上层）。**只有 Windows 实现**（`PostMessage`），macOS / Linux 返回明确错误，
+/// 由冲突检测同时标平台缺失。目标恰好是当前前台窗口时直接报错——前台输入只走既有
+/// `simulate` 那条路，不给它开第二套注入。
+///
+/// 已知不生效：Chromium / Electron / UWP / 游戏（靠 Raw Input / 焦点 / IME）、提权窗口
+/// （UIPI）、依赖真实修饰键状态的组合键。`PostMessage` 没有回执，返回成功只代表消息进了
+/// 目标队列，不代表程序处理了。
+pub fn send_to_window(target: &str, input: WindowInput<'_>) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win::send_to_window(target, input)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (target, input);
+        Err("「后台发送」目前只支持 Windows".into())
+    }
+}
+
+
 /// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
 /// 「往提权窗口注入」。
 ///

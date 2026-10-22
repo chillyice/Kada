@@ -189,7 +189,7 @@ fn keeps_vk_injection(k: Key) -> bool {
 /// 扩展键（`E0` 前缀）判定。`MapVirtualKeyEx(MAPVK_VK_TO_VSC_EX)` 只对部分扩展键
 /// （小键盘除号、Win 键等）返回 `0xE0`，方向键 / 编辑键簇它**返回的是不带 `E0` 的基准
 /// 扫描码**——漏掉扩展位会把「方向键」注入成「小键盘数字」（NumLock 开时打出数字）。
-fn is_extended_key(k: Key) -> bool {
+pub(crate) fn is_extended_key(k: Key) -> bool {
     use Key::*;
     matches!(
         k,
