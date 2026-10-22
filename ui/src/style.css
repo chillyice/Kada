@@ -2423,6 +2423,31 @@ button:disabled:hover {
   margin-top: 6px;
 }
 
+/* 触发角（EXT-10）：四角各占一块，块内是「启用 / 命名」行 + 动作编辑区。 */
+.hot-corner + .hot-corner,
+.hot-corner {
+  border-top: 1px solid var(--line-soft);
+}
+
+.hot-corner-controls {
+  flex: 0 0 auto;
+}
+
+.hot-corner-name {
+  width: 140px;
+}
+
+.hot-corner-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 14px 10px 14px;
+}
+
+.hot-corner-actions:empty {
+  display: none;
+}
+
 .set-empty {
   padding: 12px 14px;
   color: var(--muted);

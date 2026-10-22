@@ -258,6 +258,11 @@ type Settings = {
      * `ClipboardMenu::default`）；`enabled` 缺省即 true（条目里的）。
      */
     clipboard_menu?: ClipboardMenu;
+    /**
+     * 触发角（EXT-10）：光标碰到屏幕四角执行动作。缺字段 = 关（后端
+     * `HotCorners::default`）；同一份四角配置应用到每台显示器的对应角。
+     */
+    hot_corners?: HotCorners;
   };
 /**
  * 复制快捷菜单（EXT-13）：见后端 `ClipboardMenu`。条目数组顺序即显示顺序。
@@ -267,6 +272,10 @@ type MenuEntry =
   | { kind: "submenu"; label: string; enabled?: boolean; items: MenuEntry[] }
   | { kind: "separator" };
 type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntry[] };
+/** 触发角的一个角（后端 `HotCorner`）。 */
+type HotCorner = { enabled: boolean; name?: string; actions: Action[] };
+type HotCornerKey = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+type HotCorners = { enabled: boolean } & Record<HotCornerKey, HotCorner>;
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
@@ -1784,7 +1793,7 @@ const KIND_ICON: Record<ListKind, string> = {
   expansion:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
   gesture:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v1"/><path d="M18 3v4"/><path d="M16 5h4"/><circle cx="6" cy="19" r="2"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="13" rx="6.5" ry="8.5"/><path d="M12 4.5v4"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
@@ -5845,6 +5854,93 @@ function menuEntryEditor(
   return box;
 }
 
+// ---- 触发角（EXT-10） ----
+const HOT_CORNER_KEYS: { key: HotCornerKey; label: string }[] = [
+  { key: "top_left", label: tr("左上角") },
+  { key: "top_right", label: tr("右上角") },
+  { key: "bottom_left", label: tr("左下角") },
+  { key: "bottom_right", label: tr("右下角") },
+];
+
+// 老配置缺字段时补齐结构（后端 serde default 也是全关）。
+function hotCorners(): HotCorners {
+  return (cfg.settings.hot_corners ??= {
+    enabled: false,
+    top_left: { enabled: false, name: "", actions: [] },
+    top_right: { enabled: false, name: "", actions: [] },
+    bottom_left: { enabled: false, name: "", actions: [] },
+    bottom_right: { enabled: false, name: "", actions: [] },
+  });
+}
+
+function hotCornerOf(key: HotCornerKey): HotCorner {
+  const all = hotCorners();
+  let entry = all[key];
+  if (!entry) entry = all[key] = { enabled: false, name: "", actions: [] };
+  // 后端序列化会跳过空的 name / actions（`skip_serializing_if`），这里补齐再给编辑器用。
+  if (typeof entry.name !== "string") entry.name = "";
+  if (!Array.isArray(entry.actions)) entry.actions = [];
+  return entry;
+}
+
+// 设置页里的动作编辑器：一行一个动作（类型下拉 + 子类型 + 字段），与主编辑页共用
+// `actionSubtypeSelect` / `actionFields`，不另造一套动作表单。
+function hotCornerActionsEditor(actions: Action[], rerender: () => void): HTMLElement {
+  const box = el("div", "menu-editor-list");
+  actions.forEach((action, i) => {
+    const item = el("div", "menu-editor-entry");
+    const head = el("div", "menu-editor-head");
+    const typeSel = el("select", "action-type-name") as HTMLSelectElement;
+    typeSel.title = tr("点击切换动作类型");
+    typeSel.setAttribute("aria-label", tr("动作类型"));
+    for (const t of ACTION_TYPES) {
+      const o = el("option") as HTMLOptionElement;
+      o.value = t.value;
+      o.textContent = t.label;
+      typeSel.append(o);
+    }
+    typeSel.value = action.type;
+    typeSel.addEventListener("change", () => {
+      actions[i] = newAction(typeSel.value as Action["type"]);
+      rerender();
+    });
+    const del = el("button", "ghost menu-editor-btn danger", "×") as HTMLButtonElement;
+    del.title = tr("删除动作");
+    del.addEventListener("click", () => {
+      actions.splice(i, 1);
+      rerender();
+    });
+    head.append(typeSel, del);
+    item.append(head);
+    const sub = actionSubtypeSelect(action, rerender);
+    if (sub) {
+      const typeRow = el("div", "action-type-row");
+      typeRow.append(sub);
+      item.append(typeRow);
+    }
+    item.append(actionFields(action, rerender));
+    box.append(item);
+  });
+  const add = el("button", "ghost", tr("＋ 添加动作")) as HTMLButtonElement;
+  add.addEventListener("click", () => {
+    actions.push(newAction("text"));
+    rerender();
+  });
+  box.append(add);
+  return box;
+}
+
+// 某个角的动作编辑区：结构变化后只重画这一块（设置页其余部分不动）。
+function renderHotCornerActions(key: HotCornerKey) {
+  const host = document.getElementById(`hot-corner-actions-${key}`);
+  if (!host) return;
+  const rerender = () => {
+    renderHotCornerActions(key);
+    void save();
+  };
+  host.replaceChildren(hotCornerActionsEditor(hotCornerOf(key).actions, rerender));
+}
+
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
@@ -5946,6 +6042,16 @@ function syncSettings() {
     menu?.double_copy_ms ?? 500,
   );
   renderClipboardMenuEditor();
+  // 触发角（EXT-10）：缺字段 = 关；四角的启用 / 名字 / 动作都回显。
+  const corners = hotCorners();
+  (document.getElementById("set-hot-corners") as HTMLInputElement).checked = corners.enabled;
+  for (const { key } of HOT_CORNER_KEYS) {
+    const entry = hotCornerOf(key);
+    (document.getElementById(`set-hot-corner-${key}`) as HTMLInputElement).checked = entry.enabled;
+    (document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement).value =
+      entry.name ?? "";
+    renderHotCornerActions(key);
+  }
 }
 
 /**
@@ -6493,6 +6599,24 @@ function bindSettings() {
   document.getElementById("install-update")!.addEventListener("click", () => {
     void invoke("install_update");
   });
+  // 触发角（EXT-10）：总闸 + 四角的启用 / 名字；动作编辑区的增删改直接写进配置后落盘。
+  const hotCornersEnabled = document.getElementById("set-hot-corners") as HTMLInputElement;
+  hotCornersEnabled.addEventListener("change", () => {
+    hotCorners().enabled = hotCornersEnabled.checked;
+    void save();
+  });
+  for (const { key } of HOT_CORNER_KEYS) {
+    const toggle = document.getElementById(`set-hot-corner-${key}`) as HTMLInputElement;
+    toggle.addEventListener("change", () => {
+      hotCornerOf(key).enabled = toggle.checked;
+      void save();
+    });
+    const name = document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement;
+    name.addEventListener("change", () => {
+      hotCornerOf(key).name = name.value.trim();
+      void save();
+    });
+  }
 }
 
 async function exportConfig() {
@@ -7088,17 +7212,13 @@ function bind() {
 
   renderThanks();
 
-  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键与文本扩展不从这里进——统一编辑页里
+  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键、文本扩展与鼠标操作不从这里进——统一编辑页里
   // 新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
       { label: tr("新增快捷键"), run: () => void requestNew("shortcut") },
       { label: tr("新增目录"), run: () => addFolder(null) },
     ];
-    // 鼠标操作是实验功能：总闸关着时不提供这个入口（配置里已有的条目也不显示）。
-    if (mouseFeaturesEnabled()) {
-      items.splice(1, 0, { label: tr("新增鼠标操作"), run: () => void requestNew("gesture") });
-    }
     if (clipboard) items.push({ label: tr("粘贴到根级"), run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
   });

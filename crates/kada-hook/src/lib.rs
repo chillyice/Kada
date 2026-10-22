@@ -23,6 +23,9 @@ pub mod macos;
 /// 鼠标手势的采集（规划 7.2-MG）：平台无关的状态机 + 轨迹出口，识别在壳层做。
 pub mod gesture;
 
+/// 触发角（EXT-10）：平台无关的坐标状态机 + 出口，执行在壳层做。
+pub mod hotcorner;
+
 pub use kada_core::{
     format_shortcut, key_name, matches, Key, Modifier, MouseButton, RawEvent, Shortcut,
 };

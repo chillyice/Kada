@@ -2124,6 +2124,78 @@ pub fn default_double_copy_ms() -> u64 {
     500
 }
 
+/// 触发角（EXT-10）的一个角：是否启用、展示名、触发后执行的动作链。
+///
+/// 与鼠标手势一样复用 [`Action`] 与壳层 `fire` 链路（步骤上报 / 执行记录 / 注入锁 /
+/// 超时中止全部继承）。缺字段 = 关闭。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct HotCorner {
+    #[serde(default)]
+    pub enabled: bool,
+    /// 角名（列表 / 气泡展示用）；空 = 用方位名（左上角 / 右上角 / 左下角 / 右下角）。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// 触发后按顺序执行的动作。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<Action>,
+}
+
+impl HotCorner {
+    /// 展示名：有名字用名字，否则退回方位名。
+    pub fn label(&self, fallback: &str) -> String {
+        let name = self.name.trim();
+        if name.is_empty() {
+            fallback.to_string()
+        } else {
+            name.to_string()
+        }
+    }
+}
+
+/// 触发角（EXT-10）：光标碰到屏幕四角时执行动作。四角各自启用 / 命名 / 配动作，
+/// 同一份四角配置应用到每台显示器的对应角。
+///
+/// **默认关**（缺字段即关，老配置照常读）。触发判定在钩子层（纯坐标状态机，
+/// `kada-hook::hotcorner`），执行在壳层；只在 Windows 落地，其余平台走
+/// [`PlatformCaps::hot_corners`] 软冲突。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotCorners {
+    /// 总开关。关掉只是不触发，四角配置保留。
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub top_left: HotCorner,
+    #[serde(default)]
+    pub top_right: HotCorner,
+    #[serde(default)]
+    pub bottom_left: HotCorner,
+    #[serde(default)]
+    pub bottom_right: HotCorner,
+}
+
+impl Default for HotCorners {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            top_left: HotCorner::default(),
+            top_right: HotCorner::default(),
+            bottom_left: HotCorner::default(),
+            bottom_right: HotCorner::default(),
+        }
+    }
+}
+
+impl HotCorners {
+    /// 总开关开着、且至少一个角启用——钩子层据此决定要不要装鼠标钩子 / 判定角。
+    pub fn any_enabled(&self) -> bool {
+        self.enabled
+            && (self.top_left.enabled
+                || self.top_right.enabled
+                || self.bottom_left.enabled
+                || self.bottom_right.enabled)
+    }
+}
+
 /// 复制快捷菜单的一个条目：动作 / 子菜单 / 分割线。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2344,6 +2416,9 @@ pub struct Settings {
     /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
     #[serde(default)]
     pub clipboard_menu: ClipboardMenu,
+    /// 触发角（EXT-10）：光标碰到屏幕四角执行动作，见 [`HotCorners`]。缺字段 = 关闭。
+    #[serde(default)]
+    pub hot_corners: HotCorners,
 }
 
 /// 鼠标手势起手距离的缺省值（像素）。
@@ -2444,6 +2519,7 @@ impl Default for Settings {
             gesture_fail_color: default_gesture_fail_color(),
             keycast: Keycast::default(),
             clipboard_menu: ClipboardMenu::default(),
+            hot_corners: HotCorners::default(),
         }
     }
 }
@@ -2519,6 +2595,8 @@ pub struct PlatformCaps {
     pub background_input: bool,
     /// Windows Shell 补全动作（定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标）是否可用。
     pub shell_actions: bool,
+    /// 触发角（[`HotCorners`]）是否可用。目前只有 Windows 接了鼠标钩子。
+    pub hot_corners: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2533,6 +2611,7 @@ impl Default for PlatformCaps {
             mouse_absolute: true,
             background_input: true,
             shell_actions: true,
+            hot_corners: true,
         }
     }
 }
@@ -2548,6 +2627,7 @@ impl PlatformCaps {
             && self.mouse_absolute
             && self.background_input
             && self.shell_actions
+            && self.hot_corners
     }
 }
 
@@ -3133,6 +3213,18 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
     }
 
+    // 触发角（EXT-10）：现在只有 Windows 接了鼠标钩子；同一份配置同步到别的平台时
+    // 只是不触发，按平台能力缺失给 Warn（不拦保存，执行侧也不静默）。
+    if !caps.hot_corners && cfg.settings.hot_corners.any_enabled() {
+        out.push(Conflict {
+            severity: Severity::Warn,
+            platform: true,
+            message: "触发角在当前平台用不了（只有 Windows 接了鼠标钩子），配置保留但不会触发"
+                .into(),
+            name: String::new(),
+        });
+    }
+
     for r in &cfg.remaps {
         if !r.enabled {
             continue;
@@ -3358,7 +3450,9 @@ fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
 /// 而厂商接管（Logi Options+ 等）拿的是**侧键**、与右键手势无关——把手势混进去会让
 /// 一堆没装那类软件、或只用手势的用户平白收到「鼠标键被接管」的提示。
 pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
-    config_uses_mouse(cfg) || (cfg.settings.experimental && gesture_enabled(cfg))
+    config_uses_mouse(cfg)
+        || (cfg.settings.experimental && gesture_enabled(cfg))
+        || (cfg.settings.experimental && cfg.settings.hot_corners.any_enabled())
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
@@ -4131,6 +4225,25 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         seen_gesture.push((pattern, item.when_key()));
         out.gestures.push(item);
+    }
+
+    // 触发角（EXT-10）：四角动作逐个校验，坏动作单独摘掉（与手势同一口径），角本身保留。
+    for (fallback, corner) in [
+        ("左上角", &mut out.settings.hot_corners.top_left),
+        ("右上角", &mut out.settings.hot_corners.top_right),
+        ("左下角", &mut out.settings.hot_corners.bottom_left),
+        ("右下角", &mut out.settings.hot_corners.bottom_right),
+    ] {
+        let label = corner.label(fallback);
+        corner.name = corner.name.trim().to_string();
+        let mut kept = Vec::new();
+        for a in &corner.actions {
+            match a.validate() {
+                Ok(()) => kept.push(a.clone()),
+                Err(e) => ignored.push(format!("触发角「{label}」的某个动作已忽略：{e}")),
+            }
+        }
+        corner.actions = kept;
     }
 
     // 唤醒键：无法解析成单键时清空（关闭快速唤醒），不拖垮整份配置。
@@ -7013,6 +7126,7 @@ mod platform_caps_tests {
             mouse_absolute: false,
             background_input: false,
             shell_actions: false,
+            hot_corners: false,
             ..Default::default()
         }
     }
@@ -7034,6 +7148,7 @@ mod platform_caps_tests {
             mouse_absolute: true,
             background_input: false,
             shell_actions: false,
+            hot_corners: false,
         }
     }
 
@@ -7647,5 +7762,100 @@ mod input_env_tests {
                 assert_eq!(*p, p.to_lowercase(), "{} 的片段 {p} 必须是小写", d.id);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod hot_corner_tests {
+    use super::*;
+
+    fn text(value: &str) -> Action {
+        Action::Text {
+            text: value.into(),
+            mode: TextMode::Input,
+            masked: false,
+            description: None,
+        }
+    }
+
+    /// 老配置（写在触发角之前）缺 `hot_corners`：默认关、四角都关、动作空——照常读。
+    #[test]
+    fn old_config_without_hot_corners_gets_defaults() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert!(!old.settings.hot_corners.enabled);
+        assert!(!old.settings.hot_corners.any_enabled());
+        assert!(old.settings.hot_corners.top_left.actions.is_empty());
+    }
+
+    /// 四角配置原样往返（重启后名字 / 动作 / 开关都留着）。
+    #[test]
+    fn hot_corners_roundtrip() {
+        let cfg = Config {
+            settings: Settings {
+                hot_corners: HotCorners {
+                    enabled: true,
+                    top_left: HotCorner {
+                        enabled: true,
+                        name: "调度台".into(),
+                        actions: vec![text("a")],
+                    },
+                    bottom_right: HotCorner {
+                        enabled: true,
+                        name: "".into(),
+                        actions: vec![text("b")],
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.settings.hot_corners, cfg.settings.hot_corners);
+        assert_eq!(back.settings.hot_corners.bottom_right.label("右下角"), "右下角");
+    }
+
+    /// 启用了至少一个角 → 要装鼠标钩子；`config_uses_mouse` 不受影响（不误报厂商接管）。
+    #[test]
+    fn hot_corners_need_mouse_hook_but_not_uses_mouse() {
+        let mut cfg = Config::default();
+        cfg.settings.experimental = true;
+        cfg.settings.hot_corners.enabled = true;
+        cfg.settings.hot_corners.top_right.enabled = true;
+        assert!(config_needs_mouse_hook(&cfg));
+        assert!(!config_uses_mouse(&cfg));
+        // 总闸关掉 → 与没有这个功能一致。
+        cfg.settings.experimental = false;
+        assert!(!config_needs_mouse_hook(&cfg));
+    }
+
+    /// 非 Windows 平台：配了触发角给一条平台 Warn；没配就零噪音。
+    #[test]
+    fn hot_corners_flagged_where_unsupported() {
+        let mut cfg = Config::default();
+        assert!(detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() })
+            .is_empty());
+        cfg.settings.hot_corners.enabled = true;
+        cfg.settings.hot_corners.bottom_left.enabled = true;
+        let hits = detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() });
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].platform);
+        assert!(hits[0].message.contains("触发角"));
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+    }
+
+    /// 清洗只摘掉坏动作，角与名字保留。
+    #[test]
+    fn sanitize_drops_bad_hot_corner_actions() {
+        let mut cfg = Config::default();
+        cfg.settings.hot_corners.top_left.name = "  左上  ".into();
+        cfg.settings.hot_corners.top_left.actions = vec![
+            text("ok"),
+            Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+        ];
+        let (clean, ignored) = sanitize_config(&cfg);
+        assert_eq!(clean.settings.hot_corners.top_left.name, "左上");
+        assert_eq!(clean.settings.hot_corners.top_left.actions.len(), 1);
+        assert!(ignored.iter().any(|m| m.contains("触发角")));
     }
 }

@@ -926,6 +926,11 @@ fn spawn_engine_ticker(
         let mut last_wheel: Option<bool> = None;
         // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
         let mut last_gesture: Option<bool> = None;
+        // 触发角（EXT-10）：上一次推给钩子层的「总闸 + 四角开关 + 显示器矩形」。
+        // 显示器几何每 ~3 秒重取一次（热插拔 / 改分辨率），其余时候用上次的。
+        type HotCornerPush = (bool, [bool; 4], Vec<(i32, i32, i32, i32)>);
+        let mut last_hot_corners: Option<HotCornerPush> = None;
+        let mut hot_corner_tick: u32 = 0;
         // 上一次「是否处于用户暂停」：变了才对齐托盘的「暂停/恢复」勾选（设置页 / 托盘自身 /
         // 外部改配置都能改它，这里是唯一一处常驻且拿得到最新配置的地方）。
         let mut last_paused: Option<bool> = None;
@@ -1014,6 +1019,54 @@ fn spawn_engine_ticker(
             if last_gesture != Some(gesture_on) {
                 kada_hook::gesture::set_enabled(gesture_on);
                 last_gesture = Some(gesture_on);
+            }
+            // 触发角（EXT-10）：总闸 + 四角开关 + 显示器矩形推给钩子层（钩子回调里只做
+            // 纯坐标判断）。显示器几何在启用时每 ~3 秒重取一次，热插拔 / 改分辨率能跟上。
+            hot_corner_tick = hot_corner_tick.wrapping_add(1);
+            let (hot_on, hot_flags) = {
+                let g = cfg.read().unwrap();
+                let hc = &g.settings.hot_corners;
+                (
+                    g.settings.experimental && hc.any_enabled(),
+                    [
+                        hc.top_left.enabled,
+                        hc.top_right.enabled,
+                        hc.bottom_left.enabled,
+                        hc.bottom_right.enabled,
+                    ],
+                )
+            };
+            let refetch = hot_on
+                && (hot_corner_tick % 50 == 0
+                    || match last_hot_corners.as_ref() {
+                        Some((on, flags, _)) => !*on || *flags != hot_flags,
+                        None => true,
+                    });
+            let monitors = if refetch {
+                app.available_monitors()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|m| {
+                        let pos = m.position();
+                        let size = m.size();
+                        (
+                            pos.x,
+                            pos.y,
+                            pos.x + size.width as i32,
+                            pos.y + size.height as i32,
+                        )
+                    })
+                    .collect()
+            } else {
+                last_hot_corners
+                    .as_ref()
+                    .map(|(_, _, m)| m.clone())
+                    .unwrap_or_default()
+            };
+            let next = (hot_on, hot_flags, monitors);
+            if last_hot_corners.as_ref() != Some(&next) {
+                kada_hook::hotcorner::configure(next.0, next.1, next.2.clone());
+                last_hot_corners = Some(next);
             }
             // 托盘「暂停快捷键触发」的勾选对齐：设置页勾选、外部改配置、托盘自身点击都汇总到
             // 这一处比对（点菜单时 CheckMenuItem 已自动翻转，这里把状态钉死到真实配置值）。
@@ -1935,6 +1988,83 @@ fn handle_gesture(
         text_mode,
         // 手势起点 = 右键按下点（EXT-16「移动到手势起点」）；快捷键路径没有起点。
         stroke.points.first().copied(),
+    );
+}
+
+/// 触发角（EXT-10）：注册出口。回调在钩子线程上跑，这里只开线程做后续（不建窗 / 不 IO）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn spawn_hot_corner_listener(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+) {
+    kada_hook::hotcorner::set_sink(Some(Arc::new(move |corner| {
+        let app = app.clone();
+        let cfg = cfg.clone();
+        let results = results.clone();
+        let unread = unread.clone();
+        let runs = runs.clone();
+        std::thread::spawn(move || handle_hot_corner(app, cfg, results, unread, runs, corner));
+    })));
+}
+
+/// 一次触发角的收尾：全屏 / 排除程序与手势同口径让路；命中就交给 `fire`。
+///
+/// **不吞任何鼠标事件**，所以这里没有回放逻辑。触发时抓前台窗口由 `fire` 在调用线程上做。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn handle_hot_corner(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+    corner: kada_hook::hotcorner::Corner,
+) {
+    let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
+        let g = cfg.read().unwrap();
+        let hc = &g.settings.hot_corners;
+        let (entry, fallback) = match corner {
+            kada_hook::hotcorner::Corner::TopLeft => (&hc.top_left, "左上角"),
+            kada_hook::hotcorner::Corner::TopRight => (&hc.top_right, "右上角"),
+            kada_hook::hotcorner::Corner::BottomLeft => (&hc.bottom_left, "左下角"),
+            kada_hook::hotcorner::Corner::BottomRight => (&hc.bottom_right, "右下角"),
+        };
+        (
+            g.settings.experimental && hc.enabled && entry.enabled,
+            g.settings.action_timeout_ms,
+            g.settings.text_inject_mode,
+            g.settings.gesture_exclude.clone(),
+            g.settings.exclude_apps.clone(),
+            entry.actions.clone(),
+            entry.label(fallback),
+        )
+    };
+    // 没配动作 = 半条配置，什么也不做（没有可执行的链，也没有要回放的按键）。
+    if !on || actions.is_empty() {
+        return;
+    }
+    // 全屏 / 排除程序：与手势同口径，整条让路。
+    if input::foreground_fullscreen() {
+        return;
+    }
+    let fetch = || input::frontmost_context();
+    let ctx = TriggerContext::lazy(&fetch, None);
+    if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        return;
+    }
+    fire(
+        app,
+        results,
+        unread,
+        runs,
+        actions,
+        format!("触发角 {name}"),
+        name,
+        action_timeout,
+        text_mode,
+        None,
     );
 }
 
@@ -4930,6 +5060,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             mouse_absolute: false,
             background_input: false,
             shell_actions: false,
+            hot_corners: false,
             ..Default::default()
         }
     }
@@ -4948,6 +5079,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             mouse_absolute: true,
             background_input: false,
             shell_actions: false,
+            hot_corners: false,
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -4964,6 +5096,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             window_actions: false,
             background_input: false,
             shell_actions: false,
+            hot_corners: false,
             ..Default::default()
         }
     }
@@ -6139,6 +6272,16 @@ pub fn run() {
             // 放在 `KadaState` 之前：`results` / `unread` / `runs` 三个 Arc 会被 state 拿走。
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_gesture_listener(
+                app.handle().clone(),
+                config.clone(),
+                results.clone(),
+                unread.clone(),
+                runs.clone(),
+            );
+
+            // 触发角（EXT-10）：出口在钩子线程上，只开线程；开不开与四角开关由定时器线程推。
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            spawn_hot_corner_listener(
                 app.handle().clone(),
                 config.clone(),
                 results.clone(),

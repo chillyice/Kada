@@ -664,7 +664,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                         return LRESULT(1);
                     }
                 }
-                WM_MOUSEMOVE => crate::gesture::on_move((ms.pt.x, ms.pt.y)),
+                WM_MOUSEMOVE => {
+                    crate::gesture::on_move((ms.pt.x, ms.pt.y));
+                    // 触发角（EXT-10）：同样只做纯坐标判断，执行由壳层开线程。
+                    crate::hotcorner::on_move((ms.pt.x, ms.pt.y));
+                }
                 _ => {}
             }
             record_mouse(wparam.0 as u32, ms);
