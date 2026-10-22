@@ -5222,6 +5222,12 @@ pub fn run() {
                     if when_ctx.app_excluded(&guard.settings.exclude_apps) {
                         return input::HookAction::Allow;
                     }
+                    // 全局全屏暂停（EXT-05）：前台全屏程序里所有触发一律不生效——不吞键、
+                    // 不执行动作（含文本扩展），退出全屏自动恢复。与手势自带的全屏让路
+                    // 独立（那个恒生效、不看开关）。macOS / Linux 判定恒 false，待真机。
+                    if guard.settings.ignore_fullscreen && input::foreground_fullscreen() {
+                        return input::HookAction::Allow;
+                    }
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
                             app_handle.clone(),

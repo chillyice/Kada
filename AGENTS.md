@@ -64,6 +64,7 @@
 - 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`
 - **超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`）——**配置读锁必须先于 `Engine` 锁**，同序否则死锁
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时也主动解除
+- **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`（盖满显示器且非最大化、排除本进程窗口），与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势那条全屏让路无开关、恒生效**，两者别合并
 - **输入状态复位**（`Engine::reset`）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**、**缓冲里的丢弃不回放**、**锁定层保留**
 - **自愈看门狗**：Windows **只投递 `WM_APP_REINSTALL`**、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**，但 **Raw Input 键盘旁路**（`LAST_RAW_KEY_TICK`）是独立观察者
 - **前台 / 设备上下文**：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`；带 `when` 的条目用 `TriggerContext`，前台**惰性查询**

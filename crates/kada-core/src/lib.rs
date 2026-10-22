@@ -1952,6 +1952,14 @@ pub struct Settings {
     /// 含 `*`/`?` 走通配、否则子串。空 = 不排除。与 `gesture_exclude`（只排手势）独立。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exclude_apps: Vec<String>,
+    /// **全局全屏暂停**（EXT-05）：前台是全屏程序（游戏 / 视频 / F11）时所有 Kada 触发一律
+    /// 不生效（快捷键 / 改键 / 文本扩展 / 手势），退出全屏自动恢复；不吞键、不执行动作。
+    ///
+    /// 缺字段取 `false`（`#[serde(default)]` 的零值）：全屏判定只在 Windows 真判，且部分
+    /// 用户在全屏游戏里仍要用快捷键；替用户打开不合适。关着时行为与没有这个功能一致。
+    /// 与手势自带的全屏让路独立——那个不看不听、默认恒生效（保住既有语义）。
+    #[serde(default)]
+    pub ignore_fullscreen: bool,
     /// 手势轨迹颜色（`#RRGGBB`）。
     #[serde(default = "default_gesture_trail_color")]
     pub gesture_trail_color: String,
@@ -2059,6 +2067,7 @@ impl Default for Settings {
             gesture_min_segment: default_gesture_min_segment(),
             gesture_exclude: Vec::new(),
             exclude_apps: Vec::new(),
+            ignore_fullscreen: false,
             gesture_trail_color: default_gesture_trail_color(),
             gesture_trail_width: default_gesture_trail_width(),
             gesture_label_font_size: default_gesture_label_font_size(),
@@ -5758,6 +5767,21 @@ mod settings_timeout_tests {
         assert_eq!(old.settings.sequence_timeout_ms, DEFAULT_SEQUENCE_TIMEOUT_MS);
         assert_eq!(old.settings.chord_timeout_ms, DEFAULT_CHORD_TIMEOUT_MS);
         assert_eq!(old.settings.action_timeout_ms, 5000, "已有的字段照旧");
+    }
+
+    /// 全屏暂停（EXT-05）必须**显式勾选**：老配置缺字段时默认关，勾上后原样往返。
+    #[test]
+    fn ignore_fullscreen_is_opt_in_and_roundtrips() {
+        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
+        assert!(!old.settings.ignore_fullscreen);
+        let cfg = Config {
+            settings: Settings { ignore_fullscreen: true, ..Default::default() },
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains(r#""ignore_fullscreen":true"#), "{json}");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert!(back.settings.ignore_fullscreen);
     }
 
     #[test]

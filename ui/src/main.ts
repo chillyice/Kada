@@ -204,6 +204,11 @@ type Settings = {
    * （不区分大小写、`*`/`?` 通配、否则子串）。缺字段 = 不排除。
    */
   exclude_apps?: string[];
+  /**
+   * 全屏程序里暂停（EXT-05）：前台全屏程序时所有 Kada 触发一律不生效，退出全屏自动恢复。
+   * 缺字段 = 关。
+   */
+  ignore_fullscreen?: boolean;
   /** 手势轨迹颜色（`#RRGGBB`）。缺字段按后端默认 `#4c9aff`。 */
   gesture_trail_color?: string;
   /** 手势轨迹线宽（像素，1~20）。缺字段按后端默认 5。 */
@@ -5266,6 +5271,9 @@ function timeoutMs(ms: number | undefined): string {
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
+  // 缺字段按「关」显示，与后端 serde default 一致。
+  (document.getElementById("set-ignore-fullscreen") as HTMLInputElement).checked =
+    cfg.settings.ignore_fullscreen === true;
   (document.getElementById("set-wake-key") as HTMLSelectElement).value = cfg.settings.wake_key ?? "";
   (document.getElementById("set-action-timeout") as HTMLInputElement).value = String(
     timeoutSeconds(cfg.settings.action_timeout_ms),
@@ -5582,6 +5590,12 @@ function bindSettings() {
   });
   paused.addEventListener("change", () => {
     cfg.settings.paused = paused.checked;
+    void save();
+  });
+  // 全屏程序里暂停（EXT-05）：只是行为开关，配置照常保存。
+  const ignoreFullscreen = document.getElementById("set-ignore-fullscreen") as HTMLInputElement;
+  ignoreFullscreen.addEventListener("change", () => {
+    cfg.settings.ignore_fullscreen = ignoreFullscreen.checked;
     void save();
   });
   wakeKey.addEventListener("change", () => {
