@@ -4413,27 +4413,27 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 /* 三颗星：4.5 / 5 / 3.5px，4 角 / 5 角 / 4 角。
-   起点都落在射线扇面之外的间隙里（半径 10.5~14px > 射线最长 8.4px），
-   因此星与线在整段动画里都不重叠；三颗星彼此也分处三个扇区。 */
+   起点落在射线扇面**之内**（半径 4.5 / 8.5 / 8.8px，方向 -28° / -75° / -35°），
+   与射线只错开一点、允许部分方向重叠；三颗星彼此错位，不叠在同一处。 */
 [data-theme="crt"] .bz-s1 {
-  left: 6.8px;
-  top: -8.6px;
+  left: 0.84px;
+  top: -3.89px;
   width: 4.5px;
   height: 4.5px;
-  --dx: 2px;
-  --dy: -1.8px;
+  --dx: 3.97px;
+  --dy: -2.11px;
   clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
   animation-duration: 470ms;
   animation-delay: 20ms;
 }
 
 [data-theme="crt"] .bz-s2 {
-  left: 4.3px;
-  top: -17px;
+  left: -0.3px;
+  top: -10.71px;
   width: 5px;
   height: 5px;
-  --dx: 2.5px;
-  --dy: -4px;
+  --dx: 1.16px;
+  --dy: -4.35px;
   /* 一颗冷色星，免得右上角糊成一片黄。 */
   color: var(--crt-cyan);
   clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
@@ -4442,12 +4442,12 @@ html[data-theme="crt"]:has(.layout)::after {
 }
 
 [data-theme="crt"] .bz-s3 {
-  left: 8.7px;
-  top: -2.1px;
+  left: 5.46px;
+  top: -6.8px;
   width: 3.5px;
   height: 3.5px;
-  --dx: 0.8px;
-  --dy: -0.3px;
+  --dx: 3.44px;
+  --dy: -2.41px;
   /* 暖白芯，比纯黄更「亮」一点。 */
   color: color-mix(in srgb, var(--crt-yellow) 55%, #fff);
   clip-path: polygon(50% 0%, 59% 41%, 100% 50%, 59% 59%, 50% 100%, 41% 59%, 0% 50%, 41% 41%);
@@ -4455,11 +4455,9 @@ html[data-theme="crt"]:has(.layout)::after {
   animation-delay: 0ms;
 }
 
-/* 三根放射线：三根共用同一个原点（left/top = 0，transform-origin 都是左端），
-   只靠角度扇开（-20° / -50° / -80°），因此除了原点之外不会交叉。 */
+/* 三根放射线：起点各不相同（沿各自方向从角点外移 0.9~2.4px 处起笔），
+   但都落在以角点为心的三条射线上，所以仍然互不相交。 */
 [data-theme="crt"] .bz-ray {
-  left: 0;
-  top: 0;
   height: 1px;
   background: linear-gradient(
     90deg,
@@ -4475,6 +4473,8 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .bz-r1 {
   --ang: -20deg;
+  left: 1.32px;
+  top: -0.48px;
   width: 7px;
   animation-duration: 340ms;
   animation-delay: 0ms;
@@ -4482,13 +4482,17 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .bz-r2 {
   --ang: -50deg;
-  width: 6px;
+  left: 1.54px;
+  top: -1.84px;
+  width: 6.5px;
   animation-duration: 280ms;
   animation-delay: 55ms;
 }
 
 [data-theme="crt"] .bz-r3 {
   --ang: -80deg;
+  left: 0.16px;
+  top: -0.89px;
   width: 7px;
   animation-duration: 320ms;
   animation-delay: 105ms;
