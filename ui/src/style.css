@@ -3723,6 +3723,56 @@ pre.msg-v {
   background: rgba(0, 0, 0, 0.5);
 }
 
+/* 手势录入画板（鼠标操作编辑器 → 录入）：独立的居中面板 + 可画的画布。 */
+.gesture-pad-mask {
+  position: fixed;
+  z-index: 320;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gesture-pad {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px;
+  width: min(700px, 92vw);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+}
+
+.gesture-pad h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.gesture-pad-canvas {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  background: var(--bg);
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.gesture-pad-result {
+  font-family: var(--mono, monospace);
+  font-size: 15px;
+  color: var(--accent);
+}
+
+.gesture-pad-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .modal-box {
   position: relative;
   width: min(640px, 90vw);

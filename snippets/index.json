@@ -52,22 +52,6 @@
       ]
     },
     {
-      "name": "剪贴板动作（写入 / 读取 / 临时文本 / 复制粘贴）",
-      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/clipboard-actions.json",
-      "description": "剪贴板相关的现成动作：写入固定文本、读取剪贴板到变量、临时文本（粘贴后恢复原剪贴板），以及用 Keys 发 Ctrl+C / Ctrl+V、用「文本 → 转大写 / 转小写」整体改写选中内容。全平台可用（v1 只处理文本，图片剪贴板后续）。",
-      "author": "Kada",
-      "tags": [
-        "剪贴板",
-        "写入",
-        "读取",
-        "临时文本",
-        "复制",
-        "粘贴",
-        "Keys",
-        "常用动作"
-      ]
-    },
-    {
       "name": "搜索入口（浏览器 / 站点搜索）",
       "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/search-web.json",
       "description": "OpenUrl 动作把常用搜索页收成快捷键：用系统默认浏览器打开带查询词的地址。把 URL 里 q= 后面的词换成你要搜的内容即可。",

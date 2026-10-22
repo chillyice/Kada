@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+﻿import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
@@ -35,6 +35,11 @@ type ClipboardOperation =
   | { op: "set_clipboard"; text: string }
   | { op: "get_clipboard"; var: string }
   | { op: "tempstr"; text: string };
+/** 截图 / 贴图（类型 `capture`，EXT-20）。 */
+type CaptureOperation = "full_screen" | "region" | "window";
+type CaptureOutput = "clipboard" | "file" | "pin";
+/** 显示器亮度（类型 `brightness`，EXT-22）。 */
+type BrightnessOperation = "up" | "down" | "restore";
 /** 算法动作（类型 `transform`，EXT-18）：base64 / URL 编解码、哈希。 */
 type TransformOperation =
   | "base64_encode"
@@ -88,6 +93,8 @@ type Action =
   | { type: "os"; operation: OsOperation; description?: string }
   | { type: "system"; operation: SystemOperation; description?: string }
   | { type: "window"; operation: { op: WindowOperation }; description?: string }
+  | { type: "capture"; operation: CaptureOperation; output: CaptureOutput; path: string; description?: string }
+  | { type: "brightness"; operation: BrightnessOperation; step: number; description?: string }
   | { type: "app"; operation: AppOperation; description?: string }
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
@@ -479,17 +486,24 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "open_url", label: tr("打开网址") },
   { value: "os", label: tr("文件/目录") },
   { value: "system", label: tr("操作系统") },
-  { value: "window", label: tr("窗口操作") },
-  { value: "clipboard", label: tr("剪贴板") },
-  { value: "transform", label: tr("算法") },
+  { value: "capture", label: tr("截图") },
+  { value: "brightness", label: tr("亮度") },
   { value: "keys", label: tr("按键组合") },
-  { value: "send_to", label: tr("后台发送") },
   { value: "mouse", label: tr("鼠标操作") },
   { value: "pause_ms", label: tr("延迟") },
   { value: "if", label: tr("条件判断") },
   { value: "parallel", label: tr("并行执行") },
   { value: "group", label: tr("动作分组") },
 ];
+
+// 已从动作类型下拉移除的旧类型：老配置里还能看见、还能改类型，但不再提供新建入口。
+// （`clipboard` / `transform` 是用户要求删除的；`send_to` 并入「操作系统」、`window` 并入「应用」。）
+const REMOVED_TYPE_LABELS: Partial<Record<Action["type"], string>> = {
+  clipboard: tr("剪贴板（已移除）"),
+  transform: tr("算法（已移除）"),
+  send_to: tr("后台发送（已并入操作系统）"),
+  window: tr("窗口操作（已并入应用）"),
+};
 
 // 动作类型图标（收起态展示用）。
 const ACTION_ICONS: Record<Action["type"], string> = {
@@ -505,6 +519,8 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   os: "📁",
   system: "🖥️",
   window: "🪟",
+  capture: "📸",
+  brightness: "🔆",
   app: "🚀",
   open_url: "🌐",
   if: "🔀",
@@ -512,12 +528,20 @@ const ACTION_ICONS: Record<Action["type"], string> = {
   group: "▣",
 };
 
-const ACTION_TYPE_LABELS = Object.fromEntries(
-  ACTION_TYPES.map((t) => [t.value, t.label]),
-) as Record<Action["type"], string>;
+const ACTION_TYPE_LABELS = {
+  ...Object.fromEntries(ACTION_TYPES.map((t) => [t.value, t.label])),
+  ...REMOVED_TYPE_LABELS,
+} as Record<Action["type"], string>;
 
 function actionTypeLabel(t: Action["type"]): string {
   return ACTION_TYPE_LABELS[t];
+}
+
+/** 动作类型下拉的可选项：亮度（EXT-22）挂实验功能总闸，关着时不给新建入口。 */
+function actionTypeChoices(): typeof ACTION_TYPES {
+  return mouseFeaturesEnabled()
+    ? ACTION_TYPES
+    : ACTION_TYPES.filter((t) => t.value !== "brightness");
 }
 
 // ---- 变量流向（可视化编排的数据流标签） ----
@@ -591,6 +615,9 @@ function actionVarReads(a: Action): string[] {
     case "send_to":
       texts.push(a.target);
       if (a.payload.kind === "text") texts.push(a.payload.text);
+      break;
+    case "capture":
+      if (a.output === "file") texts.push(a.path);
       break;
     case "if": {
       const c = a.condition;
@@ -707,6 +734,25 @@ const WINDOW_OPS: { value: WindowOperation; label: string }[] = [
   { value: "center", label: tr("居中") },
   { value: "close", label: tr("关闭") },
   { value: "close_same_app", label: tr("关闭同类窗口") },
+];
+
+// ---- 截图 / 贴图（EXT-20）----
+const CAPTURE_OPS: { value: CaptureOperation; label: string }[] = [
+  { value: "full_screen", label: tr("全屏") },
+  { value: "region", label: tr("区域（框选）") },
+  { value: "window", label: tr("当前窗口") },
+];
+const CAPTURE_OUTPUTS: { value: CaptureOutput; label: string }[] = [
+  { value: "clipboard", label: tr("写入剪贴板") },
+  { value: "file", label: tr("保存为 PNG") },
+  { value: "pin", label: tr("贴图（置顶浮窗）") },
+];
+
+// ---- 显示器亮度（EXT-22）----
+const BRIGHTNESS_OPS: { value: BrightnessOperation; label: string }[] = [
+  { value: "up", label: tr("调高") },
+  { value: "down", label: tr("调低") },
+  { value: "restore", label: tr("恢复原始值") },
 ];
 
 // ---- 剪贴板动作的子操作（EXT-15）----
@@ -846,6 +892,10 @@ function newAction(type: Action["type"]): Action {
       return { type: "system", operation: newSystemOp("switch_desktop") };
     case "window":
       return { type: "window", operation: { op: "maximize_restore" } };
+    case "capture":
+      return { type: "capture", operation: "full_screen", output: "clipboard", path: "" };
+    case "brightness":
+      return { type: "brightness", operation: "up", step: 10 };
     case "app":
       return { type: "app", operation: newAppOp("launch") };
     case "open_url":
@@ -858,6 +908,13 @@ function newAction(type: Action["type"]): Action {
       return { type: "group", name: "", actions: [] };
   }
   return { type: "text", text: "", mode: "input" };
+}
+
+/** 原地换动作类型：保留数组里的对象引用（编辑器各处都拿着它），只换形状。 */
+function retypeAction(a: Action, type: Action["type"]) {
+  const fresh = newAction(type);
+  for (const k of Object.keys(a)) delete (a as unknown as Record<string, unknown>)[k];
+  Object.assign(a, fresh);
 }
 
 function osHasContent(o: OsOperation): boolean {
@@ -960,6 +1017,10 @@ function actionHasContent(a: Action): boolean {
       return true;
     case "window":
       return true;
+    case "capture":
+      return a.output !== "file" || a.path.trim().length > 0;
+    case "brightness":
+      return a.operation === "restore" || (a.step >= 1 && a.step <= 100);
     case "app":
       return appHasContent(a.operation);
     case "open_url":
@@ -1164,6 +1225,18 @@ function actionSummary(a: Action): string {
       return systemSummary(a.operation);
     case "window":
       return windowSummary(a.operation.op);
+    case "capture": {
+      const op = CAPTURE_OPS.find((o) => o.value === a.operation)?.label ?? a.operation;
+      const out =
+        a.output === "file"
+          ? a.path || tr("未设保存路径")
+          : (CAPTURE_OUTPUTS.find((o) => o.value === a.output)?.label ?? a.output);
+      return trt`截图：${op} → ${out}`;
+    }
+    case "brightness": {
+      const op = BRIGHTNESS_OPS.find((o) => o.value === a.operation)?.label ?? a.operation;
+      return a.operation === "restore" ? tr("亮度：恢复原始值") : trt`亮度：${op} ${a.step}`;
+    }
     case "app":
       return appSummary(a.operation);
     case "open_url":
@@ -2342,7 +2415,7 @@ function marketCard(e: IndexEntry): HTMLElement {
 
 // 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
 function actionCanRun(a: Action): boolean {
-  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url")
+  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "capture" || a.type === "brightness")
     return true;
   if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
   if (a.type === "parallel") return a.actions.some(actionCanRun);
@@ -3409,6 +3482,132 @@ function fillExpansionEditor() {
 }
 
 // 鼠标操作（手势）编辑页：方向串 + 描述 + 条件 + 动作（动作区与快捷键共用同一套编排器）。
+/** 方向串的量化顺序（与 core `gesture.rs` 的 `DIRECTIONS` 同一口径，y 向下）。 */
+const GESTURE_DIRS = ["R", "DR", "D", "DL", "L", "UL", "U", "UR"];
+
+/** 把画板上的轨迹转成方向串：每走满 `minSegment` 像素记一段，连续同向合并。 */
+function patternFromPoints(points: [number, number][], minSegment = 30): string {
+  if (points.length < 2) return "";
+  let out = "";
+  let anchor = points[0];
+  for (const p of points.slice(1)) {
+    const dx = p[0] - anchor[0];
+    const dy = p[1] - anchor[1];
+    if (Math.hypot(dx, dy) < minSegment) continue;
+    let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    if (deg < 0) deg += 360;
+    const idx =
+      deg < 22.5 || deg >= 337.5 ? 0
+      : deg < 67.5 ? 1
+      : deg < 112.5 ? 2
+      : deg < 157.5 ? 3
+      : deg < 202.5 ? 4
+      : deg < 247.5 ? 5
+      : deg < 292.5 ? 6
+      : 7;
+    const dir = GESTURE_DIRS[idx];
+    if (!out.endsWith(dir)) out += dir;
+    anchor = p;
+  }
+  return out;
+}
+
+/** 手势录入画板：画 → 松手翻译成方向串 → 确认后回填。 */
+function openGesturePad(onDone: (pattern: string) => void) {
+  const mask = el("div", "modal-mask gesture-pad-mask");
+  const modal = el("div", "gesture-pad");
+  const title = el("h3", undefined, tr("画一个手势"));
+  const hint = el(
+    "p",
+    "hint",
+    tr("按住鼠标左键在画板上画，松开后自动转成方向串；可重画后再确认。"),
+  );
+  const canvas = document.createElement("canvas");
+  canvas.className = "gesture-pad-canvas";
+  canvas.width = 640;
+  canvas.height = 360;
+  const result = el("div", "gesture-pad-result", tr("方向串：—"));
+  let points: [number, number][] = [];
+  let drawing = false;
+  let pattern = "";
+
+  const repaint = () => {
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (points.length < 2) return;
+    ctx.strokeStyle = getComputedStyle(document.documentElement)
+      .getPropertyValue("--accent")
+      .trim() || "#4c9aff";
+    ctx.lineWidth = 5;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(points[0][0], points[0][1]);
+    for (const p of points.slice(1)) ctx.lineTo(p[0], p[1]);
+    ctx.stroke();
+  };
+
+  const local = (e: PointerEvent): [number, number] => {
+    const r = canvas.getBoundingClientRect();
+    return [e.clientX - r.left, e.clientY - r.top];
+  };
+
+  canvas.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    drawing = true;
+    pattern = "";
+    points = [local(e)];
+    canvas.setPointerCapture(e.pointerId);
+    result.textContent = tr("方向串：—");
+    repaint();
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    if (!drawing) return;
+    points.push(local(e));
+    repaint();
+  });
+  const finish = () => {
+    if (!drawing) return;
+    drawing = false;
+    pattern = patternFromPoints(points);
+    result.textContent = pattern
+      ? trt`方向串：${pattern}`
+      : tr("没画出方向：再画长一点");
+  };
+  canvas.addEventListener("pointerup", finish);
+  canvas.addEventListener("pointercancel", finish);
+
+  const actions = el("div", "gesture-pad-actions");
+  const clearBtn = el("button", "ghost", tr("重画"));
+  clearBtn.addEventListener("click", () => {
+    points = [];
+    pattern = "";
+    result.textContent = tr("方向串：—");
+    repaint();
+  });
+  const cancelBtn = el("button", "ghost", tr("取消"));
+  const okBtn = el("button", "primary", tr("确认录入"));
+  okBtn.setAttribute("disabled", "true");
+  const syncOk = () => {
+    if (pattern) okBtn.removeAttribute("disabled");
+    else okBtn.setAttribute("disabled", "true");
+  };
+  // pointerup 后同步按钮状态（画的过程中禁用）。
+  canvas.addEventListener("pointerup", () => window.setTimeout(syncOk, 0));
+  const close = () => mask.remove();
+  cancelBtn.addEventListener("click", close);
+  okBtn.addEventListener("click", () => {
+    if (!pattern) return;
+    close();
+    onDone(pattern);
+  });
+  actions.append(clearBtn, cancelBtn, okBtn);
+  modal.append(title, hint, canvas, result, actions);
+  mask.append(modal);
+  document.body.append(mask);
+}
+
 function fillGestureEditor() {
   if (!gestureDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value = "";
@@ -4166,10 +4365,17 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   const typePick = el("select", "action-type-name") as HTMLSelectElement;
   typePick.title = tr("点击切换动作类型");
   typePick.setAttribute("aria-label", tr("动作类型"));
-  for (const t of ACTION_TYPES) {
+  for (const t of actionTypeChoices()) {
     const o = el("option") as HTMLOptionElement;
     o.value = t.value;
     o.textContent = t.label;
+    typePick.append(o);
+  }
+  // 已移除 / 已合并的类型仍要能在老配置里看到并改走，不给它一个空下拉。
+  if (!actionTypeChoices().some((t) => t.value === a.type)) {
+    const o = el("option") as HTMLOptionElement;
+    o.value = a.type;
+    o.textContent = actionTypeLabel(a.type);
     typePick.append(o);
   }
   typePick.value = a.type;
@@ -4551,8 +4757,18 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
       opt.textContent = o.label;
       sel.append(opt);
     }
+    // 「后台发送」并入操作系统：选中即把动作换成 send_to（模型不变，只是入口归并）。
+    const send = el("option") as HTMLOptionElement;
+    send.value = "__send_to";
+    send.textContent = tr("后台发送（按键 / 文本）");
+    sel.append(send);
     sel.value = op.op;
     sel.addEventListener("change", () => {
+      if (sel.value === "__send_to") {
+        retypeAction(a, "send_to");
+        rerender();
+        return;
+      }
       a.operation = newSystemOp(sel.value as SystemOperation["op"]);
       rerender();
     });
@@ -4567,8 +4783,22 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
       opt.textContent = o.label;
       sel.append(opt);
     }
+    // 「窗口操作」并入应用：选中即把动作换成 window（作用对象是触发时的前台窗口）。
+    for (const o of WINDOW_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = `__window:${o.value}`;
+      opt.textContent = trt`当前窗口：${o.label}`;
+      sel.append(opt);
+    }
     sel.value = op.op;
     sel.addEventListener("change", () => {
+      if (sel.value.startsWith("__window:")) {
+        const wop = sel.value.slice("__window:".length) as WindowOperation;
+        retypeAction(a, "window");
+        (a as unknown as { type: "window"; operation: { op: WindowOperation } }).operation = { op: wop };
+        rerender();
+        return;
+      }
       a.operation = newAppOp(sel.value as AppOperation["op"]);
       rerender();
     });
@@ -4585,6 +4815,36 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
     sel.value = a.operation.op;
     sel.addEventListener("change", () => {
       a.operation = { op: sel.value as WindowOperation };
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "capture") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of CAPTURE_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation;
+    sel.addEventListener("change", () => {
+      a.operation = sel.value as CaptureOperation;
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "brightness") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of BRIGHTNESS_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation;
+    sel.addEventListener("change", () => {
+      a.operation = sel.value as BrightnessOperation;
       rerender();
     });
     return sel;
@@ -5388,6 +5648,57 @@ function actionFields(
     const hint = el("div", "unit-hint");
     hint.textContent = tr("作用对象是触发那一刻的前台窗口，不会激活或切换窗口。目前仅 Windows 支持，其它平台会标平台冲突并在执行时报错。");
     body.append(hint);
+  } else if (a.type === "capture") {
+    const line = el("div", "action-line");
+    const label = el("span", "unit-label", tr("输出到"));
+    const sel = el("select", "action-input") as HTMLSelectElement;
+    for (const o of CAPTURE_OUTPUTS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.output;
+    sel.addEventListener("change", () => {
+      a.output = sel.value as CaptureOutput;
+      rerender();
+    });
+    line.append(label, sel);
+    body.append(line);
+    if (a.output === "file") {
+      body.append(
+        pathField(a.path, (v) => (a.path = v), { file: true, label: tr("保存路径") }),
+      );
+      body.append(
+        el("div", "unit-hint", tr("v1 只存 PNG；没写扩展名会自动补 .png。路径支持 {变量}。")),
+      );
+    }
+    if (a.operation === "region") {
+      body.append(
+        el("div", "unit-hint", tr("按下触发键后整块屏幕会冻结，拖拽框选；按 Esc 或右键取消（不算失败）。")),
+      );
+    }
+    body.append(
+      el("div", "unit-hint", tr("目前仅 Windows 支持（GDI）；贴图是临时浮窗，拖拽移动、右键关闭，重启不恢复。")),
+    );
+  } else if (a.type === "brightness") {
+    if (a.operation !== "restore") {
+      const line = el("div", "action-line");
+      const label = el("span", "unit-label", tr("步长"));
+      const step = el("input", "action-input") as HTMLInputElement;
+      step.type = "number";
+      step.min = "1";
+      step.max = "100";
+      step.value = String(a.step);
+      step.addEventListener("input", () => {
+        a.step = intIn(step.value, 1, 10, 100);
+      });
+      line.append(label, step);
+      body.append(line);
+    }
+    body.append(
+      el("div", "unit-hint", tr("只调主显示器（DDC/CI，VCP 0x10）。「恢复」用本次运行第一次调节前缓存的原始亮度；显示器不支持时执行会明确报错。目前仅 Windows 支持。")),
+    );
   } else if (a.type === "app") {
     const op = a.operation;
     if (op.op === "launch" || op.op === "restart") {
@@ -5800,16 +6111,9 @@ function timeoutMs(ms: number | undefined): string {
 // 手势的条目与编辑在「快捷键」页的「鼠标操作」分类里（与快捷键/改键/文本扩展并列），
 // 设置页只留一个「实验功能」总闸：关掉 = 这一类不出现、行为不生效，配置保留。
 
-// ---- 复制快捷菜单（EXT-13）----
+// ---- 复制快捷菜单（EXT-13，已删除；保留只读编辑器函数供旧配置兜底）----
 // 条目 = 一个 Action（可用「分组」串多步），编辑器内嵌在设置页；菜单浮窗只负责展示与点击，
 // 动作执行始终在壳层（与快捷键同一条 fire 链路）。
-function clipboardMenuCfg(): ClipboardMenu {
-  const s = cfg.settings;
-  if (!s.clipboard_menu) s.clipboard_menu = { enabled: false, double_copy_ms: 500, items: [] };
-  if (!Array.isArray(s.clipboard_menu.items)) s.clipboard_menu.items = [];
-  return s.clipboard_menu;
-}
-
 function renderClipboardMenuEditor() {
   const host = document.getElementById("clipboard-menu-editor");
   if (!host) return;
@@ -5903,7 +6207,7 @@ function menuEntryEditor(
     const typeSel = el("select", "action-type-name") as HTMLSelectElement;
     typeSel.title = tr("点击切换动作类型");
     typeSel.setAttribute("aria-label", tr("动作类型"));
-    for (const t of ACTION_TYPES) {
+    for (const t of actionTypeChoices()) {
       const o = el("option") as HTMLOptionElement;
       o.value = t.value;
       o.textContent = t.label;
@@ -6000,7 +6304,7 @@ function settingsActionsEditor(actions: Action[], rerender: () => void): HTMLEle
     const typeSel = el("select", "action-type-name") as HTMLSelectElement;
     typeSel.title = tr("点击切换动作类型");
     typeSel.setAttribute("aria-label", tr("动作类型"));
-    for (const t of ACTION_TYPES) {
+    for (const t of actionTypeChoices()) {
       const o = el("option") as HTMLOptionElement;
       o.value = t.value;
       o.textContent = t.label;
@@ -6176,13 +6480,8 @@ function syncSettings() {
     cfg.settings.update_source ?? "ihomy";
   (document.getElementById("set-auto-update") as HTMLInputElement).checked =
     cfg.settings.auto_update === true;
-  // 复制快捷菜单（EXT-13）：缺字段 = 关；间隔回落后端默认（与 `ClipboardMenu::default` 一致）。
-  const menu = cfg.settings.clipboard_menu;
-  (document.getElementById("set-clipboard-menu") as HTMLInputElement).checked =
-    menu?.enabled === true;
-  (document.getElementById("set-clipboard-menu-ms") as HTMLInputElement).value = String(
-    menu?.double_copy_ms ?? 500,
-  );
+  // 复制快捷菜单（双击 Ctrl+C）已删除，设置卡不再渲染。
+  // 旧配置里残留的条目仍能只读渲染（没有宿主节点时函数直接返回），不再提供编辑入口。
   renderClipboardMenuEditor();
   // 触发角（EXT-10）：缺字段 = 关；四角的启用 / 名字 / 动作都回显。
   const corners = hotCorners();
@@ -6640,39 +6939,7 @@ function bindSettings() {
     keycast().ignore_single_char = keycastIgnoreSingle.checked;
     void save();
   });
-  // 复制快捷菜单（EXT-13）：总开关 / 双击间隔 / 条目结构都在这里改；条目内部字段由
-  // `menuEntryEditor` 的 change 监听统一落盘。
-  const clipboardMenu = document.getElementById("set-clipboard-menu") as HTMLInputElement;
-  clipboardMenu.addEventListener("change", () => {
-    clipboardMenuCfg().enabled = clipboardMenu.checked;
-    void save();
-  });
-  const clipboardMenuMs = document.getElementById("set-clipboard-menu-ms") as HTMLInputElement;
-  clipboardMenuMs.addEventListener("change", () => {
-    const v = Math.min(2000, Math.max(150, Math.floor(Number(clipboardMenuMs.value) || 500)));
-    clipboardMenuMs.value = String(v);
-    clipboardMenuCfg().double_copy_ms = v;
-    void save();
-  });
-  for (const [id, mk] of [
-    ["clipboard-menu-add-action", () => ({ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") })],
-    [
-      "clipboard-menu-add-submenu",
-      () => ({
-        kind: "submenu",
-        label: tr("新子菜单"),
-        enabled: true,
-        items: [{ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") }],
-      }),
-    ],
-    ["clipboard-menu-add-separator", () => ({ kind: "separator" })],
-  ] as [string, () => MenuEntry][]) {
-    document.getElementById(id)!.addEventListener("click", () => {
-      clipboardMenuCfg().items.push(mk());
-      renderClipboardMenuEditor();
-      void save();
-    });
-  }
+  // 复制快捷菜单（双击 Ctrl+C）已删除：不再有设置项与条目编辑器。
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
   // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
   document
@@ -7500,6 +7767,20 @@ function bind() {
     if (!host) return;
     host.actions.push(newAction("group"));
     renderActions(host);
+  });
+
+  document.getElementById("edit-gesture-record")!.addEventListener("click", () => {
+    if (section !== "gestures" || !gestureDraft) return;
+    openGesturePad((pattern) => {
+      const input = document.getElementById("edit-gesture-pattern") as HTMLInputElement;
+      input.value = pattern;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (gestureDraft) {
+        gestureDraft.pattern = pattern;
+        renderActions(gestureDraft, pattern);
+      }
+      toast(trt`已录入方向串 ${pattern}，记得保存`);
+    });
   });
 
   document.getElementById("edit-capture")!.addEventListener("click", (e) => {
@@ -9101,3 +9382,5 @@ if (location.hash === "#toast") {
     void openPendingGesture();
   })();
 }
+
+

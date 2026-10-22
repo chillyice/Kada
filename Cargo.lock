@@ -1990,6 +1990,7 @@ dependencies = [
  "core-graphics",
  "evdev",
  "hidapi",
+ "image",
  "kada-core",
  "libc",
  "windows",

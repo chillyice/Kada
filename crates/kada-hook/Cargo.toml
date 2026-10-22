@@ -1,4 +1,4 @@
-[package]
+﻿[package]
 name = "kada-hook"
 version = "0.1.0"
 edition = "2021"
@@ -21,19 +21,20 @@ arboard = "3"
 # 只有 win.rs 用得到：按 `cfg(windows)` 声明，免得 Linux / macOS 也去编一个用不上的
 # Windows 绑定（它在非 Windows 目标上编不过）。
 [target.'cfg(windows)'.dependencies]
-# 罗技 HID++ 客户端（档位 C，见 `docs/底层输入能力规划.md`）：枚举 HID 集合、共享打开
-# 厂商控制接口、收发 HID++ 报文。用 `windows-native` 后端（直连 hid.dll）而不是默认的
-# C 后端，免得为一个 Windows 专属功能引入 cc 编译步骤；只挂在 Windows 目标上，Linux /
-# macOS 的交叉检查与 CI 都不会去编它。
+# 截图 / 贴图（EXT-20）：PNG 编码。`image` 本就在依赖树里（tauri），这里只开 png feature。
+image = { version = "0.25", default-features = false, features = ["png"] }
 hidapi = { version = "2.6", default-features = false, features = ["windows-native"] }
 windows = { version = "0.61", features = [
+    "Win32_Devices_Display",
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_Security",
     "Win32_Security_Authorization",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Xps",
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_IO",
+    "Win32_System_LibraryLoader",
     "Win32_System_Pipes",
     "Win32_System_Registry",
     "Win32_System_RemoteDesktop",
@@ -44,3 +45,4 @@ windows = { version = "0.61", features = [
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+

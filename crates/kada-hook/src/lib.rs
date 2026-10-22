@@ -14,6 +14,9 @@
 #[cfg(windows)]
 pub mod win;
 
+#[cfg(windows)]
+mod win_capture;
+
 #[cfg(target_os = "linux")]
 pub mod linux;
 
@@ -167,6 +170,113 @@ pub fn window_action(hwnd: Option<isize>, op: WindowAction) -> Result<(), String
     }
 }
 
+
+/// 截图目标（EXT-20）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CaptureTarget {
+    /// 整块虚拟屏幕（全部显示器拼合）。
+    FullScreen,
+    /// 冻结整屏后让用户框选；`Ok(None)` = 用户取消。
+    Region,
+    /// 触发那一刻的前台窗口句柄（Windows `HWND`）。
+    Window,
+}
+
+/// 一张抓到的图（RGBA8，行序从上到下）。
+#[derive(Clone, Debug, Default)]
+pub struct CapturedImage {
+    /// 宽度（像素）。
+    pub width: u32,
+    /// 高度（像素）。
+    pub height: u32,
+    /// `width * height * 4` 字节，RGBA 顺序。
+    pub rgba: Vec<u8>,
+}
+
+/// 亮度调节方向（EXT-22）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BrightnessOp {
+    /// 调高。
+    Up,
+    /// 调低。
+    Down,
+    /// 恢复本次运行里第一次调节前的原始值。
+    Restore,
+}
+
+/// 截图（EXT-20）。只有 Windows 用 GDI 实现；其它平台返回明确错误。
+/// `window` 是壳层在**触发那一刻**抓的前台窗口句柄（`TriggerCtx.window`），
+/// `CaptureTarget::Window` 用它，不在执行时重新抓前台。
+pub fn capture_screen(
+    target: CaptureTarget,
+    window: Option<isize>,
+) -> Result<Option<CapturedImage>, String> {
+    #[cfg(windows)]
+    {
+        match target {
+            CaptureTarget::FullScreen => win_capture::capture_full_screen().map(Some),
+            CaptureTarget::Region => win_capture::capture_region(),
+            CaptureTarget::Window => win_capture::capture_window(window).map(Some),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (target, window);
+        Err("「截图 / 贴图」目前只支持 Windows".into())
+    }
+}
+
+/// 把截图存成 PNG（EXT-20）：同目录临时文件 → rename，目标已存在时留 `.bak`。
+pub fn save_png_image(img: &CapturedImage, path: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_capture::save_png(img, path)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (img, path);
+        Err("「截图」目前只支持 Windows".into())
+    }
+}
+
+/// 把截图写进系统图片剪贴板（EXT-20）。
+pub fn set_clipboard_image(img: &CapturedImage) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_capture::set_clipboard_image(img)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = img;
+        Err("「截图」目前只支持 Windows".into())
+    }
+}
+
+/// 贴图（EXT-20）：置顶、不激活的临时浮窗（拖拽移动，右键关闭）。
+pub fn pin_image(img: CapturedImage) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_capture::pin_image(img)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = img;
+        Err("「贴图」目前只支持 Windows".into())
+    }
+}
+
+/// 调主显示器亮度（EXT-22，Windows DDC/CI）。成功返回可展示的中文结果。
+pub fn adjust_brightness(op: BrightnessOp, step: i64) -> Result<String, String> {
+    #[cfg(windows)]
+    {
+        win_capture::brightness(op, step)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (op, step);
+        Err("「显示器亮度」目前只支持 Windows（DDC/CI）".into())
+    }
+}
 
 /// 「后台发送」的内容（[`send_to_window`]，EXT-16 二阶段）。
 pub enum WindowInput<'a> {

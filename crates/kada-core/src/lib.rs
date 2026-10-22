@@ -823,6 +823,89 @@ impl WindowOperation {
     }
 }
 
+/// 截图目标（[`Action::Capture`]，EXT-20）：整块虚拟屏幕 / 用户框选区域 / 触发那一刻的前台窗口。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureOperation {
+    /// 全部显示器拼成的虚拟屏幕。
+    #[default]
+    FullScreen,
+    /// 冻结整块虚拟屏幕后让用户框选；Esc / 右键取消。
+    Region,
+    /// 触发那一刻的前台窗口（`TriggerCtx.window`，与「当前窗口」动作同口径）。
+    Window,
+}
+
+#[cfg(feature = "automation")]
+impl CaptureOperation {
+    /// 中文短标签（动作摘要 / 界面下拉共用一套说法）。
+    pub fn label(self) -> &'static str {
+        match self {
+            CaptureOperation::FullScreen => "全屏",
+            CaptureOperation::Region => "区域",
+            CaptureOperation::Window => "当前窗口",
+        }
+    }
+}
+
+/// 截图结果出口（[`Action::Capture`]）：写剪贴板 / 存 PNG 文件 / 贴图浮窗。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureOutput {
+    /// 写进系统剪贴板（图片）。
+    #[default]
+    Clipboard,
+    /// 存成 PNG；路径在 `Action::Capture.path`，支持 `{变量}`。
+    File,
+    /// 贴图（透明置顶浮窗，临时态，重启不恢复）。
+    Pin,
+}
+
+#[cfg(feature = "automation")]
+impl CaptureOutput {
+    /// 中文短标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            CaptureOutput::Clipboard => "剪贴板",
+            CaptureOutput::File => "存文件",
+            CaptureOutput::Pin => "贴图",
+        }
+    }
+}
+
+/// 显示器亮度调节方向（[`Action::Brightness`]，EXT-22）。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrightnessOperation {
+    /// 调高 `step`。
+    #[default]
+    Up,
+    /// 调低 `step`。
+    Down,
+    /// 恢复本次运行里第一次调节前的原始亮度（进程内缓存）。
+    Restore,
+}
+
+#[cfg(feature = "automation")]
+impl BrightnessOperation {
+    /// 中文短标签。
+    pub fn label(self) -> &'static str {
+        match self {
+            BrightnessOperation::Up => "调高",
+            BrightnessOperation::Down => "调低",
+            BrightnessOperation::Restore => "恢复",
+        }
+    }
+}
+
+#[cfg(feature = "automation")]
+fn default_brightness_step() -> i64 {
+    10
+}
+
 #[cfg(feature = "automation")]
 fn default_var() -> String {
     "file".into()
@@ -1226,6 +1309,29 @@ fn is_false(v: &bool) -> bool {
     !*v
 }
 
+/// `serde` 帮手：截图目标的默认值不落盘。
+#[cfg(feature = "automation")]
+fn is_default_capture_op(v: &CaptureOperation) -> bool {
+    matches!(v, CaptureOperation::FullScreen)
+}
+
+/// `serde` 帮手：截图出口的默认值不落盘。
+#[cfg(feature = "automation")]
+fn is_default_capture_output(v: &CaptureOutput) -> bool {
+    matches!(v, CaptureOutput::Clipboard)
+}
+
+/// `serde` 帮手：亮度的默认方向 / 默认步长不落盘。
+#[cfg(feature = "automation")]
+fn is_default_brightness_op(v: &BrightnessOperation) -> bool {
+    matches!(v, BrightnessOperation::Up)
+}
+
+#[cfg(feature = "automation")]
+fn is_default_brightness_step(v: &i64) -> bool {
+    *v == default_brightness_step()
+}
+
 /// `serde` 帮手：默认的 `tap` 不落盘（老配置与新配置的普通按键动作保持同一形状）。
 fn is_tap_mode(m: &KeysMode) -> bool {
     matches!(m, KeysMode::Tap)
@@ -1348,6 +1454,31 @@ pub enum Action {
     #[cfg(feature = "automation")]
     Window {
         operation: WindowOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 截图 / 贴图（EXT-20）：全屏 / 区域 / 当前窗口，结果进剪贴板、存 PNG 或贴图。
+    /// 只有 Windows 实现 GDI 抓图；其它平台执行报错并由冲突检测标平台缺失。
+    #[cfg(feature = "automation")]
+    Capture {
+        #[serde(default, skip_serializing_if = "is_default_capture_op")]
+        operation: CaptureOperation,
+        #[serde(default, skip_serializing_if = "is_default_capture_output")]
+        output: CaptureOutput,
+        /// `output = file` 时的目标路径（支持 `{变量}`；扩展名不带 `.png` 时自动补上）。
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 显示器亮度（EXT-22）：主显示器调高 / 调低 / 恢复原始值。Windows 走 DDC/CI，
+    /// 其它平台执行报错并由冲突检测标平台缺失。
+    #[cfg(feature = "automation")]
+    Brightness {
+        #[serde(default, skip_serializing_if = "is_default_brightness_op")]
+        operation: BrightnessOperation,
+        #[serde(default = "default_brightness_step", skip_serializing_if = "is_default_brightness_step")]
+        step: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1494,6 +1625,23 @@ impl Action {
             // 窗口动作没有必填字段（操作有缺省值），恒可执行；平台支持与否由冲突检测标出。
             #[cfg(feature = "automation")]
             Action::Window { .. } => Ok(()),
+            #[cfg(feature = "automation")]
+            Action::Capture { output, path, .. } => {
+                if matches!(output, CaptureOutput::File) {
+                    non_empty("保存路径", path)?;
+                    if path.contains("{}") {
+                        return Err("保存路径里的变量名不能为空".into());
+                    }
+                }
+                Ok(())
+            }
+            #[cfg(feature = "automation")]
+            Action::Brightness { operation, step, .. } => {
+                if !matches!(operation, BrightnessOperation::Restore) && !(1..=100).contains(step) {
+                    return Err("亮度步长要在 1~100 之间".into());
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -2704,6 +2852,10 @@ pub struct PlatformCaps {
     pub hot_corners: bool,
     /// 边缘滚动（[`WheelEdges`]）是否可用。目前只有 Windows 接了鼠标钩子。
     pub wheel_edges: bool,
+    /// 截图 / 贴图（[`Action::Capture`]）是否可用。目前只有 Windows 用 GDI 实现。
+    pub screenshot: bool,
+    /// 显示器亮度（[`Action::Brightness`]）是否可用。目前只有 Windows 走 DDC/CI。
+    pub brightness: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2720,6 +2872,8 @@ impl Default for PlatformCaps {
             shell_actions: true,
             hot_corners: true,
             wheel_edges: true,
+            screenshot: true,
+            brightness: true,
         }
     }
 }
@@ -2737,6 +2891,8 @@ impl PlatformCaps {
             && self.shell_actions
             && self.hot_corners
             && self.wheel_edges
+            && self.screenshot
+            && self.brightness
     }
 }
 
@@ -3268,6 +3424,24 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        #[cfg(feature = "automation")]
+        if !caps.screenshot && uses_capture(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「截图 / 贴图」当前平台用不了（只有 Windows 用 GDI 实现），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
+        #[cfg(feature = "automation")]
+        if !caps.brightness && uses_brightness(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
@@ -3316,6 +3490,32 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标」当前平台用不了（只有 Windows 实现），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
+    }
+    #[cfg(feature = "automation")]
+    if !caps.screenshot {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_capture(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「截图 / 贴图」当前平台用不了（只有 Windows 用 GDI 实现），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
+    }
+    #[cfg(feature = "automation")]
+    if !caps.brightness {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_brightness(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败".into(),
                     name: g.label(),
                 });
             }
@@ -3737,6 +3937,30 @@ fn uses_shell_actions(actions: &[Action]) -> bool {
             then, otherwise, ..
         } => uses_shell_actions(then) || uses_shell_actions(otherwise),
         Action::Parallel { actions, .. } => uses_shell_actions(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有截图 / 贴图动作（`If` / `Parallel` / 分组递归进去）。
+#[cfg(feature = "automation")]
+fn uses_capture(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Capture { .. } => true,
+        Action::Group { actions, .. } => uses_capture(actions),
+        Action::If { then, otherwise, .. } => uses_capture(then) || uses_capture(otherwise),
+        Action::Parallel { actions, .. } => uses_capture(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有亮度动作（`If` / `Parallel` / 分组递归进去）。
+#[cfg(feature = "automation")]
+fn uses_brightness(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Brightness { .. } => true,
+        Action::Group { actions, .. } => uses_brightness(actions),
+        Action::If { then, otherwise, .. } => uses_brightness(then) || uses_brightness(otherwise),
+        Action::Parallel { actions, .. } => uses_brightness(actions),
         _ => false,
     })
 }
@@ -5737,6 +5961,67 @@ mod new_action_and_folder_tests {
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
     }
 
+    /// 截图 / 贴图（EXT-20）：缺省字段（全屏 / 剪贴板 / 空路径）不落盘；
+    /// 存文件必须有路径，空变量名在保存前拦下。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn capture_action_json_roundtrip_and_validate() {
+        let a: Action = serde_json::from_str(r#"{"type":"capture"}"#).unwrap();
+        assert!(matches!(
+            a,
+            Action::Capture {
+                operation: CaptureOperation::FullScreen,
+                output: CaptureOutput::Clipboard,
+                ..
+            }
+        ));
+        assert!(a.validate().is_ok());
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, r#"{"type":"capture"}"#);
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+
+        let region: Action = serde_json::from_str(
+            r#"{"type":"capture","operation":"region","output":"file","path":"D:\\shot"}"#,
+        )
+        .unwrap();
+        assert!(region.validate().is_ok());
+        let bad: Action = serde_json::from_str(
+            r#"{"type":"capture","output":"file","path":""}"#,
+        )
+        .unwrap();
+        assert!(bad.validate().is_err());
+        let bad_var: Action = serde_json::from_str(
+            r#"{"type":"capture","output":"file","path":"D:\\{}.png"}"#,
+        )
+        .unwrap();
+        assert!(bad_var.validate().is_err());
+    }
+
+    /// 亮度（EXT-22）：默认方向 / 步长不落盘；步长限 1~100，恢复不看步长。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn brightness_action_json_roundtrip_and_validate() {
+        let a: Action = serde_json::from_str(r#"{"type":"brightness"}"#).unwrap();
+        assert!(matches!(
+            a,
+            Action::Brightness {
+                operation: BrightnessOperation::Up,
+                step: 10,
+                ..
+            }
+        ));
+        assert_eq!(serde_json::to_string(&a).unwrap(), r#"{"type":"brightness"}"#);
+        let down: Action =
+            serde_json::from_str(r#"{"type":"brightness","operation":"down","step":25}"#).unwrap();
+        assert_eq!(down.validate(), Ok(()));
+        let zero: Action =
+            serde_json::from_str(r#"{"type":"brightness","operation":"up","step":0}"#).unwrap();
+        assert!(zero.validate().is_err());
+        let restore: Action =
+            serde_json::from_str(r#"{"type":"brightness","operation":"restore","step":0}"#).unwrap();
+        assert_eq!(restore.validate(), Ok(()));
+    }
+
     /// 剪贴板动作（EXT-15）：配置 / 卡带里的形状是
     /// `{"type":"clipboard","operation":{"op":"set_clipboard","text":"..."}}`；
     /// `tempstr` 用短名（不是 `temp_str`），与规划里的写法一致。
@@ -7340,6 +7625,8 @@ mod platform_caps_tests {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
+            screenshot: false,
+            brightness: false,
         }
     }
 

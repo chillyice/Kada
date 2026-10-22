@@ -38,7 +38,8 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, DesktopDirection, FileObject, OsOperation, Shell, SystemOperation, WindowOperation,
+    AppOperation, BrightnessOperation, CaptureOperation, CaptureOutput, DesktopDirection,
+    FileObject, OsOperation, Shell, SystemOperation, WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -172,6 +173,8 @@ pub struct RunOptions {
     /// 文本注入方式（读自 `Settings.text_inject_mode`，规划 7.3-㉒）：文本动作与
     /// 「转大小写」按它选「剪贴板粘贴」或「逐字直发」。
     pub text_inject_mode: TextInjectMode,
+    /// `Settings.experimental`（新功能总闸）：EXT-22 亮度动作只在打开时执行。
+    pub experimental: bool,
 }
 
 impl Default for RunOptions {
@@ -179,6 +182,7 @@ impl Default for RunOptions {
         Self {
             action_timeout: Duration::from_millis(kada_core::DEFAULT_ACTION_TIMEOUT_MS),
             text_inject_mode: TextInjectMode::Clipboard,
+            experimental: false,
         }
     }
 }
@@ -210,6 +214,8 @@ struct Ctx<'a> {
     timeout: Duration,
     /// 见 [`RunOptions::text_inject_mode`]（文本动作与「转大小写」用）。
     text_mode: TextInjectMode,
+    /// 见 [`RunOptions::experimental`]（EXT-22 亮度动作的总闸）。
+    experimental: bool,
     /// 本次执行开始时记下的中止代数（[`abort::aborted`] 的比对基准）。
     gen: u64,
     /// 本次执行对应的记录 id（`run_actions` 的入参），写进 [`CommandResult::run_id`]，
@@ -269,6 +275,7 @@ pub fn run_actions(
         t,
         timeout: opts.action_timeout,
         text_mode: opts.text_inject_mode,
+        experimental: opts.experimental,
         gen: abort::generation(),
         run_id,
         start: Instant::now(),
@@ -350,6 +357,10 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Parallel { .. } => "parallel",
         #[cfg(feature = "automation")]
         Action::Window { .. } => "window",
+        #[cfg(feature = "automation")]
+        Action::Capture { .. } => "capture",
+        #[cfg(feature = "automation")]
+        Action::Brightness { .. } => "brightness",
     }
 }
 
@@ -780,6 +791,24 @@ fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> Command
     }
 }
 
+/// 截图落盘路径：没写扩展名（或不是 `.png`）时补 `.png`——v1 只输出 PNG。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn png_path(path: &str) -> String {
+    let p = path.trim();
+    let is_png = std::path::Path::new(p)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"));
+    if is_png {
+        p.to_string()
+    } else {
+        format!("{p}.png")
+    }
+}
+
 /// 失败记录的展示标签（消息中心 tab 上「标签 · 名称」的左半）。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_label(action: &Action) -> &'static str {
@@ -875,6 +904,10 @@ fn action_label(action: &Action) -> &'static str {
         Action::Parallel { .. } => "并行执行失败",
         #[cfg(feature = "automation")]
         Action::Window { .. } => "窗口操作失败",
+        #[cfg(feature = "automation")]
+        Action::Capture { .. } => "截图失败",
+        #[cfg(feature = "automation")]
+        Action::Brightness { .. } => "亮度调节失败",
     }
 }
 
@@ -977,6 +1010,44 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => window_body(operation),
+        #[cfg(feature = "automation")]
+        Action::Capture { operation, output, path, .. } => {
+            capture_body(*operation, *output, path, vars)
+        }
+        #[cfg(feature = "automation")]
+        Action::Brightness { operation, step, .. } => brightness_body(*operation, *step),
+    }
+}
+
+/// 截图动作摘要（消息中心「命令」一栏 / 执行记录标题）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn capture_body(
+    operation: CaptureOperation,
+    output: CaptureOutput,
+    path: &str,
+    vars: &Vars,
+) -> String {
+    let target = format!("截取{}", operation.label());
+    match output {
+        CaptureOutput::Clipboard => format!("{target} → 剪贴板"),
+        CaptureOutput::Pin => format!("{target} → 贴图"),
+        CaptureOutput::File => format!("{target} → {}", substitute_vars(path, vars)),
+    }
+}
+
+/// 亮度动作摘要。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn brightness_body(operation: BrightnessOperation, step: i64) -> String {
+    match operation {
+        BrightnessOperation::Up => format!("显示器亮度调高 {step}"),
+        BrightnessOperation::Down => format!("显示器亮度调低 {step}"),
+        BrightnessOperation::Restore => "显示器亮度恢复原始值".into(),
     }
 }
 
@@ -1257,7 +1328,9 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Script { description, .. }
         | Action::If { description, .. }
         | Action::Parallel { description, .. }
-        | Action::Window { description, .. } => description.as_deref(),
+        | Action::Window { description, .. }
+        | Action::Capture { description, .. }
+        | Action::Brightness { description, .. } => description.as_deref(),
     }
 }
 
@@ -1575,6 +1648,82 @@ fn run_action(
         Action::Window { operation, .. } => {
             // 目标窗口是**触发时**抓的句柄（`ctx.t.window`），所以链里先切前台也不影响它。
             kada_hook::window_action(ctx.t.window, hook_window_action(*operation))?;
+        }
+        #[cfg(feature = "automation")]
+        Action::Capture { operation, output, path, .. } => {
+            let target = match operation {
+                CaptureOperation::FullScreen => kada_hook::CaptureTarget::FullScreen,
+                CaptureOperation::Region => kada_hook::CaptureTarget::Region,
+                CaptureOperation::Window => kada_hook::CaptureTarget::Window,
+            };
+            // 区域截图时用户按 Esc / 右键 = 取消，不算失败。
+            let Some(img) = kada_hook::capture_screen(target, ctx.t.window)? else {
+                return Ok(None);
+            };
+            let (w, h) = (img.width, img.height);
+            let (what, msg) = match output {
+                CaptureOutput::Clipboard => {
+                    kada_hook::set_clipboard_image(&img)?;
+                    (
+                        format!("截取{} → 剪贴板", operation.label()),
+                        format!("已截取{}并写入剪贴板（{w}×{h}）", operation.label()),
+                    )
+                }
+                CaptureOutput::File => {
+                    let p = png_path(&substitute_vars(path, vars));
+                    kada_hook::save_png_image(&img, &p)?;
+                    (
+                        format!("截取{} → {p}", operation.label()),
+                        format!("已保存截图 {p}（{w}×{h}）"),
+                    )
+                }
+                CaptureOutput::Pin => {
+                    kada_hook::pin_image(img)?;
+                    (
+                        format!("截取{} → 贴图", operation.label()),
+                        format!("已贴图（{w}×{h}），右键关闭"),
+                    )
+                }
+            };
+            return Ok(Some(CommandResult {
+                kind: "capture".into(),
+                label: "截图".into(),
+                command: what,
+                // 截图成功也记一条：执行记录里能看到尺寸 / 落点，失败由统一路径记。
+                stdout: msg,
+                stderr: String::new(),
+                exit_code: None,
+                show_output: false,
+                trigger: ctx.t.trigger.into(),
+                name: ctx.t.name.into(),
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: ctx.run_id,
+            }));
+        }
+        #[cfg(feature = "automation")]
+        Action::Brightness { operation, step, .. } => {
+            if !ctx.experimental {
+                return Err("显示器亮度是实验功能：先在设置里打开「实验功能」总闸".into());
+            }
+            let op = match operation {
+                BrightnessOperation::Up => kada_hook::BrightnessOp::Up,
+                BrightnessOperation::Down => kada_hook::BrightnessOp::Down,
+                BrightnessOperation::Restore => kada_hook::BrightnessOp::Restore,
+            };
+            let msg = kada_hook::adjust_brightness(op, *step)?;
+            return Ok(Some(CommandResult {
+                kind: "brightness".into(),
+                label: "亮度".into(),
+                command: brightness_body(*operation, *step),
+                stdout: msg,
+                stderr: String::new(),
+                exit_code: None,
+                show_output: false,
+                trigger: ctx.t.trigger.into(),
+                name: ctx.t.name.into(),
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: ctx.run_id,
+            }));
         }
         #[cfg(feature = "automation")]
         Action::Script {
@@ -2638,6 +2787,7 @@ mod tests {
             // 0 = 不限时（与配置里的 0 同义），用于只测「中止」的用例。
             timeout: Duration::from_millis(timeout_ms),
             text_mode: TextInjectMode::Clipboard,
+            experimental: true,
             gen: abort::generation(),
             run_id: None,
             start: Instant::now(),
@@ -3328,6 +3478,54 @@ mod tests {
         let s = super::action_summary(&action, &vars);
         assert!(s.contains("URL 编码 hi Kada"), "{s}");
         assert!(s.contains("→ q + 注入"), "{s}");
+    }
+
+    /// 截图 / 亮度摘要：执行记录里要看得出「截了什么 / 存到哪 / 调了多少」。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn capture_and_brightness_summary_show_target_and_sink() {
+        let vars = BTreeMap::new();
+        let capture = Action::Capture {
+            operation: CaptureOperation::Window,
+            output: CaptureOutput::File,
+            path: "D:\\shots\\{name}.png".into(),
+            description: None,
+        };
+        assert_eq!(super::action_kind(&capture), "capture");
+        let s = super::action_summary(&capture, &vars);
+        assert!(s.contains("当前窗口") && s.contains("D:\\shots\\{name}.png"), "{s}");
+
+        let pin = Action::Capture {
+            operation: CaptureOperation::Region,
+            output: CaptureOutput::Pin,
+            path: String::new(),
+            description: None,
+        };
+        assert!(super::action_summary(&pin, &vars).contains("贴图"));
+
+        let bright = Action::Brightness {
+            operation: BrightnessOperation::Down,
+            step: 15,
+            description: None,
+        };
+        assert_eq!(super::action_kind(&bright), "brightness");
+        let b = super::action_summary(&bright, &vars);
+        assert!(b.contains("调低") && b.contains("15"), "{b}");
+        let restore = Action::Brightness {
+            operation: BrightnessOperation::Restore,
+            step: 10,
+            description: None,
+        };
+        assert!(super::action_summary(&restore, &vars).contains("恢复"));
+    }
+
+    /// 截图落盘路径：没写扩展名 / 不是 png 时补 `.png`（v1 只输出 PNG）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn png_path_appends_extension() {
+        assert_eq!(super::png_path("D:\\a"), "D:\\a.png");
+        assert_eq!(super::png_path("D:\\a.PNG"), "D:\\a.PNG");
+        assert_eq!(super::png_path("D:\\a.png"), "D:\\a.png");
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。
