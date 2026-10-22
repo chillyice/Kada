@@ -289,6 +289,8 @@ body.is-mac .titlebar {
   color: var(--accent);
   border: 1px solid var(--line);
   border-radius: 10px;
+  /* 简约主题的 logo 是满幅方图，圆角由这层裁；CRT 的星屑要飞出 38px 盒，那边改回 visible。 */
+  overflow: hidden;
 }
 
 .rail-nav {
@@ -4321,17 +4323,28 @@ html[data-theme="crt"]:has(.layout)::after {
   color: #d98ce0;
 }
 
-/* 品牌字：深色 / 浅色仍是原来的单字 K；CRT 换成四色 Kada 字标。
+/* 品牌字：简约深 / 浅色用设计好的方形 logo（满幅方图，圆角由 .rail-brand 的 overflow 裁）；
+   CRT 换成四色 Kada 字标。
    静止时四字各发荧光，偶尔按 K → d → 左 a → 右 a 的次序短促熄一下；
    之后自动把四字一起按进屏幕、再弹回来，右上角同时迸出两三颗星与三根短射线。
    星屑层是字标的兄弟节点，不跟着 skewX 斜切——星的形状与射线角度才可控。 */
+.brand-logo,
 .brand-word,
 .brand-burst {
   display: none;
 }
 
-[data-theme="crt"] .brand-glyph {
-  display: none;
+.brand-logo {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  user-select: none;
+  -webkit-user-drag: none;
+}
+
+[data-theme="dark"] .brand-logo-dark,
+[data-theme="light"] .brand-logo-light {
+  display: block;
 }
 
 [data-theme="crt"] .rail-brand {
