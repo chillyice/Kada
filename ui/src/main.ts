@@ -1793,8 +1793,9 @@ const KIND_ICON: Record<ListKind, string> = {
   expansion:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
   // 与发布页「鼠标手势与滚轮」卡片同款（右键方块 + 折线轨迹与箭头 + 圆点）——两处同步改。
+  // 轨迹从方块底边中点（6.5, 7）起笔：与方块同一条竖中线，圆头端点正好并进底边描边。
   gesture:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v9a4 4 0 0 0 4 4h8"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7v6a4 4 0 0 0 4 4h9.5"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
