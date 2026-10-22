@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dialog";
+import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { installBrowserMock } from "./mock";
 import { applyLocale, localizeStaticDom, savedLocale, tr, trt } from "./i18n";
 
@@ -2455,20 +2455,41 @@ function renameFolder(id: string) {
   renderListPane();
 }
 
-// 确认框统一入口。ask() 走 Tauri 的 dialog 插件（需 capabilities 放行 `dialog:allow-message`，
-// 光放行 open/save 不够——ask 调的是插件的 message 命令）；被 ACL 拒绝或插件异常时它会 reject，
-// 而 reject 直接冒出去只会变成一条没人看的 unhandled rejection，用户看到的就是「点了删除没反应」。
-// 这里兜住并把原因摆到提示条上。
-async function confirmAsk(
-  message: string,
-  opts: Parameters<typeof ask>[1],
-): Promise<boolean> {
-  try {
-    return await ask(message, opts);
-  } catch (e) {
-    toast(trt`确认框打开失败：${e}`);
-    return false;
-  }
+// 确认框统一入口（自绘）。删除 / 层 / 目录 / 外部改动冲突这类「不可逆或会丢东西」的操作都走这里。
+// 原先借系统 `ask()`：那是全应用唯一一处灰白系统框，跟四套主题割裂，而且被 ACL 拒绝时只会变成
+// 一条没人看的 unhandled rejection（表现就是「点了删除没反应」）。
+// **焦点默认落在「取消」**：危险操作不给隐式回车，习惯性连按回车不该把东西删掉。
+interface ConfirmOptions {
+  title: string;
+  text: string;
+  okLabel: string;
+  cancelLabel?: string;
+  /** 「确定」按钮用危险色（删除这类不可逆操作）。 */
+  danger?: boolean;
+}
+
+let confirmPending: ((ok: boolean) => void) | null = null;
+
+function askConfirm(opts: ConfirmOptions): Promise<boolean> {
+  // 已经有一个确认框在等：后来的请求按「取消」处理，否则先到那个 promise 永远不 resolve。
+  if (confirmPending) return Promise.resolve(false);
+  document.getElementById("confirm-title")!.textContent = opts.title;
+  document.getElementById("confirm-text")!.textContent = opts.text;
+  const ok = document.getElementById("confirm-ok") as HTMLButtonElement;
+  ok.textContent = opts.okLabel;
+  ok.className = opts.danger ? "danger" : "primary";
+  document.getElementById("confirm-cancel")!.textContent = opts.cancelLabel ?? tr("取消");
+  document.getElementById("confirm-modal")!.classList.remove("hidden");
+  // 先摘掉 `hidden` 再 focus：`display: none` 的子树里 focus() 是空操作，焦点会留在原地。
+  document.getElementById("confirm-cancel")!.focus();
+  return new Promise((resolve) => (confirmPending = resolve));
+}
+
+function resolveConfirm(ok: boolean) {
+  const pending = confirmPending;
+  confirmPending = null;
+  document.getElementById("confirm-modal")!.classList.add("hidden");
+  pending?.(ok);
 }
 
 // 删除单条内容的统一确认。原先只有「删除目录 / 删除层」问一句，同为破坏性操作的单条删除
@@ -2476,9 +2497,11 @@ async function confirmAsk(
 // 未落盘的新增项不弹：删除它等同「取消」，没有任何已保存的内容会丢。
 async function confirmDelete(kind: string, name: string, discardsDraft: boolean): Promise<boolean> {
   const dirty = discardsDraft ? tr("该条还有未保存的改动，会一并丢弃。") : "";
-  return await confirmAsk(trt`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`, {
-    kind: "warning",
+  return await askConfirm({
     title: trt`删除${kind}`,
+    text: trt`删除${kind}「${name}」？${dirty}删除后应用内无法撤销。`,
+    okLabel: tr("删除"),
+    danger: true,
   });
 }
 
@@ -2521,10 +2544,12 @@ async function deleteFolder(id: string) {
   const detail = folderEntryCounts(collectDescendantIds(id))
     .map(([label, n]) => trt`${n} 条${label}`)
     .join("、");
-  const ok = await confirmAsk(
-    trt`删除目录「${target.name}」${detail ? trt`及其中的 ${detail}` : tr("及其所有内容")}？删除后无法撤销。`,
-    { title: tr("删除目录"), kind: "warning" },
-  );
+  const ok = await askConfirm({
+    title: tr("删除目录"),
+    text: trt`删除目录「${target.name}」${detail ? trt`及其中的 ${detail}` : tr("及其所有内容")}？删除后无法撤销。`,
+    okLabel: tr("删除"),
+    danger: true,
+  });
   if (!ok) return;
   dropFolderTree(id);
   saveCollapsed();
@@ -2652,9 +2677,11 @@ async function deleteSelection() {
     n === 1 ? `${kindLabel(kindOf(objs[0]))}「${labelOf(objs[0])}」` : trt`选中的 ${n} 项`;
   const dirty = hitEdit && isDraftDirty() ? tr("正在编辑的那条还有未保存的改动，会一并丢弃。") : "";
   if (
-    !(await confirmAsk(trt`删除${what}？${dirty}删除后应用内无法撤销。`, {
-      kind: "warning",
+    !(await askConfirm({
       title: tr("删除"),
+      text: trt`删除${what}？${dirty}删除后应用内无法撤销。`,
+      okLabel: tr("删除"),
+      danger: true,
     }))
   ) {
     return;
@@ -3936,16 +3963,14 @@ async function applyExternalConfig(next: Config) {
   const editing = draft !== null || remapDraft !== null || expansionDraft !== null || gestureDraft !== null;
   if (editing) {
     if (isDraftDirty()) {
-      const take = await confirmAsk(
-        trt`${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
+      const take = await askConfirm({
+        title: tr("配置已被外部修改"),
+        text:
+          trt`${draftLabel()}有未保存的改动，而配置文件刚被外部修改（手改 JSON / 恢复备份 / 同步落盘）。` +
           tr("加载新内容会放弃这些改动。"),
-        {
-          title: tr("配置已被外部修改"),
-          kind: "warning",
-          okLabel: tr("加载新配置"),
-          cancelLabel: tr("保留我的改动（下次保存会覆盖外部改动）"),
-        },
-      );
+        okLabel: tr("加载新配置"),
+        cancelLabel: tr("保留我的改动（下次保存会覆盖外部改动）"),
+      });
       // 保留编辑：界面与内存都不动，用户手上的编辑照旧。代价（下次保存覆盖外部改动）已经写在
       // 按钮上，消息中心里也留着一条外部改动的记录，之后不会再重复弹（后端已采纳过一次）。
       if (!take) return;
@@ -6897,10 +6922,12 @@ function addLayer() {
 async function deleteLayer(id: string) {
   const target = cfg.layers.find((l) => l.id === id);
   if (!target) return;
-  const ok = await confirmAsk(
-    trt`删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`,
-    { title: tr("删除层"), kind: "warning" },
-  );
+  const ok = await askConfirm({
+    title: tr("删除层"),
+    text: trt`删除层「${target.name}」？该层的快捷键/改键会回到基础层，指向它的切层键会失效。`,
+    okLabel: tr("删除"),
+    danger: true,
+  });
   if (!ok) return;
   cfg.layers = cfg.layers.filter((l) => l.id !== id);
   cfg.shortcuts.forEach((s) => {
@@ -7058,6 +7085,19 @@ function bind() {
     if (e.key === "Escape" && unsavedPending) {
       e.preventDefault();
       resolveUnsaved("cancel");
+    }
+  });
+
+  // 删除 / 外部改动确认：遮罩与 Esc 一律按「取消」——破坏性操作绝不能被一次误触放行。
+  // 回车不接全局监听：「取消」默认拿焦点，回车就是取消；真要点「删除」得自己移过去。
+  document.getElementById("confirm-ok")!.addEventListener("click", () => resolveConfirm(true));
+  document.getElementById("confirm-cancel")!.addEventListener("click", () => resolveConfirm(false));
+  document.getElementById("confirm-modal")!.querySelector(".modal-mask")!
+    .addEventListener("click", () => resolveConfirm(false));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && confirmPending) {
+      e.preventDefault();
+      resolveConfirm(false);
     }
   });
 
@@ -7359,7 +7399,7 @@ function bind() {
       return;
     }
 
-    // 弹窗在场时全局键让路（模态自己的按钮自理；删除确认是原生 ask() 对话框）。
+    // 弹窗在场时全局键让路（模态自己的按钮与 Esc 自理，见 `bind` 里各自动作）。
     if (document.querySelector(".modal:not(.hidden)")) return;
     const mod = e.ctrlKey || e.metaKey;
 
@@ -8541,6 +8581,11 @@ function winIcon(paths: string): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", "0 0 12 12");
   svg.setAttribute("aria-hidden", "true");
+  // 必须显式给描边：SVG 的默认样式是 `fill: black; stroke: none`，只写 `<path d=…>` 画出来的
+  // 是一条填充黑块——深色标题栏上等于不可见（上一版三颗按钮只有最大化能看见一点黑）。
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "1.2");
   svg.innerHTML = paths;
   return svg;
 }

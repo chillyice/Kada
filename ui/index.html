@@ -1036,6 +1036,26 @@
       </div>
     </div>
 
+    <!-- 通用确认框（自绘）：删除 / 删目录 / 删层 / 多选删除 / 外部改动冲突都走这一块。
+         原先借系统 ask()——全应用唯一一处灰白系统框，跟四套主题割裂。标题、正文与两个按钮
+         的文案都由 `askConfirm` 填，所以这里留空。 -->
+    <div id="confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+      <div class="modal-mask"></div>
+      <div class="modal-box confirm-box">
+        <header class="modal-head">
+          <span id="confirm-title" class="modal-title"></span>
+        </header>
+        <div class="modal-body">
+          <p id="confirm-text" class="confirm-text"></p>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="confirm-cancel"></button>
+          <button id="confirm-ok" class="danger"></button>
+        </footer>
+      </div>
+    </div>
+
     <div id="save-status" class="toast" role="status"></div>
 
     <script type="module" src="/src/main.ts"></script>

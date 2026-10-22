@@ -192,6 +192,14 @@ body.is-mac .titlebar {
 .win-btn svg {
   width: 12px;
   height: 12px;
+  /* 图标走描边（`winIcon` 里给了 fill=none / stroke=currentColor），线宽 1.2 在 12px 下
+     就是一根清晰的 1px 线；CRT 的「线框图标统一 2.4px」是给 20px 导航图标的，这里要盖掉，
+     否则窗口按钮会糊成一团黑。 */
+  stroke-width: 1.2px;
+}
+
+[data-theme="crt"] .win-btn svg[stroke-width] {
+  stroke-width: 1.2px;
 }
 
 .win-btn:hover {
@@ -3730,6 +3738,29 @@ pre.msg-v {
   width: min(460px, 90vw);
 }
 
+/* 通用确认框：外部改动那一档的按钮文案很长（「保留我的改动（下次保存会覆盖外部改动）」），
+   框宽给到 520，底部操作行允许换行，别把按钮挤出框外。 */
+#confirm-modal .modal-box {
+  width: min(520px, 90vw);
+}
+
+#confirm-modal .modal-foot {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+/* 确认框里的「确定」通常是删除这类破坏性操作：静止态就给强调色描边 + 字。全局 `button.danger`
+   只在 hover 时变色（导入框的「替换」沿用那套），但在这里它跟普通按钮长得一样就失去了警示作用。 */
+#confirm-ok.danger {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+#confirm-ok.danger:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
 .confirm-text {
   margin-bottom: 8px;
 }
@@ -4277,7 +4308,9 @@ html[data-theme="crt"]:has(.layout)::after {
 
 [data-theme="crt"] .rail-brand {
   color: var(--accent);
-  border-color: var(--accent);
+  /* 橙色描边框去掉：CRT 下品牌字标本身就是 logo，外面再套一圈框像一枚按钮。
+     `border: 0`（而不是透明色）让 38px 盒宽全部给字标用。 */
+  border: 0;
   text-shadow:
     0 0 2px var(--accent),
     0 0 12px color-mix(in srgb, var(--accent) 55%, transparent);
@@ -4286,8 +4319,11 @@ html[data-theme="crt"]:has(.layout)::after {
 [data-theme="crt"] .brand-word {
   display: inline-flex;
   align-items: baseline;
-  font-size: 12px;
+  /* 字标撑满原来那圈橙框的宽度：字宽 = 2 倍字号（4 个字 × 0.5em）+ 斜切多出的约 0.1 倍，
+     18px 落在 37.9px，刚好贴到原边框外沿（盒宽 38px）。 */
+  font-size: 18px;
   line-height: 1;
+  white-space: nowrap;
   /* 设计稿里「字体可以稍微倾斜一点」：整个字标斜切几度。 */
   transform: skewX(-6deg);
 }
