@@ -1792,8 +1792,9 @@ const KIND_ICON: Record<ListKind, string> = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>',
   expansion:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
+  // 与发布页「鼠标手势与滚轮」卡片同款（右键方块 + 折线轨迹与箭头 + 圆点）——两处同步改。
   gesture:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v1"/><path d="M18 3v4"/><path d="M16 5h4"/><circle cx="6" cy="19" r="2"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4v9a4 4 0 0 0 4 4h8"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
