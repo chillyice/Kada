@@ -846,5 +846,15 @@
   "要发送的文本（支持 {变量名} 占位符）……": "Text to send (supports {variable} placeholders)…",
   "后台发送按键 {0} → {1}": "Send keys {0} → {1}",
   "后台发送文本 {0} → {1}": "Send text {0} → {1}",
-  "把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。": "Sends keys or text to a non-foreground window without activating or focusing it. The target matches a process name or window-title keyword (case-insensitive, * and ? supported); the topmost match wins. Windows only; browsers / Electron / UWP / games / elevated windows usually ignore these messages, and it never falls back to foreground injection."
+  "把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。": "Sends keys or text to a non-foreground window without activating or focusing it. The target matches a process name or window-title keyword (case-insensitive, * and ? supported); the topmost match wins. Windows only; browsers / Electron / UWP / games / elevated windows usually ignore these messages, and it never falls back to foreground injection.",
+  "定位文件（在资源管理器中选中）": "Reveal in Explorer",
+  "要定位的文件或目录": "File or folder to reveal",
+  "仅 Windows 支持：在资源管理器里打开所在目录并选中它。": "Windows only: opens the containing folder in Explorer and selects it.",
+  "定位文件：{0}": "Reveal: {0}",
+  "清空回收站": "Empty recycle bin",
+  "关闭显示器": "Turn off display",
+  "切换桌面图标": "Toggle desktop icons",
+  "永久清空回收站，不弹系统确认。仅 Windows 支持；其它平台会标平台冲突并在执行时报错。": "Permanently empties the recycle bin without a system confirmation. Windows only; other platforms show a platform conflict and fail at runtime.",
+  "立刻关闭显示器；动一下鼠标或按任意键就会亮回来。仅 Windows 支持。": "Turns the display off immediately; moving the mouse or pressing a key turns it back on. Windows only.",
+  "显示 / 隐藏桌面图标（等价于右键桌面 → 查看 → 显示桌面图标）。仅 Windows 支持。": "Shows / hides desktop icons (same as right-clicking the desktop → View → Show desktop icons). Windows only."
 }

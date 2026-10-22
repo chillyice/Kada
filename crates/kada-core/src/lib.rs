@@ -756,6 +756,8 @@ pub enum OsOperation {
     NewFolder { path: String },
     /// 在文件管理器中打开某个目录。
     OpenFolder { path: String },
+    /// 在文件管理器中定位（选中）某个文件或目录（Windows `explorer /select,`）。
+    Reveal { path: String },
     /// 把 `source`（文件或目录）压缩为 `dest` 的 zip 归档。
     Zip { source: String, dest: String },
     /// 把 `source` 的 zip 压缩包解压到 `dest` 目录。
@@ -764,7 +766,7 @@ pub enum OsOperation {
     GetFileProps { path: String, #[serde(default = "default_var")] var: String },
 }
 
-/// 操作系统动作：对操作系统本身做的动作（目前只有切换虚拟桌面）。
+/// 操作系统动作：对操作系统本身做的动作（虚拟桌面 / 回收站 / 显示器 / 桌面图标）。
 /// 与 [`OsOperation`]（文件/目录动作）分开，见那里的分类依据。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -777,6 +779,12 @@ pub enum SystemOperation {
         #[serde(default)]
         direction: DesktopDirection,
     },
+    /// 清空回收站（Windows `SHEmptyRecycleBin`，不弹确认 / 进度 / 声音）。
+    EmptyRecycleBin,
+    /// 关闭显示器（Windows 广播 `SC_MONITORPOWER`，动一下鼠标 / 按键就会亮回来）。
+    MonitorOff,
+    /// 切换桌面图标显示（Windows 给桌面 `SysListView32` 发 `0x7402`）。
+    ToggleDesktopIcons,
 }
 
 /// 当前窗口动作（[`Action::Window`]，EXT-14）：对**触发那一刻的前台窗口**执行操作，
@@ -1408,6 +1416,7 @@ impl Action {
                     Delete { path } | NewFile { path } | NewFolder { path } | OpenFolder { path } => {
                         non_empty("路径", path)
                     }
+                    Reveal { path } => non_empty("路径", path),
                     Zip { source, dest } | Unzip { source, dest } => {
                         non_empty("源路径", source)?;
                         non_empty("目标路径", dest)?;
@@ -1417,7 +1426,7 @@ impl Action {
                     GetFileProps { path, .. } => non_empty("路径", path),
                 }
             }
-            // 系统操作目前只有切换虚拟桌面：没有必填字段（方向有缺省值），恒可执行。
+            // 系统操作没有必填字段（方向有缺省值），恒可执行；平台不支持在执行时报错。
             #[cfg(feature = "automation")]
             Action::System { .. } => Ok(()),
             #[cfg(feature = "automation")]
@@ -2508,6 +2517,8 @@ pub struct PlatformCaps {
     pub mouse_absolute: bool,
     /// 「后台发送」动作（[`Action::SendTo`]）是否可用。只有 Windows 用 `PostMessage` 实现。
     pub background_input: bool,
+    /// Windows Shell 补全动作（定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标）是否可用。
+    pub shell_actions: bool,
 }
 
 impl Default for PlatformCaps {
@@ -2521,6 +2532,7 @@ impl Default for PlatformCaps {
             window_actions: true,
             mouse_absolute: true,
             background_input: true,
+            shell_actions: true,
         }
     }
 }
@@ -2535,6 +2547,7 @@ impl PlatformCaps {
             && self.window_actions
             && self.mouse_absolute
             && self.background_input
+            && self.shell_actions
     }
 }
 
@@ -3057,6 +3070,15 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        #[cfg(feature = "automation")]
+        if !caps.shell_actions && uses_shell_actions(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标」当前平台用不了（只有 Windows 实现），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
@@ -3092,6 +3114,19 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「后台发送」动作在当前平台用不了（只有 Windows 用 PostMessage 实现），执行到这一步会失败".into(),
+                    name: g.label(),
+                });
+            }
+        }
+    }
+    #[cfg(feature = "automation")]
+    if !caps.shell_actions {
+        for g in cfg.gestures.iter().filter(|g| g.enabled) {
+            if uses_shell_actions(&g.actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标」当前平台用不了（只有 Windows 实现），执行到这一步会失败".into(),
                     name: g.label(),
                 });
             }
@@ -3462,6 +3497,31 @@ fn uses_background_input(actions: &[Action]) -> bool {
         } => uses_background_input(then) || uses_background_input(otherwise),
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => uses_background_input(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有 Windows Shell 补全动作（定位文件 / 清空回收站 / 关闭显示器 /
+/// 切换桌面图标），`If` / `Parallel` / 分组递归进去。
+#[cfg(feature = "automation")]
+fn uses_shell_actions(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Os {
+            operation: OsOperation::Reveal { .. },
+            ..
+        } => true,
+        Action::System {
+            operation:
+                SystemOperation::EmptyRecycleBin
+                | SystemOperation::MonitorOff
+                | SystemOperation::ToggleDesktopIcons,
+            ..
+        } => true,
+        Action::Group { actions, .. } => uses_shell_actions(actions),
+        Action::If {
+            then, otherwise, ..
+        } => uses_shell_actions(then) || uses_shell_actions(otherwise),
+        Action::Parallel { actions, .. } => uses_shell_actions(actions),
         _ => false,
     })
 }
@@ -6952,6 +7012,7 @@ mod platform_caps_tests {
             window_actions: false,
             mouse_absolute: false,
             background_input: false,
+            shell_actions: false,
             ..Default::default()
         }
     }
@@ -6972,6 +7033,7 @@ mod platform_caps_tests {
             window_actions: false,
             mouse_absolute: true,
             background_input: false,
+            shell_actions: false,
         }
     }
 
@@ -7158,7 +7220,58 @@ mod platform_caps_tests {
 
     #[cfg(feature = "automation")]
     #[test]
-    fn nested_if_frontmost_also_flagged() {        let cfg = Config {
+    fn shell_actions_flagged_where_unsupported() {
+        let action = Action::System {
+            operation: SystemOperation::EmptyRecycleBin,
+            description: None,
+        };
+        let cfg = Config {
+            shortcuts: vec![shortcut("s", "Ctrl+K", vec![action.clone()])],
+            gestures: vec![crate::gesture::Gesture {
+                pattern: "DR".into(),
+                actions: vec![action],
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
+        for caps in [macos_caps(), linux_caps()] {
+            let hits = detect_conflicts(&cfg, &caps);
+            assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
+            assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+            assert!(hits.iter().all(|c| c.message.contains("清空回收站")));
+        }
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn shell_actions_validate_paths() {
+        assert!(Action::Os {
+            operation: OsOperation::Reveal { path: "C:\\tmp\\a.txt".into() },
+            description: None,
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Os {
+            operation: OsOperation::Reveal { path: "  ".into() },
+            description: None,
+        }
+        .validate()
+        .is_err());
+        for operation in [
+            SystemOperation::EmptyRecycleBin,
+            SystemOperation::MonitorOff,
+            SystemOperation::ToggleDesktopIcons,
+        ] {
+            assert!(Action::System { operation, description: None }.validate().is_ok());
+        }
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn nested_if_frontmost_also_flagged() {
+        let cfg = Config {
             shortcuts: vec![shortcut(
                 "s",
                 "F9",

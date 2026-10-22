@@ -15,6 +15,14 @@ chrono = "0.4"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
 [features]
 # 与 kada-core 的 `automation` 对齐：命令 / 文件 / 应用 / 条件 / 脚本 等执行逻辑。
 default = ["automation"]

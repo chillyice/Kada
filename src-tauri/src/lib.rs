@@ -4929,6 +4929,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             window_actions: false,
             mouse_absolute: false,
             background_input: false,
+            shell_actions: false,
             ..Default::default()
         }
     }
@@ -4946,6 +4947,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             window_actions: false,
             mouse_absolute: true,
             background_input: false,
+            shell_actions: false,
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -4961,6 +4963,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             device_conditions: false,
             window_actions: false,
             background_input: false,
+            shell_actions: false,
             ..Default::default()
         }
     }

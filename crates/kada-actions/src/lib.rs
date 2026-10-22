@@ -809,6 +809,11 @@ fn action_label(action: &Action) -> &'static str {
             ..
         } => "打开目录失败",
         #[cfg(feature = "automation")]
+        Action::Os {
+            operation: OsOperation::Reveal { .. },
+            ..
+        } => "定位文件失败",
+        #[cfg(feature = "automation")]
         Action::CloseProgram { .. }
         | Action::App {
             operation: AppOperation::Close { .. },
@@ -845,6 +850,21 @@ fn action_label(action: &Action) -> &'static str {
         Action::OpenUrl { .. } => "打开网址失败",
         #[cfg(feature = "automation")]
         Action::Os { .. } => "文件操作失败",
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::EmptyRecycleBin,
+            ..
+        } => "清空回收站失败",
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::MonitorOff,
+            ..
+        } => "关闭显示器失败",
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::ToggleDesktopIcons,
+            ..
+        } => "切换桌面图标失败",
         #[cfg(feature = "automation")]
         Action::System { .. } => "系统操作失败",
         #[cfg(feature = "automation")]
@@ -1027,6 +1047,7 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
         OsOperation::NewFile { path } => format!("新建文件 {}", sub(path)),
         OsOperation::NewFolder { path } => format!("新建目录 {}", sub(path)),
         OsOperation::OpenFolder { path } => format!("打开目录 {}", sub(path)),
+        OsOperation::Reveal { path } => format!("定位文件 {}", sub(path)),
         OsOperation::Zip { source, dest } => format!("压缩 {} → {}", sub(source), sub(dest)),
         OsOperation::Unzip { source, dest } => format!("解压 {} → {}", sub(source), sub(dest)),
         OsOperation::GetFileProps { path, var } => {
@@ -1045,6 +1066,9 @@ fn system_body(op: &SystemOperation) -> String {
         SystemOperation::SwitchDesktop { direction } => {
             format!("切换到{}虚拟桌面", direction.label())
         }
+        SystemOperation::EmptyRecycleBin => "清空回收站".into(),
+        SystemOperation::MonitorOff => "关闭显示器".into(),
+        SystemOperation::ToggleDesktopIcons => "切换桌面图标".into(),
     }
 }
 
@@ -1535,6 +1559,22 @@ fn run_os(
                     .map_err(|e| format!("打开目录失败: {e}"))?;
             }
         }
+        OsOperation::Reveal { path } => {
+            let p = substitute_vars(path, vars);
+            if !std::path::Path::new(&p).exists() {
+                return Err(format!("定位失败：路径不存在（{p}）"));
+            }
+            if !cfg!(target_os = "windows") {
+                return Err("「定位文件」目前只支持 Windows".into());
+            }
+            // `/select,` 与路径分成两个参数：Command 会在路径带空格时补引号，
+            // 正好是 explorer 认识的 `explorer /select, "C:\..."` 形式。
+            std::process::Command::new("explorer")
+                .arg("/select,")
+                .arg(&p)
+                .spawn()
+                .map_err(|e| format!("定位文件失败: {e}"))?;
+        }
         OsOperation::Zip { source, dest } => {
             let s = substitute_vars(source, vars);
             let d = substitute_vars(dest, vars);
@@ -1572,6 +1612,45 @@ fn run_system(op: &SystemOperation, ctx: &Ctx<'_>) -> Result<(), String> {
             let _inj = lock_inject(ctx);
             switch_desktop(*direction)
         }
+        SystemOperation::EmptyRecycleBin => empty_recycle_bin(),
+        SystemOperation::MonitorOff => monitor_off(),
+        SystemOperation::ToggleDesktopIcons => toggle_desktop_icons(),
+    }
+}
+
+#[cfg(feature = "automation")]
+fn empty_recycle_bin() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_shell::empty_recycle_bin()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("「清空回收站」目前只支持 Windows".into())
+    }
+}
+
+#[cfg(feature = "automation")]
+fn monitor_off() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_shell::monitor_off()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("「关闭显示器」目前只支持 Windows".into())
+    }
+}
+
+#[cfg(feature = "automation")]
+fn toggle_desktop_icons() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        win_shell::toggle_desktop_icons()
+    }
+    #[cfg(not(windows))]
+    {
+        Err("「切换桌面图标」目前只支持 Windows".into())
     }
 }
 
@@ -3372,5 +3451,89 @@ mod tests {
             }
         });
         assert_eq!(peak.load(Ordering::SeqCst), 1, "注入锁必须让临界区互斥");
+    }
+}
+
+/// Windows Shell 补全动作（EXT-17）：回收站 / 显示器 / 桌面图标。
+/// 只有 Windows 目标编译；其它平台由上层 `#[cfg]` 直接报错。
+#[cfg(all(windows, feature = "automation"))]
+mod win_shell {
+    use windows::core::{w, PCWSTR};
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
+    use windows::Win32::UI::Shell::{
+        SHEmptyRecycleBinW, SHERB_NOCONFIRMATION, SHERB_NOPROGRESSUI, SHERB_NOSOUND,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{
+        FindWindowExW, FindWindowW, SendMessageTimeoutW, SendMessageW, HWND_BROADCAST,
+        SC_MONITORPOWER, SMTO_ABORTIFHUNG, WM_COMMAND, WM_SYSCOMMAND,
+    };
+
+    /// 桌面图标开关的命令号（Explorer 未公开但十年未变）。
+    const TOGGLE_DESKTOP_ICONS: usize = 0x7402;
+
+    pub(super) fn empty_recycle_bin() -> Result<(), String> {
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            let res = SHEmptyRecycleBinW(
+                None,
+                PCWSTR::null(),
+                SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND,
+            );
+            if hr.is_ok() {
+                CoUninitialize();
+            }
+            res.map_err(|e| format!("清空回收站失败: {e}"))
+        }
+    }
+
+    pub(super) fn monitor_off() -> Result<(), String> {
+        let sent = unsafe {
+            SendMessageTimeoutW(
+                HWND_BROADCAST,
+                WM_SYSCOMMAND,
+                WPARAM(SC_MONITORPOWER as usize),
+                LPARAM(2),
+                SMTO_ABORTIFHUNG,
+                1000,
+                None,
+            )
+        };
+        if sent.0 == 0 {
+            Err("关闭显示器失败：没有窗口响应".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    pub(super) fn toggle_desktop_icons() -> Result<(), String> {
+        unsafe {
+            let progman = FindWindowW(w!("Progman"), PCWSTR::null()).ok();
+            let mut defview = progman.and_then(|p| {
+                FindWindowExW(Some(p), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok()
+            });
+            let mut worker = FindWindowExW(None, None, w!("WorkerW"), PCWSTR::null()).ok();
+            while defview.is_none() {
+                let Some(w) = worker else { break };
+                defview =
+                    FindWindowExW(Some(w), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok();
+                worker = FindWindowExW(None, Some(w), w!("WorkerW"), PCWSTR::null()).ok();
+            }
+            let Some(defview) = defview else {
+                return Err("切换桌面图标失败：找不到桌面视图".into());
+            };
+            let Some(list) =
+                FindWindowExW(Some(defview), None, w!("SysListView32"), PCWSTR::null()).ok()
+            else {
+                return Err("切换桌面图标失败：找不到图标列表".into());
+            };
+            SendMessageW(
+                list,
+                WM_COMMAND,
+                Some(WPARAM(TOGGLE_DESKTOP_ICONS)),
+                Some(LPARAM(0)),
+            );
+            Ok(())
+        }
     }
 }

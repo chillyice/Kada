@@ -18,11 +18,16 @@ type OsOperation =
   | { op: "new_file"; path: string }
   | { op: "new_folder"; path: string }
   | { op: "open_folder"; path: string }
+  | { op: "reveal"; path: string }
   | { op: "zip"; source: string; dest: string }
   | { op: "unzip"; source: string; dest: string }
   | { op: "get_file_props"; path: string; var: string };
 /** 操作系统动作的子操作（动作类型 `system`）——与文件/目录是两类，别混。 */
-type SystemOperation = { op: "switch_desktop"; direction: DesktopDirection };
+type SystemOperation =
+  | { op: "switch_desktop"; direction: DesktopDirection }
+  | { op: "empty_recycle_bin" }
+  | { op: "monitor_off" }
+  | { op: "toggle_desktop_icons" };
 /** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
 type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
 /** 剪贴板动作（类型 `clipboard`，EXT-15）：v1 只处理文本。 */
@@ -628,6 +633,7 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
   { value: "new_file", label: tr("新建文件") },
   { value: "new_folder", label: tr("新建文件夹") },
   { value: "open_folder", label: tr("打开文件夹") },
+  { value: "reveal", label: tr("定位文件（在资源管理器中选中）") },
   { value: "zip", label: tr("压缩为 zip") },
   { value: "unzip", label: tr("解压 zip") },
   { value: "get_file_props", label: tr("获取文件属性") },
@@ -636,6 +642,9 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
 // ---- 操作系统动作的子操作（与文件/目录是两类） ----
 const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "switch_desktop", label: tr("切换虚拟桌面") },
+  { value: "empty_recycle_bin", label: tr("清空回收站") },
+  { value: "monitor_off", label: tr("关闭显示器") },
+  { value: "toggle_desktop_icons", label: tr("切换桌面图标") },
 ];
 
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
@@ -648,6 +657,10 @@ function newSystemOp(op: SystemOperation["op"]): SystemOperation {
   switch (op) {
     case "switch_desktop":
       return { op, direction: "next" };
+    case "empty_recycle_bin":
+    case "monitor_off":
+    case "toggle_desktop_icons":
+      return { op };
   }
   return { op: "switch_desktop", direction: "next" };
 }
@@ -695,6 +708,7 @@ function newOsOp(op: OsOperation["op"]): OsOperation {  switch (op) {
     case "new_folder":
       return { op, path: "" };
     case "open_folder":
+    case "reveal":
       return { op, path: "" };
     case "zip":
     case "unzip":
@@ -809,6 +823,7 @@ function osHasContent(o: OsOperation): boolean {
     case "new_file":
     case "new_folder":
     case "open_folder":
+    case "reveal":
     case "get_file_props":
       return o.path.trim().length > 0;
   }
@@ -923,6 +938,8 @@ function osSummary(o: OsOperation): string {
       return trt`新建文件夹：${o.path}`;
     case "open_folder":
       return trt`打开文件夹：${o.path}`;
+    case "reveal":
+      return trt`定位文件：${o.path}`;
     case "zip":
       return trt`压缩：${o.source} → ${o.dest}`;
     case "unzip":
@@ -938,6 +955,12 @@ function systemSummary(o: SystemOperation): string {
   switch (o.op) {
     case "switch_desktop":
       return trt`切换虚拟桌面：${o.direction === "prev" ? tr("上一个") : tr("下一个")}`;
+    case "empty_recycle_bin":
+      return tr("清空回收站");
+    case "monitor_off":
+      return tr("关闭显示器");
+    case "toggle_desktop_icons":
+      return tr("切换桌面图标");
   }
   return "";
 }
@@ -5178,6 +5201,11 @@ function actionFields(
       body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("新建文件夹路径") }));
     } else if (op.op === "open_folder") {
       body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("打开目录") }));
+    } else if (op.op === "reveal") {
+      body.append(
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("要定位的文件或目录") }),
+      );
+      body.append(el("div", "unit-hint", tr("仅 Windows 支持：在资源管理器里打开所在目录并选中它。")));
     } else if (op.op === "get_file_props") {
       body.append(
         pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("文件路径") }),
@@ -5227,6 +5255,18 @@ function actionFields(
       hint.textContent =
         tr("切换虚拟桌面（不是切换显示器）。Windows：Win+Ctrl+←/→；macOS：⌃←/→；Linux（GNOME）：Super+PageUp/PageDown。");
       body.append(hint);
+    } else if (op.op === "empty_recycle_bin") {
+      body.append(
+        el("div", "unit-hint", tr("永久清空回收站，不弹系统确认。仅 Windows 支持；其它平台会标平台冲突并在执行时报错。")),
+      );
+    } else if (op.op === "monitor_off") {
+      body.append(
+        el("div", "unit-hint", tr("立刻关闭显示器；动一下鼠标或按任意键就会亮回来。仅 Windows 支持。")),
+      );
+    } else if (op.op === "toggle_desktop_icons") {
+      body.append(
+        el("div", "unit-hint", tr("显示 / 隐藏桌面图标（等价于右键桌面 → 查看 → 显示桌面图标）。仅 Windows 支持。")),
+      );
     }
   } else if (a.type === "window") {
     const hint = el("div", "unit-hint");
