@@ -2891,7 +2891,23 @@ fn show_main_window(app: &tauri::AppHandle) {
         // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
         .min_inner_size(900.0, 480.0)
         .resizable(true)
-        .center()
+        .center();
+    // 标题栏分平台，界面里那条是自绘的（见 `ui/src/main.ts` 的 `mountTitlebar`）：
+    // - Windows / Linux 无边框 + **开投影**：tao 对「无边框 + 有投影」的窗保留整套 DWM 帧，
+    //   缩放边、圆角、最大化到工作区都还是系统行为，只有标题区交给界面画；
+    // - macOS 用 Overlay：红绿灯由系统画、界面铺到标题栏下方，不用自绘按钮，也不必处理
+    //   三个交通灯的状态。别照抄浮窗那套 `shadow(false)`——那条是透明浮窗的规矩。
+    #[cfg(not(target_os = "macos"))]
+    {
+        builder = builder.decorations(false).shadow(true);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    match builder
         // 界面外链（帮助页落款的 GitHub）交给系统默认浏览器。WebView 的「新窗口请求」
         // 没人接时会被 wry 直接吞掉（WebView2 里 `SetHandled(true)` 后什么都不做），
         // 于是 `<a target="_blank">` 点了毫无反应——必须自己接住。这里一律不建应用内

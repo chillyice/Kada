@@ -128,6 +128,13 @@
 - **不包**：拿后端中文文案做前缀匹配、与配置数据比较的字面量——行尾标 `// i18n:ignore`
 - 语言只记本机 `localStorage["kada.locale"]`，**不进配置 / 不同步**；壳层（Rust）文案仍是中文（已知缺口，7.2-㊲）
 
+### 1.16 主窗口标题栏（`show_main_window` / `mountTitlebar`｜说明书 §6.10）
+
+- **平台分两路**：Windows / Linux `decorations(false)` + **`shadow(true)`**（开了投影 tao 才保留 DWM 帧 → 缩放边 / 圆角 / 最大化仍走系统）；macOS `TitleBarStyle::Overlay` + `hidden_title`，**红绿灯由系统画、不许自绘**
+- **拖动 / 双击最大化交给 `data-tauri-drag-region`**（Tauri 内建脚本）；自己算指针差量只适用于 `WS_EX_NOACTIVATE` 浮窗
+- **自绘关闭键必须调 `close()`**，别用 `hide()`——收回托盘归壳层 `CloseRequested` 统一处理
+- **Linux 要八条 `resize-zone`**（GTK 无边框窗没有系统缩放边）；窗口按钮的 `core:window:allow-*` **不在 `core:default` 里**，新增命令要同步放行
+
 ## 2. 命名与键模型
 
 | 项 | 值 |

@@ -117,6 +117,139 @@ body {
   display: none !important;
 }
 
+/* ---------- 自绘标题栏（主窗口） ----------
+   壳层把主窗口设成无边框（Windows / Linux；macOS 用系统 Overlay），标题区这里画。
+   拖动与双击最大化由 Tauri 内建的 `data-tauri-drag-region` 脚本接管，样式只管外观。
+   浮窗（气泡 / HUD / 提示框 / 按键回显 / 手势轨迹）加载的是同一份 index.html，它们没有
+   `has-titlebar` 这个类，布局不受影响。 */
+:root {
+  --titlebar-h: 34px;
+}
+
+body.has-titlebar {
+  flex-direction: column;
+}
+
+.titlebar {
+  flex: none;
+  height: var(--titlebar-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* macOS：红绿灯画在这块左上角，内容要让开。 */
+body.is-mac .titlebar {
+  padding-left: 78px;
+}
+
+/* 左上角一小截强调色：窗口的身份靠它，不再重复一遍 rail 里那枚 logo。 */
+.titlebar-mark {
+  width: 3px;
+  height: 14px;
+  background: var(--accent);
+  flex: none;
+}
+
+.titlebar-title {
+  font-size: var(--fs-sm);
+  color: var(--muted);
+  letter-spacing: 0.06em;
+  font-family: var(--font-pixel, inherit);
+  white-space: nowrap;
+}
+
+.titlebar-spacer {
+  flex: 1;
+  height: 100%;
+}
+
+.win-controls {
+  display: flex;
+  align-items: stretch;
+  height: 100%;
+}
+
+/* 窗口按钮按系统惯例贴满标题栏高度；圆角 / 字体交给主题（CRT 会把圆角抹成 0）。 */
+.win-btn {
+  width: 44px;
+  height: 100%;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 0;
+  border-radius: 0;
+  color: var(--muted);
+  cursor: default;
+}
+
+.win-btn svg {
+  width: 12px;
+  height: 12px;
+}
+
+.win-btn:hover {
+  background: var(--hover-bg);
+  color: var(--text);
+}
+
+.win-btn:active {
+  background: var(--line-soft);
+}
+
+/* 关闭键跟系统一样给红色警示底（浅色主题下也成立：白字 + 系统红）。 */
+.win-btn.close:hover {
+  background: #e81123;
+  color: #fff;
+}
+
+/* Linux 的无边框窗没有系统缩放边：八条透明热区自己接管（JS 侧只在 Linux 挂）。
+   留 6px 给四角，角落热区压在上面，命中优先。 */
+.resize-zone {
+  position: fixed;
+  z-index: 250;
+}
+
+.resize-zone.n,
+.resize-zone.s {
+  left: 6px;
+  right: 6px;
+  height: 5px;
+  cursor: ns-resize;
+}
+
+.resize-zone.e,
+.resize-zone.w {
+  top: 6px;
+  bottom: 6px;
+  width: 5px;
+  cursor: ew-resize;
+}
+
+.resize-zone.n { top: 0; }
+.resize-zone.s { bottom: 0; }
+.resize-zone.e { right: 0; }
+.resize-zone.w { left: 0; }
+
+.resize-zone.ne,
+.resize-zone.nw,
+.resize-zone.se,
+.resize-zone.sw {
+  width: 8px;
+  height: 8px;
+}
+
+.resize-zone.ne { top: 0; right: 0; cursor: nesw-resize; }
+.resize-zone.nw { top: 0; left: 0; cursor: nwse-resize; }
+.resize-zone.se { bottom: 0; right: 0; cursor: nwse-resize; }
+.resize-zone.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+
 .layout {
   flex: 1;
   display: flex;

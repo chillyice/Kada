@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFile, save as saveFile, ask } from "@tauri-apps/plugin-dialog";
 import { installBrowserMock } from "./mock";
 import { applyLocale, localizeStaticDom, savedLocale, tr, trt } from "./i18n";
@@ -8044,6 +8045,138 @@ async function bootstrapGesture() {
     render(e.payload, e.payload.matched, e.payload.label, e.payload.pattern),
   );
 }
+// ---- 自绘标题栏（主窗口）----
+// 壳层把主窗口设成 `decorations(false)`（macOS 走 Overlay，红绿灯由系统画），标题区由这里补。
+// 拖动 / 双击最大化不在这里做：Tauri 内建的 `data-tauri-drag-region` 脚本接管，且会自动跳过
+// button / input / tabindex 这些可点元素。这里只管三颗按钮、最大化图标切换，以及 Linux 的
+// 窗口缩放热区——GTK 的无边框窗没有系统缩放边，不给热区就只能靠按钮最大化。
+// 只在主窗口挂：其余四个浮窗加载的是同一份 index.html，走各自的 hash 分支。
+type ResizeDir =
+  | "East"
+  | "North"
+  | "NorthEast"
+  | "NorthWest"
+  | "South"
+  | "SouthEast"
+  | "SouthWest"
+  | "West";
+
+const WIN_ICONS = {
+  min: '<path d="M2 6h8"/>',
+  max: '<rect x="2.5" y="2.5" width="7" height="7"/>',
+  restore: '<rect x="2.5" y="4" width="6" height="6"/><path d="M4.5 2.5h5v5"/>',
+  close: '<path d="M3 3l6 6M9 3l-6 6"/>',
+};
+  mountTitlebar();
+
+function winIcon(paths: string): SVGSVGElement {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 12 12");
+  svg.setAttribute("aria-hidden", "true");
+  svg.innerHTML = paths;
+  return svg;
+}
+
+function mountTitlebar() {
+  // 这一行必须在 `installBrowserMock()` 之前求值：演示模式会塞一个假的
+  // __TAURI_INTERNALS__，之后就分不清是真壳还是纯浏览器了。
+  const shell = "__TAURI_INTERNALS__" in window;
+  const ua = navigator.userAgent;
+  const mac = /Macintosh|Mac OS X/.test(ua);
+  const linux = !mac && /Linux/.test(ua);
+
+  const bar = document.createElement("div");
+  bar.className = "titlebar";
+  // `deep` = 整条标题栏（含里面的文字块）都是拖动区；按钮没有这个属性，所以照常可点。
+  bar.setAttribute("data-tauri-drag-region", "deep");
+  const mark = document.createElement("i");
+  mark.className = "titlebar-mark";
+  const title = document.createElement("span");
+  title.className = "titlebar-title";
+  title.textContent = tr("咔哒 Kada");
+  const spacer = document.createElement("span");
+  spacer.className = "titlebar-spacer";
+  bar.append(mark, title, spacer);
+
+  document.body.classList.add("has-titlebar");
+  if (mac) document.body.classList.add("is-mac");
+  document.body.insertBefore(bar, document.body.firstChild);
+
+  // macOS 的红绿灯由系统画在左上角，自绘按钮会重复，也不该抢那块地方。
+  if (mac) return;
+
+  const controls = document.createElement("div");
+  controls.className = "win-controls";
+  const minBtn = document.createElement("button");
+  minBtn.className = "win-btn min";
+  minBtn.append(winIcon(WIN_ICONS.min));
+  minBtn.title = tr("最小化");
+  minBtn.setAttribute("aria-label", tr("最小化"));
+  const maxBtn = document.createElement("button");
+  maxBtn.className = "win-btn max";
+  let maximized = false;
+  const paintMax = () => {
+    maxBtn.replaceChildren(winIcon(maximized ? WIN_ICONS.restore : WIN_ICONS.max));
+    const label = maximized ? tr("还原") : tr("最大化");
+    maxBtn.title = label;
+    maxBtn.setAttribute("aria-label", label);
+  };
+  paintMax();
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "win-btn close";
+  closeBtn.append(winIcon(WIN_ICONS.close));
+  closeBtn.title = tr("关闭");
+  closeBtn.setAttribute("aria-label", tr("关闭"));
+  controls.append(minBtn, maxBtn, closeBtn);
+  bar.append(controls);
+
+  // 纯浏览器演示：按钮留着当视觉参照，但不接 IPC（演示环境的 invoke 只会 reject）。
+  if (!shell) return;
+
+  const win = getCurrentWindow();
+  minBtn.addEventListener("click", () => void win.minimize());
+  // `toggleMaximize` 与拖拽区的双击走同一条命令（`internal_toggle_maximize`）。
+  maxBtn.addEventListener("click", () => void win.toggleMaximize());
+  // `close()` 会落进壳层的 `CloseRequested` → 收回托盘，跟点系统 × 是同一个结局，
+  // 别换成 `hide()`（那会绕过壳层那处统一处理）。
+  closeBtn.addEventListener("click", () => void win.close());
+  const syncMax = async () => {
+    let now: boolean;
+    try {
+      now = await win.isMaximized();
+    } catch {
+      return;
+    }
+    if (now === maximized) return;
+    maximized = now;
+    paintMax();
+  };
+  void win.onResized(() => void syncMax());
+  void syncMax();
+
+  if (!linux) return;
+  const zones: [string, ResizeDir][] = [
+    ["n", "North"],
+    ["s", "South"],
+    ["e", "East"],
+    ["w", "West"],
+    ["ne", "NorthEast"],
+    ["nw", "NorthWest"],
+    ["se", "SouthEast"],
+    ["sw", "SouthWest"],
+  ];
+  for (const [cls, dir] of zones) {
+    const z = document.createElement("div");
+    z.className = `resize-zone ${cls}`;
+    z.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      void win.startResizeDragging(dir).catch(() => {});
+    });
+    document.body.append(z);
+  }
+}
+
 
 // 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。五个窗口共用这段。
 applyTheme(loadTheme());

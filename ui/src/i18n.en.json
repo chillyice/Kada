@@ -466,6 +466,7 @@
   "最后看输入环境：设置页的「输入层环境」会探测有没有会抢走按键的厂商软件在跑。见下。": "Finally check the input environment: “Input environment” in Settings detects vendor software that steals keys. See below.",
   "最大化": "Maximize",
   "最大化：{0}": "Maximize: {0}",
+  "还原": "Restore",
   "最小化": "Minimize",
   "最小化：{0}": "Minimize: {0}",
   "有些厂商软件（Logi Options+ / G HUB / 雷云 等）会把某个按键转交给它自己：设备从此不再把这个键放进标准报文，系统的输入栈里根本没有这次按下——Kada 的钩子收不到，任何底层工具都收不到。这类接管只影响被转交的键（常见是鼠标侧键 / 额外键），键盘快捷键不受影响。": "Some vendor software (Logi Options+ / G HUB / Razer Synapse, etc.) diverts a button to itself: the device stops putting that key in standard reports, so the press never enters the system input stack — Kada's hook cannot see it, and neither can any low-level tool. This affects only diverted keys (usually mouse side / extra buttons), not keyboard shortcuts.",
