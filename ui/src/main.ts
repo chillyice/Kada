@@ -1793,7 +1793,7 @@ const KIND_ICON: Record<ListKind, string> = {
   expansion:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16"/><path d="M4 12h9"/><path d="M4 19h16"/><path d="m17 9 3 3-3 3"/></svg>',
   gesture:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="13" rx="6.5" ry="8.5"/><path d="M12 4.5v4"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3v7a4 4 0 0 0 4 4h4a4 4 0 0 1 4 4v1"/><path d="M18 3v4"/><path d="M16 5h4"/><circle cx="6" cy="19" r="2"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
