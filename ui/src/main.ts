@@ -8083,6 +8083,14 @@ function bind() {
   document.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
 
+    // Ctrl+A：只在编辑框（输入框 / 文本域 / 下拉 / contenteditable）里放行原生全选。
+    // 其余地方拦掉——WebView 的网页级全选会把列表行、说明文字整页刷蓝，用户要的是
+    // 「复制这段输入」而不是「选中整个界面」；放在最前面，弹窗开着时同样生效。
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "a" || e.key === "A")) {
+      if (!isFormTarget(e.target)) e.preventDefault();
+      return;
+    }
+
     // Esc：关最上层的菜单 / 结果弹窗（unsaved / import 的 Esc 注册在先，已挡掉）。
     if (e.key === "Escape") {
       const menu = document.getElementById("row-menu")!;
