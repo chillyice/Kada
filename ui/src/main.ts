@@ -28,7 +28,11 @@ type SystemOperation =
   | { op: "switch_desktop"; direction: DesktopDirection }
   | { op: "empty_recycle_bin" }
   | { op: "monitor_off" }
-  | { op: "toggle_desktop_icons" };
+  | { op: "toggle_desktop_icons" }
+  /** 向非前台窗口发按键 / 文本（原独立动作 `send_to`，入口并入操作系统）。 */
+  | { op: "send_to"; target: string; payload: SendPayload }
+  /** 显示器亮度（原独立动作 `brightness`，入口并入操作系统）。 */
+  | { op: "brightness"; operation: BrightnessOperation; step: number };
 /** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
 type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
 /** 剪贴板动作（类型 `clipboard`，EXT-15）：v1 只处理文本。 */
@@ -76,7 +80,9 @@ type AppOperation =
   | { op: "minimize"; program: string }
   | { op: "activate"; program: string }
   | { op: "status"; program: string; var: string; retries: number; interval_ms: number }
-  | { op: "restart"; program: string; args: string[] };
+  | { op: "restart"; program: string; args: string[] }
+  /** 对触发那一刻的前台窗口操作（原独立动作 `window`，入口并入应用操作）。 */
+  | { op: "current_window"; action: WindowOperation };
 type TextMode = "input" | "to_upper" | "to_lower";
 type Shell = "cmd" | "powershell";
 type MouseButton = "left" | "right" | "middle" | "back" | "forward";
@@ -502,7 +508,6 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "os", label: tr("文件/文件夹") },
   { value: "system", label: tr("操作系统") },
   { value: "tool", label: tr("外部工具") },
-  { value: "brightness", label: tr("亮度") },
   { value: "keys", label: tr("按键组合") },
   { value: "mouse", label: tr("鼠标操作") },
   { value: "pause_ms", label: tr("延迟") },
@@ -512,13 +517,15 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
 ];
 
 // 已从动作类型下拉移除的旧类型：老配置里还能看见、还能改类型，但不再提供新建入口。
-// （`clipboard` / `transform` 是用户要求删除的；`send_to` 并入「操作系统」、`window` 并入「应用」。）
+// （`clipboard` / `transform` 是用户要求删除的；`send_to` 并入「操作系统」、`window` 并入「应用」、
+//   `brightness` 并入「操作系统」。这三类在加载时已被后端迁移，这里留标签只为执行记录 / 防御性渲染。）
 const REMOVED_TYPE_LABELS: Partial<Record<Action["type"], string>> = {
   clipboard: tr("剪贴板（已移除）"),
   transform: tr("算法（已移除）"),
   capture: tr("截图（已移除）"),
-  send_to: tr("后台发送（已并入操作系统）"),
-  window: tr("窗口操作（已并入应用）"),
+  send_to: tr("后台发送"),
+  window: tr("窗口操作"),
+  brightness: tr("亮度"),
 };
 
 // 动作类型图标（收起态展示用）。
@@ -554,11 +561,9 @@ function actionTypeLabel(t: Action["type"]): string {
   return ACTION_TYPE_LABELS[t];
 }
 
-/** 动作类型下拉的可选项：亮度挂实验功能总闸；外部工具没探测到在跑时不给新建入口。 */
+/** 动作类型下拉的可选项：外部工具没探测到在跑时不给新建入口。 */
 function actionTypeChoices(includeTool = false): typeof ACTION_TYPES {
-  let list = mouseFeaturesEnabled()
-    ? ACTION_TYPES
-    : ACTION_TYPES.filter((t) => t.value !== "brightness");
+  let list = ACTION_TYPES;
   if (runningTools.length === 0 && !includeTool) {
     list = list.filter((t) => t.value !== "tool");
   }
@@ -618,9 +623,15 @@ function actionVarReads(a: Action): string[] {
       if ("dest" in o) texts.push(o.dest);
       break;
     }
+    case "system":
+      if (a.operation.op === "send_to") {
+        texts.push(a.operation.target);
+        if (a.operation.payload.kind === "text") texts.push(a.operation.payload.text);
+      }
+      break;
     case "app": {
       const o = a.operation;
-      texts.push(o.program);
+      if (o.op !== "current_window") texts.push(o.program);
       if ("args" in o) texts.push(...o.args);
       break;
     }
@@ -723,12 +734,23 @@ const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
 ];
 
 // ---- 操作系统动作的子操作（与文件/目录是两类） ----
+// 「后台发送」「显示器亮度」原先各自是一种动作类型，入口已并入这里：选了它们，
+// 动作类型仍然是「操作系统」，分类不再跳走。
 const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "switch_desktop", label: tr("切换虚拟桌面") },
   { value: "empty_recycle_bin", label: tr("清空回收站") },
   { value: "monitor_off", label: tr("关闭显示器") },
   { value: "toggle_desktop_icons", label: tr("切换桌面图标") },
+  { value: "send_to", label: tr("后台发送（按键 / 文本）") },
+  { value: "brightness", label: tr("显示器亮度") },
 ];
+
+/** 系统操作可选列表：亮度仍受「实验功能」总闸管（关着时不出现，已配的仍能显示）。 */
+function systemOpChoices(current?: SystemOperation["op"]): typeof SYSTEM_OPS {
+  return SYSTEM_OPS.filter(
+    (o) => o.value !== "brightness" || mouseFeaturesEnabled() || current === "brightness",
+  );
+}
 
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
 const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
@@ -744,6 +766,10 @@ function newSystemOp(op: SystemOperation["op"]): SystemOperation {
     case "monitor_off":
     case "toggle_desktop_icons":
       return { op };
+    case "send_to":
+      return { op, target: "", payload: { kind: "keys", keys: [] } };
+    case "brightness":
+      return { op, operation: "up", step: 10 };
   }
   return { op: "switch_desktop", direction: "next" };
 }
@@ -860,6 +886,9 @@ function newAppOp(op: AppOperation["op"]): AppOperation {
       return { op, program: "", var: "app", retries: 0, interval_ms: 1000 };
     case "restart":
       return { op, program: "", args: [] };
+    // 「当前窗口」系列不做程序名匹配：作用对象是触发那一刻的前台窗口。
+    case "current_window":
+      return { op, action: "maximize_restore" };
   }
   return { op: "launch", program: "", args: [] };
 }
@@ -937,13 +966,6 @@ function newAction(type: Action["type"]): Action {
   return { type: "text", text: "", mode: "input" };
 }
 
-/** 原地换动作类型：保留数组里的对象引用（编辑器各处都拿着它），只换形状。 */
-function retypeAction(a: Action, type: Action["type"]) {
-  const fresh = newAction(type);
-  for (const k of Object.keys(a)) delete (a as unknown as Record<string, unknown>)[k];
-  Object.assign(a, fresh);
-}
-
 function osHasContent(o: OsOperation): boolean {
   switch (o.op) {
     case "copy":
@@ -997,6 +1019,9 @@ function appHasContent(o: AppOperation): boolean {
     case "status":
     case "restart":
       return o.program.trim().length > 0;
+    // 当前窗口没有必填项：操作本身有默认值，目标由触发时抓取。
+    case "current_window":
+      return true;
   }
   return false;
 }
@@ -1040,9 +1065,25 @@ function actionHasContent(a: Action): boolean {
       return a.input.trim().length > 0 && (a.var.trim().length > 0 || !!a.inject);
     case "os":
       return osHasContent(a.operation);
-    // 没有要填的字段（方向有默认值），新建出来就是可执行的。
+    // 虚拟桌面 / 回收站这类没有要填的字段（方向有默认值），新建出来就是可执行的；
+    // 并入的「后台发送」要填目标与按键，「亮度」要步长合法。
     case "system":
-      return true;
+      switch (a.operation.op) {
+        case "send_to":
+          return (
+            a.operation.target.trim().length > 0 &&
+            (a.operation.payload.kind === "keys"
+              ? a.operation.payload.keys.length > 0
+              : true)
+          );
+        case "brightness":
+          return (
+            a.operation.operation === "restore" ||
+            (a.operation.step >= 1 && a.operation.step <= 100)
+          );
+        default:
+          return true;
+      }
     case "window":
       return true;
     case "capture":
@@ -1095,6 +1136,20 @@ function osSummary(o: OsOperation): string {
   return "";
 }
 
+/** 后台发送的摘要（系统操作里的一个子操作）。 */
+function sendToSummary(target: string, payload: SendPayload): string {
+  const to = target || tr("未设目标窗口");
+  return payload.kind === "keys"
+    ? trt`后台发送按键 ${payload.keys.join("+")} → ${to}`
+    : trt`后台发送文本 ${payload.text} → ${to}`;
+}
+
+/** 亮度摘要（系统操作里的一个子操作）。 */
+function brightnessSummary(operation: BrightnessOperation, step: number): string {
+  const op = BRIGHTNESS_OPS.find((o) => o.value === operation)?.label ?? operation;
+  return operation === "restore" ? tr("亮度：恢复原始值") : trt`亮度：${op} ${step}`;
+}
+
 /** 操作系统动作的摘要。 */
 function systemSummary(o: SystemOperation): string {
   switch (o.op) {
@@ -1106,6 +1161,10 @@ function systemSummary(o: SystemOperation): string {
       return tr("关闭显示器");
     case "toggle_desktop_icons":
       return tr("切换桌面图标");
+    case "send_to":
+      return sendToSummary(o.target, o.payload);
+    case "brightness":
+      return brightnessSummary(o.operation, o.step);
   }
   return "";
 }
@@ -1184,6 +1243,8 @@ function appSummary(o: AppOperation): string {
       return trt`查询状态：${o.program} → ${o.var}${o.retries ? trt`（重试 ${o.retries} 次 / ${o.interval_ms}ms）` : ""}`;
     case "restart":
       return trt`重启：${o.program}`;
+    case "current_window":
+      return windowSummary(o.action);
   }
   return "";
 }
@@ -2463,7 +2524,7 @@ function marketCard(e: IndexEntry): HTMLElement {
 
 // 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
 function actionCanRun(a: Action): boolean {
-  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "brightness")
+  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "system" || a.type === "brightness")
     return true;
   if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
   if (a.type === "parallel") return a.actions.some(actionCanRun);
@@ -3530,34 +3591,99 @@ function fillExpansionEditor() {
 }
 
 // 鼠标操作（手势）编辑页：方向串 + 描述 + 条件 + 动作（动作区与快捷键共用同一套编排器）。
-/** 方向串的量化顺序（与 core `gesture.rs` 的 `DIRECTIONS` 同一口径，y 向下）。 */
-const GESTURE_DIRS = ["R", "DR", "D", "DL", "L", "UL", "U", "UR"];
+/** 方向 token（与 core `gesture.rs` 的八方向同一口径，y 向下）。 */
+type GestureDir = "R" | "DR" | "D" | "DL" | "L" | "UL" | "U" | "UR";
 
-/** 把画板上的轨迹转成方向串：每走满 `minSegment` 像素记一段，连续同向合并。 */
-function patternFromPoints(points: [number, number][], minSegment = 30): string {
+function gestureDirFromVec(dx: number, dy: number): GestureDir | null {
+  if (dx === 0 && dy === 0) return null;
+  let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+  if (deg < 0) deg += 360;
+  if (deg < 22.5 || deg >= 337.5) return "R";
+  if (deg < 67.5) return "DR";
+  if (deg < 112.5) return "D";
+  if (deg < 157.5) return "DL";
+  if (deg < 202.5) return "L";
+  if (deg < 247.5) return "UL";
+  if (deg < 292.5) return "U";
+  return "UR";
+}
+
+/** 桶序号（`R` 起顺时针，45° 一格）。 */
+const GESTURE_ORDER: GestureDir[] = ["R", "DR", "D", "DL", "L", "UL", "U", "UR"];
+
+/** 两个方向相差不超过一格（≤45°）：略带抖动的同一条直线会被分到相邻两桶，要并回一段。 */
+function gestureDirsAdjacent(a: GestureDir, b: GestureDir): boolean {
+  const d = Math.abs(GESTURE_ORDER.indexOf(a) - GESTURE_ORDER.indexOf(b));
+  return Math.min(d, 8 - d) <= 1;
+}
+
+/** 折线简化（RDP，与 core `simplify` 同一口径）：手抖 / 轻微弧线压成主干，真拐点保留。 */
+function simplifyGesture(
+  points: [number, number][],
+  eps: number,
+): [number, number][] {
+  if (points.length <= 2) return points.slice();
+  const first = points[0];
+  const last = points[points.length - 1];
+  const dx = last[0] - first[0];
+  const dy = last[1] - first[1];
+  const len = Math.hypot(dx, dy);
+  let idx = 0;
+  let max = 0;
+  for (let i = 1; i < points.length - 1; i++) {
+    const [px, py] = points[i];
+    const d =
+      len === 0
+        ? Math.hypot(px - first[0], py - first[1])
+        : Math.abs((dx * (first[1] - py) - (first[0] - px) * dy) / len);
+    if (d > max) {
+      max = d;
+      idx = i;
+    }
+  }
+  if (max <= eps) return [first, last];
+  const left = simplifyGesture(points.slice(0, idx + 1), eps);
+  const right = simplifyGesture(points.slice(idx), eps);
+  left.pop();
+  return [...left, ...right];
+}
+
+/**
+ * 把画板上的轨迹转成方向串（规范写法：单 token 直接写，多段用逗号分隔）。
+ * `D,R` = 先下再右，`DR` = 右下斜向——两者是不同的手势。
+ */
+function patternFromPoints(
+  points: [number, number][],
+  minSegment = cfg.settings.gesture_min_segment ?? 16,
+): string {
   if (points.length < 2) return "";
-  let out = "";
-  let anchor = points[0];
-  for (const p of points.slice(1)) {
+  const min = Math.max(1, minSegment);
+  const pts = simplifyGesture(points, Math.max(2, min / 4));
+  // 每段先按位移向量累积；相邻 ≤45° 的段合并（向量相加，方向取平均）。
+  const runs: [number, number][] = [];
+  let anchor = pts[0];
+  for (const p of pts.slice(1)) {
     const dx = p[0] - anchor[0];
     const dy = p[1] - anchor[1];
-    if (Math.hypot(dx, dy) < minSegment) continue;
-    let deg = (Math.atan2(dy, dx) * 180) / Math.PI;
-    if (deg < 0) deg += 360;
-    const idx =
-      deg < 22.5 || deg >= 337.5 ? 0
-      : deg < 67.5 ? 1
-      : deg < 112.5 ? 2
-      : deg < 157.5 ? 3
-      : deg < 202.5 ? 4
-      : deg < 247.5 ? 5
-      : deg < 292.5 ? 6
-      : 7;
-    const dir = GESTURE_DIRS[idx];
-    if (!out.endsWith(dir)) out += dir;
+    // 还没走满一段：位移留在锚点里，攒到下一段一起判方向。
+    if (Math.hypot(dx, dy) < min) continue;
+    const cur = gestureDirFromVec(dx, dy);
+    const last = runs[runs.length - 1];
+    const prevDir = last ? gestureDirFromVec(last[0], last[1]) : null;
+    if (last && cur && prevDir && gestureDirsAdjacent(prevDir, cur)) {
+      last[0] += dx;
+      last[1] += dy;
+    } else {
+      runs.push([dx, dy]);
+    }
     anchor = p;
   }
-  return out;
+  const tokens: GestureDir[] = [];
+  for (const [dx, dy] of runs) {
+    const dir = gestureDirFromVec(dx, dy);
+    if (dir && tokens[tokens.length - 1] !== dir) tokens.push(dir);
+  }
+  return tokens.join(",");
 }
 
 /** 手势录入画板：画 → 松手翻译成方向串 → 确认后回填。 */
@@ -4267,16 +4393,6 @@ async function requestNew(kind: ListKind, folderId: string | null = null) {
   openDetail(-1, true, folderId);
 }
 
-// EXT-03 手势添加模式：未匹配手势时后端暂存方向串并唤出主窗口（见 handle_gesture），
-// 这里取走并开一条「新增鼠标操作」草稿，方向串预填成刚画出的那条。
-async function openPendingGesture() {
-  const pattern = await invoke<string | null>("take_pending_gesture").catch(() => null);
-  if (!pattern || !mouseFeaturesEnabled()) return;
-  if (!(await confirmLeaveDraft())) return;
-  if (section !== "gestures") switchSectionNow("gestures", { keepList: true });
-  openDetail(-1, true, null, { pattern });
-}
-
 // 取消 / ×  关闭编辑页：同样是「离开」，走同一道守卫。
 async function requestCloseDetail() {
   if (!(await confirmLeaveDraft())) return;
@@ -4799,24 +4915,15 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
   if (a.type === "system") {
     const op = a.operation;
     const sel = el("select", "action-type") as HTMLSelectElement;
-    for (const o of SYSTEM_OPS) {
+    for (const o of systemOpChoices(op.op)) {
       const opt = el("option") as HTMLOptionElement;
       opt.value = o.value;
       opt.textContent = o.label;
       sel.append(opt);
     }
-    // 「后台发送」并入操作系统：选中即把动作换成 send_to（模型不变，只是入口归并）。
-    const send = el("option") as HTMLOptionElement;
-    send.value = "__send_to";
-    send.textContent = tr("后台发送（按键 / 文本）");
-    sel.append(send);
     sel.value = op.op;
     sel.addEventListener("change", () => {
-      if (sel.value === "__send_to") {
-        retypeAction(a, "send_to");
-        rerender();
-        return;
-      }
+      // 子操作变了，动作类型始终是「操作系统」——不再把整条动作换成别的分类。
       a.operation = newSystemOp(sel.value as SystemOperation["op"]);
       rerender();
     });
@@ -4831,23 +4938,24 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
       opt.textContent = o.label;
       sel.append(opt);
     }
-    // 「窗口操作」并入应用：选中即把动作换成 window（作用对象是触发时的前台窗口）。
+    // 「当前窗口」系列同属应用操作（原独立类型 `window`）：作用对象是触发时的前台窗口。
     for (const o of WINDOW_OPS) {
       const opt = el("option") as HTMLOptionElement;
-      opt.value = `__window:${o.value}`;
+      opt.value = `current_window:${o.value}`;
       opt.textContent = trt`当前窗口：${o.label}`;
       sel.append(opt);
     }
-    sel.value = op.op;
+    sel.value =
+      op.op === "current_window" ? `current_window:${op.action}` : op.op;
     sel.addEventListener("change", () => {
-      if (sel.value.startsWith("__window:")) {
-        const wop = sel.value.slice("__window:".length) as WindowOperation;
-        retypeAction(a, "window");
-        (a as unknown as { type: "window"; operation: { op: WindowOperation } }).operation = { op: wop };
-        rerender();
-        return;
+      if (sel.value.startsWith("current_window:")) {
+        a.operation = {
+          op: "current_window",
+          action: sel.value.slice("current_window:".length) as WindowOperation,
+        };
+      } else {
+        a.operation = newAppOp(sel.value as AppOperation["op"]);
       }
-      a.operation = newAppOp(sel.value as AppOperation["op"]);
       rerender();
     });
     return sel;
@@ -5235,6 +5343,87 @@ function keyRecordButton(
   return btn;
 }
 
+/** 「后台发送」的字段（目标窗口 + 按键 / 文本）：系统操作的子操作与旧 `send_to` 类型共用。 */
+function sendToFields(
+  op: { target: string; payload: SendPayload },
+  rerender: () => void,
+): HTMLElement[] {
+  const nodes: HTMLElement[] = [];
+  nodes.push(
+    el(
+      "div",
+      "unit-hint",
+      tr("把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。"),
+    ),
+  );
+  const targetLine = el("div", "action-line");
+  const target = el("input", "action-input") as HTMLInputElement;
+  target.type = "text";
+  target.value = op.target;
+  target.placeholder = tr("目标窗口：进程名或标题关键字，如 chrome.exe / 记事本");
+  target.addEventListener("input", () => {
+    op.target = target.value;
+  });
+  targetLine.append(el("span", "unit-hint", tr("目标窗口")), target);
+  nodes.push(targetLine);
+
+  const kindLine = el("div", "action-line");
+  const kind = el("select", "action-input") as HTMLSelectElement;
+  for (const [value, label] of [
+    ["keys", tr("按键")],
+    ["text", tr("文本")],
+  ] as [SendPayload["kind"], string][]) {
+    const o = el("option") as HTMLOptionElement;
+    o.value = value;
+    o.textContent = label;
+    kind.append(o);
+  }
+  kind.value = op.payload.kind;
+  kind.addEventListener("change", () => {
+    op.payload =
+      kind.value === "keys" ? { kind: "keys", keys: [] } : { kind: "text", text: "" };
+    rerender();
+  });
+  kindLine.append(el("span", "unit-hint", tr("发送内容")), kind);
+  nodes.push(kindLine);
+
+  if (op.payload.kind === "keys") {
+    const line = el("div", "action-line");
+    const keys = el("input", "action-input") as HTMLInputElement;
+    keys.type = "text";
+    keys.value = op.payload.keys.join("+");
+    keys.placeholder = tr("如 Ctrl+S");
+    keys.addEventListener("input", () => {
+      op.payload = {
+        kind: "keys",
+        keys: keys.value
+          .split("+")
+          .map((x) => x.trim())
+          .filter(Boolean),
+      };
+    });
+    const cap = el("button", undefined, tr("录入")) as HTMLButtonElement;
+    cap.addEventListener("click", (e) => {
+      const btn = e.currentTarget as HTMLButtonElement;
+      startCapture((combo) => {
+        op.payload = { kind: "keys", keys: combo.split("+") };
+        keys.value = combo;
+      }, btn);
+    });
+    line.append(keys, cap);
+    nodes.push(line);
+  } else {
+    const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
+    ta.value = op.payload.text;
+    ta.placeholder = tr("要发送的文本（支持 {变量名} 占位符）……");
+    ta.addEventListener("input", () => {
+      op.payload = { kind: "text", text: ta.value };
+    });
+    nodes.push(ta);
+  }
+  return nodes;
+}
+
 function actionFields(
   a: Action,
   rerender: () => void,
@@ -5456,58 +5645,8 @@ function actionFields(
     recLine.append(keyRecordButton(rerender, ctx));
     body.append(recLine);
   } else if (a.type === "send_to") {
-    body.append(
-      el(
-        "div",
-        "unit-hint",
-        tr("把按键或文本发给一个非前台窗口，全程不激活、不抢焦点。目标填进程名或窗口标题关键字（忽略大小写，支持 * 和 ?）；多个窗口时取最上层。仅 Windows 支持；浏览器 / Electron / UWP / 游戏 / 提权窗口通常收不到消息，且不会回落到前台注入。"),
-      ),
-    );
-    const targetLine = el("div", "action-line");
-    const target = el("input", "action-input") as HTMLInputElement;
-    target.type = "text";
-    target.value = a.target;
-    target.placeholder = tr("目标窗口：进程名或标题关键字，如 chrome.exe / 记事本");
-    target.addEventListener("input", () => {
-      a.target = target.value;
-    });
-    targetLine.append(el("span", "unit-hint", tr("目标窗口")), target);
-    body.append(targetLine);
-
-    if (a.payload.kind === "keys") {
-      const line = el("div", "action-line");
-      const keys = el("input", "action-input") as HTMLInputElement;
-      keys.type = "text";
-      keys.value = a.payload.keys.join("+");
-      keys.placeholder = tr("如 Ctrl+S");
-      keys.addEventListener("input", () => {
-        a.payload = {
-          kind: "keys",
-          keys: keys.value
-            .split("+")
-            .map((x) => x.trim())
-            .filter(Boolean),
-        };
-      });
-      const cap = el("button", undefined, tr("录入")) as HTMLButtonElement;
-      cap.addEventListener("click", (e) => {
-        const btn = e.currentTarget as HTMLButtonElement;
-        startCapture((combo) => {
-          a.payload = { kind: "keys", keys: combo.split("+") };
-          keys.value = combo;
-        }, btn);
-      });
-      line.append(keys, cap);
-      body.append(line);
-    } else {
-      const ta = el("textarea", "action-textarea") as HTMLTextAreaElement;
-      ta.value = a.payload.text;
-      ta.placeholder = tr("要发送的文本（支持 {变量名} 占位符）……");
-      ta.addEventListener("input", () => {
-        a.payload = { kind: "text", text: ta.value };
-      });
-      body.append(ta);
-    }
+    // 旧类型兜底（加载时已迁移成 `system.send_to`），字段与系统操作里那一项共用。
+    body.append(...sendToFields(a, rerender));
   } else if (a.type === "mouse") {
     const op = a.op;
     const line = el("div", "action-line");
@@ -5772,6 +5911,27 @@ function actionFields(
       body.append(
         el("div", "unit-hint", tr("显示 / 隐藏桌面图标（等价于右键桌面 → 查看 → 显示桌面图标）。仅 Windows 支持。")),
       );
+    } else if (op.op === "send_to") {
+      // 原独立动作「后台发送」：类型仍是操作系统，只是子操作换了。
+      body.append(...sendToFields(op, rerender));
+    } else if (op.op === "brightness") {
+      if (op.operation !== "restore") {
+        const line = el("div", "action-line");
+        const label = el("span", "unit-label", tr("步长"));
+        const step = el("input", "action-input") as HTMLInputElement;
+        step.type = "number";
+        step.min = "1";
+        step.max = "100";
+        step.value = String(op.step);
+        step.addEventListener("input", () => {
+          op.step = intIn(step.value, 1, 10, 100);
+        });
+        line.append(label, step);
+        body.append(line);
+      }
+      body.append(
+        el("div", "unit-hint", tr("只调主显示器（DDC/CI，VCP 0x10）。「恢复」用本次运行第一次调节前缓存的原始亮度；显示器不支持时执行会明确报错。目前仅 Windows 支持。")),
+      );
     }
   } else if (a.type === "window") {
     const hint = el("div", "unit-hint");
@@ -5805,7 +5965,12 @@ function actionFields(
     );
   } else if (a.type === "app") {
     const op = a.operation;
-    if (op.op === "launch" || op.op === "restart") {
+    if (op.op === "current_window") {
+      // 原独立动作「窗口操作」：类型仍是应用操作，目标 = 触发那一刻的前台窗口。
+      body.append(
+        el("div", "unit-hint", tr("作用对象是触发那一刻的前台窗口，不会激活或切换窗口，也不按程序名匹配。目前仅 Windows 支持，其它平台会标平台冲突并在执行时报错。")),
+      );
+    } else if (op.op === "launch" || op.op === "restart") {
       const progWrap = el("div", "action-line");
       const prog = el("input", "action-input") as HTMLInputElement;
       prog.type = "text";
@@ -8733,8 +8898,6 @@ async function initEvents() {
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);
   });
-  // EXT-03：未匹配手势时后端暂存方向串并唤出主窗口（见 handle_gesture），这里补一次取件。
-  await listen("gesture-add", () => void openPendingGesture());
   // 应用内别的窗口写盘后广播（`set_config` / 导入 / 提示框窗口拖了位置调了滚轮 / 托盘暂停）：
   // 只跟上「本界面不是唯一写入者」的那几块——它们在别处被改过，本界面手上这份已经旧了，
   // 下次保存会把旧值写回去（拖好的位置、调好的透明度、托盘刚切的暂停被打回原形）。
@@ -9192,6 +9355,8 @@ async function bootstrapGesture() {
   await listen<GestureResultPayload>("gesture-result", (e) =>
     render(e.payload, e.payload.matched, e.payload.label, e.payload.pattern),
   );
+  // 监听器就绪后再告诉壳层：冷启动第一笔手势的轨迹事件不会白丢。
+  await invoke("gesture_overlay_ready").catch(() => {});
 }
 
 // ---- 复制快捷菜单（独立窗口，加载 index.html#clipboard-menu，EXT-13）----
@@ -9480,8 +9645,6 @@ if (location.hash === "#toast") {
   void (async () => {
     await initEvents();
     await load();
-    // 启动后如果不在刚进入时 `gesture-add` 事件已过期，这里补取一次（同 toast 那条路径）。
-    void openPendingGesture();
   })();
 }
 

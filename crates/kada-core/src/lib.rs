@@ -769,8 +769,8 @@ pub enum OsOperation {
     GetFileProps { path: String, #[serde(default = "default_var")] var: String },
 }
 
-/// 操作系统动作：对操作系统本身做的动作（虚拟桌面 / 回收站 / 显示器 / 桌面图标）。
-/// 与 [`OsOperation`]（文件/目录动作）分开，见那里的分类依据。
+/// 操作系统动作：对操作系统本身做的动作（虚拟桌面 / 回收站 / 显示器 / 桌面图标 /
+/// 后台发送 / 亮度）。与 [`OsOperation`]（文件/目录动作）分开，见那里的分类依据。
 #[cfg(feature = "automation")]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -788,6 +788,21 @@ pub enum SystemOperation {
     MonitorOff,
     /// 切换桌面图标显示（Windows 给桌面 `SysListView32` 发 `0x7402`）。
     ToggleDesktopIcons,
+    /// 向**非前台**窗口发送按键 / 文本（原 `Action::SendTo`，入口已并入操作系统）：
+    /// Windows 用 `PostMessage`，全程不激活、不抢焦点，也不回落到前台注入。`target` 匹配
+    /// 进程名或窗口标题（忽略大小写，含 `*`/`?` 走通配，否则子串）；多个命中取 Z 序最上层。
+    /// 只有 Windows 实现，其它平台执行时报错并由冲突检测标平台缺失。目标程序靠 Raw Input /
+    /// 焦点 / IME 收键时（Chromium、UWP、游戏、提权窗口）通常收不到——这是 `PostMessage`
+    /// 的固有限制，不是回退前台的信号。
+    SendTo { target: String, payload: SendPayload },
+    /// 显示器亮度（原 `Action::Brightness`，入口已并入操作系统）：主显示器调高 / 调低 /
+    /// 恢复原始值。Windows 走 DDC/CI，其它平台执行报错并由冲突检测标平台缺失。
+    Brightness {
+        #[serde(default, skip_serializing_if = "is_default_brightness_op")]
+        operation: BrightnessOperation,
+        #[serde(default = "default_brightness_step", skip_serializing_if = "is_default_brightness_step")]
+        step: i64,
+    },
 }
 
 /// 当前窗口动作（[`Action::Window`]，EXT-14）：对**触发那一刻的前台窗口**执行操作，
@@ -1191,6 +1206,13 @@ pub enum AppOperation {
     },
     /// 重启程序：先关闭再重新启动。
     Restart { program: String, #[serde(default)] args: Vec<String> },
+    /// 当前窗口（原 `Action::Window`，入口已并入应用动作，EXT-14）：对**触发那一刻的前台
+    /// 窗口**执行操作，不按程序名匹配、也不激活窗口（不抢焦点）。只有 Windows 有前台窗口
+    /// 句柄，其它平台执行报错并由冲突检测标平台缺失。
+    CurrentWindow {
+        #[serde(default)]
+        action: WindowOperation,
+    },
 }
 
 /// 文本动作的方式：直接输入 / 把选中或剪贴板文本转大写 / 转小写。
@@ -1391,11 +1413,8 @@ pub enum Action {
     /// 按键动作：`tap` 按下再松开（默认）；`press` 只按下并保持到链结束 / 显式抬起；
     /// `release` 抬起（逆序）。按住类按键在失败 / 中止 / 输入复位时也会自动抬起。
     Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "is_tap_mode")] mode: KeysMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
-    /// 向**非前台**窗口发送按键 / 文本（EXT-16 二阶段）：Windows 用 `PostMessage`，全程不激活、
-    /// 不抢焦点，也不回落到前台注入。`target` 匹配进程名或窗口标题（忽略大小写，含 `*`/`?`
-    /// 走通配，否则子串）；多个命中取 Z 序最上层。只有 Windows 实现，其它平台执行时报错并由
-    /// 冲突检测标平台缺失。目标程序靠 Raw Input / 焦点 / IME 收键时（Chromium、UWP、游戏、
-    /// 提权窗口）通常收不到——这是 `PostMessage` 的固有限制，不是回退前台的信号。
+    /// 向**非前台**窗口发送按键 / 文本（原独立动作类型；**加载时自动迁移为
+    /// `System::SendTo`**，界面入口已收进「操作系统」）。语义见 [`SystemOperation::SendTo`]。
     SendTo { target: String, payload: SendPayload, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 暂停 ms 毫秒。
     PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1471,7 +1490,8 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    /// 当前窗口动作（EXT-14）：对触发那一刻的前台窗口最大化 / 还原、最小化、置顶切换、
+    /// 当前窗口动作（EXT-14；**加载时自动迁移为 `App::CurrentWindow`**，界面入口已收进
+    /// 「应用操作」）：对触发那一刻的前台窗口最大化 / 还原、最小化、置顶切换、
     /// 居中、关闭、关闭同类窗口。目标窗口在触发时抓取（手势路径同理），**不激活窗口**。
     /// 目前只有 Windows 实现，其它平台执行时报「不支持」（冲突检测同时标软冲突）。
     #[cfg(feature = "automation")]
@@ -1504,7 +1524,8 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
-    /// 显示器亮度（EXT-22）：主显示器调高 / 调低 / 恢复原始值。Windows 走 DDC/CI，
+    /// 显示器亮度（EXT-22；**加载时自动迁移为 `System::Brightness`**，界面入口已收进
+    /// 「操作系统」）：主显示器调高 / 调低 / 恢复原始值。Windows 走 DDC/CI，
     /// 其它平台执行报错并由冲突检测标平台缺失。
     #[cfg(feature = "automation")]
     Brightness {
@@ -1621,9 +1642,39 @@ impl Action {
                     GetFileProps { path, .. } => non_empty("路径", path),
                 }
             }
-            // 系统操作没有必填字段（方向有缺省值），恒可执行；平台不支持在执行时报错。
+            // 系统操作里除「后台发送」外没有必填字段；平台不支持在执行时报错。
             #[cfg(feature = "automation")]
-            Action::System { .. } => Ok(()),
+            Action::System { operation, .. } => {
+                use SystemOperation::*;
+                match operation {
+                    SendTo { target, payload } => {
+                        non_empty("目标窗口", target)?;
+                        match payload {
+                            SendPayload::Keys { keys } => {
+                                if keys.is_empty() {
+                                    return Err("后台发送的按键组合不能为空".into());
+                                }
+                                for k in keys {
+                                    check_key("后台发送", k)?;
+                                }
+                            }
+                            SendPayload::Text { .. } => {}
+                        }
+                        Ok(())
+                    }
+                    Brightness { operation, step } => {
+                        if !matches!(operation, BrightnessOperation::Restore)
+                            && !(1..=100).contains(step)
+                        {
+                            return Err("亮度步长要在 1~100 之间".into());
+                        }
+                        Ok(())
+                    }
+                    SwitchDesktop { .. } | EmptyRecycleBin | MonitorOff | ToggleDesktopIcons => {
+                        Ok(())
+                    }
+                }
+            }
             #[cfg(feature = "automation")]
             Action::App { operation, .. } => {
                 use AppOperation::*;
@@ -1636,6 +1687,8 @@ impl Action {
                     | Restart { program, .. } => non_empty("程序", program),
                     // 变量名允许为空（执行时回退到 "app"），只要求程序非空。
                     Status { program, .. } => non_empty("程序", program),
+                    // 当前窗口没有必填字段（操作有缺省值），平台支持与否由冲突检测标出。
+                    CurrentWindow { .. } => Ok(()),
                 }
             }
             #[cfg(feature = "automation")]
@@ -3887,6 +3940,10 @@ fn scan_actions_platform(
 fn uses_window_action(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Window { .. } => true,
+        Action::App {
+            operation: AppOperation::CurrentWindow { .. },
+            ..
+        } => true,
         Action::Group { actions, .. } => uses_window_action(actions),
         Action::If {
             then, otherwise, ..
@@ -3918,6 +3975,11 @@ fn uses_absolute_move(actions: &[Action]) -> bool {
 fn uses_background_input(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::SendTo { .. } => true,
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::SendTo { .. },
+            ..
+        } => true,
         Action::Group { actions, .. } => uses_background_input(actions),
         #[cfg(feature = "automation")]
         Action::If {
@@ -3959,6 +4021,10 @@ fn uses_shell_actions(actions: &[Action]) -> bool {
 fn uses_brightness(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Brightness { .. } => true,
+        Action::System {
+            operation: SystemOperation::Brightness { .. },
+            ..
+        } => true,
         Action::Group { actions, .. } => uses_brightness(actions),
         Action::If { then, otherwise, .. } => uses_brightness(then) || uses_brightness(otherwise),
         Action::Parallel { actions, .. } => uses_brightness(actions),
@@ -4158,6 +4224,22 @@ pub fn migrate_action(a: Action) -> Action {
         Action::OpenFolder { path, description } => {
             Action::Os { operation: OsOperation::OpenFolder { path }, description }
         }
+        // 入口收口：动作类型下拉里不再单列这三类，旧配置加载时并进所属分类。
+        #[cfg(feature = "automation")]
+        Action::SendTo { target, payload, description } => Action::System {
+            operation: SystemOperation::SendTo { target, payload },
+            description,
+        },
+        #[cfg(feature = "automation")]
+        Action::Window { operation, description } => Action::App {
+            operation: AppOperation::CurrentWindow { action: operation },
+            description,
+        },
+        #[cfg(feature = "automation")]
+        Action::Brightness { operation, step, description } => Action::System {
+            operation: SystemOperation::Brightness { operation, step },
+            description,
+        },
         #[cfg(feature = "automation")]
         Action::If { condition, then, otherwise, description } => Action::If {
             condition,
@@ -5960,6 +6042,113 @@ mod new_action_and_folder_tests {
         let json = serde_json::to_string(&a).unwrap();
         assert!(json.contains(r#""op":"maximize_restore""#), "{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+    }
+
+    /// 入口收口：旧的三类动作在加载时并进所属分类（亮度 / 后台发送 → 系统，窗口 → 应用）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn migrate_merges_brightness_send_to_and_window_into_categories() {
+        let bright = migrate_action(Action::Brightness {
+            operation: BrightnessOperation::Down,
+            step: 25,
+            description: None,
+        });
+        assert_eq!(
+            bright,
+            Action::System {
+                operation: SystemOperation::Brightness {
+                    operation: BrightnessOperation::Down,
+                    step: 25,
+                },
+                description: None,
+            }
+        );
+
+        let send = migrate_action(
+            serde_json::from_str(
+                r#"{"type":"send_to","target":"notepad","payload":{"kind":"keys","keys":["Ctrl","S"]}}"#,
+            )
+            .unwrap(),
+        );
+        assert!(matches!(
+            send,
+            Action::System {
+                operation: SystemOperation::SendTo { .. },
+                ..
+            }
+        ));
+
+        let win = migrate_action(
+            serde_json::from_str(r#"{"type":"window","operation":{"op":"close"}}"#).unwrap(),
+        );
+        assert_eq!(
+            win,
+            Action::App {
+                operation: AppOperation::CurrentWindow {
+                    action: WindowOperation::Close,
+                },
+                description: None,
+            }
+        );
+    }
+
+    /// 合并后的新形态：`system.send_to` / `system.brightness` / `app.current_window`
+    /// 能往返、能校验，必填项与步长越界照样拦住。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn merged_operation_json_roundtrip_and_validate() {
+        for json in [
+            r#"{"type":"system","operation":{"op":"send_to","target":"notepad","payload":{"kind":"text","text":"hi"}}}"#,
+            r#"{"type":"system","operation":{"op":"brightness","operation":"down","step":25}}"#,
+            r#"{"type":"app","operation":{"op":"current_window","action":{"op":"close"}}}"#,
+        ] {
+            let a: Action = serde_json::from_str(json).unwrap();
+            assert!(a.validate().is_ok(), "{json}");
+            let back = serde_json::to_string(&a).unwrap();
+            assert_eq!(serde_json::from_str::<Action>(&back).unwrap(), a, "{back}");
+        }
+
+        let bad: Action = serde_json::from_str(
+            r#"{"type":"system","operation":{"op":"send_to","target":"","payload":{"kind":"text","text":"x"}}}"#,
+        )
+        .unwrap();
+        assert!(bad.validate().is_err());
+        let bad: Action = serde_json::from_str(
+            r#"{"type":"system","operation":{"op":"brightness","operation":"up","step":0}}"#,
+        )
+        .unwrap();
+        assert!(bad.validate().is_err());
+    }
+
+    /// 平台能力缺口检查要认得合并后的形态（不只是旧类型）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn platform_helpers_detect_merged_operations() {
+        let send = Action::System {
+            operation: SystemOperation::SendTo {
+                target: "notepad".into(),
+                payload: SendPayload::Text { text: "hi".into() },
+            },
+            description: None,
+        };
+        assert!(uses_background_input(std::slice::from_ref(&send)));
+
+        let bright = Action::System {
+            operation: SystemOperation::Brightness {
+                operation: BrightnessOperation::Up,
+                step: 10,
+            },
+            description: None,
+        };
+        assert!(uses_brightness(std::slice::from_ref(&bright)));
+
+        let win = Action::App {
+            operation: AppOperation::CurrentWindow {
+                action: WindowOperation::Close,
+            },
+            description: None,
+        };
+        assert!(uses_window_action(std::slice::from_ref(&win)));
     }
 
     /// 旧截图动作还能解析（老配置不能因为功能移除就打不开）。

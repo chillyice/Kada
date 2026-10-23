@@ -79,7 +79,7 @@ const DEMO_CONFIG = {
       layer: null,
       triggers: ["Ctrl+Alt+U"],
       enabled: true,
-      actions: [{ type: "brightness", operation: "down", step: 10 }],
+      actions: [{ type: "system", operation: { op: "brightness", operation: "down", step: 10 } }],
     },
   ],
   remaps: [

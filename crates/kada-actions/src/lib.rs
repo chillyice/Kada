@@ -215,6 +215,7 @@ struct Ctx<'a> {
     /// 见 [`RunOptions::text_inject_mode`]（文本动作与「转大小写」用）。
     text_mode: TextInjectMode,
     /// 见 [`RunOptions::experimental`]（EXT-22 亮度动作的总闸）。
+    #[cfg_attr(not(feature = "automation"), allow(dead_code))]
     experimental: bool,
     /// 本次执行开始时记下的中止代数（[`abort::aborted`] 的比对基准）。
     gen: u64,
@@ -865,6 +866,11 @@ fn action_label(action: &Action) -> &'static str {
             ..
         } => "窗口置于前台失败",
         #[cfg(feature = "automation")]
+        Action::App {
+            operation: AppOperation::CurrentWindow { .. },
+            ..
+        } => "窗口操作失败",
+        #[cfg(feature = "automation")]
         Action::Script { .. } => "脚本失败",
         #[cfg(feature = "automation")]
         Action::OpenUrl { .. } => "打开网址失败",
@@ -885,6 +891,16 @@ fn action_label(action: &Action) -> &'static str {
             operation: SystemOperation::ToggleDesktopIcons,
             ..
         } => "切换桌面图标失败",
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::SendTo { .. },
+            ..
+        } => "后台发送失败",
+        #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::Brightness { .. },
+            ..
+        } => "亮度调节失败",
         #[cfg(feature = "automation")]
         Action::System { .. } => "系统操作失败",
         #[cfg(feature = "automation")]
@@ -983,7 +999,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         #[cfg(feature = "automation")]
         Action::Os { operation, .. } => os_body(operation, vars),
         #[cfg(feature = "automation")]
-        Action::System { operation, .. } => system_body(operation),
+        Action::System { operation, .. } => system_body(operation, vars),
         #[cfg(feature = "automation")]
         Action::App { operation, .. } => app_body(operation, vars),
         #[cfg(feature = "automation")]
@@ -1234,12 +1250,12 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
     }
 }
 
-/// 系统操作摘要（不含变量：系统操作目前不读占位符）。
+/// 系统操作摘要（后台发送会代入变量）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
-fn system_body(op: &SystemOperation) -> String {
+fn system_body(op: &SystemOperation, vars: &Vars) -> String {
     match op {
         SystemOperation::SwitchDesktop { direction } => {
             format!("切换到{}虚拟桌面", direction.label())
@@ -1247,6 +1263,27 @@ fn system_body(op: &SystemOperation) -> String {
         SystemOperation::EmptyRecycleBin => "清空回收站".into(),
         SystemOperation::MonitorOff => "关闭显示器".into(),
         SystemOperation::ToggleDesktopIcons => "切换桌面图标".into(),
+        SystemOperation::SendTo { target, payload } => {
+            send_to_body(target, payload, vars)
+        }
+        SystemOperation::Brightness { operation, step } => brightness_body(*operation, *step),
+    }
+}
+
+/// 后台发送摘要（消息中心「命令」一栏）：`后台发送按键 Ctrl+S → notepad`。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn send_to_body(target: &str, payload: &SendPayload, vars: &Vars) -> String {
+    let target = substitute_vars(target, vars);
+    match payload {
+        SendPayload::Keys { keys } => {
+            format!("后台发送按键 {} → {}", keys.join("+"), target)
+        }
+        SendPayload::Text { text } => {
+            format!("后台发送文本 {} → {}", substitute_vars(text, vars), target)
+        }
     }
 }
 
@@ -1268,6 +1305,7 @@ fn app_body(op: &AppOperation, vars: &Vars) -> String {
         AppOperation::Restart { program, args } => {
             format!("重启程序 {}", join_args(&sub(program), args, vars))
         }
+        AppOperation::CurrentWindow { action } => window_body(action),
     }
 }
 
@@ -1410,23 +1448,8 @@ fn run_action(
             }
         }
         Action::SendTo { target, payload, .. } => {
-            // 持链内注入锁：与前台注入动作保持同一顺序，链内输入步骤不交错。
-            // 注意它不是 SendInput，物理修饰键不会污染它，所以壳层不把它算进 `injects_keys`。
-            let _inj = lock_inject(ctx);
-            let target = substitute_vars(target, vars);
-            match payload {
-                SendPayload::Keys { keys } => {
-                    let ks: Vec<Key> = keys
-                        .iter()
-                        .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
-                        .collect::<Result<_, _>>()?;
-                    kada_hook::send_to_window(&target, kada_hook::WindowInput::Keys(&ks))?;
-                }
-                SendPayload::Text { text } => {
-                    let text = substitute_vars(text, vars);
-                    kada_hook::send_to_window(&target, kada_hook::WindowInput::Text(&text))?;
-                }
-            }
+            // 旧形态兜底（正常流程已在加载时迁移到 `System::SendTo`）。
+            send_to_action(target, payload, ctx, vars)?;
         }
         Action::Mouse { op, .. } => {
             // 持链内注入锁：点击是「按下 + 抬起」一对，不能被别的成员插进来。
@@ -1615,7 +1638,7 @@ fn run_action(
         }
         #[cfg(feature = "automation")]
         Action::System { operation, .. } => {
-            run_system(operation, ctx)?;
+            return run_system(operation, ctx, vars);
         }
         #[cfg(feature = "automation")]
         Action::App { operation, .. } => {
@@ -1638,8 +1661,12 @@ fn run_action(
         }
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => {
-            // 目标窗口是**触发时**抓的句柄（`ctx.t.window`），所以链里先切前台也不影响它。
-            kada_hook::window_action(ctx.t.window, hook_window_action(*operation))?;
+            // 旧形态兜底（正常流程已在加载时迁移到 `App::CurrentWindow`）。
+            return run_app(
+                &AppOperation::CurrentWindow { action: *operation },
+                ctx,
+                vars,
+            );
         }
         #[cfg(feature = "automation")]
         Action::Capture { .. } => {
@@ -1658,28 +1685,15 @@ fn run_action(
         }
         #[cfg(feature = "automation")]
         Action::Brightness { operation, step, .. } => {
-            if !ctx.experimental {
-                return Err("显示器亮度是实验功能：先在设置里打开「实验功能」总闸".into());
-            }
-            let op = match operation {
-                BrightnessOperation::Up => kada_hook::BrightnessOp::Up,
-                BrightnessOperation::Down => kada_hook::BrightnessOp::Down,
-                BrightnessOperation::Restore => kada_hook::BrightnessOp::Restore,
-            };
-            let msg = kada_hook::adjust_brightness(op, *step)?;
-            return Ok(Some(CommandResult {
-                kind: "brightness".into(),
-                label: "亮度".into(),
-                command: brightness_body(*operation, *step),
-                stdout: msg,
-                stderr: String::new(),
-                exit_code: None,
-                show_output: false,
-                trigger: ctx.t.trigger.into(),
-                name: ctx.t.name.into(),
-                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
-                run_id: ctx.run_id,
-            }));
+            // 旧形态兜底（正常流程已在加载时迁移到 `System::Brightness`）。
+            return run_system(
+                &SystemOperation::Brightness {
+                    operation: *operation,
+                    step: *step,
+                },
+                ctx,
+                vars,
+            );
         }
         #[cfg(feature = "automation")]
         Action::Script {
@@ -1852,18 +1866,88 @@ fn run_os(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
-fn run_system(op: &SystemOperation, ctx: &Ctx<'_>) -> Result<(), String> {
+fn run_system(
+    op: &SystemOperation,
+    ctx: &Ctx<'_>,
+    vars: &Vars,
+) -> Result<Option<CommandResult>, String> {
     match op {
         SystemOperation::SwitchDesktop { direction } => {
             // 持链内注入锁：`Win+Ctrl+←` 这种组合被别的并行成员插进半截，目标系统收到的是
             // 一个混合组合键（切桌面就成了别的东西）。与 `Keys` 同款理由。
             let _inj = lock_inject(ctx);
-            switch_desktop(*direction)
+            switch_desktop(*direction)?;
+            Ok(None)
         }
-        SystemOperation::EmptyRecycleBin => empty_recycle_bin(),
-        SystemOperation::MonitorOff => monitor_off(),
-        SystemOperation::ToggleDesktopIcons => toggle_desktop_icons(),
+        SystemOperation::EmptyRecycleBin => {
+            empty_recycle_bin()?;
+            Ok(None)
+        }
+        SystemOperation::MonitorOff => {
+            monitor_off()?;
+            Ok(None)
+        }
+        SystemOperation::ToggleDesktopIcons => {
+            toggle_desktop_icons()?;
+            Ok(None)
+        }
+        SystemOperation::SendTo { target, payload } => {
+            send_to_action(target, payload, ctx, vars)?;
+            Ok(None)
+        }
+        SystemOperation::Brightness { operation, step } => {
+            if !ctx.experimental {
+                return Err("显示器亮度是实验功能：先在设置里打开「实验功能」总闸".into());
+            }
+            let op = match operation {
+                BrightnessOperation::Up => kada_hook::BrightnessOp::Up,
+                BrightnessOperation::Down => kada_hook::BrightnessOp::Down,
+                BrightnessOperation::Restore => kada_hook::BrightnessOp::Restore,
+            };
+            let msg = kada_hook::adjust_brightness(op, *step)?;
+            Ok(Some(CommandResult {
+                kind: "brightness".into(),
+                label: "亮度".into(),
+                command: brightness_body(*operation, *step),
+                stdout: msg,
+                stderr: String::new(),
+                exit_code: None,
+                show_output: false,
+                trigger: ctx.t.trigger.into(),
+                name: ctx.t.name.into(),
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: ctx.run_id,
+            }))
+        }
     }
+}
+
+/// 后台发送（`System::SendTo`）：持链内注入锁、按目标窗口发按键或文本。
+///
+/// 它不是 SendInput，物理修饰键不会污染它，所以壳层不把它算进 `injects_keys`；
+/// 但注入锁仍要持——链内输入步骤不能交错。
+fn send_to_action(
+    target: &str,
+    payload: &SendPayload,
+    ctx: &Ctx<'_>,
+    vars: &Vars,
+) -> Result<(), String> {
+    let _inj = lock_inject(ctx);
+    let target = substitute_vars(target, vars);
+    match payload {
+        SendPayload::Keys { keys } => {
+            let ks: Vec<Key> = keys
+                .iter()
+                .map(|k| k.parse::<Key>().map_err(|e| e.to_string()))
+                .collect::<Result<_, _>>()?;
+            kada_hook::send_to_window(&target, kada_hook::WindowInput::Keys(&ks))?;
+        }
+        SendPayload::Text { text } => {
+            let text = substitute_vars(text, vars);
+            kada_hook::send_to_window(&target, kada_hook::WindowInput::Text(&text))?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(feature = "automation")]
@@ -2045,6 +2129,11 @@ fn run_app(op: &AppOperation, ctx: &Ctx, vars: &mut Vars) -> Result<Option<Comma
             let program = substitute_vars(program, vars);
             let args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
             restart_program(&program, &args, ctx)?;
+            Ok(None)
+        }
+        AppOperation::CurrentWindow { action } => {
+            // 目标窗口是**触发时**抓的句柄（`ctx.t.window`），所以链里先切前台也不影响它。
+            kada_hook::window_action(ctx.t.window, hook_window_action(*action))?;
             Ok(None)
         }
     }

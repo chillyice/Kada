@@ -127,7 +127,7 @@
               </div>
               <!-- 鼠标操作（手势）：方向串（按住右键画轨迹的方向序列） -->
               <div class="key-view hidden" id="key-gesture">
-                <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串，如 DL（U/D/L/R + 斜向 UR/DR/DL/UL）" />
+                <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
               </div>
             </div>
@@ -506,7 +506,8 @@
                 <details class="hint-fold">
                   <summary>鼠标手势怎么用</summary>
                   <p class="hint">打开后到「<strong>快捷键</strong>」页新增一条「<strong>鼠标操作</strong>」（列表里那一类）：填方向串（<code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上、<code>DR</code> 右下、<code>DL</code> 左下、<code>UL</code> 左上），再配一串动作。画的时候：按住<strong>右键</strong>画一条轨迹，松手时按方向串匹配。</p>
-                  <p class="hint">方向串也认 <code>UP</code> / <code>↓</code> 这类写法，保存时自动归一化成字母。没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
+                  <p class="hint"><strong>多段用逗号分隔</strong>：<code>D,R</code> = 先下再右（两段），<code>DR</code> = 右下斜向（一段），两者是两条不同的手势。相邻重复自动去重（<code>D,D,R</code> 就是 <code>D,R</code>）。方向串也认 <code>UP</code> / <code>↓</code> 这类写法，保存时自动归一化。</p>
+                  <p class="hint">没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
                   <p class="hint">全屏程序（游戏 / 视频 / F11）和上面排除列表里的程序里不接管右键：右键拖拽保持原生，手势不会触发。</p>
                 </details>
               </section>

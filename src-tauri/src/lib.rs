@@ -469,9 +469,6 @@ struct KadaState {
     /// 按键回显的隐藏截止时刻：前端建窗后回报尺寸时据此判断「这条已经过期了」，
     /// 别把一条早该消失的按键在冷启动完成后又亮出来。
     keycast_until: Mutex<Option<Instant>>,
-    /// 未匹配手势待添加的方向串（EXT-03）：主窗口可能是刚被唤出的，事件会早于前端监听器，
-    /// 所以先落这里，前端加载后 `take_pending_gesture` 取走。
-    pending_gesture: Arc<Mutex<Option<String>>>,
     /// 复制快捷菜单（EXT-13）是否处于「已请求 / 已显示」生命周期。
     clipboard_menu_showing: Arc<AtomicBool>,
     /// 钩子回调发现 Esc 时置位，菜单轮询线程消费后收回（回调里不碰窗口）。
@@ -1604,6 +1601,9 @@ struct GestureResultPayload {
 /// 结果展示序号：新一次手势 / 新结果会把它推进，旧的隐藏定时器据此让位。
 static GESTURE_VISUAL_SERIAL: AtomicU64 = AtomicU64::new(0);
 
+/// 手势浮层前端是否已注册好 `gesture-preview` / `gesture-result` 监听器。
+static GESTURE_OVERLAY_READY: AtomicBool = AtomicBool::new(false);
+
 /// 手势浮层窗口名（`index.html#gesture`）。
 const GESTURE_WINDOW: &str = "gesture";
 
@@ -1626,6 +1626,7 @@ fn ensure_gesture_overlay(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow
     if let Some(w) = app.get_webview_window(GESTURE_WINDOW) {
         return Some(w);
     }
+    GESTURE_OVERLAY_READY.store(false, Ordering::Relaxed);
     let w = match tauri::WebviewWindowBuilder::new(
         app,
         GESTURE_WINDOW,
@@ -1688,6 +1689,20 @@ fn local_gesture_points(points: &[(i32, i32)], origin: (i32, i32)) -> Vec<(i32, 
         .collect()
 }
 
+/// 等手势浮层前端注册好监听器（上限 1 秒；前端加载失败也不至于卡死）。
+fn wait_gesture_overlay_ready() {
+    let deadline = Instant::now() + Duration::from_millis(1000);
+    while !GESTURE_OVERLAY_READY.load(Ordering::Relaxed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// 手势浮层前端注册完监听器后回报（避免冷启动第一笔手势的轨迹事件丢失）。
+#[tauri::command]
+fn gesture_overlay_ready() {
+    GESTURE_OVERLAY_READY.store(true, Ordering::Relaxed);
+}
+
 /// 收起浮层，并让旧的隐藏定时器失效。
 fn hide_gesture_overlay(app: &tauri::AppHandle) {
     GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -1708,7 +1723,6 @@ fn show_gesture_result(
     if points.len() < 2 {
         return;
     }
-    let newly = app.get_webview_window(GESTURE_WINDOW).is_none();
     if ensure_gesture_overlay(app).is_none() {
         return;
     }
@@ -1730,10 +1744,9 @@ fn show_gesture_result(
     let serial = GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
     let app = app.clone();
     std::thread::spawn(move || {
-        // 刚建的窗口要等前端加载完监听器，否则第一个事件会丢（toast 用拉取兜底，
-        // 这里只是短暂提示，等一拍再发更省事）。
-        if newly {
-            std::thread::sleep(Duration::from_millis(180));
+        // 等前端注册好监听器（`gesture_overlay_ready`），否则事件会丢。
+        if !GESTURE_OVERLAY_READY.load(Ordering::Relaxed) {
+            wait_gesture_overlay_ready();
         }
         if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial {
             return;
@@ -1762,6 +1775,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
         let mut shown = false;
         let mut suppressed = false;
         let mut last_len = usize::MAX;
+        let mut preloaded = false;
         loop {
             let interval = if kada_hook::gesture::enabled() { 16 } else { 120 };
             std::thread::sleep(Duration::from_millis(interval));
@@ -1770,6 +1784,17 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 shown = false;
                 suppressed = false;
                 last_len = usize::MAX;
+                // 提前把浮层建好并等前端就绪：冷启动第一笔手势如果边画边建窗，
+                // WebView 加载要几百毫秒，轨迹还没画出来就结束了。
+                if !preloaded {
+                    let on = {
+                        let g = cfg.read().unwrap();
+                        g.settings.experimental && gesture_capture_enabled(&g)
+                    };
+                    if on {
+                        preloaded = ensure_gesture_overlay(&app).is_some();
+                    }
+                }
                 continue;
             }
             if !was_drawing {
@@ -1826,9 +1851,17 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                     suppressed = true;
                     continue;
                 };
+                let serial = GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
                 let _ = w.show();
-                GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed);
                 shown = true;
+                if !GESTURE_OVERLAY_READY.load(Ordering::Relaxed) {
+                    wait_gesture_overlay_ready();
+                }
+                if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial
+                    || !kada_hook::gesture::drawing()
+                {
+                    continue;
+                }
             }
             if points.len() == last_len {
                 continue;
@@ -2006,16 +2039,6 @@ fn handle_gesture(
         "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
     );
     replay_right_click();
-    // EXT-03 手势添加模式：唤出主窗口并打开「新增鼠标操作」，方向串预填成刚画的这条。
-    // 只开界面、不执行任何动作；右键已在上面补回。
-    if let Some(state) = app.try_state::<KadaState>() {
-        state.pending_gesture.lock().unwrap().replace(pattern);
-    }
-    let add_app = app.clone();
-    std::thread::spawn(move || {
-        show_main_window(&add_app);
-        let _ = add_app.emit("gesture-add", ());
-    });
 }
 
 /// 圈选截图收尾：收起手势预览 → 冻结画面等左键确认 → 写图片剪贴板。
@@ -6100,12 +6123,6 @@ fn get_toast_payload(state: tauri::State<'_, KadaState>) -> Option<ToastPayload>
     state.toast.lock().unwrap().clone()
 }
 
-/// 取走未匹配手势的方向串（EXT-03）：主界面据此打开「新增鼠标操作」并预填。
-#[tauri::command]
-fn take_pending_gesture(state: tauri::State<'_, KadaState>) -> Option<String> {
-    state.pending_gesture.lock().unwrap().take()
-}
-
 /// 标记全部已读（熄灭红点，还原托盘图标）。
 #[tauri::command]
 fn mark_results_read(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
@@ -6174,9 +6191,9 @@ pub fn run() {
             get_clipboard_menu_payload,
             clipboard_menu_ready,
             clipboard_menu_exec,
-            take_pending_gesture,
             hud_ready,
             keycast_ready,
+            gesture_overlay_ready,
             get_hints_state,
             hints_ready,
             hints_move,
@@ -6470,7 +6487,6 @@ pub fn run() {
                   status: Arc::new(Mutex::new(None)),
                   keycast: Arc::new(Mutex::new(None)),
                   keycast_until: Mutex::new(None),
-                pending_gesture: Arc::new(Mutex::new(None)),
                 clipboard_menu_showing,
                 clipboard_menu_hide,
                 clipboard_menu_serial,
