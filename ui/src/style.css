@@ -2284,12 +2284,14 @@ button:disabled:hover {
 .set-grid {
   display: grid;
   /* 窄窗口一列 —— 应用默认窗口（860 宽）可用宽约 796px，够不着一格 520px 的两列；
-     窗口拉宽 / 最大化时并成两列（每列 ≥520px，正好放下「标签 + 说明 + 控件」一行）。
-     上限 1100px：再宽也不会散成三四列，且与编辑页（880px）大致同一条竖轴。 */
-  grid-template-columns: repeat(auto-fill, minmax(520px, 1fr));
+     窗口拉宽 / 最大化（含界面放大）后自动并成多列（每列 ≥520px，正好放下「标签 + 说明 +
+     控件」一行），**不设宽度上限**：拉多大就横向铺满多大（1600 宽两列、1920 宽三列、
+     2400 宽四列……），右侧不再留一截空白。
+     auto-fit 而非 auto-fill：可见卡片不足一行时，空列位收掉、卡片自己撑开，不留下右半边空档；
+     min(520px, 100%) 兜住窗口窄于 520px 的情况（放大到 200% 以上），否则会横向溢出。 */
+  grid-template-columns: repeat(auto-fit, minmax(min(520px, 100%), 1fr));
   align-items: start;
   gap: 16px;
-  max-width: 1100px;
 }
 
 .set-card {
