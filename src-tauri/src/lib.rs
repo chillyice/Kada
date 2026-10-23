@@ -5574,7 +5574,7 @@ fn hidpp_unlock(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> Hi
 #[tauri::command]
 fn sync_now(state: tauri::State<'_, KadaState>) -> Result<String, String> {
     let cfg = state.config.read().unwrap().clone();
-    let file = sync_file(&cfg).ok_or("尚未设置同步存档目录")?;
+    let file = sync_file(&cfg).ok_or("尚未设置同步存档文件夹")?;
     config_io::save(&file, &cfg)?;
     Ok(file.display().to_string())
 }
@@ -5584,7 +5584,7 @@ fn sync_now(state: tauri::State<'_, KadaState>) -> Result<String, String> {
 #[tauri::command]
 fn sync_import_path(state: tauri::State<'_, KadaState>) -> Result<String, String> {
     let cfg = state.config.read().unwrap().clone();
-    let file = sync_file(&cfg).ok_or("尚未设置同步存档目录")?;
+    let file = sync_file(&cfg).ok_or("尚未设置同步存档文件夹")?;
     if !file.exists() {
         return Err(format!("同步存档里还没有配置：{}", file.display()));
     }

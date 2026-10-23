@@ -695,7 +695,7 @@ async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), Str
 fn persist(app: &tauri::AppHandle, version: &str, bytes: &[u8]) -> Result<(), String> {
     let state = app.state::<UpdateState>();
     let dir = state.dir.clone();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新目录失败：{e}"))?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新文件夹失败：{e}"))?;
     let file = format!("update-{version}.pkg");
     let tmp = dir.join(format!("{file}.tmp"));
     std::fs::write(&tmp, bytes).map_err(|e| format!("写入更新包失败：{e}"))?;
@@ -883,7 +883,7 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
 fn apply_portable_update(app: &tauri::AppHandle, pending: &PendingUpdate) -> Result<(), String> {
     let package = app.state::<UpdateState>().dir.join(&pending.file);
     let exe = std::env::current_exe().map_err(|e| format!("取不到当前程序路径：{e}"))?;
-    let dir = exe.parent().ok_or_else(|| "取不到程序所在目录".to_string())?;
+    let dir = exe.parent().ok_or_else(|| "取不到程序所在文件夹".to_string())?;
     let staged = dir.join("kada.exe.new");
     std::fs::copy(&package, &staged).map_err(|e| format!("准备更新文件失败：{e}"))?;
     let backup = dir.join(format!("kada.exe.old-{}", env!("CARGO_PKG_VERSION")));

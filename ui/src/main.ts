@@ -18,6 +18,7 @@ type OsOperation =
   | { op: "new_file"; path: string }
   | { op: "new_folder"; path: string }
   | { op: "open_folder"; path: string }
+  | { op: "open_file"; path: string }
   | { op: "reveal"; path: string }
   | { op: "zip"; source: string; dest: string }
   | { op: "unzip"; source: string; dest: string }
@@ -498,7 +499,7 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "script", label: tr("执行脚本") },
   { value: "app", label: tr("应用操作") },
   { value: "open_url", label: tr("打开网址") },
-  { value: "os", label: tr("文件/目录") },
+  { value: "os", label: tr("文件/文件夹") },
   { value: "system", label: tr("操作系统") },
   { value: "tool", label: tr("外部工具") },
   { value: "brightness", label: tr("亮度") },
@@ -667,7 +668,7 @@ const CONDITION_TYPES: { value: Condition["kind"]; label: string }[] = [
   { value: "exists", label: tr("路径存在") },
   { value: "not_exists", label: tr("路径不存在") },
   { value: "is_file", label: tr("路径是文件") },
-  { value: "is_dir", label: tr("路径是目录") },
+  { value: "is_dir", label: tr("路径是文件夹") },
   { value: "modified_within", label: tr("修改时间在…分钟内") },
   { value: "equals", label: tr("变量字段等于") },
   { value: "not_equals", label: tr("变量字段不等于") },
@@ -707,13 +708,14 @@ function newCondition(kind: Condition["kind"]): Condition {
 
 // ---- 文件/目录动作的子操作 ----
 const OS_OPS: { value: OsOperation["op"]; label: string }[] = [
-  { value: "copy", label: tr("复制（文件/目录）") },
+  { value: "copy", label: tr("复制（文件/文件夹）") },
   { value: "cut", label: tr("剪切（移动）") },
   { value: "paste", label: tr("粘贴（上次复制/剪切来源）") },
   { value: "delete", label: tr("删除") },
   { value: "new_file", label: tr("新建文件") },
   { value: "new_folder", label: tr("新建文件夹") },
   { value: "open_folder", label: tr("打开文件夹") },
+  { value: "open_file", label: tr("打开文件（默认程序）") },
   { value: "reveal", label: tr("定位文件（在资源管理器中选中）") },
   { value: "zip", label: tr("压缩为 zip") },
   { value: "unzip", label: tr("解压 zip") },
@@ -822,6 +824,7 @@ function newOsOp(op: OsOperation["op"]): OsOperation {  switch (op) {
     case "new_folder":
       return { op, path: "" };
     case "open_folder":
+    case "open_file":
     case "reveal":
       return { op, path: "" };
     case "zip":
@@ -954,6 +957,7 @@ function osHasContent(o: OsOperation): boolean {
     case "new_file":
     case "new_folder":
     case "open_folder":
+    case "open_file":
     case "reveal":
     case "get_file_props":
       return o.path.trim().length > 0;
@@ -1077,6 +1081,8 @@ function osSummary(o: OsOperation): string {
       return trt`新建文件夹：${o.path}`;
     case "open_folder":
       return trt`打开文件夹：${o.path}`;
+    case "open_file":
+      return trt`打开文件：${o.path}`;
     case "reveal":
       return trt`定位文件：${o.path}`;
     case "zip":
@@ -1143,7 +1149,7 @@ function condSummary(c: Condition): string {  switch (c.kind) {
     case "is_file":
       return trt`是文件：${c.path}`;
     case "is_dir":
-      return trt`是目录：${c.path}`;
+      return trt`是文件夹：${c.path}`;
     case "modified_within":
       return trt`修改时间 ${c.minutes} 分钟内：${c.path}`;
     case "equals":
@@ -2234,7 +2240,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
   if (editingFolderId === f.id) {
     const inp = el("input", "folder-input") as HTMLInputElement;
     inp.value = f.name;
-    inp.placeholder = tr("目录名");
+    inp.placeholder = tr("文件夹名");
     let done = false;
     const commit = () => {
       if (done) return;
@@ -2269,7 +2275,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
   }
   // Postman 式 hover 操作：目录行右侧「＋ 直接新增快捷键」「⋯ 更多」。
   const add = el("button", "row-add", "＋") as HTMLButtonElement;
-  add.title = tr("在此目录新增快捷键");
+  add.title = tr("在此文件夹新增快捷键");
   add.addEventListener("click", (e) => {
     e.stopPropagation();
     void requestNew("shortcut", f.id);
@@ -2296,24 +2302,24 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
 // 目录的菜单（⋯ / 右键共用）：新增在前，其后是目录自身的维护项。
 function folderMenuItems(f: Folder): MenuItem[] {
   const items: MenuItem[] = [
-    { label: tr("新增快捷键到此目录"), run: () => void requestNew("shortcut", f.id) },
-    { label: tr("新增子目录"), run: () => addFolder(f.id) },
+    { label: tr("新增快捷键到此文件夹"), run: () => void requestNew("shortcut", f.id) },
+    { label: tr("新增子文件夹"), run: () => addFolder(f.id) },
     { label: tr("重命名"), run: () => renameFolder(f.id) },
   ];
   // 目录只装快捷键：剪贴板里没有快捷键时，粘到目录里没有意义。
   if (clipboard?.items.some((i) => i.kind === "shortcut"))
-    items.push({ label: tr("粘贴到该目录"), run: () => pasteIntoFolder(f.id) });
+    items.push({ label: tr("粘贴到该文件夹"), run: () => pasteIntoFolder(f.id) });
   const inFolder = picksInFolder(f.id);
   if (inFolder.length)
     items.push({
-      label: trt`导出该目录为卡带（${inFolder.length} 项）`,
+      label: trt`导出该文件夹为卡带（${inFolder.length} 项）`,
       run: () => void exportFragment(inFolder),
     });
   // 目录级启停：一次作用到该目录（含子目录）里的全部条目。
   const n = folderEntryCounts(collectDescendantIds(f.id)).reduce((sum, [, c]) => sum + c, 0);
   if (n) {
-    items.push({ label: trt`启用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, true) });
-    items.push({ label: trt`禁用该目录（${n} 项）`, run: () => void setFolderEnabled(f.id, false) });
+    items.push({ label: trt`启用该文件夹（${n} 项）`, run: () => void setFolderEnabled(f.id, true) });
+    items.push({ label: trt`禁用该文件夹（${n} 项）`, run: () => void setFolderEnabled(f.id, false) });
   }
   items.push({ label: tr("删除"), run: () => void deleteFolder(f.id) });
   return items;
@@ -2743,8 +2749,8 @@ async function deleteFolder(id: string) {
     .map(([label, n]) => trt`${n} 条${label}`)
     .join("、");
   const ok = await askConfirm({
-    title: tr("删除目录"),
-    text: trt`删除目录「${target.name}」${detail ? trt`及其中的 ${detail}` : tr("及其所有内容")}？删除后无法撤销。`,
+    title: tr("删除文件夹"),
+    text: trt`删除文件夹「${target.name}」${detail ? trt`及其中的 ${detail}` : tr("及其所有内容")}？删除后无法撤销。`,
     okLabel: tr("删除"),
     danger: true,
   });
@@ -5138,7 +5144,7 @@ function renderWhenEditor(
 }
 
 // 鼠标操作编辑器里的「录制」按钮：录一段鼠标动作（移动到某处再点击 / 滚轮），录完替换掉
-// 当前动作。与键盘宏录制（#action-record）独立，结果只含鼠标操作动作。
+// 当前动作。与键盘宏录制（keyRecordButton）独立，结果只含鼠标操作动作。
 function mouseRecordButton(
   rerender: () => void,
   ctx?: { actions: Action[]; idx: number },
@@ -5178,6 +5184,52 @@ function mouseRecordButton(
       rerender();
     } else {
       toast(tr("未录到鼠标动作"));
+    }
+  });
+  return btn;
+}
+
+// 「按键组合」动作里的「开始录制」：录一段键盘宏（组合键 + 间隔），录完替换掉当前动作。
+// 与鼠标录制（mouseRecordButton）各自独立，但两个入口都长在同一张动作卡片里。
+function keyRecordButton(
+  rerender: () => void,
+  ctx?: { actions: Action[]; idx: number },
+): HTMLElement {
+  const btn = el("button", "record action-key-record") as HTMLButtonElement;
+  btn.textContent = recording ? tr("■ 录制中（点此停止）") : tr("● 开始录制");
+  if (recording) btn.classList.add("recording");
+  btn.title = tr("录一段按键（组合键与按键间隔），录完替换当前动作");
+  btn.addEventListener("click", async () => {
+    if (!recording) {
+      try {
+        await invoke("start_record");
+      } catch (err) {
+        toast(trt`开始录制失败: ${err}`);
+        return;
+      }
+      recording = true;
+      btn.classList.add("recording");
+      btn.textContent = tr("■ 录制中（点此停止）");
+      return;
+    }
+    recording = false;
+    let rec: Action[];
+    try {
+      rec = await invoke<Action[]>("stop_record");
+    } catch (err) {
+      toast(trt`停止录制失败: ${err}`);
+      btn.classList.remove("recording");
+      btn.textContent = tr("● 开始录制");
+      return;
+    }
+    btn.classList.remove("recording");
+    btn.textContent = tr("● 开始录制");
+    if (rec.length && ctx) {
+      // 录到的按键动作替换掉当前这一条（占位），其余顺次插在后面。
+      ctx.actions.splice(ctx.idx, 1, ...rec);
+      rerender();
+    } else {
+      toast(tr("没有录到按键"));
     }
   });
   return btn;
@@ -5399,6 +5451,10 @@ function actionFields(
     });
     line.append(keys, cap);
     body.append(mode, line);
+    // 整段按键录制挂在「按键组合」这一步上：录到的组合键与间隔替换掉当前这一条。
+    const recLine = el("div", "action-line");
+    recLine.append(keyRecordButton(rerender, ctx));
+    body.append(recLine);
   } else if (a.type === "send_to") {
     body.append(
       el(
@@ -5632,9 +5688,9 @@ function actionFields(
       body.append(
         pathField(op.source, (v) => (op.source = v), { file: true, label: tr("压缩包路径") }),
       );
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("解压到目录") }));
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("解压到文件夹") }));
     } else if (op.op === "paste") {
-      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("目标目录") }));
+      body.append(pathField(op.dest, (v) => (op.dest = v), { dir: true, label: tr("目标文件夹") }));
     } else if (op.op === "delete") {
       body.append(
         pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("待删除路径") }),
@@ -5644,12 +5700,17 @@ function actionFields(
     } else if (op.op === "new_folder") {
       body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("新建文件夹路径") }));
     } else if (op.op === "open_folder") {
-      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("打开目录") }));
+      body.append(pathField(op.path, (v) => (op.path = v), { dir: true, label: tr("打开文件夹") }));
+    } else if (op.op === "open_file") {
+      body.append(pathField(op.path, (v) => (op.path = v), { file: true, label: tr("打开文件") }));
+      body.append(
+        el("div", "unit-hint", tr("用电脑里设置了关联的默认程序打开这个文件（按扩展名，如 .pdf 用 PDF 阅读器、.docx 用 Word）。")),
+      );
     } else if (op.op === "reveal") {
       body.append(
-        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("要定位的文件或目录") }),
+        pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("要定位的文件或文件夹") }),
       );
-      body.append(el("div", "unit-hint", tr("仅 Windows 支持：在资源管理器里打开所在目录并选中它。")));
+      body.append(el("div", "unit-hint", tr("仅 Windows 支持：在资源管理器里打开所在文件夹并选中它。")));
     } else if (op.op === "get_file_props") {
       body.append(
         pathField(op.path, (v) => (op.path = v), { file: true, dir: true, label: tr("文件路径") }),
@@ -5854,14 +5915,16 @@ function actionFields(
     const url = el("input", "action-input") as HTMLInputElement;
     url.type = "text";
     url.value = a.url;
-    url.placeholder = tr("网址，如 https://example.com（支持 {变量名} 占位符）");
+    url.placeholder = tr("网址，如 example.com（不写 https:// 也行；支持 {变量名} 占位符）");
     url.addEventListener("input", () => {
       a.url = url.value.trim();
       showFieldError(url, urlError(url.value));
     });
     line.append(url);
     body.append(line);
-    body.append(el("div", "unit-hint", tr("用系统默认浏览器打开该网页。")));
+    body.append(
+      el("div", "unit-hint", tr("用系统默认浏览器打开该网页。没写协议头的会自动补 https://。")),
+    );
   } else if (a.type === "if") {
     const cond = a.condition;
     body.append(conditionFields(cond));
@@ -5946,12 +6009,10 @@ function pathError(v: string): string {
 }
 
 // 网址合法性：非空、http(s) 开头；含 {变量} 占位符的拼完才知道形态，放行。
+// 网址只拦空值：格式完全放开（localhost:3000、www.xxx.com 都行），没写协议头的
+// 由后端 `open_url` 补 `https://`。变量占位符同样原样放行。
 function urlError(v: string): string {
-  const t = v.trim();
-  if (!t) return tr("网址不能为空");
-  if (t.includes("{")) return "";
-  if (!/^https?:\/\/\S+$/i.test(t)) return tr("需以 http:// 或 https:// 开头");
-  return "";
+  return v.trim() ? "" : tr("网址不能为空");
 }
 
 // 文本扩展触发词（与后端 TextExpansion::validate 同口径）：非空、无空白字符。
@@ -5984,7 +6045,7 @@ function pathField(
     line.append(bf);
   }
   if (opts.dir) {
-    const bd = el("button", undefined, tr("目录…"));
+    const bd = el("button", undefined, tr("文件夹…"));
     bd.addEventListener("click", () => void pickDir(input));
     line.append(bd);
   }
@@ -6460,7 +6521,7 @@ function syncSettings() {
     cfg.settings.snippet_index_url ?? "";
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
-    cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个目录（如 OneDrive）即可自动存一份");
+    cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个文件夹（如 OneDrive）即可自动存一份");
   // 输入层环境诊断：缺字段的老配置按「开」显示，与后端 `default_true` 一致；
   // 结论每次进设置页重算（探测在后端，有 3 秒缓存，不构成负担）。
   (document.getElementById("set-input-env") as HTMLInputElement).checked =
@@ -7706,7 +7767,7 @@ function bind() {
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
       { label: tr("新增快捷键"), run: () => void requestNew("shortcut") },
-      { label: tr("新增目录"), run: () => addFolder(null) },
+      { label: tr("新增文件夹"), run: () => addFolder(null) },
     ];
     if (clipboard) items.push({ label: tr("粘贴到根级"), run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
@@ -7866,32 +7927,6 @@ function bind() {
       renderTriggers(d);
       void refreshConflicts().then(renderConflictBubble);
     }, btn);
-  });
-
-  document.getElementById("action-record")!.addEventListener("click", async (e) => {
-    const btn = e.currentTarget as HTMLButtonElement;
-    if (section !== "shortcuts" || !draft) return;
-    if (!recording) {
-      try {
-        await invoke("start_record");
-      } catch (err) {
-        toast(trt`开始录制失败: ${err}`);
-        return;
-      }
-      recording = true;
-      btn.classList.add("recording");
-      btn.textContent = tr("■ 录制中（点此停止）");
-    } else {
-      recording = false;
-      const actions = await invoke<Action[]>("stop_record");
-      btn.classList.remove("recording");
-      btn.textContent = tr("● 开始录制");
-      // 录制结果进草稿，统一由「保存」落盘，避免未点保存就被写盘。
-      const host = currentActionsHost();
-      if (!host) return;
-      host.actions.push(...actions);
-      renderActions(host);
-    }
   });
 
   // 标题行右侧的五个图标按钮（三类条目共用一套 id；执行只对快捷键出现，见 syncEntry）。
@@ -8173,10 +8208,9 @@ function switchSectionNow(tab: Section, opts?: { keepList?: boolean }) {
 
 async function stopRecIfAny() {
   if (recording) {
+    // 录制按钮长在「按键组合」动作卡片里，随重绘自然复位；这里只收掉后端的时间线，
+    // 不把录到的东西塞进任何草稿（离开编辑页 = 这次录制作废）。
     recording = false;
-    const btn = document.getElementById("action-record") as HTMLButtonElement;
-    btn.classList.remove("recording");
-    btn.textContent = tr("● 开始录制");
     await invoke("stop_record").catch(() => {});
   }
   if (mouseRecording) {

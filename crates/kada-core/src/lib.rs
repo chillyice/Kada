@@ -757,6 +757,8 @@ pub enum OsOperation {
     NewFolder { path: String },
     /// 在文件管理器中打开某个目录。
     OpenFolder { path: String },
+    /// 用系统默认程序打开文件（按扩展名关联的程序；传入目录则打开文件管理器）。
+    OpenFile { path: String },
     /// 在文件管理器中定位（选中）某个文件或目录（Windows `explorer /select,`）。
     Reveal { path: String },
     /// 把 `source`（文件或目录）压缩为 `dest` 的 zip 归档。
@@ -1569,7 +1571,7 @@ impl Action {
             #[cfg(feature = "automation")]
             Action::CloseProgram { program, .. } => non_empty("程序名", program),
             #[cfg(feature = "automation")]
-            Action::OpenFolder { path, .. } => non_empty("目录", path),
+            Action::OpenFolder { path, .. } => non_empty("文件夹", path),
             Action::Keys { keys, .. } => {
                 if keys.is_empty() {
                     return Err("按键组合不能为空".into());
@@ -1604,9 +1606,11 @@ impl Action {
                         Ok(())
                     }
                     Paste { dest } => non_empty("目标路径", dest),
-                    Delete { path } | NewFile { path } | NewFolder { path } | OpenFolder { path } => {
-                        non_empty("路径", path)
-                    }
+                    Delete { path }
+                    | NewFile { path }
+                    | NewFolder { path }
+                    | OpenFolder { path }
+                    | OpenFile { path } => non_empty("路径", path),
                     Reveal { path } => non_empty("路径", path),
                     Zip { source, dest } | Unzip { source, dest } => {
                         non_empty("源路径", source)?;
@@ -4203,11 +4207,11 @@ fn clean_folders(folders: &[Folder]) -> (Vec<Folder>, Vec<String>) {
         let id = f.id.trim().to_string();
         let name = f.name.trim().to_string();
         if id.is_empty() || name.is_empty() {
-            ignored.push(format!("目录「{}」已忽略：id 或名称为空", name));
+            ignored.push(format!("文件夹「{}」已忽略：id 或名称为空", name));
             continue;
         }
         if !seen.insert(id.clone()) {
-            ignored.push(format!("目录「{name}」已忽略：id 重复"));
+            ignored.push(format!("文件夹「{name}」已忽略：id 重复"));
             continue;
         }
         out.push(Folder { id, name, parent: f.parent.clone() });
@@ -4232,7 +4236,7 @@ fn clean_folders(folders: &[Folder]) -> (Vec<Folder>, Vec<String>) {
         }
         if broken {
             f.parent = None;
-            ignored.push(format!("目录「{}」的父目录链无效（成环或不存在），已置为根级", f.name));
+            ignored.push(format!("文件夹「{}」的父文件夹链无效（成环或不存在），已置为根级", f.name));
         }
     }
 
@@ -4345,7 +4349,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
 
         if let Some(fid) = &item.folder {
             if !valid_folder_ids.contains(fid) {
-                ignored.push(format!("快捷键「{label}」所属目录已忽略：目录不存在"));
+                ignored.push(format!("快捷键「{label}」所属文件夹已忽略：文件夹不存在"));
                 item.folder = None;
             }
         }
@@ -4407,7 +4411,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         // 归属目录 / 归属层 / 长按切层引用校验（断引用清空）。
         if let Some(fid) = &item.folder {
             if !valid_folder_ids.contains(fid) {
-                ignored.push(format!("改键「{}」所属目录已忽略：目录不存在", r.from));
+                ignored.push(format!("改键「{}」所属文件夹已忽略：文件夹不存在", r.from));
                 item.folder = None;
             }
         }
@@ -4520,7 +4524,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 let mut item = e.clone();
                 if let Some(fid) = &item.folder {
                     if !valid_folder_ids.contains(fid) {
-                        ignored.push(format!("文本扩展「{}」所属目录已忽略：目录不存在", e.trigger));
+                        ignored.push(format!("文本扩展「{}」所属文件夹已忽略：文件夹不存在", e.trigger));
                         item.folder = None;
                     }
                 }

@@ -202,7 +202,7 @@ pub fn save(file: &Path, cfg: &Config) -> Result<(), String> {
     let json = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
     if let Some(dir) = file.parent() {
         if !dir.as_os_str().is_empty() {
-            fs::create_dir_all(dir).map_err(|e| format!("创建配置目录失败：{e}"))?;
+            fs::create_dir_all(dir).map_err(|e| format!("创建配置文件夹失败：{e}"))?;
         }
     }
     backup_existing(file);

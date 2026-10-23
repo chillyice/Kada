@@ -155,7 +155,6 @@
                 <div class="action-foot">
                   <button id="add-action" class="add-action">+ 添加动作</button>
                   <button id="add-group" class="add-action">+ 添加分组</button>
-                  <button id="action-record" class="record">● 开始录制</button>
                 </div>
               </div>
               <div class="work-view hidden" id="work-remap">
@@ -810,7 +809,7 @@
                       <span class="set-name">载入示例配置</span>
                       <span class="set-sub">把内置示例合并进来（含窗口 / 搜索 / 剪贴板 / 文件 / 延时等常用动作；只增不删、不碰本机设置）</span>
                     </span>
-                    <button id="load-sample" title="示例会合并进来；「示例」目录下的条目可删掉该目录整体清除">载入示例</button>
+                    <button id="load-sample" title="示例会合并进来；「示例」文件夹下的条目可删掉该文件夹整体清除">载入示例</button>
                   </div>
                   <div class="set-row set-row-merged">
                     <span class="set-main">
@@ -831,22 +830,22 @@
                   <div class="set-row set-row-merged">
                     <span class="set-main">
                       <span class="set-name">同步存档</span>
-                      <span class="set-sub" id="sync-dir">未设置 —— 选一个目录（如 OneDrive）即可自动存一份</span>
+                      <span class="set-sub" id="sync-dir">未设置 —— 选一个文件夹（如 OneDrive）即可自动存一份</span>
                     </span>
                     <div class="set-controls">
-                      <button id="sync-choose" title="选一个目录（如 OneDrive 文件夹）；之后每次配置落盘都会自动存一份到那里">选择目录…</button>
+                      <button id="sync-choose" title="选一个文件夹（如 OneDrive 文件夹）；之后每次配置落盘都会自动存一份到那里">选择文件夹…</button>
                       <button id="sync-clear">清除</button>
-                      <button id="sync-now" title="立即同步：把当前配置马上再写一份到同步存档目录">立即同步</button>
-                      <button id="sync-restore" title="从存档恢复…：用目录里的那份配置合并或覆盖回来（覆盖前会自动留档）">从存档恢复…</button>
+                      <button id="sync-now" title="立即同步：把当前配置马上再写一份到同步存档文件夹">立即同步</button>
+                      <button id="sync-restore" title="从存档恢复…：用文件夹里的那份配置合并或覆盖回来（覆盖前会自动留档）">从存档恢复…</button>
                     </div>
                   </div>
                 </div>
                 <details class="hint-fold">
                   <summary>导入与分享的规则</summary>
                   <p class="hint">改动即时保存并生效。导入可选「合并」（只新增，触发键撞车的条目跳过、本机设置不动）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
-                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为卡带</strong>），或目录行 ⋯ → <strong>导出该目录为卡带</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。<strong>卡带</strong>就是一小组可分享的配置条目（快捷键 / 改键 / 文本扩展，连带它们用到的层），不含设置、也不含目录分组（目录是本机的）。</p>
+                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为卡带</strong>），或文件夹行 ⋯ → <strong>导出该文件夹为卡带</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。<strong>卡带</strong>就是一小组可分享的配置条目（快捷键 / 改键 / 文本扩展，连带它们用到的层），不含设置、也不含文件夹分组（文件夹是本机的）。</p>
                   <p class="hint">卡带市场没有服务端：索引就是一个放在网上、能下载到的 JSON 文件，索引里每条再指向一个卡带文件。想收录自己的卡带，把导出的卡带文件按索引格式加进索引即可（内置索引在本仓库 <code>snippets/</code>，由 <code>scripts/build-snippet-index.mjs</code> 生成）。</p>
-                  <p class="hint"><strong>同步存档</strong>：选一个目录（如你的 OneDrive 文件夹），之后每次配置落盘都会在那目录里自动存一份 <code>kada-config.json</code>（保留一份 <code>.bak</code>）。换机器时在新机器的设置里选<strong>同一个目录</strong>，点「从存档恢复」即可把配置搬过去（可选合并或替换）。走的是本地文件夹、不登录任何账号——云端上传下载由 OneDrive 客户端自己负责。</p>
+                  <p class="hint"><strong>同步存档</strong>：选一个文件夹（如你的 OneDrive 文件夹），之后每次配置落盘都会在那文件夹里自动存一份 <code>kada-config.json</code>（保留一份 <code>.bak</code>）。换机器时在新机器的设置里选<strong>同一个文件夹</strong>，点「从存档恢复」即可把配置搬过去（可选合并或替换）。走的是本地文件夹、不登录任何账号——云端上传下载由 OneDrive 客户端自己负责。</p>
                 </details>
               </section>
 
@@ -959,7 +958,7 @@
             <table>
               <tr><th>动作</th><th>存成什么</th><th>怎么引用</th></tr>
               <tr><td>执行命令（填「存为变量」）</td><td>文本：标准输出 + 退出码</td><td><code>{变量名}</code> 得输出全文、<code>{变量名.exit_code}</code> 得退出码</td></tr>
-              <tr><td>文件/目录 → 获取文件属性</td><td>文件对象（多个字段）</td><td><code>{变量名}</code> 得完整路径、<code>{变量名.字段}</code> 得字段</td></tr>
+              <tr><td>文件/文件夹 → 获取文件属性</td><td>文件对象（多个字段）</td><td><code>{变量名}</code> 得完整路径、<code>{变量名.字段}</code> 得字段</td></tr>
               <tr><td>应用 → 查询运行状态</td><td>布尔 true / false</td><td><code>{变量名}</code></td></tr>
             </table>
 
@@ -972,7 +971,7 @@
 
             <h3>文件属性字段</h3>
             <ul>
-              <li><code>name</code> 文件名、<code>path</code> 完整路径、<code>dir</code> 所在目录、<code>stem</code> 主名、<code>ext</code> 扩展名、<code>size</code> 大小(字节)、<code>modified</code> 修改时间、<code>is_dir</code> 是否目录。</li>
+              <li><code>name</code> 文件名、<code>path</code> 完整路径、<code>dir</code> 所在文件夹、<code>stem</code> 主名、<code>ext</code> 扩展名、<code>size</code> 大小(字节)、<code>modified</code> 修改时间、<code>is_dir</code> 是否文件夹。</li>
             </ul>
 
             <h2>实战：把文件复制到「盘符不定」的移动硬盘</h2>
@@ -984,7 +983,7 @@
             <p>「存为变量」填 <code>drive</code>。卷标 <code>'我的硬盘'</code> 换成你硬盘的实际卷标（资源管理器里看到的名字）。这句只输出一个字母，如 <code>E</code>。</p>
 
             <h3>第 2 步：复制文件，用变量拼目标路径</h3>
-            <p>动作类型「文件/目录 → 复制」：原始路径 <code>C:\工作\待备份</code>，目标路径 <code>{drive}:\备份\</code>。</p>
+            <p>动作类型「文件/文件夹 → 复制」：原始路径 <code>C:\工作\待备份</code>，目标路径 <code>{drive}:\备份\</code>。</p>
             <p>触发后 <code>{drive}</code> 被替换成当天盘符，实际执行 <code>E:\备份\</code>。</p>
 
             <h3>更稳的写法：先确认硬盘在，再复制</h3>

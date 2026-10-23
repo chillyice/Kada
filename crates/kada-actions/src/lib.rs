@@ -822,7 +822,12 @@ fn action_label(action: &Action) -> &'static str {
         | Action::Os {
             operation: OsOperation::OpenFolder { .. },
             ..
-        } => "打开目录失败",
+        } => "打开文件夹失败",
+        #[cfg(feature = "automation")]
+        Action::Os {
+            operation: OsOperation::OpenFile { .. },
+            ..
+        } => "打开文件失败",
         #[cfg(feature = "automation")]
         Action::Os {
             operation: OsOperation::Reveal { .. },
@@ -972,7 +977,7 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             format!("启动程序 {}", join_args(&sub(program), args, vars))
         }
         #[cfg(feature = "automation")]
-        Action::OpenFolder { path, .. } => format!("打开目录 {}", sub(path)),
+        Action::OpenFolder { path, .. } => format!("打开文件夹 {}", sub(path)),
         #[cfg(feature = "automation")]
         Action::CloseProgram { program, .. } => format!("关闭程序 {}", sub(program)),
         #[cfg(feature = "automation")]
@@ -1217,8 +1222,9 @@ fn os_body(op: &OsOperation, vars: &Vars) -> String {
         OsOperation::Paste { dest } => format!("粘贴到 {}", sub(dest)),
         OsOperation::Delete { path } => format!("删除 {}", sub(path)),
         OsOperation::NewFile { path } => format!("新建文件 {}", sub(path)),
-        OsOperation::NewFolder { path } => format!("新建目录 {}", sub(path)),
-        OsOperation::OpenFolder { path } => format!("打开目录 {}", sub(path)),
+        OsOperation::NewFolder { path } => format!("新建文件夹 {}", sub(path)),
+        OsOperation::OpenFolder { path } => format!("打开文件夹 {}", sub(path)),
+        OsOperation::OpenFile { path } => format!("打开文件 {}", sub(path)),
         OsOperation::Reveal { path } => format!("定位文件 {}", sub(path)),
         OsOperation::Zip { source, dest } => format!("压缩 {} → {}", sub(source), sub(dest)),
         OsOperation::Unzip { source, dest } => format!("解压 {} → {}", sub(source), sub(dest)),
@@ -1728,6 +1734,24 @@ fn hook_window_action(op: WindowOperation) -> kada_hook::WindowAction {
     }
 }
 
+/// 交给系统 shell 打开一个路径（文件或目录都行）：Windows `explorer`、macOS `open`、
+/// Linux `xdg-open`。文件按扩展名关联的默认程序打开，目录用文件管理器打开。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn open_with_default(path: &str, what_failed: &str) -> Result<(), String> {
+    let res = if cfg!(target_os = "windows") {
+        std::process::Command::new("explorer").arg(path).spawn()
+    } else if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg(path).spawn()
+    } else {
+        std::process::Command::new("xdg-open").arg(path).spawn()
+    };
+    res.map(|_| ())
+        .map_err(|e| format!("{what_failed}: {e}"))
+}
+
 /// 执行一个文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
@@ -1768,27 +1792,20 @@ fn run_os(
         }
         OsOperation::NewFolder { path } => {
             let p = substitute_vars(path, vars);
-            std::fs::create_dir_all(&p).map_err(|e| format!("新建目录失败: {e}"))?;
+            std::fs::create_dir_all(&p).map_err(|e| format!("新建文件夹失败: {e}"))?;
         }
         OsOperation::OpenFolder { path } => {
             let p = substitute_vars(path, vars);
-            if cfg!(target_os = "windows") {
-                std::process::Command::new("explorer")
-                    .arg(&p)
-                    .spawn()
-                    .map_err(|e| format!("打开目录失败: {e}"))?;
-            } else if cfg!(target_os = "macos") {
-                // macOS 的 `open` 一个命令同时管「打开目录」与「打开网址」（见 open_url）。
-                std::process::Command::new("open")
-                    .arg(&p)
-                    .spawn()
-                    .map_err(|e| format!("打开目录失败: {e}"))?;
-            } else {
-                std::process::Command::new("xdg-open")
-                    .arg(&p)
-                    .spawn()
-                    .map_err(|e| format!("打开目录失败: {e}"))?;
+            open_with_default(&p, "打开文件夹失败")?;
+        }
+        OsOperation::OpenFile { path } => {
+            let p = substitute_vars(path, vars);
+            if !std::path::Path::new(&p).exists() {
+                return Err(format!("打开文件失败：路径不存在（{p}）"));
             }
+            // 交给系统 shell 按扩展名关联打开：`explorer` / `open` / `xdg-open` 都是
+            // 「默认程序」语义，不读、不改文件本身。
+            open_with_default(&p, "打开文件失败")?;
         }
         OsOperation::Reveal { path } => {
             let p = substitute_vars(path, vars);
@@ -2052,15 +2069,57 @@ fn launch_program(program: &str, args: &[String]) -> Result<(), String> {
 /// `pub` 且不随 `automation` 门控：桌面壳拦到界面外链（`<a target="_blank">`）时也走这里，
 /// 基础版同样要能打开外链——平台分叉只留这一份。
 pub fn open_url(url: &str) -> Result<(), String> {
+    let url = normalize_url(url);
     let res = if cfg!(target_os = "windows") {
-        std::process::Command::new("explorer").arg(url).spawn()
+        std::process::Command::new("explorer").arg(&url).spawn()
     } else if cfg!(target_os = "macos") {
-        std::process::Command::new("open").arg(url).spawn()
+        std::process::Command::new("open").arg(&url).spawn()
     } else {
-        std::process::Command::new("xdg-open").arg(url).spawn()
+        std::process::Command::new("xdg-open").arg(&url).spawn()
     };
     res.map(|_| ())
         .map_err(|e| format!("打开网址「{url}」失败: {e}"))
+}
+
+/// 已知的非 http 协议头：这些原样交给系统（邮件 / 文件 / 应用深链等）。
+const URL_SCHEMES: &[&str] = &[
+    "http", "https", "mailto", "file", "ftp", "ftps", "tel", "sms", "magnet", "steam", "vscode",
+];
+
+/// 补全用户输入的网址：没写协议头的（`example.com`、`localhost:3000`）补 `https://`；
+/// 已经是完整 URL 或系统认识的其他协议（`mailto:` 这类）原样返回。界面不再限制输入格式，
+/// 所以「随便写」要在这里落成系统能打开的形式。
+fn normalize_url(raw: &str) -> String {
+    let t = raw.trim();
+    if t.is_empty() {
+        return String::new();
+    }
+    let lower = t.to_ascii_lowercase();
+    let has_known_scheme = URL_SCHEMES
+        .iter()
+        .any(|s| lower.starts_with(&format!("{s}:")));
+    if has_known_scheme {
+        t.to_string()
+    } else {
+        format!("https://{t}")
+    }
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::normalize_url;
+
+    #[test]
+    fn normalize_url_adds_scheme_only_when_missing() {
+        assert_eq!(normalize_url("example.com"), "https://example.com");
+        assert_eq!(normalize_url("  localhost:3000/a  "), "https://localhost:3000/a");
+        assert_eq!(
+            normalize_url("https://example.com/a?b=1&c=2"),
+            "https://example.com/a?b=1&c=2"
+        );
+        assert_eq!(normalize_url("MAILTO:a@b.c"), "MAILTO:a@b.c");
+        assert_eq!(normalize_url("   "), "");
+    }
 }
 
 /// 关闭程序（结束所有同名进程），返回命令结果供消息中心展示。
@@ -2150,7 +2209,7 @@ fn copy_path(source: &str, dest: &str) -> Result<(), String> {
         let _ = fs::create_dir_all(parent);
     }
     if src.is_dir() {
-        copy_dir_rec(src, &target).map_err(|e| format!("复制目录失败: {e}"))
+        copy_dir_rec(src, &target).map_err(|e| format!("复制文件夹失败: {e}"))
     } else {
         fs::copy(src, &target).map_err(|e| format!("复制文件失败: {e}"))?;
         Ok(())
@@ -2214,7 +2273,7 @@ fn delete_path(path: &str) -> Result<(), String> {
         return Err(format!("删除失败：「{path}」不存在"));
     }
     if p.is_dir() {
-        fs::remove_dir_all(p).map_err(|e| format!("删除目录失败: {e}"))
+        fs::remove_dir_all(p).map_err(|e| format!("删除文件夹失败: {e}"))
     } else {
         fs::remove_file(p).map_err(|e| format!("删除文件失败: {e}"))
     }
@@ -2228,7 +2287,7 @@ fn delete_path(path: &str) -> Result<(), String> {
 fn new_file(path: &str) -> Result<(), String> {
     let p = Path::new(path);
     if let Some(parent) = p.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("创建父目录失败: {e}"))?;
+        fs::create_dir_all(parent).map_err(|e| format!("创建父文件夹失败: {e}"))?;
     }
     fs::write(p, b"").map_err(|e| format!("新建文件失败: {e}"))
 }
@@ -2285,7 +2344,7 @@ fn unzip_path(source: &str, dest: &str) -> Result<(), String> {
     if !src.exists() {
         return Err(format!("解压失败：压缩包「{source}」不存在"));
     }
-    fs::create_dir_all(dest).map_err(|e| format!("创建解压目录失败: {e}"))?;
+    fs::create_dir_all(dest).map_err(|e| format!("创建解压文件夹失败: {e}"))?;
     let status = if cfg!(target_os = "windows") {
         let full = format!(
             "Expand-Archive -Path '{}' -DestinationPath '{}' -Force",

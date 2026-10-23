@@ -1033,7 +1033,8 @@ body.is-mac .titlebar {
 }
 
 /* 录入图标：自身无边框、无底色，和框体融为一体；左边界那条分隔线把它们和按键区分隔。
-   align-self: stretch —— key-view 是 align-items: center，不拉满的话分隔线只有按钮那么高。 */
+   align-self: stretch —— key-view 是 align-items: center，不拉满的话分隔线只有按钮那么高。
+   组合键 / 序列 / 和弦三个录入按钮统一用主色橙（--accent），和普通工具图标区分开。 */
 .key-tools {
   display: flex;
   align-self: stretch;
@@ -1054,7 +1055,7 @@ body.is-mac .titlebar {
   background: none;
   border: none;
   border-radius: 0;
-  color: var(--muted);
+  color: var(--accent);
   cursor: pointer;
 }
 
@@ -1071,6 +1072,7 @@ body.is-mac .titlebar {
 .key-tool:disabled {
   background: none;
   color: var(--accent);
+  opacity: 0.5;
   cursor: default;
 }
 

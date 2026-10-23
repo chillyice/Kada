@@ -21,7 +21,7 @@ pub fn sample_config() -> Config {
     let mut cfg = Config {
         folders: vec![Folder {
             id: FOLDER.into(),
-            name: "示例（可整目录删除）".into(),
+            name: "示例（可整文件夹删除）".into(),
             parent: None,
         }],
         layers: vec![Layer {
