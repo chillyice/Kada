@@ -671,6 +671,17 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                     // 边缘滚动（EXT-11）：移动只负责「离开后重新武装」，触发靠滚轮。
                     crate::wheel_edge::on_move((ms.pt.x, ms.pt.y));
                 }
+                // 圈选截图：右键按住画完圈再点左键 = 确认；这一记左键（含抬起）归我们吞掉。
+                WM_LBUTTONDOWN => {
+                    if crate::gesture::on_left_down((ms.pt.x, ms.pt.y)) {
+                        return LRESULT(1);
+                    }
+                }
+                WM_LBUTTONUP => {
+                    if crate::gesture::on_left_up() {
+                        return LRESULT(1);
+                    }
+                }
                 _ => {}
             }
             record_mouse(wparam.0 as u32, ms);
@@ -1020,6 +1031,12 @@ pub fn running_tools() -> Vec<String> {
         .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
         .map(|t| t.id.to_string())
         .collect()
+}
+
+/// 指定进程在不在跑（精确文件名、小写，如 `snipaste.exe`）。圈选截图按这个决定要不要
+/// 把图交给 Snipaste（没装 / 没开时按 F3 会落到前台程序上，宁可不发）。
+pub fn process_running(name: &str) -> bool {
+    process_names().iter().any(|n| n == name)
 }
 
 /// 当前所有进程的可执行文件名（小写，带 `.exe`）。取不到就返回空表。

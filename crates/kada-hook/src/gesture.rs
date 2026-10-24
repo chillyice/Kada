@@ -6,6 +6,9 @@
 //!
 //! 吞放铁律：右键按下先吞（否则菜单已经弹了），抬起时把轨迹交给出口；**没匹配上手势
 //! 由壳层回放一次完整右键**（按下-抬起配对），不把用户的右键吞掉。
+//!
+//! 圈选截图（EXT-20）是**右键按住期间点左键**才确认：只画圈不截、右键照常回放。确认了就把
+//! 点击那一刻的包围盒放进 [`Stroke`]，右键抬起时一并交给出口。
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -18,6 +21,9 @@ pub struct Stroke {
     pub points: Vec<(i32, i32)>,
     /// 从按下到抬起的毫秒数（超时判定用）。
     pub elapsed_ms: u64,
+    /// 圈选截图的包围盒（屏幕坐标，左 / 上 / 右 / 下）：`Some` = 这次手势点了左键确认。
+    /// 取**点左键那一刻**的包围盒，之后右键还没松时的抖动不再改变选区。
+    pub lasso: Option<(i32, i32, i32, i32)>,
 }
 
 /// 轨迹出口（壳层注册）。**回调在钩子线程上跑**，壳层要自己开线程做后续。
@@ -43,6 +49,10 @@ struct Tracker {
     points: Vec<(i32, i32)>,
     /// 上一个记下的点（抽稀用）。
     last: (i32, i32),
+    /// 这次手势里左键确认过的圈选矩形（点左键那一刻定下来）。
+    lasso: Option<(i32, i32, i32, i32)>,
+    /// 确认时那一记左键被吞了，它的抬起也要连续吞掉（不然下层窗口收到一个孤立的 up）。
+    left_swallowed: bool,
 }
 
 static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
@@ -50,6 +60,8 @@ static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
     start: None,
     points: Vec::new(),
     last: (0, 0),
+    lasso: None,
+    left_swallowed: false,
 });
 
 /// 轨迹点数上限：长轨迹 + 高频移动会吃内存，方向量化用不到这么密。
@@ -82,6 +94,8 @@ pub fn reset() {
     t.start = None;
     t.points.clear();
     t.last = (0, 0);
+    t.lasso = None;
+    t.left_swallowed = false;
 }
 
 /// 当前是否正在画（右键按住中）。浮层按这个开关显示 / 收起。
@@ -108,6 +122,8 @@ pub fn on_right_down(pt: (i32, i32)) -> bool {
     t.points.clear();
     t.points.push(pt);
     t.last = pt;
+    t.lasso = None;
+    t.left_swallowed = false;
     true
 }
 
@@ -133,6 +149,41 @@ pub fn on_move(pt: (i32, i32)) {
     }
 }
 
+/// 左键按下：右键按住期间、且当前轨迹已经绕成一个圈 = 确认圈选截图。
+///
+/// 返回 `true` = 这一记左键要吞掉（它只是「确认」按钮，不该点到底下的窗口）。**只画圈不点
+/// 左键不截图**——那只是普通右键拖动，右键由壳层原样回放。
+pub fn on_left_down(pt: (i32, i32)) -> bool {
+    if !enabled() {
+        return false;
+    }
+    let mut t = TRACKER.lock().unwrap();
+    if !t.down || t.lasso.is_some() {
+        return false;
+    }
+    let dx = (pt.0 - t.last.0) as i64;
+    let dy = (pt.1 - t.last.1) as i64;
+    if (dx * dx + dy * dy) >= (MIN_STEP * MIN_STEP) as i64 {
+        t.points.push(pt);
+        t.last = pt;
+    }
+    let Some(rect) = kada_core::lasso_bbox(&t.points) else {
+        return false;
+    };
+    t.lasso = Some(rect);
+    t.left_swallowed = true;
+    true
+}
+
+/// 左键抬起：确认用的那一记左键要连抬起一起吞掉（吞了 down 不吞 up，下层会收到孤立 up）。
+pub fn on_left_up() -> bool {
+    if !enabled() {
+        return false;
+    }
+    let mut t = TRACKER.lock().unwrap();
+    std::mem::take(&mut t.left_swallowed)
+}
+
 /// 右键抬起：返回 `true` = 这一下应当被吞掉（轨迹已交给出口回调）。
 pub fn on_right_up(pt: (i32, i32)) -> bool {
     if !enabled() {
@@ -144,6 +195,7 @@ pub fn on_right_up(pt: (i32, i32)) -> bool {
             return false;
         }
         t.down = false;
+        t.left_swallowed = false;
         let dx = (pt.0 - t.last.0) as i64;
         let dy = (pt.1 - t.last.1) as i64;
         if (dx * dx + dy * dy) >= (MIN_STEP * MIN_STEP) as i64 {
@@ -158,6 +210,7 @@ pub fn on_right_up(pt: (i32, i32)) -> bool {
         let stroke = Stroke {
             points: std::mem::take(&mut t.points),
             elapsed_ms,
+            lasso: t.lasso.take(),
         };
         // 出口**只借用不取走**（`Arc` 克隆）：取走等于「第一次右键之后所有手势都不再上报」。
         let sink = SINK.lock().unwrap().clone();
@@ -200,7 +253,41 @@ mod tests {
             assert_eq!(strokes.len(), 1);
             assert_eq!(strokes[0].points.first(), Some(&(10, 10)));
             assert_eq!(strokes[0].points.last(), Some(&(80, 10)));
+            assert_eq!(strokes[0].lasso, None, "没点左键 = 不截图");
         }
+
+        // 圈选截图：右键按住画完圈，点左键才确认；只画圈不点 = 不截图。
+        assert!(on_right_down((100, 100)));
+        let circle: Vec<(i32, i32)> = (0..=16)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 16.0;
+                ((140.0 + 40.0 * a.cos()) as i32, (140.0 + 40.0 * a.sin()) as i32)
+            })
+            .collect();
+        for p in &circle[1..] {
+            on_move(*p);
+        }
+        // 左键离圈心很远（不是圈上）也能确认——判断看的是已经画出的轨迹。
+        assert!(on_left_down((100, 100)), "圈 + 左键 = 确认");
+        assert!(on_left_up(), "确认用的左键连抬起一起吞");
+        assert!(!on_left_up(), "只吞一次");
+        assert!(!on_left_down((100, 100)), "已确认后再点左键不再吃");
+        // 右键还没松时抖一下，选区不变。
+        on_move((200, 200));
+        assert!(on_right_up((200, 200)));
+        {
+            let strokes = got.lock().unwrap();
+            let lasso = strokes.last().unwrap().lasso.expect("确认后要带上包围盒");
+            assert_eq!(lasso, (100, 100, 180, 180));
+        }
+
+        // 只画圈不点左键：右键照常交给出口，但没有包围盒（壳层回放右键）。
+        assert!(on_right_down((400, 400)));
+        for p in &circle[1..] {
+            on_move((p.0 + 300, p.1 + 300));
+        }
+        assert!(on_right_up((700, 700)));
+        assert_eq!(got.lock().unwrap().last().unwrap().lasso, None);
 
         // 出口必须**反复**可用：取走（`take`）的实现会让「第一次右键之后所有手势都不再上报」，
         // 而第一次右键往往只是普通点击——用户看到的就是「手势完全不生效」。
@@ -209,7 +296,7 @@ mod tests {
             on_move((i + 30, 0));
             assert!(on_right_up((i + 30, 0)));
         }
-        assert_eq!(got.lock().unwrap().len(), 6);
+        assert_eq!(got.lock().unwrap().len(), 8);
 
         set_sink(None);
         set_enabled(false);

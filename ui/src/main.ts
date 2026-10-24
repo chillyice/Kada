@@ -248,8 +248,8 @@ type Settings = {
    */
   gesture_min_segment?: number;
   /**
-   * 右键圈选截图（自带手势）：绕一圈松手后左键确认，包围盒写剪贴板。
-   * 缺字段按后端默认 `true`（总闸 experimental 仍管着）。
+   * 右键圈选截图（自带手势）：绕一圈后**右键别松**再点左键确认，包围盒写剪贴板。
+   * 只画圈不截图。缺字段按后端默认 `true`（总闸 experimental 仍管着）。
    */
   gesture_screenshot?: boolean;
   /**
@@ -5943,7 +5943,7 @@ function actionFields(
     );
   } else if (a.type === "capture") {
     body.append(
-      el("div", "unit-hint", tr("截图动作已移除（执行会报错）：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认。")),
+      el("div", "unit-hint", tr("截图动作已移除（执行会报错）：现在改用鼠标手势——按住右键绕一圈，右键别松再点一下左键确认。")),
     );
   } else if (a.type === "brightness") {
     if (a.operation !== "restore") {

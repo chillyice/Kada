@@ -71,7 +71,7 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, foreground_fullscreen, foreground_window, frontmost_context,
-        hotkey_occupied, reinstall_count, set_mouse_enabled, set_mouse_recorder,
+        hotkey_occupied, process_running, reinstall_count, set_mouse_enabled, set_mouse_recorder,
         set_wheel_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
@@ -1944,14 +1944,14 @@ fn handle_gesture(
     };
     if !on {
         hide_gesture_overlay(&app);
-        replay_right_click();
+        replay_stroke(&stroke);
         return;
     }
     // 全屏程序自动暂停（规划 7.2-MG 余项⑤）：游戏 / 视频 / 远程桌面里右键拖拽本来就是正常
     // 操作，整条不接管、右键原样回放。判据见 `kada_hook::win::foreground_fullscreen`。
     if input::foreground_fullscreen() {
         hide_gesture_overlay(&app);
-        replay_right_click();
+        replay_stroke(&stroke);
         return;
     }
     // 排除程序：全局列表（EXT-04）与手势专用列表命中都整条不接管，右键原样回放。
@@ -1960,7 +1960,7 @@ fn handle_gesture(
     let ctx = TriggerContext::lazy(&fetch, None);
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
         hide_gesture_overlay(&app);
-        replay_right_click();
+        replay_stroke(&stroke);
         return;
     }
     // 位移没超过起手距离 = 普通右键点击（不是手势）；画太久 = 这次手势作废。两种都补回右键。
@@ -1974,14 +1974,20 @@ fn handle_gesture(
     let pattern = kada_core::pattern_from_points(&stroke.points, min_segment);
     if moved < start_distance {
         hide_gesture_overlay(&app);
-        replay_right_click();
+        replay_stroke(&stroke);
         return;
     }
-    // 圈选截图是**自带手势**：轨迹绕成圈就截包围盒，不需要配置条目。配置好的手势优先，
-    // 没匹配上再走这里；画圈不受手势超时限制（大圈画慢一点很常见）。
-    let lasso = screenshot
-        .then(|| kada_core::lasso_bbox(&stroke.points))
-        .flatten();
+    // 圈选截图：右键按住画完圈、**再点一下左键**才算确认——那一下左键就是「拍照」。
+    // 只画圈不点 = 普通右键拖动（下面按没匹配处理，右键原样回放），不会误截。
+    if let Some(rect) = stroke.lasso {
+        if screenshot {
+            run_lasso_capture(&app, rect);
+        } else {
+            hide_gesture_overlay(&app);
+            replay_stroke(&stroke);
+        }
+        return;
+    }
     let matched = if stroke.elapsed_ms > gesture_timeout {
         None
     } else {
@@ -2000,7 +2006,7 @@ fn handle_gesture(
                 &format!("手势 {pattern} 没有动作"),
                 "右键已补回。给这条「鼠标操作」配上动作才会执行。",
             );
-            replay_right_click();
+            replay_stroke(&stroke);
             return;
         }
         show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
@@ -2019,13 +2025,16 @@ fn handle_gesture(
         );
         return;
     }
-    if lasso.is_some() {
-        run_lasso_capture(&app, &stroke.points);
+    // 只画了个圈但没点左键：不截图，告诉用户怎么确认（旧版是右键一松就截图，容易误截）。
+    if screenshot && kada_core::lasso_bbox(&stroke.points).is_some() {
+        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+        show_toast_note(&app, "圈选截图未确认", "按住右键画圈后再点一下左键；只画圈不截图。");
+        replay_stroke(&stroke);
         return;
     }
     if stroke.elapsed_ms > gesture_timeout {
         show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern);
-        replay_right_click();
+        replay_stroke(&stroke);
         return;
     }
     eprintln!("kada: 未配置的手势 {pattern}（右键已补回）");
@@ -2038,25 +2047,49 @@ fn handle_gesture(
         &format!("手势未匹配：{pattern}"),
         "右键已补回。把这个方向串填进「快捷键 → 鼠标操作」就能用了。",
     );
-    replay_right_click();
+    replay_stroke(&stroke);
 }
 
-/// 圈选截图收尾：收起手势预览 → 冻结画面等左键确认 → 写图片剪贴板。
-/// 钩子线程已经把右键处理完了，这里在独立线程上可以阻塞等用户点击。
+/// Snipaste 在不在跑：在跑才把图递给它（按 F3 没人接会落到前台程序上，宁可不发）。
+#[cfg(target_os = "windows")]
+fn snipaste_running() -> bool {
+    input::process_running("snipaste.exe")
+}
+
+#[cfg(not(target_os = "windows"))]
+fn snipaste_running() -> bool {
+    false
+}
+
+/// 圈选截图收尾：收起手势预览 → 等浮层真的撤掉 → 按选区裁剪 → 写剪贴板 →
+/// Snipaste 在跑就按一下 F3 让它贴图（标注 / 保存 / 置顶都在它那边，我们不再做编辑器）。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-fn run_lasso_capture(app: &tauri::AppHandle, points: &[(i32, i32)]) {
+fn run_lasso_capture(app: &tauri::AppHandle, rect: (i32, i32, i32, i32)) {
     hide_gesture_overlay(app);
-    // 浮层隐藏是异步的，等一拍再冻结，免得把手势轨迹画进截图。
+    // 浮层隐藏是异步的，等一拍再抓，免得把手势轨迹画进截图。
     std::thread::sleep(Duration::from_millis(80));
-    match kada_hook::capture_lasso(points) {
-        Ok(Some(img)) => {
+    match kada_hook::capture_rect(rect) {
+        Ok(img) => {
             let (w, h) = (img.width, img.height);
             match kada_hook::set_clipboard_image(&img) {
-                Ok(()) => show_toast_note(app, &format!("已框选截图 {w}×{h}"), "已复制到剪贴板"),
+                Ok(()) => {
+                    let snipaste = snipaste_running();
+                    if snipaste {
+                        input::simulate::tap(Key::F3);
+                    }
+                    show_toast_note(
+                        app,
+                        &format!("已框选截图 {w}×{h}"),
+                        if snipaste {
+                            "已复制，Snipaste 贴图接管（标注 / 保存 / 置顶在它那边）"
+                        } else {
+                            "已复制到剪贴板（装 Snipaste 后按 F3 可贴图标注）"
+                        },
+                    );
+                }
                 Err(e) => show_toast_note(app, "截图失败", &e),
             }
         }
-        Ok(None) => {}
         Err(e) => show_toast_note(app, "截图失败", &e),
     }
 }
@@ -2223,6 +2256,21 @@ fn replay_right_click() {
     };
     if let Err(e) = input::simulate::mouse(&op) {
         eprintln!("kada: 回放右键失败：{e}");
+    }
+}
+
+/// 手势让路 / 未命中时补回被吞的键：右键一定补；**圈选确认过的那记左键也要补**——
+/// 钩子层确认时把左右键都吞了，壳层若因为全屏 / 排除程序 / 开关关着而不截图，不补就少一次点击。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn replay_stroke(stroke: &kada_hook::gesture::Stroke) {
+    replay_right_click();
+    if stroke.lasso.is_some() {
+        let op = kada_core::MouseOp::Click {
+            button: kada_core::MouseButton::Left,
+        };
+        if let Err(e) = input::simulate::mouse(&op) {
+            eprintln!("kada: 回放左键失败：{e}");
+        }
     }
 }
 

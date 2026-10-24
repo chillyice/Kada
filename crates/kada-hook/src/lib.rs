@@ -213,16 +213,16 @@ pub enum BrightnessOp {
     Restore,
 }
 
-/// 右键圈选截图：冻结整屏 → 画出用户刚才画的圈 → 等左键确认 → 裁包围盒。
-/// `Ok(None)` = 用户按 Esc / 右键取消。目前只有 Windows 用 GDI 实现。
-pub fn capture_lasso(points: &[(i32, i32)]) -> Result<Option<CapturedImage>, String> {
+/// 圈选截图：按选区（屏幕物理坐标，左 / 上 / 右 / 下）裁出图。选区由钩子层的
+/// 「右键画圈 + 点左键」确认（见 [`gesture::on_left_down`]）。目前只有 Windows 用 GDI 实现。
+pub fn capture_rect(rect: (i32, i32, i32, i32)) -> Result<CapturedImage, String> {
     #[cfg(windows)]
     {
-        win_capture::capture_lasso(points)
+        win_capture::capture_rect(rect)
     }
     #[cfg(not(windows))]
     {
-        let _ = points;
+        let _ = rect;
         Err("「圈选截图」目前只支持 Windows".into())
     }
 }

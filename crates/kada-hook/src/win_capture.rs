@@ -1,37 +1,29 @@
 ﻿//! Windows 圈选截图 / 显示器亮度（EXT-22）。
 //!
-//! 抓图只用 GDI：`BitBlt` 见屏幕；图片剪贴板用 `arboard`。圈选截图是**先冻结整块虚拟屏、
-//! 再把用户画过的圈与包围盒画上去**：浮层本身不进图，等左键确认期间画面也不会变。
+//! 抓图只用 GDI：`BitBlt` 见屏幕；图片剪贴板用 `arboard`。圈选截图只负责**按选区裁剪**——
+//! 选区由钩子层的「右键画圈 + 点左键」确认（`kada_hook::gesture`），裁剪完写剪贴板，
+//! 标注 / 贴图交给 Snipaste（壳层触发它的粘贴热键）。
 //!
-//! 全部函数都在动作执行线程上跑（不是钩子回调），可以弹窗、阻塞等用户确认。
+//! 全部函数都在动作执行线程上跑（不是钩子回调），可以阻塞做系统调用。
 
 use std::ffi::c_void;
 use std::mem::size_of;
-use std::ptr::{null_mut};
-use std::sync::{Mutex, Once};
+use std::ptr::null_mut;
+use std::sync::Mutex;
 
-use windows::core::PCWSTR;
 use windows::Win32::Devices::Display::{
     DestroyPhysicalMonitors, GetNumberOfPhysicalMonitorsFromHMONITOR,
     GetPhysicalMonitorsFromHMONITOR, GetVCPFeatureAndVCPFeatureReply, SetVCPFeature,
     PHYSICAL_MONITOR,
 };
-use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, WPARAM};
+use windows::Win32::Foundation::POINT;
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, BitBlt, CreateCompatibleDC, CreateDIBSection, CreatePen, DeleteDC, DeleteObject,
-    EndPaint, GetDC, GetStockObject, MonitorFromPoint, Polyline, ReleaseDC, SelectObject,
-    StretchDIBits, UpdateWindow, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
-    HBRUSH, HDC, HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, NULL_BRUSH, PAINTSTRUCT, PS_SOLID, SRCCOPY,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromPoint,
+    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
+    HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, SRCCOPY,
 };
-use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::UI::Input::KeyboardAndMouse::{SetFocus, VK_ESCAPE};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-    GetSystemMetrics, LoadCursorW, PostQuitMessage, RegisterClassW, SetCursor, SetForegroundWindow,
-    SetWindowLongPtrW, ShowWindow, TranslateMessage, GWLP_USERDATA, IDC_CROSS, MSG,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SW_SHOW, WM_CLOSE,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_PAINT, WM_RBUTTONDOWN, WM_SETCURSOR, WM_SYSKEYDOWN,
-    WNDCLASSW, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_POPUP, WS_VISIBLE,
+    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 use crate::{BrightnessOp, CapturedImage};
@@ -39,11 +31,9 @@ use crate::{BrightnessOp, CapturedImage};
 /// 一张抓到的图（RGBA8，行序从上到下）。
 pub type Image = CapturedImage;
 
-unsafe fn wide(s: &str) -> Vec<u16> {
-    s.encode_utf16().chain(std::iter::once(0)).collect()
-}
 
 /// 抓指定屏幕区域（虚拟屏坐标，可为负）。
+
 fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Image, String> {
     if w <= 0 || h <= 0 {
         return Err("要截取的区域是空的".into());
@@ -116,202 +106,28 @@ pub fn capture_full_screen() -> Result<Image, String> {
 }
 
 // ---------------------------------------------------------------------------
-// 圈选确认浮层（先冻结整屏，再从冻结帧裁剪）
+// 圈选截图：按确认时定下的包围盒裁剪
 // ---------------------------------------------------------------------------
 
-struct LassoState {
-    image: Image,
-    /// 轨迹点（浮层本地坐标）。
-    points: Vec<(i32, i32)>,
-    /// 包围盒（浮层本地坐标）。
-    rect: (i32, i32, i32, i32),
-    /// 左键已按下（抬起才算确认，避免把 up 漏给下面的窗口）。
-    armed: bool,
-    /// 左键抬起 = 确认截图。
-    confirmed: bool,
-    done: bool,
-}
-
-static REGION_CLASS: Once = Once::new();
-
-unsafe extern "system" fn lasso_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
-    let p = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWLP_USERDATA)
-        as *mut LassoState;
-    if p.is_null() {
-        return DefWindowProcW(hwnd, msg, wp, lp);
+/// 抓虚拟屏并按包围盒（屏幕物理坐标，左 / 上 / 右 / 下）裁出选区。
+///
+/// 选区在钩子层已经由「右键画圈 + 点左键」确认过了（见 `kada_hook::gesture::on_left_down`），
+/// 这里不再弹确认浮层：裁出来直接进剪贴板，标注 / 贴图交给 Snipaste（壳层 `run_lasso_capture`）。
+pub fn capture_rect(rect: (i32, i32, i32, i32)) -> Result<Image, String> {
+    let (l, t, r, b) = rect;
+    if r <= l || b <= t {
+        return Err("截图选区是空的".into());
     }
-    let st = &mut *p;
-    match msg {
-        WM_PAINT => {
-            let mut ps = PAINTSTRUCT::default();
-            let hdc = BeginPaint(hwnd, &mut ps);
-            draw_lasso(hdc, &st.image, &st.points, st.rect);
-            let _ = EndPaint(hwnd, &ps);
-            LRESULT(0)
-        }
-        WM_LBUTTONDOWN => {
-            st.armed = true;
-            LRESULT(0)
-        }
-        WM_LBUTTONUP => {
-            if st.armed {
-                st.armed = false;
-                st.confirmed = true;
-                st.done = true;
-                let _ = DestroyWindow(hwnd);
-                PostQuitMessage(0);
-            }
-            LRESULT(0)
-        }
-        WM_RBUTTONDOWN => {
-            st.done = true;
-            let _ = DestroyWindow(hwnd);
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        WM_KEYDOWN | WM_SYSKEYDOWN => {
-            if wp.0 as u16 == VK_ESCAPE.0 {
-                st.done = true;
-                let _ = DestroyWindow(hwnd);
-                PostQuitMessage(0);
-            }
-            LRESULT(0)
-        }
-        WM_SETCURSOR => {
-            if let Ok(cur) = LoadCursorW(None, IDC_CROSS) {
-                SetCursor(Some(cur));
-            }
-            LRESULT(1)
-        }
-        WM_CLOSE => {
-            st.done = true;
-            let _ = DestroyWindow(hwnd);
-            PostQuitMessage(0);
-            LRESULT(0)
-        }
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
-    }
-}
-
-fn draw_lasso(hdc: HDC, img: &Image, points: &[(i32, i32)], rect: (i32, i32, i32, i32)) {
-    unsafe {
-        let bi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: img.width as i32,
-                biHeight: -(img.height as i32),
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        // 冻结帧是 RGBA；GDI 的 32bpp DIB 读 BGRA，交换 R/B 再画。
-        let mut bgra = img.rgba.clone();
-        for px in bgra.chunks_exact_mut(4) {
-            px.swap(0, 2);
-        }
-        StretchDIBits(
-            hdc,
-            0,
-            0,
-            img.width as i32,
-            img.height as i32,
-            0,
-            0,
-            img.width as i32,
-            img.height as i32,
-            Some(bgra.as_ptr() as *const c_void),
-            &bi,
-            DIB_RGB_COLORS,
-            SRCCOPY,
-        );
-        let pen = CreatePen(PS_SOLID, 2, COLORREF(0x00ff9c4c));
-        let old_pen = SelectObject(hdc, HGDIOBJ(pen.0));
-        let brush = HBRUSH(GetStockObject(NULL_BRUSH).0);
-        let old_brush = SelectObject(hdc, HGDIOBJ(brush.0));
-        let (l, t, r, b) = rect;
-        let _ = windows::Win32::Graphics::Gdi::Rectangle(hdc, l, t, r, b);
-        let pts: Vec<POINT> = points.iter().map(|&(x, y)| POINT { x, y }).collect();
-        if pts.len() >= 2 {
-            let _ = Polyline(hdc, &pts);
-        }
-        SelectObject(hdc, old_brush);
-        SelectObject(hdc, old_pen);
-        let _ = DeleteObject(HGDIOBJ(pen.0));
-    }
-}
-
-/// 冻结整块虚拟屏，画出用户画的圈与包围盒，等左键确认。
-/// `Ok(None)` = 用户按 Esc / 右键取消（或轨迹不成圈）。
-pub fn capture_lasso(points: &[(i32, i32)]) -> Result<Option<Image>, String> {
-    let Some((l, t, r, b)) = kada_core::lasso_bbox(points) else {
-        return Ok(None);
-    };
-    let frozen = capture_full_screen()?;
-    unsafe {
-        let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        REGION_CLASS.call_once(|| {
-            let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
-            let cls = WNDCLASSW {
-                style: windows::Win32::UI::WindowsAndMessaging::CS_HREDRAW
-                    | windows::Win32::UI::WindowsAndMessaging::CS_VREDRAW,
-                lpfnWndProc: Some(lasso_proc),
-                hInstance: hinst,
-                hCursor: LoadCursorW(None, IDC_CROSS).unwrap_or_default(),
-                lpszClassName: PCWSTR(wide("KadaCaptureRegion").as_ptr()),
-                ..Default::default()
-            };
-            RegisterClassW(&cls);
-        });
-        let hinst: HINSTANCE = GetModuleHandleW(None).unwrap_or_default().into();
-        let local: Vec<(i32, i32)> = points.iter().map(|&(x, y)| (x - vx, y - vy)).collect();
-        let local_rect = (l - vx, t - vy, r - vx, b - vy);
-        let mut st = Box::new(LassoState {
-            image: frozen,
-            points: local,
-            rect: local_rect,
-            armed: false,
-            confirmed: false,
-            done: false,
-        });
-        let ptr = &mut *st as *mut LassoState as *const c_void;
-        let hwnd = CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
-            PCWSTR(wide("KadaCaptureRegion").as_ptr()),
-            PCWSTR(wide("Kada 截图").as_ptr()),
-            WS_POPUP | WS_VISIBLE,
-            vx,
-            vy,
-            vw,
-            vh,
-            None,
-            None,
-            Some(hinst),
-            Some(ptr),
+    let full = capture_full_screen()?;
+    let (vx, vy) = unsafe {
+        (
+            GetSystemMetrics(SM_XVIRTUALSCREEN),
+            GetSystemMetrics(SM_YVIRTUALSCREEN),
         )
-        .map_err(|e| format!("创建框选确认浮层失败：{e}"))?;
-        SetWindowLongPtrW(hwnd, GWLP_USERDATA, ptr as isize);
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let _ = SetForegroundWindow(hwnd);
-        let _ = SetFocus(Some(hwnd));
-        let _ = UpdateWindow(hwnd);
-        let mut msg = MSG::default();
-        while GetMessageW(&mut msg, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&msg);
-            DispatchMessageW(&msg);
-            if st.done {
-                break;
-            }
-        }
-        let LassoState { image, confirmed, .. } = *st;
-        Ok(confirmed.then(|| crop(&image, local_rect.0, local_rect.1, local_rect.2, local_rect.3)))
-    }
+    };
+    Ok(crop(&full, l - vx, t - vy, r - vx, b - vy))
 }
+
 
 fn crop(img: &Image, l: i32, t: i32, r: i32, b: i32) -> Image {
     let l = l.max(0) as u32;
