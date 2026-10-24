@@ -1027,18 +1027,31 @@ fn spawn_engine_ticker(
             hot_corner_tick = hot_corner_tick.wrapping_add(1);
             let (hot_on, hot_flags, wheel_on, wheel_flags) = {
                 let g = cfg.read().unwrap();
-                let hc = &g.settings.hot_corners;
-                let we = &g.settings.wheel_edges;
+                let any_corner = |spot| {
+                    g.hot_corners
+                        .iter()
+                        .any(|r| r.enabled && r.spot == spot)
+                };
+                let any_edge = |edge| {
+                    g.wheel_edges
+                        .iter()
+                        .any(|r| r.enabled && r.edge == edge)
+                };
                 (
-                    g.settings.experimental && hc.any_enabled(),
+                    g.settings.experimental && g.hot_corners.iter().any(|r| r.enabled),
                     [
-                        hc.top_left.enabled,
-                        hc.top_right.enabled,
-                        hc.bottom_left.enabled,
-                        hc.bottom_right.enabled,
+                        any_corner(kada_core::HotCornerSpot::TopLeft),
+                        any_corner(kada_core::HotCornerSpot::TopRight),
+                        any_corner(kada_core::HotCornerSpot::BottomLeft),
+                        any_corner(kada_core::HotCornerSpot::BottomRight),
                     ],
-                    g.settings.experimental && we.any_enabled(),
-                    [we.top.enabled, we.bottom.enabled, we.left.enabled, we.right.enabled],
+                    g.settings.experimental && g.wheel_edges.iter().any(|r| r.enabled),
+                    [
+                        any_edge(kada_core::WheelEdgeSpot::Top),
+                        any_edge(kada_core::WheelEdgeSpot::Bottom),
+                        any_edge(kada_core::WheelEdgeSpot::Left),
+                        any_edge(kada_core::WheelEdgeSpot::Right),
+                    ],
                 )
             };
             let any_edge = hot_on || wheel_on;
@@ -1527,11 +1540,6 @@ fn fire(
         let opts = RunOptions {
             action_timeout: Duration::from_millis(timeout_ms),
             text_inject_mode: text_mode,
-            // EXT-22：亮度动作挂实验功能总闸；关着时执行侧明确报错（入口也隐藏）。
-            experimental: app
-                .try_state::<KadaState>()
-                .map(|s| s.config.read().unwrap().settings.experimental)
-                .unwrap_or(false),
         };
         let t = TriggerCtx {
             trigger: &trigger,
@@ -2125,23 +2133,23 @@ fn handle_hot_corner(
     runs: Arc<Mutex<Vec<RunRecord>>>,
     corner: kada_hook::hotcorner::Corner,
 ) {
+    let spot = match corner {
+        kada_hook::hotcorner::Corner::TopLeft => kada_core::HotCornerSpot::TopLeft,
+        kada_hook::hotcorner::Corner::TopRight => kada_core::HotCornerSpot::TopRight,
+        kada_hook::hotcorner::Corner::BottomLeft => kada_core::HotCornerSpot::BottomLeft,
+        kada_hook::hotcorner::Corner::BottomRight => kada_core::HotCornerSpot::BottomRight,
+    };
     let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
         let g = cfg.read().unwrap();
-        let hc = &g.settings.hot_corners;
-        let (entry, fallback) = match corner {
-            kada_hook::hotcorner::Corner::TopLeft => (&hc.top_left, "左上角"),
-            kada_hook::hotcorner::Corner::TopRight => (&hc.top_right, "右上角"),
-            kada_hook::hotcorner::Corner::BottomLeft => (&hc.bottom_left, "左下角"),
-            kada_hook::hotcorner::Corner::BottomRight => (&hc.bottom_right, "右下角"),
-        };
+        let hit = g.hot_corners.iter().find(|r| r.enabled && r.spot == spot);
         (
-            g.settings.experimental && hc.enabled && entry.enabled,
+            g.settings.experimental,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
             g.settings.exclude_apps.clone(),
-            entry.actions.clone(),
-            entry.label(fallback),
+            hit.map(|r| r.actions.clone()).unwrap_or_default(),
+            hit.map(|r| r.label()).unwrap_or_else(|| spot.label().to_string()),
         )
     };
     // 没配动作 = 半条配置，什么也不做（没有可执行的链，也没有要回放的按键）。
@@ -2202,23 +2210,23 @@ fn handle_wheel_edge(
     runs: Arc<Mutex<Vec<RunRecord>>>,
     edge: kada_hook::wheel_edge::Edge,
 ) {
+    let spot = match edge {
+        kada_hook::wheel_edge::Edge::Top => kada_core::WheelEdgeSpot::Top,
+        kada_hook::wheel_edge::Edge::Bottom => kada_core::WheelEdgeSpot::Bottom,
+        kada_hook::wheel_edge::Edge::Left => kada_core::WheelEdgeSpot::Left,
+        kada_hook::wheel_edge::Edge::Right => kada_core::WheelEdgeSpot::Right,
+    };
     let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
         let g = cfg.read().unwrap();
-        let we = &g.settings.wheel_edges;
-        let (entry, fallback) = match edge {
-            kada_hook::wheel_edge::Edge::Top => (&we.top, "上边缘"),
-            kada_hook::wheel_edge::Edge::Bottom => (&we.bottom, "下边缘"),
-            kada_hook::wheel_edge::Edge::Left => (&we.left, "左边缘"),
-            kada_hook::wheel_edge::Edge::Right => (&we.right, "右边缘"),
-        };
+        let hit = g.wheel_edges.iter().find(|r| r.enabled && r.edge == spot);
         (
-            g.settings.experimental && we.enabled && entry.enabled,
+            g.settings.experimental,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
             g.settings.exclude_apps.clone(),
-            entry.actions.clone(),
-            entry.label(fallback),
+            hit.map(|r| r.actions.clone()).unwrap_or_default(),
+            hit.map(|r| r.label()).unwrap_or_else(|| spot.label().to_string()),
         )
     };
     // 没配动作 = 半条配置，什么也不做（滚轮本来就放行了）。

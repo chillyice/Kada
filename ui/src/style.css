@@ -474,6 +474,14 @@ body.is-mac .titlebar {
   color: #a97cf0;
 }
 
+.row-kind.kind-hotcorner {
+  color: #f0a24c;
+}
+
+.row-kind.kind-wheeledge {
+  color: #4cc3d9;
+}
+
 /* 停用态：整行压暗，hover 出 title（右键可启用）。 */
 .row.off .row-kind {
   color: var(--muted);
@@ -2421,6 +2429,55 @@ button:disabled:hover {
 .set-card > .hint-fold > .hint:first-of-type {
   margin-top: 6px;
 }
+
+/* 设置卡片里按总开关显隐的一组设置行：display:contents 让子行仍按 .set-rows 直接子元素布局。 */
+.set-rows-group {
+  display: contents;
+}
+
+/* 触发角 / 边缘滚动编辑页的模拟显示器：一台显示器的框，四角 / 四边是可点位置。 */
+.monitor-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.monitor-screen {
+  position: relative;
+  align-self: center;
+  width: min(320px, 100%);
+  aspect-ratio: 16 / 9;
+  border: 2px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel-2, rgba(127, 127, 127, 0.08));
+}
+
+.monitor-point {
+  position: absolute;
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.monitor-point.active {
+  border-color: var(--accent);
+  color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.monitor-point.corner-top_left { top: 4px; left: 4px; }
+.monitor-point.corner-top_right { top: 4px; right: 4px; }
+.monitor-point.corner-bottom_left { bottom: 4px; left: 4px; }
+.monitor-point.corner-bottom_right { bottom: 4px; right: 4px; }
+.monitor-point.edge-top { top: 4px; left: 50%; transform: translateX(-50%); }
+.monitor-point.edge-bottom { bottom: 4px; left: 50%; transform: translateX(-50%); }
+.monitor-point.edge-left { left: 4px; top: 50%; transform: translateY(-50%); }
+.monitor-point.edge-right { right: 4px; top: 50%; transform: translateY(-50%); }
 
 /* 触发角（EXT-10）：四角各占一块，块内是「启用 / 命名」行 + 动作编辑区。 */
 .hot-corner + .hot-corner,

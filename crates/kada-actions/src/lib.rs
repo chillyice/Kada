@@ -173,8 +173,6 @@ pub struct RunOptions {
     /// 文本注入方式（读自 `Settings.text_inject_mode`，规划 7.3-㉒）：文本动作与
     /// 「转大小写」按它选「剪贴板粘贴」或「逐字直发」。
     pub text_inject_mode: TextInjectMode,
-    /// `Settings.experimental`（新功能总闸）：EXT-22 亮度动作只在打开时执行。
-    pub experimental: bool,
 }
 
 impl Default for RunOptions {
@@ -182,7 +180,6 @@ impl Default for RunOptions {
         Self {
             action_timeout: Duration::from_millis(kada_core::DEFAULT_ACTION_TIMEOUT_MS),
             text_inject_mode: TextInjectMode::Clipboard,
-            experimental: false,
         }
     }
 }
@@ -214,9 +211,6 @@ struct Ctx<'a> {
     timeout: Duration,
     /// 见 [`RunOptions::text_inject_mode`]（文本动作与「转大小写」用）。
     text_mode: TextInjectMode,
-    /// 见 [`RunOptions::experimental`]（EXT-22 亮度动作的总闸）。
-    #[cfg_attr(not(feature = "automation"), allow(dead_code))]
-    experimental: bool,
     /// 本次执行开始时记下的中止代数（[`abort::aborted`] 的比对基准）。
     gen: u64,
     /// 本次执行对应的记录 id（`run_actions` 的入参），写进 [`CommandResult::run_id`]，
@@ -276,7 +270,6 @@ pub fn run_actions(
         t,
         timeout: opts.action_timeout,
         text_mode: opts.text_inject_mode,
-        experimental: opts.experimental,
         gen: abort::generation(),
         run_id,
         start: Instant::now(),
@@ -1896,9 +1889,6 @@ fn run_system(
             Ok(None)
         }
         SystemOperation::Brightness { operation, step } => {
-            if !ctx.experimental {
-                return Err("显示器亮度是实验功能：先在设置里打开「实验功能」总闸".into());
-            }
             let op = match operation {
                 BrightnessOperation::Up => kada_hook::BrightnessOp::Up,
                 BrightnessOperation::Down => kada_hook::BrightnessOp::Down,
@@ -2885,7 +2875,6 @@ mod tests {
             // 0 = 不限时（与配置里的 0 同义），用于只测「中止」的用例。
             timeout: Duration::from_millis(timeout_ms),
             text_mode: TextInjectMode::Clipboard,
-            experimental: true,
             gen: abort::generation(),
             run_id: None,
             start: Instant::now(),

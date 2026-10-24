@@ -805,7 +805,7 @@
   "写入剪贴板后立即粘贴到当前焦点，再恢复原来的剪贴板文本（图片不恢复；图片剪贴板列为后续）。": "Writes to the clipboard, pastes into the focused control immediately, then restores the previous clipboard text (images are not restored; image clipboard is planned later).",
   "按键回显": "Key echo",
   "显示当前按键": "Show current keys",
-  "在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示": "Shows the current key and modifier combination on screen (e.g. Ctrl+Alt+K ↓). Never steals focus, is click-through, and stays hidden while paused, fullscreen-paused, or in an excluded app.",
+  "默认关闭；在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示": "Off by default. Shows the current key and modifier combination on screen (e.g. Ctrl+Alt+K ↓). Never steals focus, is click-through, and stays hidden while paused, fullscreen-paused, or in an excluded app.",
   "文字颜色": "Text color",
   "按键文字与方向箭头的颜色": "Color of the key text and direction arrows",
   "位置": "Position",
@@ -953,5 +953,18 @@
   "没有录到按键": "No keys recorded",
   "用电脑里设置了关联的默认程序打开这个文件（按扩展名，如 .pdf 用 PDF 阅读器、.docx 用 Word）。": "Open this file with the app associated in the OS (by extension, e.g. .pdf in a PDF reader, .docx in Word).",
   "用系统默认浏览器打开该网页。没写协议头的会自动补 https://。": "Open this URL in the system default browser. https:// is added automatically when the scheme is missing.",
-  "网址，如 example.com（不写 https:// 也行；支持 {变量名} 占位符）": "URL, e.g. example.com (https:// optional; {变量名} placeholders supported)"
+  "网址，如 example.com（不写 https:// 也行；支持 {变量名} 占位符）": "URL, e.g. example.com (https:// optional; {变量名} placeholders supported)",
+  "⚠ 已配置 {0} 条鼠标手势，但「鼠标操作」未开启 → 不会触发": "⚠ {0} mouse gestures configured, but “Mouse actions” is off → they will not trigger",
+  "启用鼠标操作": "Enable mouse actions",
+  "默认关闭；关掉后鼠标手势 / 右键圈选截图 / 触发角 / 边缘滚动一律不可用（入口隐藏、行为不生效），配置保留": "Off by default. When disabled, mouse gestures / right-drag lasso screenshot / hot corners / edge scrolling are all unavailable (hidden and inactive); their configuration is kept.",
+  "右键圈选截图（依赖 Snipaste）": "Right-drag lasso screenshot (requires Snipaste)",
+  "鼠标操作怎么用": "How mouse actions work",
+  "总开关打开后到「快捷键」页新增条目：模式下拉里可选「鼠标操作」（按住右键画轨迹，按方向串匹配）、「触发角」（光标碰到屏幕四角）和「边缘滚动」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里有一块模拟显示器，点要用的角或边，再在下面配动作。": "After enabling the master switch, add entries on the “Shortcuts” page: the mode menu offers “Mouse gesture” (hold the right button and draw a path, matched by direction pattern), “Hot corner” (cursor touches a screen corner), and “Edge scrolling” (scroll the wheel while the cursor is against a screen edge). The hot corner / edge scrolling editors show a mock monitor; click the corner or edge you want, then configure actions below.",
+  "鼠标手势的方向串用 U 上 / D 下 / L 左 / R 右，斜向写两个字母如 UR 右上；多段用逗号分隔：D,R = 先下再右（两段），DR = 右下斜向（一段）。": "Mouse gesture patterns use U up / D down / L left / R right; diagonals use two letters such as UR for up-right. Separate segments with commas: D,R = down then right (two segments), DR = a single down-right diagonal.",
+  "全屏程序（游戏 / 视频 / F11）和上图排除列表里的程序里一律让路：手势不接管右键，触发角 / 边缘滚动也不触发。": "Full-screen apps (games / video / F11) and apps in the exclusion list above are left alone: gestures do not take over the right button, and hot corners / edge scrolling do not trigger.",
+  "右键圈选截图依赖 Snipaste：裁剪图会先写进剪贴板；Snipaste 在跑时会按 F3 调出贴图，标注 / 保存 / 置顶都在 Snipaste 里完成。没装或没运行时只有剪贴板里的图，请自行粘贴。": "The right-drag lasso screenshot depends on Snipaste: the cropped image is written to the clipboard first; if Snipaste is running, F3 pastes it as a floating image, and annotation / saving / pinning happen in Snipaste. Without Snipaste running there is only the clipboard image — paste it yourself.",
+  "当前位置：{0}；同一位置可建多条，按列表顺序取第一条启用的。": "Current spot: {0}. Multiple entries are allowed for the same spot; the first enabled one in list order wins.",
+  "放到{0}": "Place at {0}",
+  "触发角「{0}」": "Hot corner “{0}”",
+  "边缘滚动「{0}」": "Edge scrolling “{0}”"
 }

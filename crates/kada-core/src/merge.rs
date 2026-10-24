@@ -27,6 +27,8 @@ pub struct MergeReport {
     pub remaps: usize,
     pub expansions: usize,
     pub gestures: usize,
+    pub hot_corners: usize,
+    pub wheel_edges: usize,
     /// 跳过的条目说明（逐条带名称/触发键，只报个数的话用户查不出是哪条没进来）。
     pub skipped: Vec<String>,
 }
@@ -40,6 +42,8 @@ impl MergeReport {
             + self.remaps
             + self.expansions
             + self.gestures
+            + self.hot_corners
+            + self.wheel_edges
     }
 }
 
@@ -133,6 +137,29 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         }
         out.gestures.push(g.clone());
         report.gestures += 1;
+    }
+
+    // 触发角 / 边缘滚动：同位置允许多条，按「完整相等」去重（重复导入同一份文件保持幂等），
+    // 不做「同位置只留一条」的合并——那会悄悄吃掉用户本来配好的第二条。
+    for hc in &incoming.hot_corners {
+        if out.hot_corners.contains(hc) {
+            report
+                .skipped
+                .push(format!("触发角「{}」未导入：相同的条目已存在", hc.label()));
+            continue;
+        }
+        out.hot_corners.push(hc.clone());
+        report.hot_corners += 1;
+    }
+    for we in &incoming.wheel_edges {
+        if out.wheel_edges.contains(we) {
+            report
+                .skipped
+                .push(format!("边缘滚动「{}」未导入：相同的条目已存在", we.label()));
+            continue;
+        }
+        out.wheel_edges.push(we.clone());
+        report.wheel_edges += 1;
     }
 
     (out, report)

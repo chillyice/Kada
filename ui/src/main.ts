@@ -228,7 +228,7 @@ type Settings = {
    */
   auto_update?: boolean;
   /**
-   * **新功能总开关**（规划 7.2-MG）：关掉后本轮新增的功能一律不可用（入口隐藏 +
+   * **鼠标操作总开关**（规划 7.2-MG）：关掉后鼠标类功能一律不可用（入口隐藏 +
    * 行为不生效），**配置保留**（重新打开即恢复）。缺字段按后端默认「**关**」。
    */
   experimental?: boolean;
@@ -296,15 +296,13 @@ type Settings = {
      */
     clipboard_menu?: ClipboardMenu;
     /**
-     * 触发角（EXT-10）：光标碰到屏幕四角执行动作。缺字段 = 关（后端
-     * `HotCorners::default`）；同一份四角配置应用到每台显示器的对应角。
+     * 旧版触发角配置（EXT-10）：只在老配置里出现，后端加载时迁移到根级 `hot_corners`。
      */
-    hot_corners?: HotCorners;
+    hot_corners?: unknown;
     /**
-     * 边缘滚动（EXT-11）：光标贴屏幕四边时滚轮触发动作。缺字段 = 关（后端
-     * `WheelEdges::default`）；同一份四边配置应用到每台显示器的对应边。
+     * 旧版边缘滚动配置（EXT-11）：同上，加载时迁移到根级 `wheel_edges`。
      */
-    wheel_edges?: WheelEdges;
+    wheel_edges?: unknown;
   };
 /**
  * 复制快捷菜单（EXT-13）：见后端 `ClipboardMenu`。条目数组顺序即显示顺序。
@@ -314,14 +312,14 @@ type MenuEntry =
   | { kind: "submenu"; label: string; enabled?: boolean; items: MenuEntry[] }
   | { kind: "separator" };
 type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntry[] };
-/** 触发角的一个角（后端 `HotCorner`）。 */
-type HotCorner = { enabled: boolean; name?: string; actions: Action[] };
-type HotCornerKey = "top_left" | "top_right" | "bottom_left" | "bottom_right";
-type HotCorners = { enabled: boolean } & Record<HotCornerKey, HotCorner>;
-/** 边缘滚动的一条边（后端 `WheelEdge`）。 */
-type WheelEdge = { enabled: boolean; name?: string; actions: Action[] };
-type WheelEdgeKey = "top" | "bottom" | "left" | "right";
-type WheelEdges = { enabled: boolean } & Record<WheelEdgeKey, WheelEdge>;
+/** 触发角位置（后端 `HotCornerSpot`）。 */
+type HotCornerSpot = "top_left" | "top_right" | "bottom_left" | "bottom_right";
+/** 一条触发角规则（后端 `HotCornerRule`）：同位置可有多条，取第一条启用的。 */
+type HotCornerRule = { spot: HotCornerSpot; name?: string | null; enabled: boolean; actions: Action[] };
+/** 边缘滚动位置（后端 `WheelEdgeSpot`）。 */
+type WheelEdgeSpot = "top" | "bottom" | "left" | "right";
+/** 一条边缘滚动规则（后端 `WheelEdgeRule`）：同位置可有多条，取第一条启用的。 */
+type WheelEdgeRule = { edge: WheelEdgeSpot; name?: string | null; enabled: boolean; actions: Action[] };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
@@ -335,7 +333,7 @@ type Gesture = {
   /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在，回放右键。 */
   when?: Condition | null;
 };
-type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; settings: Settings };
+type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
 type StatusPayload = {
   /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
@@ -423,18 +421,36 @@ function splitConflicts(list: Conflict[]): { errors: Conflict[]; warns: Conflict
     caps: list.filter((c) => c.platform),
   };
 }
-type Section = "shortcuts" | "remaps" | "expansions" | "gestures" | "messages" | "settings" | "help";
+type Section =
+  | "shortcuts"
+  | "remaps"
+  | "expansions"
+  | "gestures"
+  | "hotcorners"
+  | "wheeledges"
+  | "messages"
+  | "settings"
+  | "help";
 // 合并列表里的条目类型：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
 // gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目，与快捷键/改键/文本扩展并列。
-type ListKind = "shortcut" | "remap" | "expansion" | "gesture";
+type ListKind = "shortcut" | "remap" | "expansion" | "gesture" | "hotcorner" | "wheeledge";
 const KIND_SECTION: Record<ListKind, Section> = {
   shortcut: "shortcuts",
   remap: "remaps",
   expansion: "expansions",
   gesture: "gestures",
+  hotcorner: "hotcorners",
+  wheeledge: "wheeledges",
 };
 function isListSection(s: Section): boolean {
-  return s === "shortcuts" || s === "remaps" || s === "expansions" || s === "gestures";
+  return (
+    s === "shortcuts" ||
+    s === "remaps" ||
+    s === "expansions" ||
+    s === "gestures" ||
+    s === "hotcorners" ||
+    s === "wheeledges"
+  );
 }
 // 当前编辑页的条目类型 / 草稿（仅列表分区有效，别在设置/消息页调）。
 function currentKind(): ListKind {
@@ -444,13 +460,19 @@ function currentKind(): ListKind {
       ? "expansion"
       : section === "gestures"
         ? "gesture"
-        : "shortcut";
+        : section === "hotcorners"
+          ? "hotcorner"
+          : section === "wheeledges"
+            ? "wheeledge"
+            : "shortcut";
 }
-function currentDraft(): ShortcutItem | Remap | TextExpansion | Gesture | null {
+function currentDraft(): ShortcutItem | Remap | TextExpansion | Gesture | HotCornerRule | WheelEdgeRule | null {
   if (section === "shortcuts") return draft;
   if (section === "remaps") return remapDraft;
   if (section === "expansions") return expansionDraft;
   if (section === "gestures") return gestureDraft;
+  if (section === "hotcorners") return hotcornerDraft;
+  if (section === "wheeledges") return wheeledgeDraft;
   return null;
 }
 // 编辑页的四个页签：详情 / 动作·操作·展开文本（work）/ 层 / 条件。
@@ -744,13 +766,6 @@ const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "send_to", label: tr("后台发送（按键 / 文本）") },
   { value: "brightness", label: tr("显示器亮度") },
 ];
-
-/** 系统操作可选列表：亮度仍受「实验功能」总闸管（关着时不出现，已配的仍能显示）。 */
-function systemOpChoices(current?: SystemOperation["op"]): typeof SYSTEM_OPS {
-  return SYSTEM_OPS.filter(
-    (o) => o.value !== "brightness" || mouseFeaturesEnabled() || current === "brightness",
-  );
-}
 
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
 const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
@@ -1384,6 +1399,8 @@ let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保�
 let remapDraft: Remap | null = null; // 改键编辑草稿
 let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
 let gestureDraft: Gesture | null = null; // 鼠标操作（手势）编辑草稿
+let hotcornerDraft: HotCornerRule | null = null; // 触发角编辑草稿
+let wheeledgeDraft: WheelEdgeRule | null = null; // 边缘滚动编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
 // 见「未保存改动守卫」一节。
 let draftBaseline: string | null = null;
@@ -1946,7 +1963,14 @@ function renderListPane() {
     section === "settings" || section === "messages" || section === "help",
   );
   // 多选集按各份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
-  const all: object[] = [...cfg.shortcuts, ...cfg.remaps, ...cfg.expansions, ...(cfg.gestures ?? [])];
+  const all: object[] = [
+    ...cfg.shortcuts,
+    ...cfg.remaps,
+    ...cfg.expansions,
+    ...(cfg.gestures ?? []),
+    ...(cfg.hot_corners ?? []),
+    ...(cfg.wheel_edges ?? []),
+  ];
   for (const o of [...picked]) if (!all.includes(o)) picked.delete(o);
   if (pickAnchor && !all.includes(pickAnchor)) pickAnchor = null;
   // 筛选按钮亮起来 = 有筛选在生效。
@@ -2027,6 +2051,10 @@ const KIND_ICON: Record<ListKind, string> = {
   // 轨迹从方块底边中点（6.5, 7）起笔：与方块同一条竖中线，圆头端点正好并进底边描边。
   gesture:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7v6a4 4 0 0 0 4 4h9.5"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
+  hotcorner:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 4l5 5"/><circle cx="3" cy="4" r="1.4" fill="currentColor"/></svg>',
+  wheeledge:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="9" y="10" width="6" height="8" rx="1"/><path d="M12 11v2m0 0 1-1m-1 1-1-1"/></svg>',
 };
 
 function kindIcon(kind: ListKind): HTMLElement {
@@ -2056,10 +2084,16 @@ function renderEntries() {
     cfg.expansions.forEach((e, i) => {
       if ((e.folder ?? null) === folderId && expansionVisible(e)) list.append(expansionRow(e, i, depth));
     });
-    // 鼠标操作（手势）没有目录归属（V1：全局触发源），只排在根级。
+    // 鼠标操作（手势）/ 触发角 / 边缘滚动没有目录归属（全局触发源），只排在根级。
     if (folderId === null) {
       (cfg.gestures ?? []).forEach((g, i) => {
         if (gestureVisible(g)) list.append(gestureRow(g, i, depth));
+      });
+      (cfg.hot_corners ?? []).forEach((r, i) => {
+        if (hotCornerVisible(r)) list.append(hotCornerRow(r, i, depth));
+      });
+      (cfg.wheel_edges ?? []).forEach((r, i) => {
+        if (wheelEdgeVisible(r)) list.append(wheelEdgeRow(r, i, depth));
       });
     }
   };
@@ -2239,14 +2273,19 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
   return li;
 }
 
-// 鼠标操作（手势）这类新功能是否已由用户显式打开（设置页「实验功能」总闸，默认关）。
+// 鼠标操作（手势）这类新功能是否已由用户显式打开（设置页「鼠标操作」总开关，默认关）。
 // 关着 = 列表里不出现这一类、新增菜单里没有它、钩子也不拦右键。
 function mouseFeaturesEnabled(): boolean {
   return cfg.settings.experimental === true;
 }
 
+/** 触发角 / 边缘滚动：位置 + 动作，没有详情 / 层 / 条件。 */
+function isMouseTriggerKind(kind: ListKind): boolean {
+  return kind === "hotcorner" || kind === "wheeledge";
+}
+
 // 鼠标操作（手势）行：方向串占「组合键」那一格，后面跟名称。
-// **实验功能总闸关着时整类不显示**（入口隐藏），配置本身留着。
+// **鼠标操作总开关关着时整类不显示**（入口隐藏），配置本身留着。
 function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
   const li = el(
     "li",
@@ -2278,6 +2317,94 @@ function gestureVisible(g: Gesture): boolean {
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !g.enabled) return false;
+  return true;
+}
+
+const HOT_CORNER_SPOTS: { spot: HotCornerSpot; label: string }[] = [
+  { spot: "top_left", label: tr("左上角") },
+  { spot: "top_right", label: tr("右上角") },
+  { spot: "bottom_left", label: tr("左下角") },
+  { spot: "bottom_right", label: tr("右下角") },
+];
+const WHEEL_EDGE_SPOTS: { edge: WheelEdgeSpot; label: string }[] = [
+  { edge: "top", label: tr("上边缘") },
+  { edge: "bottom", label: tr("下边缘") },
+  { edge: "left", label: tr("左边缘") },
+  { edge: "right", label: tr("右边缘") },
+];
+
+function spotLabel(spot: HotCornerSpot | WheelEdgeSpot): string {
+  return (
+    HOT_CORNER_SPOTS.find((s) => s.spot === spot)?.label ??
+    WHEEL_EDGE_SPOTS.find((s) => s.edge === spot)?.label ??
+    ""
+  );
+}
+
+// 触发角 / 边缘滚动行：位置作「触发键」那一格，后面跟名称。
+function hotCornerRow(r: HotCornerRule, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("hotcorner", idx) ? " selected" : "") +
+      (picked.has(r) ? " picked" : "") +
+      (r.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!r.enabled) li.title = tr("已停用（右键可启用）");
+  listRow(li, r, "hotcorner", idx);
+  const trig = el("span", "row-trigger");
+  trig.append(el("span", "row-trigger-text", spotLabel(r.spot)));
+  li.append(
+    kindIcon("hotcorner"),
+    trig,
+    el("span", "row-name", r.name?.trim() || tr("（未命名）")),
+    moreButton((btn) => openRowMenu(btn, li, r)),
+  );
+  return li;
+}
+
+function wheelEdgeRow(r: WheelEdgeRule, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("wheeledge", idx) ? " selected" : "") +
+      (picked.has(r) ? " picked" : "") +
+      (r.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!r.enabled) li.title = tr("已停用（右键可启用）");
+  listRow(li, r, "wheeledge", idx);
+  const trig = el("span", "row-trigger");
+  trig.append(el("span", "row-trigger-text", spotLabel(r.edge)));
+  li.append(
+    kindIcon("wheeledge"),
+    trig,
+    el("span", "row-name", r.name?.trim() || tr("（未命名）")),
+    moreButton((btn) => openRowMenu(btn, li, r)),
+  );
+  return li;
+}
+
+function hotCornerVisible(r: HotCornerRule): boolean {
+  if (!mouseFeaturesEnabled()) return false;
+  const q = search.trim().toLowerCase();
+  if (q) {
+    const hay = `${spotLabel(r.spot)} ${r.name ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (listFilter.enabled && !r.enabled) return false;
+  return true;
+}
+
+function wheelEdgeVisible(r: WheelEdgeRule): boolean {
+  if (!mouseFeaturesEnabled()) return false;
+  const q = search.trim().toLowerCase();
+  if (q) {
+    const hay = `${spotLabel(r.edge)} ${r.name ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (listFilter.enabled && !r.enabled) return false;
   return true;
 }
 
@@ -2840,8 +2967,14 @@ function collectDescendantIds(id: string): Set<string> {
 }
 
 // 选中集操作（合并列表里各类条目共存，靠内容定位而不是下标）。
-type AnyEntry = ShortcutItem | Remap | TextExpansion | Gesture;
-// **有目录归属的**条目（鼠标操作没有目录：它是全局触发源，V1 不参与目录树）。
+type AnyEntry =
+  | ShortcutItem
+  | Remap
+  | TextExpansion
+  | Gesture
+  | HotCornerRule
+  | WheelEdgeRule;
+// **有目录归属的**条目（鼠标类触发源没有目录：它们是全局触发源，不参与目录树）。
 type FolderEntry = ShortcutItem | Remap | TextExpansion;
 
 function kindOf(o: object): ListKind | null {
@@ -2849,6 +2982,8 @@ function kindOf(o: object): ListKind | null {
   if ((cfg.remaps as object[]).includes(o)) return "remap";
   if ((cfg.expansions as object[]).includes(o)) return "expansion";
   if ((cfg.gestures as object[]).includes(o)) return "gesture";
+  if ((cfg.hot_corners as object[]).includes(o)) return "hotcorner";
+  if ((cfg.wheel_edges as object[]).includes(o)) return "wheeledge";
   return null;
 }
 
@@ -2859,7 +2994,11 @@ function arrOf(kind: ListKind): AnyEntry[] {
       ? cfg.remaps
       : kind === "expansion"
         ? cfg.expansions
-        : (cfg.gestures ?? []);
+        : kind === "gesture"
+          ? (cfg.gestures ?? [])
+          : kind === "hotcorner"
+            ? (cfg.hot_corners ?? [])
+            : (cfg.wheel_edges ?? []);
 }
 
 function kindLabel(kind: ListKind | null): string {
@@ -2871,7 +3010,11 @@ function kindLabel(kind: ListKind | null): string {
         ? tr("文本扩展")
         : kind === "gesture"
           ? tr("鼠标操作")
-          : tr("条目");
+          : kind === "hotcorner"
+            ? tr("触发角")
+            : kind === "wheeledge"
+              ? tr("边缘滚动")
+              : tr("条目");
 }
 
 // 条目的展示名（确认框要与列表行对得上号）：有标题用标题，否则退回各自的兜底。
@@ -2890,6 +3033,14 @@ function labelOf(o: object): string {
     const g = o as Gesture;
     return g.name?.trim() || g.pattern || tr("未命名");
   }
+  if (kind === "hotcorner") {
+    const r = o as HotCornerRule;
+    return r.name?.trim() || spotLabel(r.spot) || tr("未命名");
+  }
+  if (kind === "wheeledge") {
+    const r = o as WheelEdgeRule;
+    return r.name?.trim() || spotLabel(r.edge) || tr("未命名");
+  }
   return tr("条目");
 }
 
@@ -2900,6 +3051,8 @@ function selectedObject(): AnyEntry | null {
   if (section === "remaps") return cfg.remaps[selected] ?? null;
   if (section === "expansions") return cfg.expansions[selected] ?? null;
   if (section === "gestures") return (cfg.gestures ?? [])[selected] ?? null;
+  if (section === "hotcorners") return (cfg.hot_corners ?? [])[selected] ?? null;
+  if (section === "wheeledges") return (cfg.wheel_edges ?? [])[selected] ?? null;
   return null;
 }
 
@@ -2955,6 +3108,9 @@ async function deleteSelection() {
   cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
   cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
   cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
+  if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
+  if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
+  if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
   picked.clear();
   pickAnchor = null;
   if (editing) {
@@ -2981,6 +3137,10 @@ function pasteIntoFolder(folderId: string | null) {
       cfg.remaps.push(copy as Remap);
     } else if (it.kind === "gesture") {
       (cfg.gestures ?? (cfg.gestures = [])).push(copy as Gesture);
+    } else if (it.kind === "hotcorner") {
+      (cfg.hot_corners ?? (cfg.hot_corners = [])).push(copy as HotCornerRule);
+    } else if (it.kind === "wheeledge") {
+      (cfg.wheel_edges ?? (cfg.wheel_edges = [])).push(copy as WheelEdgeRule);
     } else {
       cfg.expansions.push(copy as TextExpansion);
     }
@@ -2991,6 +3151,8 @@ function pasteIntoFolder(folderId: string | null) {
     cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
     cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
     if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
+    if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
+    if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
     clipboard = null;
   }
   void save();
@@ -3442,6 +3604,8 @@ async function setPickedEnabled(v: boolean) {
   for (const r of cfg.remaps) if (picked.has(r)) { r.enabled = v; n++; }
   for (const e of cfg.expansions) if (picked.has(e)) { e.enabled = v; n++; }
   for (const g of cfg.gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
+  for (const r of cfg.hot_corners ?? []) if (picked.has(r)) { r.enabled = v; n++; }
+  for (const r of cfg.wheel_edges ?? []) if (picked.has(r)) { r.enabled = v; n++; }
   picked.clear();
   pickAnchor = null;
   const ok = await save(); // save 自带「已保存」提示；成功后盖上条数，失败保留错误提示
@@ -3530,6 +3694,8 @@ function setEntryTitle() {
 function currentActionsHost(): { actions: Action[] } | null {
   if (section === "shortcuts") return draft;
   if (section === "gestures") return gestureDraft;
+  if (section === "hotcorners") return hotcornerDraft;
+  if (section === "wheeledges") return wheeledgeDraft;
   return null;
 }
 
@@ -3799,6 +3965,59 @@ function fillGestureEditor() {
   setEntryTitle();
 }
 
+/** 模拟显示器选点：四角 / 四边各一个可点位置，选中即写回草稿。 */
+function spotPicker(
+  kind: "hotcorner" | "wheeledge",
+  current: HotCornerSpot | WheelEdgeSpot,
+  pick: (spot: HotCornerSpot | WheelEdgeSpot) => void,
+): HTMLElement {
+  const box = el("div", "monitor-pick");
+  const screen = el("div", "monitor-screen");
+  const points =
+    kind === "hotcorner"
+      ? HOT_CORNER_SPOTS.map((s) => ({ key: s.spot, label: s.label, cls: `corner-${s.spot}` }))
+      : WHEEL_EDGE_SPOTS.map((s) => ({ key: s.edge, label: s.label, cls: `edge-${s.edge}` }));
+  for (const p of points) {
+    const b = el("button", `monitor-point ${p.cls}` + (p.key === current ? " active" : ""), p.label) as HTMLButtonElement;
+    b.type = "button";
+    b.title = trt`放到${p.label}`;
+    b.addEventListener("click", () => pick(p.key));
+    screen.append(b);
+  }
+  box.append(screen, el("div", "unit-hint", trt`当前位置：${spotLabel(current)}；同一位置可建多条，按列表顺序取第一条启用的。`));
+  return box;
+}
+
+function fillHotCornerEditor() {
+  if (!hotcornerDraft) return;
+  const host = document.getElementById("key-hotcorner")!;
+  host.replaceChildren(
+    spotPicker("hotcorner", hotcornerDraft.spot, (spot) => {
+      if (!hotcornerDraft) return;
+      hotcornerDraft.spot = spot as HotCornerSpot;
+      fillHotCornerEditor();
+      refreshDirty();
+    }),
+  );
+  renderActions(hotcornerDraft, spotLabel(hotcornerDraft.spot));
+  setEntryTitle();
+}
+
+function fillWheelEdgeEditor() {
+  if (!wheeledgeDraft) return;
+  const host = document.getElementById("key-wheeledge")!;
+  host.replaceChildren(
+    spotPicker("wheeledge", wheeledgeDraft.edge, (edge) => {
+      if (!wheeledgeDraft) return;
+      wheeledgeDraft.edge = edge as WheelEdgeSpot;
+      fillWheelEdgeEditor();
+      refreshDirty();
+    }),
+  );
+  renderActions(wheeledgeDraft, spotLabel(wheeledgeDraft.edge));
+  setEntryTitle();
+}
+
 // ---- 统一编辑页的模式 / 页签同步 ----
 // 模式按钮（快捷键 / 改键 / 文本扩展）、按键框里显示哪一套、四个页签的可用性与当前页，
 // 都在这里对齐当前类型。openDetail → renderDetail 每次都会走一遍。
@@ -3808,12 +4027,20 @@ function syncEntry() {
   document.getElementById("entry-run")!.classList.toggle("hidden", kind !== "shortcut");
   const label = document.getElementById("mode-label");
   if (label) label.textContent = kindLabel(kind);
-  for (const k of ["shortcut", "remap", "expansion", "gesture"] as ListKind[]) {
+  for (const k of [
+    "shortcut",
+    "remap",
+    "expansion",
+    "gesture",
+    "hotcorner",
+    "wheeledge",
+  ] as ListKind[]) {
     const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
     if (item) {
       item.classList.toggle("active", k === kind);
-      // 鼠标操作是实验功能：总闸关着时这一项不出现（入口隐藏，配置留着）。
-      if (k === "gesture") item.classList.toggle("hidden", !mouseFeaturesEnabled());
+      // 鼠标类新功能：总闸关着时这些项不出现（入口隐藏，配置留着）。
+      if (k === "gesture" || k === "hotcorner" || k === "wheeledge")
+        item.classList.toggle("hidden", !mouseFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
       item.classList.toggle("disabled", k !== kind && !draftNew);
@@ -3827,16 +4054,19 @@ function syncEntry() {
     document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
     document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
   }
-  // 动作区：快捷键与鼠标操作共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
-  document.getElementById("work-shortcut")!.classList.toggle("hidden", kind !== "shortcut" && kind !== "gesture");
+  // 动作区：快捷键 / 鼠标类触发共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
+  document.getElementById("work-shortcut")!.classList.toggle(
+    "hidden",
+    kind !== "shortcut" && kind !== "gesture" && kind !== "hotcorner" && kind !== "wheeledge",
+  );
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展与鼠标操作没有「层」；鼠标操作有「条件」（与快捷键同语义）。
-  // 鼠标操作也没有「描述」字段 → 「详情」页签整页不出现（方向串 + 条件 + 动作）。
-  const hasLayer = kind !== "expansion" && kind !== "gesture";
-  const hasWhen = kind !== "expansion";
-  const hasDetail = kind !== "gesture";
+  // 文本扩展与鼠标类触发没有「层」；鼠标操作有「条件」（与快捷键同语义）。
+  // 触发角 / 边缘滚动只有「位置 + 动作」，连详情页签也不出现。
+  const hasLayer = kind !== "expansion" && !isMouseTriggerKind(kind);
+  const hasWhen = kind === "shortcut" || kind === "remap" || kind === "gesture";
+  const hasDetail = kind !== "gesture" && !isMouseTriggerKind(kind);
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
   document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
   document.getElementById("tab-detail")!.classList.toggle("hidden", !hasDetail);
@@ -3924,12 +4154,26 @@ function deleteCurrentEntry() {
     void deleteDetailEntry(tr("文本扩展"), e.name?.trim() || e.trigger || tr("未命名"), () => {
       if (selected !== null) cfg.expansions.splice(selected, 1);
     });
-  } else {
+  } else if (kind === "gesture") {
     if (!gestureDraft) return;
     if (draftNew) return discardNewDraft();
     const g = gestureDraft;
     void deleteDetailEntry(tr("鼠标操作"), g.name?.trim() || g.pattern || tr("未命名"), () => {
       if (selected !== null) (cfg.gestures ?? []).splice(selected, 1);
+    });
+  } else if (kind === "hotcorner") {
+    if (!hotcornerDraft) return;
+    if (draftNew) return discardNewDraft();
+    const r = hotcornerDraft;
+    void deleteDetailEntry(tr("触发角"), r.name?.trim() || spotLabel(r.spot), () => {
+      if (selected !== null) (cfg.hot_corners ?? []).splice(selected, 1);
+    });
+  } else {
+    if (!wheeledgeDraft) return;
+    if (draftNew) return discardNewDraft();
+    const r = wheeledgeDraft;
+    void deleteDetailEntry(tr("边缘滚动"), r.name?.trim() || spotLabel(r.edge), () => {
+      if (selected !== null) (cfg.wheel_edges ?? []).splice(selected, 1);
     });
   }
 }
@@ -3981,6 +4225,9 @@ function openDetail(
   draft = null;
   remapDraft = null;
   expansionDraft = null;
+  gestureDraft = null;
+  hotcornerDraft = null;
+  wheeledgeDraft = null;
   selected = i;
   draftNew = isNew;
   draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
@@ -4023,6 +4270,18 @@ function openDetail(
       if (seed.pattern) gestureDraft.pattern = seed.pattern;
     }
     fillGestureEditor();
+  } else if (section === "hotcorners") {
+    hotcornerDraft = isNew
+      ? { spot: "top_left", name: null, actions: [newAction("text")], enabled: true }
+      : deepClone((cfg.hot_corners ?? [])[i]);
+    if (isNew && seed) hotcornerDraft.name = seed.name ?? null;
+    fillHotCornerEditor();
+  } else if (section === "wheeledges") {
+    wheeledgeDraft = isNew
+      ? { edge: "top", name: null, actions: [newAction("text")], enabled: true }
+      : deepClone((cfg.wheel_edges ?? [])[i]);
+    if (isNew && seed) wheeledgeDraft.name = seed.name ?? null;
+    fillWheelEdgeEditor();
   }
   markDraftBaseline();
   renderListPane();
@@ -4044,6 +4303,8 @@ function discardDraft() {
   remapDraft = null;
   expansionDraft = null;
   gestureDraft = null;
+  hotcornerDraft = null;
+  wheeledgeDraft = null;
   draftBaseline = null;
   refreshDirty();
 }
@@ -4213,6 +4474,45 @@ async function saveGestureDetail(): Promise<boolean> {
   return ok;
 }
 
+// 触发角 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
+async function saveHotCornerDetail(): Promise<boolean> {
+  if (section !== "hotcorners" || !hotcornerDraft) return false;
+  const item = deepClone(hotcornerDraft);
+  const list = cfg.hot_corners ?? (cfg.hot_corners = []);
+  if (draftNew) {
+    list.unshift(item);
+  } else if (selected !== null && list[selected]) {
+    item.enabled = list[selected].enabled;
+    list[selected] = item;
+  }
+  hotcornerDraft = null;
+  draftNew = false;
+  selected = null;
+  draftBaseline = null;
+  const ok = await save();
+  if (ok) flashRow((cfg.hot_corners ?? []).indexOf(item), "hotcorner");
+  return ok;
+}
+
+async function saveWheelEdgeDetail(): Promise<boolean> {
+  if (section !== "wheeledges" || !wheeledgeDraft) return false;
+  const item = deepClone(wheeledgeDraft);
+  const list = cfg.wheel_edges ?? (cfg.wheel_edges = []);
+  if (draftNew) {
+    list.unshift(item);
+  } else if (selected !== null && list[selected]) {
+    item.enabled = list[selected].enabled;
+    list[selected] = item;
+  }
+  wheeledgeDraft = null;
+  draftNew = false;
+  selected = null;
+  draftBaseline = null;
+  const ok = await save();
+  if (ok) flashRow((cfg.wheel_edges ?? []).indexOf(item), "wheeledge");
+  return ok;
+}
+
 // ---- 未保存改动守卫 ----
 // 编辑草稿是 cfg 的副本（openDetail 时 deepClone / 新建模板），所以「改没改过」没法靠引用比对，
 // 只能与基线比对：draftBaseline 记下打开编辑页（或上次保存）那一刻的草稿签名。
@@ -4272,6 +4572,8 @@ function draftSignature(): string | null {
       pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
     });
   }
+  if (section === "hotcorners") return hotcornerDraft ? JSON.stringify(hotcornerDraft) : null;
+  if (section === "wheeledges") return wheeledgeDraft ? JSON.stringify(wheeledgeDraft) : null;
   return null;
 }
 
@@ -4312,6 +4614,12 @@ function revertDraft() {
   } else if (section === "gestures") {
     gestureDraft = JSON.parse(draftBaseline) as Gesture;
     fillGestureEditor();
+  } else if (section === "hotcorners") {
+    hotcornerDraft = JSON.parse(draftBaseline) as HotCornerRule;
+    fillHotCornerEditor();
+  } else if (section === "wheeledges") {
+    wheeledgeDraft = JSON.parse(draftBaseline) as WheelEdgeRule;
+    fillWheelEdgeEditor();
   } else {
     return;
   }
@@ -4334,6 +4642,12 @@ function draftLabel(): string {
   }
   if (section === "gestures") {
     return trt`鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || tr("未命名")}」`;
+  }
+  if (section === "hotcorners") {
+    return trt`触发角「${hotcornerDraft?.name?.trim() || spotLabel(hotcornerDraft?.spot ?? "top_left")}」`;
+  }
+  if (section === "wheeledges") {
+    return trt`边缘滚动「${wheeledgeDraft?.name?.trim() || spotLabel(wheeledgeDraft?.edge ?? "top")}」`;
   }
   return tr("当前编辑");
 }
@@ -4373,6 +4687,8 @@ async function saveCurrentDraft(): Promise<boolean> {
   if (section === "remaps") return await saveRemapDetail();
   if (section === "expansions") return await saveExpansionDetail();
   if (section === "gestures") return await saveGestureDetail();
+  if (section === "hotcorners") return await saveHotCornerDetail();
+  if (section === "wheeledges") return await saveWheelEdgeDetail();
   return false;
 }
 
@@ -4406,7 +4722,13 @@ async function requestCloseDetail() {
 // 只是打开了编辑页却没改（干净草稿）就不问——关掉它什么都不会丢，留着反而危险：外部内容里
 // 的同一下标可能已经是另一条，草稿一保存就写到别人身上去了。
 async function applyExternalConfig(next: Config) {
-  const editing = draft !== null || remapDraft !== null || expansionDraft !== null || gestureDraft !== null;
+  const editing =
+    draft !== null ||
+    remapDraft !== null ||
+    expansionDraft !== null ||
+    gestureDraft !== null ||
+    hotcornerDraft !== null ||
+    wheeledgeDraft !== null;
   if (editing) {
     if (isDraftDirty()) {
       const take = await askConfirm({
@@ -4915,7 +5237,7 @@ function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | nul
   if (a.type === "system") {
     const op = a.operation;
     const sel = el("select", "action-type") as HTMLSelectElement;
-    for (const o of systemOpChoices(op.op)) {
+    for (const o of SYSTEM_OPS) {
       const opt = el("option") as HTMLOptionElement;
       opt.value = o.value;
       opt.textContent = o.label;
@@ -6252,7 +6574,7 @@ function renderConflictBubble() {
       el(
         "span",
         "conflict-bubble-text",
-        trt`⚠ 已配置 ${gestureCount} 条鼠标手势，但「实验功能」未开启 → 不会触发`,
+        trt`⚠ 已配置 ${gestureCount} 条鼠标手势，但「鼠标操作」未开启 → 不会触发`,
       ),
       el("span", "conflict-bubble-hint", tr("点击开启")),
     );
@@ -6283,11 +6605,12 @@ function renderConflictBubble() {
   box.append(bubble);
 }
 
-// 打开「新功能总闸」并立刻落盘：手势这类功能默认关着，用户配好了却没打开就白配。
+// 打开「鼠标操作」总开关并立刻落盘：手势这类功能默认关着，用户配好了却没打开就白配。
 async function enableExperimentalFeatures() {
   cfg.settings.experimental = true;
   const box = document.getElementById("set-experimental") as HTMLInputElement | null;
   if (box) box.checked = true;
+  syncMouseOpts();
   await save();
 }
 
@@ -6378,7 +6701,7 @@ function timeoutMs(ms: number | undefined): string {
 
 // ---- 鼠标手势（规划 7.2-MG）----
 // 手势的条目与编辑在「快捷键」页的「鼠标操作」分类里（与快捷键/改键/文本扩展并列），
-// 设置页只留一个「实验功能」总闸：关掉 = 这一类不出现、行为不生效，配置保留。
+// 设置页只留一个「鼠标操作」总开关：关掉 = 鼠标类条目不显示、行为不生效，配置保留。
 
 // ---- 复制快捷菜单（EXT-13，已删除；保留只读编辑器函数供旧配置兜底）----
 // 条目 = 一个 Action（可用「分组」串多步），编辑器内嵌在设置页；菜单浮窗只负责展示与点击，
@@ -6534,128 +6857,6 @@ function menuEntryEditor(
   return box;
 }
 
-// ---- 触发角（EXT-10） ----
-const HOT_CORNER_KEYS: { key: HotCornerKey; label: string }[] = [
-  { key: "top_left", label: tr("左上角") },
-  { key: "top_right", label: tr("右上角") },
-  { key: "bottom_left", label: tr("左下角") },
-  { key: "bottom_right", label: tr("右下角") },
-];
-
-// 老配置缺字段时补齐结构（后端 serde default 也是全关）。
-function hotCorners(): HotCorners {
-  return (cfg.settings.hot_corners ??= {
-    enabled: false,
-    top_left: { enabled: false, name: "", actions: [] },
-    top_right: { enabled: false, name: "", actions: [] },
-    bottom_left: { enabled: false, name: "", actions: [] },
-    bottom_right: { enabled: false, name: "", actions: [] },
-  });
-}
-
-function hotCornerOf(key: HotCornerKey): HotCorner {
-  const all = hotCorners();
-  let entry = all[key];
-  if (!entry) entry = all[key] = { enabled: false, name: "", actions: [] };
-  // 后端序列化会跳过空的 name / actions（`skip_serializing_if`），这里补齐再给编辑器用。
-  if (typeof entry.name !== "string") entry.name = "";
-  if (!Array.isArray(entry.actions)) entry.actions = [];
-  return entry;
-}
-
-// 设置页里的动作编辑器：一行一个动作（类型下拉 + 子类型 + 字段），与主编辑页共用
-// `actionSubtypeSelect` / `actionFields`，不另造一套动作表单。触发角 / 边缘滚动共用。
-function settingsActionsEditor(actions: Action[], rerender: () => void): HTMLElement {
-  const box = el("div", "menu-editor-list");
-  actions.forEach((action, i) => {
-    const item = el("div", "menu-editor-entry");
-    const head = el("div", "menu-editor-head");
-    const typeSel = el("select", "action-type-name") as HTMLSelectElement;
-    typeSel.title = tr("点击切换动作类型");
-    typeSel.setAttribute("aria-label", tr("动作类型"));
-    for (const t of actionTypeChoices(action.type === "tool")) {
-      const o = el("option") as HTMLOptionElement;
-      o.value = t.value;
-      o.textContent = t.label;
-      typeSel.append(o);
-    }
-    typeSel.value = action.type;
-    typeSel.addEventListener("change", () => {
-      actions[i] = newAction(typeSel.value as Action["type"]);
-      rerender();
-    });
-    const del = el("button", "ghost menu-editor-btn danger", "×") as HTMLButtonElement;
-    del.title = tr("删除动作");
-    del.addEventListener("click", () => {
-      actions.splice(i, 1);
-      rerender();
-    });
-    head.append(typeSel, del);
-    item.append(head);
-    const sub = actionSubtypeSelect(action, rerender);
-    if (sub) {
-      const typeRow = el("div", "action-type-row");
-      typeRow.append(sub);
-      item.append(typeRow);
-    }
-    item.append(actionFields(action, rerender));
-    box.append(item);
-  });
-  const add = el("button", "ghost", tr("＋ 添加动作")) as HTMLButtonElement;
-  add.addEventListener("click", () => {
-    actions.push(newAction("text"));
-    rerender();
-  });
-  box.append(add);
-  return box;
-}
-
-// 某个角的动作编辑区：结构变化后只重画这一块（设置页其余部分不动）。
-function renderHotCornerActions(key: HotCornerKey) {
-  const host = document.getElementById(`hot-corner-actions-${key}`);
-  if (!host) return;
-  const rerender = () => {
-    renderHotCornerActions(key);
-    void save();
-  };
-  host.replaceChildren(settingsActionsEditor(hotCornerOf(key).actions, rerender));
-}
-
-// ---- 边缘滚动（EXT-11） ----
-const WHEEL_EDGE_KEYS: WheelEdgeKey[] = ["top", "bottom", "left", "right"];
-
-// 老配置缺字段时补齐结构（后端 serde default 也是全关）。
-function wheelEdges(): WheelEdges {
-  return (cfg.settings.wheel_edges ??= {
-    enabled: false,
-    top: { enabled: false, name: "", actions: [] },
-    bottom: { enabled: false, name: "", actions: [] },
-    left: { enabled: false, name: "", actions: [] },
-    right: { enabled: false, name: "", actions: [] },
-  });
-}
-
-function wheelEdgeOf(key: WheelEdgeKey): WheelEdge {
-  const all = wheelEdges();
-  let entry = all[key];
-  if (!entry) entry = all[key] = { enabled: false, name: "", actions: [] };
-  // 后端序列化会跳过空的 name / actions（`skip_serializing_if`），这里补齐再给编辑器用。
-  if (typeof entry.name !== "string") entry.name = "";
-  if (!Array.isArray(entry.actions)) entry.actions = [];
-  return entry;
-}
-
-// 某条边的动作编辑区：结构变化后只重画这一块（设置页其余部分不动）。
-function renderWheelEdgeActions(key: WheelEdgeKey) {
-  const host = document.getElementById(`wheel-edge-actions-${key}`);
-  if (!host) return;
-  const rerender = () => {
-    renderWheelEdgeActions(key);
-    void save();
-  };
-  host.replaceChildren(settingsActionsEditor(wheelEdgeOf(key).actions, rerender));
-}
-
 function syncSettings() {
   (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
   (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
@@ -6754,26 +6955,14 @@ function syncSettings() {
   // 复制快捷菜单（双击 Ctrl+C）已删除，设置卡不再渲染。
   // 旧配置里残留的条目仍能只读渲染（没有宿主节点时函数直接返回），不再提供编辑入口。
   renderClipboardMenuEditor();
-  // 触发角（EXT-10）：缺字段 = 关；四角的启用 / 名字 / 动作都回显。
-  const corners = hotCorners();
-  (document.getElementById("set-hot-corners") as HTMLInputElement).checked = corners.enabled;
-  for (const { key } of HOT_CORNER_KEYS) {
-    const entry = hotCornerOf(key);
-    (document.getElementById(`set-hot-corner-${key}`) as HTMLInputElement).checked = entry.enabled;
-    (document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement).value =
-      entry.name ?? "";
-    renderHotCornerActions(key);
-  }
-  // 边缘滚动（EXT-11）：同样缺字段 = 关；四边启用 / 名字 / 动作都回显。
-  const edges = wheelEdges();
-  (document.getElementById("set-wheel-edges") as HTMLInputElement).checked = edges.enabled;
-  for (const key of WHEEL_EDGE_KEYS) {
-    const entry = wheelEdgeOf(key);
-    (document.getElementById(`set-wheel-edge-${key}`) as HTMLInputElement).checked = entry.enabled;
-    (document.getElementById(`set-wheel-edge-name-${key}`) as HTMLInputElement).value =
-      entry.name ?? "";
-    renderWheelEdgeActions(key);
-  }
+  syncMouseOpts();
+}
+
+/** 鼠标操作的参数设置块只在总开关打开时显示（关闭时配置仍保留）。 */
+function syncMouseOpts() {
+  document
+    .getElementById("mouse-opts")
+    ?.classList.toggle("hidden", cfg.settings.experimental !== true);
 }
 
 /**
@@ -7079,12 +7268,13 @@ function bindSettings() {
     void save();
     void renderInputEnvReport();
   });
-  // 新功能总开关（规划 7.2-MG）：关掉后本轮新增的功能一律不可用——**配置保留**
+  // 鼠标操作总开关（规划 7.2-MG）：关掉后鼠标类功能一律不可用——**配置保留**
   // （只是入口隐藏 + 行为不生效），所以这里只改开关，不动 cfg.gestures。
   const experimental = document.getElementById("set-experimental") as HTMLInputElement;
   experimental.addEventListener("change", () => {
     cfg.settings.experimental = experimental.checked;
-    // 改完重画列表：快捷键页里「鼠标操作」那一类的显隐由它决定。
+    syncMouseOpts();
+    // 改完重画列表：快捷键页里鼠标类条目的显隐由它决定。
     void save().then(() => render());
   });
   const gestureScreenshot = document.getElementById(
@@ -7296,42 +7486,6 @@ function bindSettings() {
   document.getElementById("install-update")!.addEventListener("click", () => {
     void invoke("install_update");
   });
-  // 触发角（EXT-10）：总闸 + 四角的启用 / 名字；动作编辑区的增删改直接写进配置后落盘。
-  const hotCornersEnabled = document.getElementById("set-hot-corners") as HTMLInputElement;
-  hotCornersEnabled.addEventListener("change", () => {
-    hotCorners().enabled = hotCornersEnabled.checked;
-    void save();
-  });
-  for (const { key } of HOT_CORNER_KEYS) {
-    const toggle = document.getElementById(`set-hot-corner-${key}`) as HTMLInputElement;
-    toggle.addEventListener("change", () => {
-      hotCornerOf(key).enabled = toggle.checked;
-      void save();
-    });
-    const name = document.getElementById(`set-hot-corner-name-${key}`) as HTMLInputElement;
-    name.addEventListener("change", () => {
-      hotCornerOf(key).name = name.value.trim();
-      void save();
-    });
-  }
-  // 边缘滚动（EXT-11）：总闸 + 四边的启用 / 名字；动作编辑区同样直接写进配置后落盘。
-  const wheelEdgesEnabled = document.getElementById("set-wheel-edges") as HTMLInputElement;
-  wheelEdgesEnabled.addEventListener("change", () => {
-    wheelEdges().enabled = wheelEdgesEnabled.checked;
-    void save();
-  });
-  for (const key of WHEEL_EDGE_KEYS) {
-    const toggle = document.getElementById(`set-wheel-edge-${key}`) as HTMLInputElement;
-    toggle.addEventListener("change", () => {
-      wheelEdgeOf(key).enabled = toggle.checked;
-      void save();
-    });
-    const name = document.getElementById(`set-wheel-edge-name-${key}`) as HTMLInputElement;
-    name.addEventListener("change", () => {
-      wheelEdgeOf(key).name = name.value.trim();
-      void save();
-    });
-  }
 }
 
 async function exportConfig() {
@@ -7834,6 +7988,18 @@ function isFormTarget(t: EventTarget | null): boolean {
   );
 }
 
+// 只有真正能选中文字的控件才放行原生 Ctrl+A。复选框 / 单选 / 颜色 / 下拉这类控件拿到
+// Ctrl+A 会退化成「选中整页」，在设置页点过勾选后按 Ctrl+A 就会整页刷蓝。
+function isTextEntryTarget(t: EventTarget | null): boolean {
+  const el = t as HTMLElement | null;
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  if (el.tagName === "TEXTAREA") return true;
+  if (el.tagName !== "INPUT") return false;
+  const type = (el as HTMLInputElement).type;
+  return ["text", "search", "url", "tel", "email", "password", "number"].includes(type);
+}
+
 // 鸣谢名单：写死在前端（纯展示，不进 config）。有「首页」的名字点击跳首页；没设首页的点一下从鼠标
 // 点击处喷一串向上漂浮的字符泡泡（字符取自该人自己的池子）。
 type ThanksEntry = { name: string; homepage?: string; pool?: string[] };
@@ -8248,11 +8414,10 @@ function bind() {
   document.addEventListener("keydown", (e) => {
     if (e.defaultPrevented) return;
 
-    // Ctrl+A：只在编辑框（输入框 / 文本域 / 下拉 / contenteditable）里放行原生全选。
-    // 其余地方拦掉——WebView 的网页级全选会把列表行、说明文字整页刷蓝，用户要的是
-    // 「复制这段输入」而不是「选中整个界面」；放在最前面，弹窗开着时同样生效。
+    // Ctrl+A：只在文本框（输入框 / 文本域 / contenteditable）里放行原生全选。
+    // 复选框 / 颜色 / 下拉这类控件上拦掉——WebView 会把 Ctrl+A 退化成整页全选。
     if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === "a" || e.key === "A")) {
-      if (!isFormTarget(e.target)) e.preventDefault();
+      if (!isTextEntryTarget(e.target)) e.preventDefault();
       return;
     }
 
@@ -8352,7 +8517,14 @@ function startBrandLogoLoop() {
 // （合并列表），所以落到「快捷键」上高亮，不另造页签。
 function syncRailTab(tab: Section) {
   // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
-  const rail = tab === "remaps" || tab === "expansions" || tab === "gestures" ? "shortcuts" : tab;
+  const rail =
+    tab === "remaps" ||
+    tab === "expansions" ||
+    tab === "gestures" ||
+    tab === "hotcorners" ||
+    tab === "wheeledges"
+      ? "shortcuts"
+      : tab;
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
     b.classList.toggle("active", b.dataset.tab === rail);
   });

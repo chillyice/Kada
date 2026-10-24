@@ -2531,6 +2531,112 @@ impl WheelEdges {
     }
 }
 
+/// 触发角的位置（新条目模型：一个角可以有多条规则，按数组顺序取第一条启用的）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HotCornerSpot {
+    #[default]
+    TopLeft,
+    TopRight,
+    BottomLeft,
+    BottomRight,
+}
+
+impl HotCornerSpot {
+    pub const ALL: [HotCornerSpot; 4] = [
+        HotCornerSpot::TopLeft,
+        HotCornerSpot::TopRight,
+        HotCornerSpot::BottomLeft,
+        HotCornerSpot::BottomRight,
+    ];
+
+    /// 方位名（没填名称时的兜底展示名）。
+    pub fn label(self) -> &'static str {
+        match self {
+            HotCornerSpot::TopLeft => "左上角",
+            HotCornerSpot::TopRight => "右上角",
+            HotCornerSpot::BottomLeft => "左下角",
+            HotCornerSpot::BottomRight => "右下角",
+        }
+    }
+}
+
+/// 一条触发角规则：位置 + 名称 + 动作链。缺字段 = 关闭。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HotCornerRule {
+    #[serde(default)]
+    pub spot: HotCornerSpot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<Action>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl HotCornerRule {
+    pub fn label(&self) -> String {
+        self.name
+            .clone()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.spot.label().to_string())
+    }
+}
+
+/// 边缘滚动的位置（新条目模型：一条边可以有多条规则，取第一条启用的）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WheelEdgeSpot {
+    #[default]
+    Top,
+    Bottom,
+    Left,
+    Right,
+}
+
+impl WheelEdgeSpot {
+    pub const ALL: [WheelEdgeSpot; 4] = [
+        WheelEdgeSpot::Top,
+        WheelEdgeSpot::Bottom,
+        WheelEdgeSpot::Left,
+        WheelEdgeSpot::Right,
+    ];
+
+    /// 方位名（没填名称时的兜底展示名）。
+    pub fn label(self) -> &'static str {
+        match self {
+            WheelEdgeSpot::Top => "上边缘",
+            WheelEdgeSpot::Bottom => "下边缘",
+            WheelEdgeSpot::Left => "左边缘",
+            WheelEdgeSpot::Right => "右边缘",
+        }
+    }
+}
+
+/// 一条边缘滚动规则：位置 + 名称 + 动作链。缺字段 = 关闭。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WheelEdgeRule {
+    #[serde(default)]
+    pub edge: WheelEdgeSpot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<Action>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl WheelEdgeRule {
+    pub fn label(&self) -> String {
+        self.name
+            .clone()
+            .map(|n| n.trim().to_string())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| self.edge.label().to_string())
+    }
+}
+
 /// 复制快捷菜单的一个条目：动作 / 子菜单 / 分割线。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -2756,11 +2862,12 @@ pub struct Settings {
     /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
     #[serde(default)]
     pub clipboard_menu: ClipboardMenu,
-    /// 触发角（EXT-10）：光标碰到屏幕四角执行动作，见 [`HotCorners`]。缺字段 = 关闭。
-    #[serde(default)]
+    /// **旧版**触发角（EXT-10）四角配置：只在加载旧 JSON 时读，`migrate()` 会转成
+    /// [`Config::hot_corners`] 后清空；新配置不再写这个键。
+    #[serde(default, skip_serializing)]
     pub hot_corners: HotCorners,
-    /// 边缘滚动（EXT-11）：光标贴屏幕四边时滚轮触发动作，见 [`WheelEdges`]。缺字段 = 关闭。
-    #[serde(default)]
+    /// **旧版**边缘滚动（EXT-11）四边配置：迁移口径同 `hot_corners`。
+    #[serde(default, skip_serializing)]
     pub wheel_edges: WheelEdges,
 }
 
@@ -2887,6 +2994,12 @@ pub struct Config {
     /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、松手按方向串匹配。
     #[serde(default)]
     pub gestures: Vec<Gesture>,
+    /// 触发角（EXT-10）：光标碰到屏幕四角执行动作。同一位置可有多条，按顺序取第一条启用的。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hot_corners: Vec<HotCornerRule>,
+    /// 边缘滚动（EXT-11）：光标贴屏幕四边滚动滚轮执行动作。同位置可有多条，取第一条启用的。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub wheel_edges: Vec<WheelEdgeRule>,
     #[serde(default)]
     pub settings: Settings,
 }
@@ -3590,7 +3703,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
 
     // 触发角（EXT-10）：现在只有 Windows 接了鼠标钩子；同一份配置同步到别的平台时
     // 只是不触发，按平台能力缺失给 Warn（不拦保存，执行侧也不静默）。
-    if !caps.hot_corners && cfg.settings.hot_corners.any_enabled() {
+    if !caps.hot_corners && cfg.hot_corners.iter().any(|r| r.enabled) {
         out.push(Conflict {
             severity: Severity::Warn,
             platform: true,
@@ -3601,7 +3714,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     }
 
     // 边缘滚动（EXT-11）：同触发角口径，只有 Windows 接了鼠标钩子。
-    if !caps.wheel_edges && cfg.settings.wheel_edges.any_enabled() {
+    if !caps.wheel_edges && cfg.wheel_edges.iter().any(|r| r.enabled) {
         out.push(Conflict {
             severity: Severity::Warn,
             platform: true,
@@ -3838,8 +3951,8 @@ fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
 pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
     config_uses_mouse(cfg)
         || (cfg.settings.experimental && gesture_capture_enabled(cfg))
-        || (cfg.settings.experimental && cfg.settings.hot_corners.any_enabled())
-        || (cfg.settings.experimental && cfg.settings.wheel_edges.any_enabled())
+        || (cfg.settings.experimental && cfg.hot_corners.iter().any(|r| r.enabled))
+        || (cfg.settings.experimental && cfg.wheel_edges.iter().any(|r| r.enabled))
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
@@ -4269,10 +4382,66 @@ impl Config {
                 .map(migrate_action)
                 .collect();
         }
+        for g in &mut self.gestures {
+            g.actions = std::mem::take(&mut g.actions)
+                .into_iter()
+                .map(migrate_action)
+                .collect();
+        }
+        for r in &mut self.hot_corners {
+            r.actions = std::mem::take(&mut r.actions)
+                .into_iter()
+                .map(migrate_action)
+                .collect();
+        }
+        for r in &mut self.wheel_edges {
+            r.actions = std::mem::take(&mut r.actions)
+                .into_iter()
+                .map(migrate_action)
+                .collect();
+        }
+        self.migrate_legacy_mouse_regions();
         self.settings.hints = std::mem::take(&mut self.settings.hints).normalized();
         self.settings.keycast = std::mem::take(&mut self.settings.keycast).normalized();
         self.settings.clipboard_menu =
             std::mem::take(&mut self.settings.clipboard_menu).normalized();
+    }
+
+    /// 旧版「触发角 / 边缘滚动」写在 `settings.hot_corners` / `settings.wheel_edges` 里，
+    /// 每个位置只能一条。转成新根数组（同位置可多条）后清空旧键，幂等。
+    fn migrate_legacy_mouse_regions(&mut self) {
+        let hc = std::mem::take(&mut self.settings.hot_corners);
+        for (spot, entry) in [
+            (HotCornerSpot::TopLeft, &hc.top_left),
+            (HotCornerSpot::TopRight, &hc.top_right),
+            (HotCornerSpot::BottomLeft, &hc.bottom_left),
+            (HotCornerSpot::BottomRight, &hc.bottom_right),
+        ] {
+            if entry.enabled || !entry.actions.is_empty() || !entry.name.trim().is_empty() {
+                self.hot_corners.push(HotCornerRule {
+                    spot,
+                    name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
+                    actions: entry.actions.clone(),
+                    enabled: hc.enabled && entry.enabled,
+                });
+            }
+        }
+        let we = std::mem::take(&mut self.settings.wheel_edges);
+        for (edge, entry) in [
+            (WheelEdgeSpot::Top, &we.top),
+            (WheelEdgeSpot::Bottom, &we.bottom),
+            (WheelEdgeSpot::Left, &we.left),
+            (WheelEdgeSpot::Right, &we.right),
+        ] {
+            if entry.enabled || !entry.actions.is_empty() || !entry.name.trim().is_empty() {
+                self.wheel_edges.push(WheelEdgeRule {
+                    edge,
+                    name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
+                    actions: entry.actions.clone(),
+                    enabled: we.enabled && entry.enabled,
+                });
+            }
+        }
     }
 }
 
@@ -4655,42 +4824,42 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         out.gestures.push(item);
     }
 
-    // 触发角（EXT-10）：四角动作逐个校验，坏动作单独摘掉（与手势同一口径），角本身保留。
-    for (fallback, corner) in [
-        ("左上角", &mut out.settings.hot_corners.top_left),
-        ("右上角", &mut out.settings.hot_corners.top_right),
-        ("左下角", &mut out.settings.hot_corners.bottom_left),
-        ("右下角", &mut out.settings.hot_corners.bottom_right),
-    ] {
-        let label = corner.label(fallback);
-        corner.name = corner.name.trim().to_string();
+    // 触发角（EXT-10）：动作逐个校验，坏动作单独摘掉（与手势同一口径），规则本身保留。
+    for rule in &cfg.hot_corners {
+        let label = rule.label();
+        let mut item = rule.clone();
+        if let Some(name) = &item.name {
+            let trimmed = name.trim().to_string();
+            item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
+        }
         let mut kept = Vec::new();
-        for a in &corner.actions {
+        for a in &item.actions {
             match a.validate() {
                 Ok(()) => kept.push(a.clone()),
                 Err(e) => ignored.push(format!("触发角「{label}」的某个动作已忽略：{e}")),
             }
         }
-        corner.actions = kept;
+        item.actions = kept;
+        out.hot_corners.push(item);
     }
 
-    // 边缘滚动（EXT-11）：四边动作逐个校验，口径同触发角。
-    for (fallback, edge) in [
-        ("上边缘", &mut out.settings.wheel_edges.top),
-        ("下边缘", &mut out.settings.wheel_edges.bottom),
-        ("左边缘", &mut out.settings.wheel_edges.left),
-        ("右边缘", &mut out.settings.wheel_edges.right),
-    ] {
-        let label = edge.label(fallback);
-        edge.name = edge.name.trim().to_string();
+    // 边缘滚动（EXT-11）：动作逐个校验，口径同触发角。
+    for rule in &cfg.wheel_edges {
+        let label = rule.label();
+        let mut item = rule.clone();
+        if let Some(name) = &item.name {
+            let trimmed = name.trim().to_string();
+            item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
+        }
         let mut kept = Vec::new();
-        for a in &edge.actions {
+        for a in &item.actions {
             match a.validate() {
                 Ok(()) => kept.push(a.clone()),
                 Err(e) => ignored.push(format!("边缘滚动「{label}」的某个动作已忽略：{e}")),
             }
         }
-        edge.actions = kept;
+        item.actions = kept;
+        out.wheel_edges.push(item);
     }
 
     // 唤醒键：无法解析成单键时清空（关闭快速唤醒），不拖垮整份配置。
@@ -4871,6 +5040,8 @@ mod config_tests {
             remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() }],
             expansions: vec![],
             gestures: vec![],
+            hot_corners: vec![],
+            wheel_edges: vec![],
             settings: Settings::default(),
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
@@ -5366,6 +5537,8 @@ mod os_and_sanitize_tests {
             ],
             expansions: vec![],
             gestures: vec![],
+            hot_corners: vec![],
+            wheel_edges: vec![],
             settings: Settings::default(),
         };
         let (clean, ignored) = sanitize_config(&cfg);
@@ -5911,6 +6084,8 @@ mod os_and_sanitize_tests {
             ],
             expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true, ..Default::default() }],
             gestures: vec![],
+            hot_corners: vec![],
+            wheel_edges: vec![],
             settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
         };
 
@@ -8447,19 +8622,18 @@ mod hot_corner_tests {
         }
     }
 
-    /// 老配置（写在触发角之前）缺 `hot_corners`：默认关、四角都关、动作空——照常读。
+    /// 老配置缺字段：根数组为空，照常读。
     #[test]
     fn old_config_without_hot_corners_gets_defaults() {
         let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
-        assert!(!old.settings.hot_corners.enabled);
-        assert!(!old.settings.hot_corners.any_enabled());
-        assert!(old.settings.hot_corners.top_left.actions.is_empty());
+        assert!(old.hot_corners.is_empty());
+        assert!(old.wheel_edges.is_empty());
     }
 
-    /// 四角配置原样往返（重启后名字 / 动作 / 开关都留着）。
+    /// 旧版写在 settings 里的四角 / 四边配置：migrate 转成根数组，旧键清空，幂等。
     #[test]
-    fn hot_corners_roundtrip() {
-        let cfg = Config {
+    fn legacy_settings_regions_migrate_to_root_rules() {
+        let mut cfg = Config {
             settings: Settings {
                 hot_corners: HotCorners {
                     enabled: true,
@@ -8475,22 +8649,79 @@ mod hot_corner_tests {
                     },
                     ..Default::default()
                 },
+                wheel_edges: WheelEdges {
+                    enabled: true,
+                    left: WheelEdge {
+                        enabled: true,
+                        name: "音量".into(),
+                        actions: vec![text("c")],
+                    },
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..Default::default()
         };
-        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
-        assert_eq!(back.settings.hot_corners, cfg.settings.hot_corners);
-        assert_eq!(back.settings.hot_corners.bottom_right.label("右下角"), "右下角");
+        cfg.migrate();
+        assert_eq!(cfg.hot_corners.len(), 2);
+        assert_eq!(cfg.hot_corners[0].spot, HotCornerSpot::TopLeft);
+        assert_eq!(cfg.hot_corners[0].label(), "调度台");
+        assert!(cfg.hot_corners[1].enabled);
+        assert_eq!(cfg.wheel_edges.len(), 1);
+        assert_eq!(cfg.wheel_edges[0].edge, WheelEdgeSpot::Left);
+        assert!(!cfg.settings.hot_corners.enabled);
+        assert!(!cfg.settings.wheel_edges.enabled);
+
+        // 幂等：再迁移一次不会重复生成。
+        cfg.migrate();
+        assert_eq!(cfg.hot_corners.len(), 2);
+        assert_eq!(cfg.wheel_edges.len(), 1);
     }
 
-    /// 启用了至少一个角 → 要装鼠标钩子；`config_uses_mouse` 不受影响（不误报厂商接管）。
+    /// 同一位置允许多条规则，JSON 往返保持顺序与内容。
+    #[test]
+    fn hot_corner_rules_roundtrip_including_multiple_per_spot() {
+        let cfg = Config {
+            hot_corners: vec![
+                HotCornerRule {
+                    spot: HotCornerSpot::TopLeft,
+                    name: Some("调度台".into()),
+                    actions: vec![text("a")],
+                    enabled: true,
+                },
+                HotCornerRule {
+                    spot: HotCornerSpot::TopLeft,
+                    name: None,
+                    actions: vec![text("b")],
+                    enabled: true,
+                },
+            ],
+            wheel_edges: vec![WheelEdgeRule {
+                edge: WheelEdgeSpot::Left,
+                name: Some("音量".into()),
+                actions: vec![text("c")],
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.hot_corners, cfg.hot_corners);
+        assert_eq!(back.hot_corners[1].label(), "左上角");
+        assert_eq!(back.wheel_edges, cfg.wheel_edges);
+        assert_eq!(back.wheel_edges[0].label(), "音量");
+    }
+
+    /// 启用了至少一条 → 要装鼠标钩子；`config_uses_mouse` 不受影响（不误报厂商接管）。
     #[test]
     fn hot_corners_need_mouse_hook_but_not_uses_mouse() {
         let mut cfg = Config::default();
         cfg.settings.experimental = true;
-        cfg.settings.hot_corners.enabled = true;
-        cfg.settings.hot_corners.top_right.enabled = true;
+        cfg.hot_corners.push(HotCornerRule {
+            spot: HotCornerSpot::TopRight,
+            name: None,
+            actions: vec![text("a")],
+            enabled: true,
+        });
         assert!(config_needs_mouse_hook(&cfg));
         assert!(!config_uses_mouse(&cfg));
         // 总闸关掉 → 与没有这个功能一致。
@@ -8504,8 +8735,12 @@ mod hot_corner_tests {
         let mut cfg = Config::default();
         assert!(detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() })
             .is_empty());
-        cfg.settings.hot_corners.enabled = true;
-        cfg.settings.hot_corners.bottom_left.enabled = true;
+        cfg.hot_corners.push(HotCornerRule {
+            spot: HotCornerSpot::BottomLeft,
+            name: None,
+            actions: vec![text("a")],
+            enabled: true,
+        });
         let hits = detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() });
         assert_eq!(hits.len(), 1);
         assert!(hits[0].platform);
@@ -8513,56 +8748,23 @@ mod hot_corner_tests {
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
     }
 
-    /// 清洗只摘掉坏动作，角与名字保留。
+    /// 清洗只摘掉坏动作，位置与名字保留（名字去空白，空名变 None）。
     #[test]
     fn sanitize_drops_bad_hot_corner_actions() {
         let mut cfg = Config::default();
-        cfg.settings.hot_corners.top_left.name = "  左上  ".into();
-        cfg.settings.hot_corners.top_left.actions = vec![
-            text("ok"),
-            Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
-        ];
+        cfg.hot_corners.push(HotCornerRule {
+            spot: HotCornerSpot::TopLeft,
+            name: Some("  左上  ".into()),
+            actions: vec![
+                text("ok"),
+                Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+            ],
+            enabled: true,
+        });
         let (clean, ignored) = sanitize_config(&cfg);
-        assert_eq!(clean.settings.hot_corners.top_left.name, "左上");
-        assert_eq!(clean.settings.hot_corners.top_left.actions.len(), 1);
+        assert_eq!(clean.hot_corners[0].name.as_deref(), Some("左上"));
+        assert_eq!(clean.hot_corners[0].actions.len(), 1);
         assert!(ignored.iter().any(|m| m.contains("触发角")));
-    }
-
-    /// 老配置缺 `wheel_edges`：默认关，四边都没有动作。
-    #[test]
-    fn old_config_without_wheel_edges_gets_defaults() {
-        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
-        assert!(!old.settings.wheel_edges.enabled);
-        assert!(!old.settings.wheel_edges.any_enabled());
-        assert!(old.settings.wheel_edges.top.actions.is_empty());
-    }
-
-    /// 四边开关 / 名字 / 动作能原样往返（空名 / 空动作不落盘）。
-    #[test]
-    fn wheel_edges_roundtrip() {
-        let cfg = Config {
-            settings: Settings {
-                wheel_edges: WheelEdges {
-                    enabled: true,
-                    top: WheelEdge {
-                        enabled: true,
-                        name: "音量".into(),
-                        actions: vec![text("a")],
-                    },
-                    left: WheelEdge {
-                        enabled: true,
-                        name: "".into(),
-                        actions: vec![text("b")],
-                    },
-                    ..Default::default()
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
-        assert_eq!(back.settings.wheel_edges, cfg.settings.wheel_edges);
-        assert_eq!(back.settings.wheel_edges.left.label("左边缘"), "左边缘");
     }
 
     /// 边缘滚动启用 → 要装鼠标钩子，但 `config_uses_mouse` 不受影响（不误报厂商接管）。
@@ -8570,8 +8772,12 @@ mod hot_corner_tests {
     fn wheel_edges_need_mouse_hook_but_not_uses_mouse() {
         let mut cfg = Config::default();
         cfg.settings.experimental = true;
-        cfg.settings.wheel_edges.enabled = true;
-        cfg.settings.wheel_edges.right.enabled = true;
+        cfg.wheel_edges.push(WheelEdgeRule {
+            edge: WheelEdgeSpot::Right,
+            name: None,
+            actions: vec![text("a")],
+            enabled: true,
+        });
         assert!(config_needs_mouse_hook(&cfg));
         assert!(!config_uses_mouse(&cfg));
         // 总闸关掉 → 不装。
@@ -8585,8 +8791,12 @@ mod hot_corner_tests {
         let mut cfg = Config::default();
         assert!(detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() })
             .is_empty());
-        cfg.settings.wheel_edges.enabled = true;
-        cfg.settings.wheel_edges.bottom.enabled = true;
+        cfg.wheel_edges.push(WheelEdgeRule {
+            edge: WheelEdgeSpot::Bottom,
+            name: None,
+            actions: vec![text("a")],
+            enabled: true,
+        });
         let hits = detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() });
         assert_eq!(hits.len(), 1);
         assert!(hits[0].platform);
@@ -8598,14 +8808,18 @@ mod hot_corner_tests {
     #[test]
     fn sanitize_drops_bad_wheel_edge_actions() {
         let mut cfg = Config::default();
-        cfg.settings.wheel_edges.left.name = "  桌面  ".into();
-        cfg.settings.wheel_edges.left.actions = vec![
-            text("ok"),
-            Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
-        ];
+        cfg.wheel_edges.push(WheelEdgeRule {
+            edge: WheelEdgeSpot::Left,
+            name: Some("  桌面  ".into()),
+            actions: vec![
+                text("ok"),
+                Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+            ],
+            enabled: true,
+        });
         let (clean, ignored) = sanitize_config(&cfg);
-        assert_eq!(clean.settings.wheel_edges.left.name, "桌面");
-        assert_eq!(clean.settings.wheel_edges.left.actions.len(), 1);
+        assert_eq!(clean.wheel_edges[0].name.as_deref(), Some("桌面"));
+        assert_eq!(clean.wheel_edges[0].actions.len(), 1);
         assert!(ignored.iter().any(|m| m.contains("边缘滚动")));
     }
 }

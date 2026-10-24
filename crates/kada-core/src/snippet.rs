@@ -86,6 +86,8 @@ pub enum PickKind {
     Remap,
     Expansion,
     Gesture,
+    Hotcorner,
+    Wheeledge,
 }
 
 /// 一条被点名要分享的条目（前端按「类别 + 下标」指；下标越界者跳过）。
@@ -126,6 +128,14 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
                 let Some(g) = cfg.gestures.get(p.idx).cloned() else { continue };
                 out.gestures.push(g);
             }
+            PickKind::Hotcorner => {
+                let Some(r) = cfg.hot_corners.get(p.idx).cloned() else { continue };
+                out.hot_corners.push(r);
+            }
+            PickKind::Wheeledge => {
+                let Some(r) = cfg.wheel_edges.get(p.idx).cloned() else { continue };
+                out.wheel_edges.push(r);
+            }
         }
     }
 
@@ -144,11 +154,19 @@ pub fn snippet_title(part: &Config) -> String {
         e.trigger.clone()
     } else if let Some(g) = part.gestures.first() {
         g.label()
+    } else if let Some(c) = part.hot_corners.first() {
+        c.label()
+    } else if let Some(w) = part.wheel_edges.first() {
+        w.label()
     } else {
         String::new()
     };
-    let n =
-        part.shortcuts.len() + part.remaps.len() + part.expansions.len() + part.gestures.len();
+    let n = part.shortcuts.len()
+        + part.remaps.len()
+        + part.expansions.len()
+        + part.gestures.len()
+        + part.hot_corners.len()
+        + part.wheel_edges.len();
     if n <= 1 {
         one
     } else {

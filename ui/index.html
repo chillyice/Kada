@@ -95,7 +95,9 @@
                 </button>
                 <ul id="mode-menu" class="mode-menu hidden">
                   <li class="mode-item" data-kind="shortcut" title="快捷键：按下组合键 / 序列 / 和弦触发一串动作"><span class="mi-icon"></span><span class="mi-label">快捷键</span></li>
-                  <li class="mode-item" data-kind="gesture" title="鼠标操作：按住右键画一条轨迹，按方向串触发一串动作（实验功能）"><span class="mi-icon"></span><span class="mi-label">鼠标操作</span></li>
+                  <li class="mode-item" data-kind="gesture" title="鼠标操作：按住右键画一条轨迹，按方向串触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">鼠标操作</span></li>
+                  <li class="mode-item" data-kind="hotcorner" title="触发角：光标碰到屏幕四角时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">触发角</span></li>
+                  <li class="mode-item" data-kind="wheeledge" title="边缘滚动：光标贴屏幕边缘滚动滚轮时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">边缘滚动</span></li>
                   <li class="mode-item" data-kind="remap" title="改键：把一个键改成另一个键（含长按、切层、单次、粘滞等形态）"><span class="mi-icon"></span><span class="mi-label">改键</span></li>
                   <li class="mode-item" data-kind="expansion" title="文本扩展：输入触发词自动展开成一段文本"><span class="mi-icon"></span><span class="mi-label">文本扩展</span></li>
                 </ul>
@@ -130,6 +132,10 @@
                 <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
               </div>
+              <!-- 触发角：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
+              <div class="key-view hidden" id="key-hotcorner"></div>
+              <!-- 边缘滚动：模拟显示器，点一条边选中位置 -->
+              <div class="key-view hidden" id="key-wheeledge"></div>
             </div>
 
             <!-- 第二行：tab —— 详情 / 动作·操作·展开文本 / 层 / 条件 -->
@@ -419,19 +425,20 @@
                 </div>
               </section>
 
-              <!-- 实验功能（规划 7.2-MG）：新功能总开关。
-                   默认**关**；关掉 → 入口隐藏（快捷键页不出现「鼠标操作」这一类）+ 行为不生效，
-                   配置保留（重新打开即恢复）。鼠标功能本身的设置在「快捷键」页的「鼠标操作」分类里做。 -->
+              <!-- 鼠标操作（规划 7.2-MG）：新鼠标功能总开关。
+                   默认**关**；关掉 → 入口隐藏（快捷键页不出现鼠标操作 / 触发角 / 边缘滚动）+ 行为不生效，
+                   配置保留（重新打开即恢复）。总开关开着才显示下面的参数设置块。 -->
               <section class="set-card" id="experimental-card">
-                <div class="set-card-head"><span>实验功能</span></div>
+                <div class="set-card-head"><span>鼠标操作</span></div>
                 <div class="set-rows">
                   <label class="set-row">
                     <span class="set-main">
-                      <span class="set-name">新功能总开关</span>
-                      <span class="set-sub">默认关闭；关掉后本轮新增的功能一律不可用（入口隐藏、行为不生效），配置保留</span>
+                      <span class="set-name">启用鼠标操作</span>
+                      <span class="set-sub">默认关闭；关掉后鼠标手势 / 右键圈选截图 / 触发角 / 边缘滚动一律不可用（入口隐藏、行为不生效），配置保留</span>
                     </span>
                     <input type="checkbox" id="set-experimental" class="toggle" />
                   </label>
+                  <div id="mouse-opts" class="set-rows-group hidden">
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">手势排除程序</span>
@@ -441,8 +448,8 @@
                   </label>
                   <label class="set-row">
                     <span class="set-main">
-                      <span class="set-name">右键圈选截图</span>
-                      <span class="set-sub">按住右键绕一圈，右键别松再点一下左键确认，包围盒裁图写进剪贴板（Snipaste 在跑会自动贴图）。只画圈不截图，不需要配置手势条目。目前仅 Windows。</span>
+                      <span class="set-name">右键圈选截图（依赖 Snipaste）</span>
+                      <span class="set-sub">按住右键绕一圈，右键别松再点一下左键确认，包围盒裁图写进剪贴板。<strong>贴图 / 标注依赖 Snipaste</strong>：它没在跑时只复制到剪贴板，装好并运行 Snipaste 后会自动按 F3 贴图。只画圈不截图，不需要配置手势条目。目前仅 Windows。</span>
                     </span>
                     <input type="checkbox" id="set-gesture-screenshot" class="toggle" />
                   </label>
@@ -502,161 +509,15 @@
                     </span>
                     <input type="color" id="set-gesture-fail-color" />
                   </label>
+                  </div>
                 </div>
                 <details class="hint-fold">
-                  <summary>鼠标手势怎么用</summary>
-                  <p class="hint">打开后到「<strong>快捷键</strong>」页新增一条「<strong>鼠标操作</strong>」（列表里那一类）：填方向串（<code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上、<code>DR</code> 右下、<code>DL</code> 左下、<code>UL</code> 左上），再配一串动作。画的时候：按住<strong>右键</strong>画一条轨迹，松手时按方向串匹配。</p>
-                  <p class="hint"><strong>多段用逗号分隔</strong>：<code>D,R</code> = 先下再右（两段），<code>DR</code> = 右下斜向（一段），两者是两条不同的手势。相邻重复自动去重（<code>D,D,R</code> 就是 <code>D,R</code>）。方向串也认 <code>UP</code> / <code>↓</code> 这类写法，保存时自动归一化。</p>
+                  <summary>鼠标操作怎么用</summary>
+                  <p class="hint">总开关打开后到「<strong>快捷键</strong>」页新增条目：模式下拉里可选「<strong>鼠标操作</strong>」（按住右键画轨迹，按方向串匹配）、「<strong>触发角</strong>」（光标碰到屏幕四角）和「<strong>边缘滚动</strong>」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里有一块模拟显示器，点要用的角或边，再在下面配动作。</p>
+                  <p class="hint">鼠标手势的方向串用 <code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上；<strong>多段用逗号分隔</strong>：<code>D,R</code> = 先下再右（两段），<code>DR</code> = 右下斜向（一段）。</p>
                   <p class="hint">没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
-                  <p class="hint">全屏程序（游戏 / 视频 / F11）和上面排除列表里的程序里不接管右键：右键拖拽保持原生，手势不会触发。</p>
-                </details>
-              </section>
-
-              <!-- 触发角（EXT-10）：默认关。光标碰到屏幕四角执行动作；四角独立启用 / 命名 /
-                   配动作。判定在钩子层（纯坐标），执行走 fire 链路。同一份配置应用到每台
-                   显示器的对应角；全屏 / 排除程序与鼠标手势同口径让路。 -->
-              <section class="set-card" id="hot-corners-card">
-                <div class="set-card-head"><span>触发角</span></div>
-                <div class="set-rows">
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">启用触发角</span>
-                      <span class="set-sub">光标碰到屏幕四角时执行对应动作；停留不重复触发，离开后再次碰到才触发。不吞任何鼠标事件</span>
-                    </span>
-                    <input type="checkbox" id="set-hot-corners" class="toggle" />
-                  </label>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">左上角</span>
-                        <span class="set-sub">光标碰到屏幕左上角时执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-hot-corner-name-top_left" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-hot-corner-top_left" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="hot-corner-actions-top_left"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">右上角</span>
-                        <span class="set-sub">光标碰到屏幕右上角时执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-hot-corner-name-top_right" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-hot-corner-top_right" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="hot-corner-actions-top_right"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">左下角</span>
-                        <span class="set-sub">光标碰到屏幕左下角时执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-hot-corner-name-bottom_left" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-hot-corner-bottom_left" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="hot-corner-actions-bottom_left"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">右下角</span>
-                        <span class="set-sub">光标碰到屏幕右下角时执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-hot-corner-name-bottom_right" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-hot-corner-bottom_right" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="hot-corner-actions-bottom_right"></div>
-                  </div>
-                </div>
-                <details class="hint-fold">
-                  <summary>触发角怎么用</summary>
-                  <p class="hint">四角各自启用、各自命名、各配一串动作（与快捷键同一套动作，支持命令 / 打开程序 / 按键等）。<strong>同一份配置应用到每台显示器的对应角</strong>；角落判定用屏幕物理坐标，不按工作区裁掉任务栏。</p>
-                  <p class="hint">停留在一个角里<strong>不会重复触发</strong>；离开角落一段距离后再次碰到才会再触发。全屏程序（游戏 / 视频 / F11）与「手势排除程序」「这些程序里不启用 Kada」命中的程序里一律让路，不触发、也不吞鼠标事件。</p>
-                  <p class="hint">当前只有 Windows 支持；macOS / Linux 上配置保留但不会触发（冲突提示里会说明）。</p>
-                </details>
-              </section>
-
-              <!-- 边缘滚动（EXT-11）：默认关。光标贴屏幕四边时滚动滚轮执行动作；四边独立启用 /
-                   命名 / 配动作。判定在钩子层（纯坐标），执行走 fire 链路。同一份配置应用到每台
-                   显示器的对应边；全屏 / 排除程序与鼠标手势同口径让路，不吞滚轮。 -->
-              <section class="set-card" id="wheel-edges-card">
-                <div class="set-card-head"><span>边缘滚动</span></div>
-                <div class="set-rows">
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">启用边缘滚动</span>
-                      <span class="set-sub">光标贴在屏幕边缘时滚动滚轮执行对应动作；一次停留只触发一次，离开边缘后重新武装。不吞滚轮</span>
-                    </span>
-                    <input type="checkbox" id="set-wheel-edges" class="toggle" />
-                  </label>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">上边缘</span>
-                        <span class="set-sub">光标贴在屏幕上边缘时滚动滚轮，执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-wheel-edge-name-top" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-wheel-edge-top" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="wheel-edge-actions-top"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">下边缘</span>
-                        <span class="set-sub">光标贴在屏幕下边缘时滚动滚轮，执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-wheel-edge-name-bottom" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-wheel-edge-bottom" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="wheel-edge-actions-bottom"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">左边缘</span>
-                        <span class="set-sub">光标贴在屏幕左边缘时滚动滚轮，执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-wheel-edge-name-left" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-wheel-edge-left" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="wheel-edge-actions-left"></div>
-                  </div>
-                  <div class="hot-corner">
-                    <div class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">右边缘</span>
-                        <span class="set-sub">光标贴在屏幕右边缘时滚动滚轮，执行下面的动作</span>
-                      </span>
-                      <span class="set-controls hot-corner-controls">
-                        <input type="text" id="set-wheel-edge-name-right" class="hot-corner-name" placeholder="名称（可选）" />
-                        <input type="checkbox" id="set-wheel-edge-right" class="toggle" />
-                      </span>
-                    </div>
-                    <div class="hot-corner-actions" id="wheel-edge-actions-right"></div>
-                  </div>
-                </div>
-                <details class="hint-fold">
-                  <summary>边缘滚动怎么用</summary>
-                  <p class="hint">四边各自启用、各自命名、各配一串动作（与快捷键同一套动作，支持命令 / 打开程序 / 按键等）。<strong>同一份配置应用到每台显示器的对应边</strong>；判定用屏幕物理坐标，不按工作区裁掉任务栏。</p>
-                  <p class="hint">贴着一边滚轮<strong>只触发一次</strong>；离开边缘一段距离后回来再滚才会再触发。滚轮本身<strong>照常滚动</strong>（不吞键）；如果某一格已经被滚轮快捷键接走，边缘滚动不再重复处理。全屏程序（游戏 / 视频 / F11）与「手势排除程序」「这些程序里不启用 Kada」命中的程序里一律让路。</p>
-                  <p class="hint">当前只有 Windows 支持；macOS / Linux 上配置保留但不会触发（冲突提示里会说明）。</p>
+                  <p class="hint">全屏程序（游戏 / 视频 / F11）和上图排除列表里的程序里一律让路：手势不接管右键，触发角 / 边缘滚动也不触发。</p>
+                  <p class="hint"><strong>右键圈选截图依赖 Snipaste</strong>：裁剪图会先写进剪贴板；Snipaste 在跑时会按 F3 调出贴图，标注 / 保存 / 置顶都在 Snipaste 里完成。没装或没运行时只有剪贴板里的图，请自行粘贴。</p>
                 </details>
               </section>
 
@@ -666,7 +527,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">显示当前按键</span>
-                      <span class="set-sub">在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示</span>
+                      <span class="set-sub">默认关闭；在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示</span>
                     </span>
                     <input type="checkbox" id="set-keycast" class="toggle" />
                   </label>
