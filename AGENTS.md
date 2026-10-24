@@ -48,7 +48,7 @@
 
 - **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：唤窗、动作执行、注入一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
 - **注入事件一律放行**（Windows `LLKHF_INJECTED`）防回环；**`Block` / `Replace` 登记 `SWALLOWED`** 连 keyup 一起吞，但**所有 keyup 仍要回调 handler**
-- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）**或**有启用的手势 / 触发角 / 边缘滚动才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`（会让输入层诊断误报厂商接管）
+- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）**或**有启用的手势 / 触发角 / 边缘滚动才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`
 - **滚轮只在绑了触发键时接管**（`config_uses_wheel` → `set_wheel_enabled`）：120 累积一格、换向清零；没绑就原样放行。**边缘滚动只在贴边时旁听、不吞滚轮**（`wheel_edge`）
 - **macOS 辅助功能是运行时授权**（`AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；**媒体键走独立 `NX_SYSDEFINED` tap**
 - **Linux 不抓触摸板 / 指点杆**（抓了等于废掉整个触摸板）
@@ -69,7 +69,7 @@
 - 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`
 - **超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`）——**配置读锁必须先于 `Engine` 锁**，同序否则死锁
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时也主动解除
-- **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`（盖满显示器且非最大化、排除本进程窗口），与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势那条全屏让路无开关、恒生效**，两者别合并
+- **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`（盖满显示器且非最大化、排除本进程窗口与**桌面外壳 `Progman`/`WorkerW`**），与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势全屏让路无开关、恒生效**，两者别合并
 - **输入状态复位**（`Engine::reset`）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**、**缓冲里的丢弃不回放**、**锁定层保留**
 - **自愈看门狗**：Windows **只投递 `WM_APP_REINSTALL`**、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**，但 **Raw Input 键盘旁路**（`LAST_RAW_KEY_TICK`）是独立观察者
 - **前台 / 设备上下文**：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`；带 `when` 的条目用 `TriggerContext`，前台**惰性查询**

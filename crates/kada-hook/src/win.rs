@@ -1128,10 +1128,11 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
 ///
 /// 判据：窗口矩形 ⊇ 显示器矩形，且窗口**不是最大化**——最大化窗口的矩形会越过显示器边缘
 /// （不可见边框），只看矩形会把「浏览器最大化」误判成全屏。无边框全屏（游戏 / F11）不是
-/// `WS_MAXIMIZE`，照常命中。自己的窗口不算（`is_own_window`）。
+/// `WS_MAXIMIZE`，照常命中。自己的窗口不算（`is_own_window`），**桌面外壳也不算**
+/// （`is_desktop_shell`）。
 pub fn foreground_fullscreen() -> bool {
     let hwnd = unsafe { GetForegroundWindow() };
-    if hwnd.0.is_null() || is_own_window(hwnd) {
+    if hwnd.0.is_null() || is_own_window(hwnd) || is_desktop_shell(hwnd) {
         return false;
     }
     if unsafe { IsZoomed(hwnd) }.as_bool() {
@@ -1161,6 +1162,24 @@ fn rect_covers(window: RECT, monitor: RECT) -> bool {
         && window.top <= monitor.top
         && window.right >= monitor.right
         && window.bottom >= monitor.bottom
+}
+
+/// 前台窗口是不是桌面外壳本身（空虚拟桌面 / 点了桌面背景时前台就是它）。
+///
+/// 它的矩形本来就铺满显示器、又不是 `WS_MAXIMIZE`，只看几何会被当成全屏程序——后果是
+/// 触发角 / 鼠标手势 / 全局全屏暂停在空桌面上整条让路（切到没有窗口的桌面后四角全哑）。
+fn is_desktop_shell(hwnd: HWND) -> bool {
+    if hwnd == unsafe { GetShellWindow() } {
+        return true;
+    }
+    let mut buf = [0u16; 32];
+    let n = unsafe { GetClassNameW(hwnd, &mut buf) };
+    is_desktop_shell_class(&String::from_utf16_lossy(&buf[..n.max(0) as usize]))
+}
+
+/// 桌面外壳的窗口类（纯判定，单测覆盖）：`Progman` = 桌面本体，`WorkerW` = 壁纸宿主。
+fn is_desktop_shell_class(class: &str) -> bool {
+    matches!(class, "Progman" | "WorkerW")
 }
 
 /// Raw Input 消息窗口句柄（0 = 没建起来 / 已销毁）。WM_INPUT 发到它、由钩子线程的消息
@@ -2173,6 +2192,15 @@ mod tests {
         // 普通窗口 / 只占一半 / 盖住任务栏但没盖满都不是。
         assert!(!rect_covers(RECT { left: 100, top: 100, right: 900, bottom: 700 }, mon));
         assert!(!rect_covers(RECT { left: 0, top: 0, right: 1920, bottom: 1040 }, mon));
+    }
+
+    /// 空桌面的前台就是 Progman（矩形铺满、非最大化）：必须认成桌面，不能当全屏程序。
+    #[test]
+    fn desktop_shell_is_not_fullscreen() {
+        assert!(is_desktop_shell_class("Progman"));
+        assert!(is_desktop_shell_class("WorkerW"));
+        assert!(!is_desktop_shell_class("Chrome_WidgetWin_1"));
+        assert!(!is_desktop_shell_class(""));
     }
 
     #[test]
