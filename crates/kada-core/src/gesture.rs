@@ -21,6 +21,9 @@ pub struct Gesture {
     /// 条目标题（列表 / 气泡展示用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 条目描述（只做展示，与快捷键的 `description` 同义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`；多段用逗号分隔（如 `D,R,U,L`）。
     #[serde(default)]
     pub pattern: String,
@@ -437,6 +440,7 @@ mod tests {
     fn gesture(pattern: &str) -> Gesture {
         Gesture {
             name: Some("测试".into()),
+            description: None,
             pattern: pattern.into(),
             actions: Vec::new(),
             #[cfg(feature = "automation")]

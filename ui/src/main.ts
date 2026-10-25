@@ -1,4 +1,4 @@
-﻿import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
@@ -315,17 +315,41 @@ type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntr
 /** 触发角位置（后端 `HotCornerSpot`）。 */
 type HotCornerSpot = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 /** 一条触发角规则（后端 `HotCornerRule`）：同位置可有多条，取第一条启用的。 */
-type HotCornerRule = { spot: HotCornerSpot; name?: string | null; enabled: boolean; actions: Action[] };
+type HotCornerRule = {
+  spot: HotCornerSpot;
+  name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
+  /** 所属层：null / 缺省 = 基础层（恒生效）。 */
+  layer?: string | null;
+  /** 触发侧条件门控（同快捷键）；缺省 = 无条件。 */
+  when?: Condition | null;
+  enabled: boolean;
+  actions: Action[];
+};
 /** 边缘滚动位置（后端 `WheelEdgeSpot`）。 */
 type WheelEdgeSpot = "top" | "bottom" | "left" | "right";
 /** 一条边缘滚动规则（后端 `WheelEdgeRule`）：同位置可有多条，取第一条启用的。 */
-type WheelEdgeRule = { edge: WheelEdgeSpot; name?: string | null; enabled: boolean; actions: Action[] };
+type WheelEdgeRule = {
+  edge: WheelEdgeSpot;
+  name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
+  /** 所属层：null / 缺省 = 基础层（恒生效）。 */
+  layer?: string | null;
+  /** 触发侧条件门控（同快捷键）；缺省 = 无条件。 */
+  when?: Condition | null;
+  enabled: boolean;
+  actions: Action[];
+};
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
  * 后端模型见 `kada-core` 的 `Gesture`。
  */
 type Gesture = {
   name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
   /** 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`（如 `DRUL`）。 */
   pattern: string;
   enabled: boolean;
@@ -428,6 +452,7 @@ type Section =
   | "gestures"
   | "hotcorners"
   | "wheeledges"
+  | "layers"
   | "messages"
   | "settings"
   | "help";
@@ -1941,7 +1966,7 @@ function render() {
   renderConflictBubble();
   renderDetail();
   renderMessages();
-  if (section === "settings") renderLayers();
+  if (section === "layers") renderLayers();
 }
 
 function renderListPane() {
@@ -1960,7 +1985,7 @@ function renderListPane() {
         : null;
   document.getElementById("list-pane")!.classList.toggle(
     "hidden",
-    section === "settings" || section === "messages" || section === "help",
+    section === "settings" || section === "layers" || section === "messages" || section === "help",
   );
   // 多选集按各份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
   const all: object[] = [
@@ -2052,7 +2077,7 @@ const KIND_ICON: Record<ListKind, string> = {
   gesture:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7v6a4 4 0 0 0 4 4h9.5"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
   hotcorner:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 4l5 5"/><circle cx="3" cy="4" r="1.4" fill="currentColor"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4h16"/><path d="M4 8a4 4 0 0 1 4-4"/></svg>',
   wheeledge:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="9" y="10" width="6" height="8" rx="1"/><path d="M12 11v2m0 0 1-1m-1 1-1-1"/></svg>',
 };
@@ -2279,11 +2304,7 @@ function mouseFeaturesEnabled(): boolean {
   return cfg.settings.experimental === true;
 }
 
-/** 触发角 / 边缘滚动：位置 + 动作，没有详情 / 层 / 条件。 */
-function isMouseTriggerKind(kind: ListKind): boolean {
-  return kind === "hotcorner" || kind === "wheeledge";
-}
-
+/** 触发角 / 边缘滚动：位置 + 动作（详情 / 层 / 条件与其它条目同口径）。 */
 // 鼠标操作（手势）行：方向串占「组合键」那一格，后面跟名称。
 // **鼠标操作总开关关着时整类不显示**（入口隐藏），配置本身留着。
 function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
@@ -2313,7 +2334,7 @@ function gestureVisible(g: Gesture): boolean {
   if (!mouseFeaturesEnabled()) return false; // 总闸关着 = 这一类不出现
   const q = search.trim().toLowerCase();
   if (q) {
-    const hay = `${g.pattern} ${g.name ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    const hay = `${g.pattern} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !g.enabled) return false;
@@ -2390,7 +2411,7 @@ function hotCornerVisible(r: HotCornerRule): boolean {
   if (!mouseFeaturesEnabled()) return false;
   const q = search.trim().toLowerCase();
   if (q) {
-    const hay = `${spotLabel(r.spot)} ${r.name ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    const hay = `${spotLabel(r.spot)} ${r.name ?? ""} ${r.description ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !r.enabled) return false;
@@ -2401,7 +2422,7 @@ function wheelEdgeVisible(r: WheelEdgeRule): boolean {
   if (!mouseFeaturesEnabled()) return false;
   const q = search.trim().toLowerCase();
   if (q) {
-    const hay = `${spotLabel(r.edge)} ${r.name ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    const hay = `${spotLabel(r.edge)} ${r.name ?? ""} ${r.description ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !r.enabled) return false;
@@ -3630,6 +3651,7 @@ async function setFolderEnabled(rootId: string, v: boolean) {
 function renderDetail() {
   const entry = isListSection(section);
   document.getElementById("detail-entry")!.classList.toggle("hidden", !entry);
+  document.getElementById("detail-layers")!.classList.toggle("hidden", section !== "layers");
   document.getElementById("detail-settings")!.classList.toggle("hidden", section !== "settings");
   document.getElementById("detail-messages")!.classList.toggle("hidden", section !== "messages");
   document.getElementById("detail-help")!.classList.toggle("hidden", section !== "help");
@@ -3950,7 +3972,8 @@ function openGesturePad(onDone: (pattern: string) => void) {
 
 function fillGestureEditor() {
   if (!gestureDraft) return;
-  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = "";
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
+    gestureDraft.description ?? "";
   (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
     gestureDraft.pattern;
   renderWhenEditor(
@@ -3984,15 +4007,52 @@ function spotPicker(
     b.addEventListener("click", () => pick(p.key));
     screen.append(b);
   }
-  box.append(screen, el("div", "unit-hint", trt`当前位置：${spotLabel(current)}；同一位置可建多条，按列表顺序取第一条启用的。`));
+  box.append(
+    screen,
+    el("div", "unit-hint", tr("同一位置可建多条，按列表顺序取第一条启用的。")),
+  );
+  return box;
+}
+
+/** 位置选择：平时只占一行「位置：左上角」，点开才浮出显示器（选完自动收起）。 */
+function spotField(
+  kind: "hotcorner" | "wheeledge",
+  current: HotCornerSpot | WheelEdgeSpot,
+  pick: (spot: HotCornerSpot | WheelEdgeSpot) => void,
+): HTMLElement {
+  const box = el("details", "spot-field") as HTMLDetailsElement;
+  const sum = el("summary", "spot-trigger", trt`位置：${spotLabel(current)}`);
+  const pop = el("div", "spot-pop");
+  pop.append(
+    spotPicker(kind, current, (s) => {
+      box.open = false;
+      pick(s);
+    }),
+  );
+  box.append(sum, pop);
   return box;
 }
 
 function fillHotCornerEditor() {
   if (!hotcornerDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
+    hotcornerDraft.description ?? "";
+  fillLayerSelect(
+    document.getElementById("hotcorner-layer") as HTMLSelectElement,
+    hotcornerDraft.layer ?? null,
+    "assign",
+  );
+  renderWhenEditor(
+    document.getElementById("edit-when")!,
+    () => hotcornerDraft?.when,
+    (c) => {
+      if (hotcornerDraft) hotcornerDraft.when = c;
+    },
+    refreshDirty,
+  );
   const host = document.getElementById("key-hotcorner")!;
   host.replaceChildren(
-    spotPicker("hotcorner", hotcornerDraft.spot, (spot) => {
+    spotField("hotcorner", hotcornerDraft.spot, (spot) => {
       if (!hotcornerDraft) return;
       hotcornerDraft.spot = spot as HotCornerSpot;
       fillHotCornerEditor();
@@ -4005,9 +4065,24 @@ function fillHotCornerEditor() {
 
 function fillWheelEdgeEditor() {
   if (!wheeledgeDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
+    wheeledgeDraft.description ?? "";
+  fillLayerSelect(
+    document.getElementById("wheeledge-layer") as HTMLSelectElement,
+    wheeledgeDraft.layer ?? null,
+    "assign",
+  );
+  renderWhenEditor(
+    document.getElementById("edit-when")!,
+    () => wheeledgeDraft?.when,
+    (c) => {
+      if (wheeledgeDraft) wheeledgeDraft.when = c;
+    },
+    refreshDirty,
+  );
   const host = document.getElementById("key-wheeledge")!;
   host.replaceChildren(
-    spotPicker("wheeledge", wheeledgeDraft.edge, (edge) => {
+    spotField("wheeledge", wheeledgeDraft.edge, (edge) => {
       if (!wheeledgeDraft) return;
       wheeledgeDraft.edge = edge as WheelEdgeSpot;
       fillWheelEdgeEditor();
@@ -4062,11 +4137,11 @@ function syncEntry() {
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展与鼠标类触发没有「层」；鼠标操作有「条件」（与快捷键同语义）。
-  // 触发角 / 边缘滚动只有「位置 + 动作」，连详情页签也不出现。
-  const hasLayer = kind !== "expansion" && !isMouseTriggerKind(kind);
-  const hasWhen = kind === "shortcut" || kind === "remap" || kind === "gesture";
-  const hasDetail = kind !== "gesture" && !isMouseTriggerKind(kind);
+  // 文本扩展没有「层」；快捷键 / 改键 / 鼠标操作 / 触发角 / 边缘滚动都能归属层。
+  // 条件（when）与快捷键同语义，改键 / 鼠标类触发也都支持；六类条目都有「详情」页签。
+  const hasLayer = kind !== "expansion";
+  const hasWhen = kind !== "expansion";
+  const hasDetail = true;
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
   document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
   document.getElementById("tab-detail")!.classList.toggle("hidden", !hasDetail);
@@ -4263,7 +4338,13 @@ function openDetail(
     fillExpansionEditor();
   } else if (section === "gestures") {
     gestureDraft = isNew
-      ? { name: null, pattern: "D", actions: [newAction("text")], enabled: true }
+      ? {
+          name: null,
+          description: null,
+          pattern: "D",
+          actions: [newAction("text")],
+          enabled: true,
+        }
       : deepClone((cfg.gestures ?? [])[i]);
     if (isNew && seed) {
       gestureDraft.name = seed.name ?? null;
@@ -4272,13 +4353,29 @@ function openDetail(
     fillGestureEditor();
   } else if (section === "hotcorners") {
     hotcornerDraft = isNew
-      ? { spot: "top_left", name: null, actions: [newAction("text")], enabled: true }
+      ? {
+          spot: "top_left",
+          name: null,
+          description: null,
+          layer: null,
+          when: null,
+          actions: [newAction("text")],
+          enabled: true,
+        }
       : deepClone((cfg.hot_corners ?? [])[i]);
     if (isNew && seed) hotcornerDraft.name = seed.name ?? null;
     fillHotCornerEditor();
   } else if (section === "wheeledges") {
     wheeledgeDraft = isNew
-      ? { edge: "top", name: null, actions: [newAction("text")], enabled: true }
+      ? {
+          edge: "top",
+          name: null,
+          description: null,
+          layer: null,
+          when: null,
+          actions: [newAction("text")],
+          enabled: true,
+        }
       : deepClone((cfg.wheel_edges ?? [])[i]);
     if (isNew && seed) wheeledgeDraft.name = seed.name ?? null;
     fillWheelEdgeEditor();
@@ -4457,6 +4554,7 @@ async function saveGestureDetail(): Promise<boolean> {
     return false;
   }
   gestureDraft.pattern = pattern;
+  gestureDraft.description = domValue("edit-desc") || null;
   const item = deepClone(gestureDraft);
   const list = cfg.gestures ?? (cfg.gestures = []);
   if (draftNew) {
@@ -4477,6 +4575,8 @@ async function saveGestureDetail(): Promise<boolean> {
 // 触发角 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
 async function saveHotCornerDetail(): Promise<boolean> {
   if (section !== "hotcorners" || !hotcornerDraft) return false;
+  hotcornerDraft.description = domValue("edit-desc") || null;
+  hotcornerDraft.layer = domValue("hotcorner-layer") || null;
   const item = deepClone(hotcornerDraft);
   const list = cfg.hot_corners ?? (cfg.hot_corners = []);
   if (draftNew) {
@@ -4496,6 +4596,8 @@ async function saveHotCornerDetail(): Promise<boolean> {
 
 async function saveWheelEdgeDetail(): Promise<boolean> {
   if (section !== "wheeledges" || !wheeledgeDraft) return false;
+  wheeledgeDraft.description = domValue("edit-desc") || null;
+  wheeledgeDraft.layer = domValue("wheeledge-layer") || null;
   const item = deepClone(wheeledgeDraft);
   const list = cfg.wheel_edges ?? (cfg.wheel_edges = []);
   if (draftNew) {
@@ -4569,11 +4671,26 @@ function draftSignature(): string | null {
     if (!gestureDraft) return null;
     return JSON.stringify({
       ...gestureDraft,
+      description: domValue("edit-desc") || null,
       pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
     });
   }
-  if (section === "hotcorners") return hotcornerDraft ? JSON.stringify(hotcornerDraft) : null;
-  if (section === "wheeledges") return wheeledgeDraft ? JSON.stringify(wheeledgeDraft) : null;
+  if (section === "hotcorners")
+    return hotcornerDraft
+      ? JSON.stringify({
+          ...hotcornerDraft,
+          description: domValue("edit-desc") || null,
+          layer: domValue("hotcorner-layer") || null,
+        })
+      : null;
+  if (section === "wheeledges")
+    return wheeledgeDraft
+      ? JSON.stringify({
+          ...wheeledgeDraft,
+          description: domValue("edit-desc") || null,
+          layer: domValue("wheeledge-layer") || null,
+        })
+      : null;
   return null;
 }
 
@@ -7971,6 +8088,9 @@ async function deleteLayer(id: string) {
     if (r.hold_layer === id) r.hold_layer = null;
     if (r.lock_layer === id) r.lock_layer = null;
   });
+  for (const r of [...(cfg.hot_corners ?? []), ...(cfg.wheel_edges ?? [])]) {
+    if (r.layer === id) r.layer = null;
+  }
   if (editingLayerId === id) editingLayerId = null;
   void save();
 }
@@ -8088,6 +8208,13 @@ function renderThanks() {
 function bind() {
   document.querySelectorAll<HTMLButtonElement>(".rail-item").forEach((b) => {
     b.addEventListener("click", () => void switchSection(b.dataset.tab as Section));
+  });
+  // 位置浮层（<details>）：点外面任一处置回收起（原生 details 不帮这个忙）。
+  document.addEventListener("click", (e) => {
+    if ((e.target as HTMLElement | null)?.closest(".spot-field")) return;
+    document
+      .querySelectorAll<HTMLDetailsElement>(".spot-field[open]")
+      .forEach((d) => (d.open = false));
   });
   startBrandLogoLoop();
 
@@ -8513,8 +8640,8 @@ function startBrandLogoLoop() {
   });
 }
 
-// rail 只有 4 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
-// （合并列表），所以落到「快捷键」上高亮，不另造页签。
+// rail 只有 5 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
+// （合并列表），所以落到「快捷键」上高亮，不另造页签；「键位层」是独立一级页。
 function syncRailTab(tab: Section) {
   // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
   const rail =

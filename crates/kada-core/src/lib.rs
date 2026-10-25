@@ -2568,6 +2568,16 @@ pub struct HotCornerRule {
     pub spot: HotCornerSpot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 条目描述（只做展示，与快捷键的 `description` 同义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 归属层：`None` = 基础层（恒生效）；`Some` = 仅在该层激活时参与匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// 触发侧条件门控（同快捷键）：不成立 = 这条不存在，落到下一条同位置的规则。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Condition>,
     #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
@@ -2581,6 +2591,24 @@ impl HotCornerRule {
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| self.spot.label().to_string())
+    }
+
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// 层语义同快捷键：`active_layer` 与条目归属层严格相等（`None` = 基础层）。
+    pub fn layer_matches(&self, active_layer: Option<&str>) -> bool {
+        self.layer.as_deref() == active_layer
     }
 }
 
@@ -2621,6 +2649,16 @@ pub struct WheelEdgeRule {
     pub edge: WheelEdgeSpot,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// 条目描述（只做展示，与快捷键的 `description` 同义）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 归属层：`None` = 基础层（恒生效）；`Some` = 仅在该层激活时参与匹配。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layer: Option<String>,
+    /// 触发侧条件门控（同快捷键）：不成立 = 这条不存在，落到下一条同位置的规则。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<Condition>,
     #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
@@ -2634,6 +2672,24 @@ impl WheelEdgeRule {
             .map(|n| n.trim().to_string())
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| self.edge.label().to_string())
+    }
+
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// 层语义同快捷键：`active_layer` 与条目归属层严格相等（`None` = 基础层）。
+    pub fn layer_matches(&self, active_layer: Option<&str>) -> bool {
+        self.layer.as_deref() == active_layer
     }
 }
 
@@ -4421,6 +4477,10 @@ impl Config {
                 self.hot_corners.push(HotCornerRule {
                     spot,
                     name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
+                    description: None,
+                    layer: None,
+                    #[cfg(feature = "automation")]
+                    when: None,
                     actions: entry.actions.clone(),
                     enabled: hc.enabled && entry.enabled,
                 });
@@ -4437,6 +4497,10 @@ impl Config {
                 self.wheel_edges.push(WheelEdgeRule {
                     edge,
                     name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
+                    description: None,
+                    layer: None,
+                    #[cfg(feature = "automation")]
+                    when: None,
                     actions: entry.actions.clone(),
                     enabled: we.enabled && entry.enabled,
                 });
@@ -4832,6 +4896,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             let trimmed = name.trim().to_string();
             item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
         }
+        if let Some(lid) = &item.layer {
+            if !valid_layer_ids.contains(lid) {
+                ignored.push(format!("触发角「{label}」所属层已忽略：层不存在"));
+                item.layer = None;
+            }
+        }
         let mut kept = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -4840,6 +4910,13 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
         item.actions = kept;
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("触发角「{label}」的触发条件已忽略：{e}"));
+                item.when = None;
+            }
+        }
         out.hot_corners.push(item);
     }
 
@@ -4851,6 +4928,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             let trimmed = name.trim().to_string();
             item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
         }
+        if let Some(lid) = &item.layer {
+            if !valid_layer_ids.contains(lid) {
+                ignored.push(format!("边缘滚动「{label}」所属层已忽略：层不存在"));
+                item.layer = None;
+            }
+        }
         let mut kept = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -4859,6 +4942,13 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
         item.actions = kept;
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("边缘滚动「{label}」的触发条件已忽略：{e}"));
+                item.when = None;
+            }
+        }
         out.wheel_edges.push(item);
     }
 
@@ -8686,12 +8776,20 @@ mod hot_corner_tests {
                 HotCornerRule {
                     spot: HotCornerSpot::TopLeft,
                     name: Some("调度台".into()),
+                    description: Some("打开调度台".into()),
+                    layer: None,
+                    #[cfg(feature = "automation")]
+                    when: None,
                     actions: vec![text("a")],
                     enabled: true,
                 },
                 HotCornerRule {
                     spot: HotCornerSpot::TopLeft,
                     name: None,
+                    description: None,
+                    layer: None,
+                    #[cfg(feature = "automation")]
+                    when: None,
                     actions: vec![text("b")],
                     enabled: true,
                 },
@@ -8699,6 +8797,10 @@ mod hot_corner_tests {
             wheel_edges: vec![WheelEdgeRule {
                 edge: WheelEdgeSpot::Left,
                 name: Some("音量".into()),
+                description: None,
+                layer: None,
+                #[cfg(feature = "automation")]
+                when: None,
                 actions: vec![text("c")],
                 enabled: true,
             }],
@@ -8719,6 +8821,10 @@ mod hot_corner_tests {
         cfg.hot_corners.push(HotCornerRule {
             spot: HotCornerSpot::TopRight,
             name: None,
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![text("a")],
             enabled: true,
         });
@@ -8738,6 +8844,10 @@ mod hot_corner_tests {
         cfg.hot_corners.push(HotCornerRule {
             spot: HotCornerSpot::BottomLeft,
             name: None,
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![text("a")],
             enabled: true,
         });
@@ -8755,6 +8865,10 @@ mod hot_corner_tests {
         cfg.hot_corners.push(HotCornerRule {
             spot: HotCornerSpot::TopLeft,
             name: Some("  左上  ".into()),
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![
                 text("ok"),
                 Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
@@ -8775,6 +8889,10 @@ mod hot_corner_tests {
         cfg.wheel_edges.push(WheelEdgeRule {
             edge: WheelEdgeSpot::Right,
             name: None,
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![text("a")],
             enabled: true,
         });
@@ -8794,6 +8912,10 @@ mod hot_corner_tests {
         cfg.wheel_edges.push(WheelEdgeRule {
             edge: WheelEdgeSpot::Bottom,
             name: None,
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![text("a")],
             enabled: true,
         });
@@ -8811,6 +8933,10 @@ mod hot_corner_tests {
         cfg.wheel_edges.push(WheelEdgeRule {
             edge: WheelEdgeSpot::Left,
             name: Some("  桌面  ".into()),
+            description: None,
+            layer: None,
+            #[cfg(feature = "automation")]
+            when: None,
             actions: vec![
                 text("ok"),
                 Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },

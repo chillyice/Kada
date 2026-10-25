@@ -966,5 +966,12 @@
   "当前位置：{0}；同一位置可建多条，按列表顺序取第一条启用的。": "Current spot: {0}. Multiple entries are allowed for the same spot; the first enabled one in list order wins.",
   "放到{0}": "Place at {0}",
   "触发角「{0}」": "Hot corner “{0}”",
-  "边缘滚动「{0}」": "Edge scrolling “{0}”"
+  "边缘滚动「{0}」": "Edge scrolling “{0}”",
+  "位置：{0}": "Position: {0}",
+  "同一位置可建多条，按列表顺序取第一条启用的。": "You can create several entries for the same position; the first enabled one in list order wins.",
+  "激活层里的触发角优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。": "Hot corners in the active layer win, base layer as fallback; several entries per position are allowed, the first match in list order wins.",
+  "激活层里的边缘滚动优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。": "Edge scrolling in the active layer wins, base layer as fallback; several entries per position are allowed, the first match in list order wins.",
+  "鼠标操作 / 触发角 / 边缘滚动也能归属到层：激活层里的条目优先，基础层条目兜底（与快捷键同一口径）。条目自己的「层」下拉在编辑页的「层」页签里。": "Mouse gestures / hot corners / edge scrolling can also belong to a layer: entries in the active layer win and base-layer entries act as a fallback (same rule as shortcuts). The entry's own Layer dropdown is on the Layer tab of its editor.",
+  "总开关打开后到「快捷键」页新增条目：模式下拉里可选「鼠标操作」（按住右键画轨迹，按方向串匹配）、「触发角」（光标碰到屏幕四角）和「边缘滚动」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里点「位置：…」展开模拟显示器，选完自动收起，再在下面配动作。": "After enabling the master switch, add entries on the Shortcuts page: pick Mouse gesture (hold the right button and draw a trail, matched by direction string), Hot corner (cursor reaches a screen corner) or Edge scroll (scroll the wheel while the cursor touches a screen edge) from the mode menu. In the hot corner / edge scroll editor, click “Position: …” to open the mock monitor; it collapses after you pick, then configure actions below.",
+  "右键圈选截图依赖 Snipaste：确认后自动调出 Snipaste 的截图界面，框选范围与矩形 / 椭圆 / 箭头等标注都由你自己画；Kada 不裁剪、不写剪贴板。没装或没运行 Snipaste 时只会提示一句，不会动屏幕内容。": "The right-drag lasso screenshot relies on Snipaste: confirming opens Snipaste's screenshot UI, where you choose the region and draw rectangles / ellipses / arrows yourself. Kada does not crop and does not touch the clipboard. If Snipaste is not installed or running it only shows a hint and leaves the screen untouched."
 }

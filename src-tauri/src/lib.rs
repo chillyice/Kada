@@ -1987,9 +1987,9 @@ fn handle_gesture(
     }
     // 圈选截图：右键按住画完圈、**再点一下左键**才算确认——那一下左键就是「拍照」。
     // 只画圈不点 = 普通右键拖动（下面按没匹配处理，右键原样回放），不会误截。
-    if let Some(rect) = stroke.lasso {
+    if stroke.lasso.is_some() {
         if screenshot {
-            run_lasso_capture(&app, rect);
+            run_lasso_capture(&app);
         } else {
             hide_gesture_overlay(&app);
             replay_stroke(&stroke);
@@ -2069,37 +2069,29 @@ fn snipaste_running() -> bool {
     false
 }
 
-/// 圈选截图收尾：收起手势预览 → 等浮层真的撤掉 → 按选区裁剪 → 写剪贴板 →
-/// Snipaste 在跑就按一下 F3 让它贴图（标注 / 保存 / 置顶都在它那边，我们不再做编辑器）。
+/// 圈选截图收尾：收起手势预览 → 等浮层撤掉 → 直接调出 Snipaste 的截图界面（F1）。
+///
+/// 只负责「进入截图态」：框选范围、矩形 / 椭圆 / 箭头等标注都在 Snipaste 里由用户自己画。
+/// 不自动裁剪、不写剪贴板——自动裁完就等于把标注挡在门外。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-fn run_lasso_capture(app: &tauri::AppHandle, rect: (i32, i32, i32, i32)) {
+fn run_lasso_capture(app: &tauri::AppHandle) {
     hide_gesture_overlay(app);
-    // 浮层隐藏是异步的，等一拍再抓，免得把手势轨迹画进截图。
+    // 浮层隐藏是异步的，等一拍再按键，免得截到手势轨迹。
     std::thread::sleep(Duration::from_millis(80));
-    match kada_hook::capture_rect(rect) {
-        Ok(img) => {
-            let (w, h) = (img.width, img.height);
-            match kada_hook::set_clipboard_image(&img) {
-                Ok(()) => {
-                    let snipaste = snipaste_running();
-                    if snipaste {
-                        input::simulate::tap(Key::F3);
-                    }
-                    show_toast_note(
-                        app,
-                        &format!("已框选截图 {w}×{h}"),
-                        if snipaste {
-                            "已复制，Snipaste 贴图接管（标注 / 保存 / 置顶在它那边）"
-                        } else {
-                            "已复制到剪贴板（装 Snipaste 后按 F3 可贴图标注）"
-                        },
-                    );
-                }
-                Err(e) => show_toast_note(app, "截图失败", &e),
-            }
-        }
-        Err(e) => show_toast_note(app, "截图失败", &e),
+    if !snipaste_running() {
+        show_toast_note(
+            app,
+            "圈选截图需要 Snipaste",
+            "装好 Snipaste 并让它保持运行，画圈后点左键会自动调出它的截图界面",
+        );
+        return;
     }
+    input::simulate::tap(Key::F1);
+    show_toast_note(
+        app,
+        "已进入截图",
+        "Snipaste 截图界面已打开，框选后用矩形 / 椭圆 / 箭头自己标注",
+    );
 }
 
 /// 触发角（EXT-10）：注册出口。回调在钩子线程上跑，这里只开线程做后续（不建窗 / 不 IO）。
@@ -2107,6 +2099,7 @@ fn run_lasso_capture(app: &tauri::AppHandle, rect: (i32, i32, i32, i32)) {
 fn spawn_hot_corner_listener(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
+    engine: Arc<Mutex<Engine>>,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
@@ -2114,10 +2107,13 @@ fn spawn_hot_corner_listener(
     kada_hook::hotcorner::set_sink(Some(Arc::new(move |corner| {
         let app = app.clone();
         let cfg = cfg.clone();
+        let engine = engine.clone();
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
-        std::thread::spawn(move || handle_hot_corner(app, cfg, results, unread, runs, corner));
+        std::thread::spawn(move || {
+            handle_hot_corner(app, cfg, engine, results, unread, runs, corner)
+        });
     })));
 }
 
@@ -2128,6 +2124,7 @@ fn spawn_hot_corner_listener(
 fn handle_hot_corner(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
+    engine: Arc<Mutex<Engine>>,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
@@ -2139,21 +2136,21 @@ fn handle_hot_corner(
         kada_hook::hotcorner::Corner::BottomLeft => kada_core::HotCornerSpot::BottomLeft,
         kada_hook::hotcorner::Corner::BottomRight => kada_core::HotCornerSpot::BottomRight,
     };
-    let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
+    let (on, action_timeout, text_mode, exclude, exclude_apps, rules, active) = {
         let g = cfg.read().unwrap();
-        let hit = g.hot_corners.iter().find(|r| r.enabled && r.spot == spot);
+        // 锁序铁律：配置读锁先于 Engine 锁。
+        let active = engine.lock().unwrap().active_layer().map(|s| s.to_string());
         (
             g.settings.experimental,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
             g.settings.exclude_apps.clone(),
-            hit.map(|r| r.actions.clone()).unwrap_or_default(),
-            hit.map(|r| r.label()).unwrap_or_else(|| spot.label().to_string()),
+            g.hot_corners.clone(),
+            active,
         )
     };
-    // 没配动作 = 半条配置，什么也不做（没有可执行的链，也没有要回放的按键）。
-    if !on || actions.is_empty() {
+    if !on {
         return;
     }
     // 全屏 / 排除程序：与手势同口径，整条让路。
@@ -2163,6 +2160,26 @@ fn handle_hot_corner(
     let fetch = || input::frontmost_context();
     let ctx = TriggerContext::lazy(&fetch, None);
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        return;
+    }
+    // 层语义同快捷键：激活层里的规则优先，基础层兜底；`when` 不成立 = 这条不存在。
+    let pick = |want: Option<&str>| -> Option<(Vec<Action>, String)> {
+        rules
+            .iter()
+            .find(|r| {
+                r.enabled
+                    && r.spot == spot
+                    && r.layer_matches(want)
+                    && r.when_matches(&ctx)
+            })
+            .map(|r| (r.actions.clone(), r.label()))
+    };
+    let Some((actions, name)) = active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
+    else {
+        return;
+    };
+    // 没配动作 = 半条配置，什么也不做（没有可执行的链，也没有要回放的按键）。
+    if actions.is_empty() {
         return;
     }
     fire(
@@ -2184,6 +2201,7 @@ fn handle_hot_corner(
 fn spawn_wheel_edge_listener(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
+    engine: Arc<Mutex<Engine>>,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
@@ -2191,10 +2209,13 @@ fn spawn_wheel_edge_listener(
     kada_hook::wheel_edge::set_sink(Some(Arc::new(move |edge| {
         let app = app.clone();
         let cfg = cfg.clone();
+        let engine = engine.clone();
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
-        std::thread::spawn(move || handle_wheel_edge(app, cfg, results, unread, runs, edge));
+        std::thread::spawn(move || {
+            handle_wheel_edge(app, cfg, engine, results, unread, runs, edge)
+        });
     })));
 }
 
@@ -2205,6 +2226,7 @@ fn spawn_wheel_edge_listener(
 fn handle_wheel_edge(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
+    engine: Arc<Mutex<Engine>>,
     results: Arc<Mutex<Vec<CommandResult>>>,
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
@@ -2216,21 +2238,21 @@ fn handle_wheel_edge(
         kada_hook::wheel_edge::Edge::Left => kada_core::WheelEdgeSpot::Left,
         kada_hook::wheel_edge::Edge::Right => kada_core::WheelEdgeSpot::Right,
     };
-    let (on, action_timeout, text_mode, exclude, exclude_apps, actions, name) = {
+    let (on, action_timeout, text_mode, exclude, exclude_apps, rules, active) = {
         let g = cfg.read().unwrap();
-        let hit = g.wheel_edges.iter().find(|r| r.enabled && r.edge == spot);
+        // 锁序铁律：配置读锁先于 Engine 锁。
+        let active = engine.lock().unwrap().active_layer().map(|s| s.to_string());
         (
             g.settings.experimental,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
             g.settings.gesture_exclude.clone(),
             g.settings.exclude_apps.clone(),
-            hit.map(|r| r.actions.clone()).unwrap_or_default(),
-            hit.map(|r| r.label()).unwrap_or_else(|| spot.label().to_string()),
+            g.wheel_edges.clone(),
+            active,
         )
     };
-    // 没配动作 = 半条配置，什么也不做（滚轮本来就放行了）。
-    if !on || actions.is_empty() {
+    if !on {
         return;
     }
     // 全屏 / 排除程序：与手势同口径，整条让路。
@@ -2240,6 +2262,26 @@ fn handle_wheel_edge(
     let fetch = || input::frontmost_context();
     let ctx = TriggerContext::lazy(&fetch, None);
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        return;
+    }
+    // 层语义同快捷键：激活层里的规则优先，基础层兜底；`when` 不成立 = 这条不存在。
+    let pick = |want: Option<&str>| -> Option<(Vec<Action>, String)> {
+        rules
+            .iter()
+            .find(|r| {
+                r.enabled
+                    && r.edge == spot
+                    && r.layer_matches(want)
+                    && r.when_matches(&ctx)
+            })
+            .map(|r| (r.actions.clone(), r.label()))
+    };
+    let Some((actions, name)) = active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
+    else {
+        return;
+    };
+    // 没配动作 = 半条配置，什么也不做（滚轮本来就放行了）。
+    if actions.is_empty() {
         return;
     }
     fire(
@@ -6483,7 +6525,7 @@ pub fn run() {
             // 顺带把输入状态可视指示推给界面（托盘提示 + 悬浮指示窗，见规划 7.3-⑬）。
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_engine_ticker(
-                engine,
+                engine.clone(),
                 config.clone(),
                 paused_until.clone(),
                 rec.clone(),
@@ -6509,6 +6551,7 @@ pub fn run() {
             spawn_hot_corner_listener(
                 app.handle().clone(),
                 config.clone(),
+                engine.clone(),
                 results.clone(),
                 unread.clone(),
                 runs.clone(),
@@ -6519,6 +6562,7 @@ pub fn run() {
             spawn_wheel_edge_listener(
                 app.handle().clone(),
                 config.clone(),
+                engine.clone(),
                 results.clone(),
                 unread.clone(),
                 runs.clone(),

@@ -28,6 +28,10 @@
             <svg viewBox="0 0 24 24"><path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z" fill="currentColor"/></svg>
             <span>快捷键</span>
           </button>
+          <button class="rail-item" data-tab="layers">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
+            <span>键位层</span>
+          </button>
           <button class="rail-item" data-tab="messages">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span>消息</span>
@@ -244,6 +248,20 @@
               <div class="work-view hidden" id="layer-expansion">
                 <p class="hint">文本扩展不参与键位层：它按输入内容匹配，与当前哪一层无关。</p>
               </div>
+              <div class="work-view hidden" id="layer-hotcorner">
+                <div class="editor-row">
+                  <label>所属层</label>
+                  <select id="hotcorner-layer"></select>
+                </div>
+                <p class="hint">激活层里的触发角优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。</p>
+              </div>
+              <div class="work-view hidden" id="layer-wheeledge">
+                <div class="editor-row">
+                  <label>所属层</label>
+                  <select id="wheeledge-layer"></select>
+                </div>
+                <p class="hint">激活层里的边缘滚动优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。</p>
+              </div>
             </div>
 
             <!-- 条件 -->
@@ -257,7 +275,27 @@
           </div>
         </section>
 
-        <!-- 设置详情：按用途分卡片（外观与提示 / 通用行为 / 输入与响应 / 键位层 / 配置与数据 /
+        <!-- 键位层：从设置页独立出来的一级页签（切层键指向这里建的层）。 -->
+        <section id="detail-layers" class="detail hidden">
+          <div class="detail-body">
+            <div class="set-grid">
+              <section class="set-card">
+                <div class="set-card-head">
+                  <span>键位层</span>
+                  <button id="add-layer-btn" class="ghost">＋ 新建层</button>
+                </div>
+                <div id="layer-list" class="layer-list"></div>
+                <details class="hint-fold" open>
+                  <summary>层是怎么生效的</summary>
+                  <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键 / 改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦 / 序列用这种）。</p>
+                  <p class="hint">鼠标操作 / 触发角 / 边缘滚动也能归属到层：激活层里的条目优先，基础层条目兜底（与快捷键同一口径）。条目自己的「层」下拉在编辑页的「层」页签里。</p>
+                </details>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <!-- 设置详情：按用途分卡片（外观与提示 / 通用行为 / 输入与响应 / 配置与数据 /
              软件更新），卡片里一律「左标签 + 右控件」、行间一条细分隔线，每项配一行小字说明。
              原先十项平铺成一列各带边框的小方块、宽度还只有下面整宽区块的一半（空着大半个窗口），
              五段长说明又整块杵在最上面挡路。长说明按主题收进各自卡片的折叠块。 -->
@@ -398,19 +436,6 @@
                 </details>
               </section>
 
-              <!-- 键位层 -->
-              <section class="set-card">
-                <div class="set-card-head">
-                  <span>键位层</span>
-                  <button id="add-layer-btn" class="ghost">＋ 新建层</button>
-                </div>
-                <div id="layer-list" class="layer-list"></div>
-                <details class="hint-fold">
-                  <summary>层是怎么生效的</summary>
-                  <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键 / 改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦 / 序列用这种）。</p>
-                </details>
-              </section>
-
               <!-- 全局排除程序（EXT-04）：命中的程序里所有 Kada 触发一律不生效。 -->
               <section class="set-card" id="exclude-apps-card">
                 <div class="set-card-head"><span>全局排除程序</span></div>
@@ -449,7 +474,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">右键圈选截图（依赖 Snipaste）</span>
-                      <span class="set-sub">按住右键绕一圈，右键别松再点一下左键确认，包围盒裁图写进剪贴板。<strong>贴图 / 标注依赖 Snipaste</strong>：它没在跑时只复制到剪贴板，装好并运行 Snipaste 后会自动按 F3 贴图。只画圈不截图，不需要配置手势条目。目前仅 Windows。</span>
+                      <span class="set-sub">按住右键绕一圈，右键别松再点一下左键确认，直接调出 Snipaste 的截图界面。<strong>框选与标注都由你自己完成</strong>：矩形 / 椭圆 / 箭头等标注在 Snipaste 里画；它没在跑时给一条提示，不做任何裁剪。只画圈不截图，也不需要配置手势条目。目前仅 Windows。</span>
                     </span>
                     <input type="checkbox" id="set-gesture-screenshot" class="toggle" />
                   </label>
@@ -513,11 +538,11 @@
                 </div>
                 <details class="hint-fold">
                   <summary>鼠标操作怎么用</summary>
-                  <p class="hint">总开关打开后到「<strong>快捷键</strong>」页新增条目：模式下拉里可选「<strong>鼠标操作</strong>」（按住右键画轨迹，按方向串匹配）、「<strong>触发角</strong>」（光标碰到屏幕四角）和「<strong>边缘滚动</strong>」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里有一块模拟显示器，点要用的角或边，再在下面配动作。</p>
+                  <p class="hint">总开关打开后到「<strong>快捷键</strong>」页新增条目：模式下拉里可选「<strong>鼠标操作</strong>」（按住右键画轨迹，按方向串匹配）、「<strong>触发角</strong>」（光标碰到屏幕四角）和「<strong>边缘滚动</strong>」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里点「位置：…」展开模拟显示器，选完自动收起，再在下面配动作。</p>
                   <p class="hint">鼠标手势的方向串用 <code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上；<strong>多段用逗号分隔</strong>：<code>D,R</code> = 先下再右（两段），<code>DR</code> = 右下斜向（一段）。</p>
                   <p class="hint">没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
                   <p class="hint">全屏程序（游戏 / 视频 / F11）和上图排除列表里的程序里一律让路：手势不接管右键，触发角 / 边缘滚动也不触发。</p>
-                  <p class="hint"><strong>右键圈选截图依赖 Snipaste</strong>：裁剪图会先写进剪贴板；Snipaste 在跑时会按 F3 调出贴图，标注 / 保存 / 置顶都在 Snipaste 里完成。没装或没运行时只有剪贴板里的图，请自行粘贴。</p>
+                  <p class="hint"><strong>右键圈选截图依赖 Snipaste</strong>：确认后自动调出 Snipaste 的截图界面，框选范围与矩形 / 椭圆 / 箭头等标注都由你自己画；Kada 不裁剪、不写剪贴板。没装或没运行 Snipaste 时只会提示一句，不会动屏幕内容。</p>
                 </details>
               </section>
 
