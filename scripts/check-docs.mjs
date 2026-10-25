@@ -133,9 +133,11 @@ if (existsSync(mapFile)) {
 }
 
 // ---- 4. AGENTS.md 体积（注入上下文会被截断，尾部先丢）----
+// 按 CRLF 计：CI 的 Windows checkout 会转 CRLF，用工作区 LF 尺寸量会漏判。
 const A_LIMIT = 20 * 1024;
-const aSize = statSync(join(root, "AGENTS.md")).size;
-if (aSize > A_LIMIT) problems.push(`[size] AGENTS.md ${aSize} B > ${A_LIMIT} B`);
+const aText = read(join(root, "AGENTS.md"));
+const aSize = Buffer.byteLength(aText.replace(/\r?\n/g, "\r\n"), "utf8");
+if (aSize > A_LIMIT) problems.push(`[size] AGENTS.md ${aSize} B（CRLF）> ${A_LIMIT} B`);
 
 // ---- 5. docs/README.md 索引覆盖 ----
 const idx = read(join(docsDir, "README.md"));

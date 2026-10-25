@@ -1,7 +1,7 @@
 # AGENTS.md — Kada 项目规则
 
-> **本文件 = AI 会话必读入口**：只放「不可违反的规则」「去哪查」「怎么验证」。机制细节外移到 `docs/`（导航见文末）。
-> **上限 20KB**——超了注入上下文被截断、**尾部先丢**，所以「命令」和「归档」放最后，别让它们被挤掉。改完本文件跑 `node scripts/check-docs.mjs`（CI 也跑）。
+> **本文件 = AI 会话必读入口**：只放规则 / 去哪查 / 怎么验证。机制细节外移到 `docs/`。
+> **上限 20KB（按 CRLF 计）**——超了注入上下文被截断、**尾部先丢**，所以「命令」「归档」放最后。改完跑 `node scripts/check-docs.mjs`。
 
 ## 0. 动手前 30 秒
 
@@ -14,13 +14,13 @@
 | 查只能真机验的验收项 | `docs/人工验证清单.md` |
 | 改完怎么归档 | 本文件「归档流程」 |
 
-**顺序永远是：先读规则 → 再改代码 → 再验证 → 再归档。** 铁律是底线，其余细节去上面那张表指的地方查。
+**顺序：先读规则 → 改代码 → 验证 → 归档。** 铁律是底线，细节去上表查。
 
-> **⚠ 编码/路径警示**：含中文的源码 / 配置 / 文档一律走 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content` / `Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 仅用于 cargo / npm 构建与跑 demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会被自动转换，注意参数。
+> **⚠ 编码/路径警示**：含中文的源码 / 配置 / 文档一律走 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content` / `Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 只用于 cargo / npm / demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会自动转换，注意参数。
 
 ## 1. 铁律
 
-> 每条都是「违反了就是 bug」，不是风格问题。括号里是细则所在的小节；机制与「为什么」在那一节里，**别在本文件复述**。
+> 每条违反了都是 bug，不是风格问题。括号里是细则所在小节，机制与「为什么」在那边，**别在本文件复述**。
 
 ### 1.1 配置与落盘（`src-tauri/src/config_io.rs` / `config_watch.rs`｜说明书 §5.6）
 
@@ -111,10 +111,10 @@
 ### 1.13 鼠标操作（总开关｜说明书 §5.9）
 
 - 按住右键画轨迹 → 方向串。**右键按下先吞、抬起才判定**：命中执行动作；**未命中 / 没画出轨迹一律回放一次完整右键**（注入不回环）
-- **右键画圈 ≠ 截图**：画圈后**右键不松再点左键**才确认（`on_left_down`，左右键都吞）→ 裁剪进剪贴板，Snipaste 在跑就 F3（需 Snipaste）；只画圈回放右键；截图动作已删（旧配置只报错，§5.15）
+- **右键画圈 ≠ 截图**：画圈后**右键不松再点左键**才确认（`on_left_down`，左右键都吞）→ 撤浮层后模拟 Snipaste `F1` 叫出它的截图界面（不抓屏、不写剪贴板；没装只提示）；只画圈回放右键；截图动作已删（旧配置只报错，§5.15）
 - 识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**；**轨迹出口只借用不取走**
 - **让路**（都算「不接管、右键原样回放」）：排除程序 `gesture_exclude` 命中、**前台全屏**（占满显示器且非最大化）、`when` 不成立（落到下一条）
-- 总闸 `Settings.experimental`（**默认关**）：关掉 → 鼠标类入口全隐藏、行为不生效、**配置保留**。**本功能正式完成前不打 tag、不发 release**
+- 总闸 `Settings.experimental`（**默认关**）：关掉 → 鼠标类入口全隐藏、行为不生效、**配置保留**。
 
 ### 1.14 软件更新（说明书 §5.5）
 
@@ -145,7 +145,7 @@
 | Tauri `identifier` | `com.kada` |
 | `productName` / 窗口标题 / 应用显示名 | `Kada` / `咔哒 Kada` |
 
-- **键模型使用平台无关中性名**：`Enter/Escape`（不是 `Return`），修饰键 `Ctrl/Alt/Shift/Meta`（macOS 的 ⌘ 由 `Meta` 承载，平台层负责把 OS 键映射成 `Key`）。键名渲染回 `"Ctrl+Alt+K"` 形式（说明书 §2）
+- **键模型使用平台无关中性名**：`Enter/Escape`（不是 `Return`），修饰键 `Ctrl/Alt/Shift/Meta`（macOS ⌘ 由 `Meta` 承载，平台层映射）。键名渲染回 `"Ctrl+Alt+K"` 形式（说明书 §2）
 - **滚轮是离散键**（`WheelUp`/`WheelDown`）：一格 = 一次按下+抬起，不能作和弦成员 / 按住类触发；高精度滚轮累积到 120 才算一格（说明书 §5.10）
 - 平台代码一律 `#[cfg]` 门控，三后端同一套接口；目录树见 `docs/README.md`
 
@@ -155,12 +155,12 @@
 cargo test --workspace      # 全 workspace 测试
 cargo check -p kada         # Tauri 壳编译（完整版）
 cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation）
-cargo build --release -p kada --features custom-protocol   # 手动打 exe：**必须带 custom-protocol**（漏了只嵌壳不嵌前端 → 连 localhost:1420 白屏）
+cargo build --release -p kada --features custom-protocol   # 手动打 exe：**必须带 custom-protocol**（漏了只嵌壳不嵌前端 → 白屏）
 npm --prefix ui run build   # 前端构建（tsc + vite build）
 node scripts/check-docs.mjs # 文档一致性（路径引用 / § 消歧 / 代码地图令牌 / AGENTS 体积）
 node scripts/check-i18n.mjs # 界面文案：中文必须包 tr()/trt()，i18n.en.json 覆盖全部 key
 cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
-cargo check -pada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
+cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
 ```
 
 - **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
@@ -171,7 +171,7 @@ cargo check -pada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧�
 
 ## 4. 归档流程
 
-- **每次改完就归档**（功能 / 里程碑迭代，验证通过后），别攒批、别等口令——会话可能因上下文超长失败，**没归档的改动会随会话一起丢**；多会话并行时未提交的改动会被回退
+- **每次改完就归档**（验证通过后），别攒批——会话可能超长失败，**没归档的改动会随会话一起丢**；多会话并行时未提交的改动会被回退
 - **分流**：`AGENTS.md`（新规则 / 踩坑 / 约定）｜ `docs/需求设计说明书.md`（功能现状，**只改模块小节、不写版本叙事**，正文引模块小节号而非版本号）｜ `docs/变更归档.md`（**索引表加一行**）+ `docs/归档/`（当前卷正文追加 `#####` 条目，标题带版本号）｜ `docs/架构设计.md`（结构变了才动）｜ `docs/人工验证清单.md`（只能真机验的项，跑完回填顶部状态表）
 - 落点细则见 `.agents/skills/archive/SKILL.md`（`/archive` 技能）
 - **⚠ Git 规定**：非人工指令**不得主动提交代码**（`git commit` / `git push` 一律禁止）；`git add` 只能指定具体文件路径（**禁 `git add -A` / `git add .`**）。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`；`git add` 仍只给具体路径
