@@ -23,11 +23,12 @@ use crate::Config;
 /// 而不是按老字段猜——猜错的代价是装上一堆用户看不懂的条目。
 pub const SNIPPET_INDEX_VERSION: u32 = 1;
 
-/// 内置索引地址（设置页可改，别处自建索引就填自己的）。指向本仓库的 `snippets/index.json`，
-/// 由 `scripts/build-snippet-index.mjs` 从 `snippets/*.json` 生成——**没有任何服务端**：
-/// 索引就是一份能 GET 到的静态 JSON。
+/// 内置索引地址（设置页可改，别处自建索引就填自己的）。默认指向 ihomy 的静态索引
+/// （`https://ihomy.top/files/kada/snippets/index.json`，与更新清单同一个站内目录），
+/// 国内可直连；GitHub 上的 `snippets/index.json` 仍由 `scripts/build-snippet-index.mjs`
+/// 生成、作为公开备份。**没有任何服务端**：索引就是一份能 GET 到的静态 JSON。
 pub const DEFAULT_SNIPPET_INDEX_URL: &str =
-    "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/index.json";
+    "https://ihomy.top/files/kada/snippets/index.json";
 
 /// 索引里的一条卡带（展示用；卡带本体是另一个 JSON，走现有「导入 → 合并」）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

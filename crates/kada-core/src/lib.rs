@@ -2205,140 +2205,6 @@ pub fn default_hints_opacity() -> u8 {
     HintsWindow::DEFAULT_OPACITY
 }
 
-/// 屏幕按键回显（EXT-12）的持久化状态：每次物理按键在屏幕上浮一条「Ctrl+Alt+K ↓」。
-///
-/// 与 [`HintsWindow`] 一样按「同生共死的一组值」收成结构：开关 + 外观 + 位置 + 停留时间。
-/// **默认关**——它是常驻屏幕的浮层，不请自来比找不到入口更烦人。缺字段的老配置照旧不受影响。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Keycast {
-    /// 是否显示按键回显。关掉只是不显示，外观配置保留。
-    #[serde(default)]
-    pub enabled: bool,
-    /// 文字颜色（`#RRGGBB`）。
-    #[serde(default = "default_keycast_color")]
-    pub color: String,
-    /// 出现位置：`top-left` / `top-center` / `top-right` / `bottom-left` /
-    /// `bottom-center` / `bottom-right`（未知值回落 `top-center`）。
-    #[serde(default = "default_keycast_position")]
-    pub position: String,
-    /// 字号（像素）。
-    #[serde(default = "default_keycast_font_size")]
-    pub font_size: u16,
-    /// 最后一次按键后停留多久（毫秒）再淡出。
-    #[serde(default = "default_keycast_hide_ms")]
-    pub hide_ms: u64,
-    /// 忽略单字符（字母 / 数字 / 标点）的裸按键，只在带修饰键或功能键时显示。
-    #[serde(default = "default_true")]
-    pub ignore_single_char: bool,
-}
-
-impl Keycast {
-    /// 字号上下限（像素）。
-    pub const FONT_SIZE_RANGE: (u16, u16) = (12, 72);
-    /// 停留时间上下限（毫秒）。
-    pub const HIDE_MS_RANGE: (u64, u64) = (200, 10_000);
-    /// 位置取值表（界面下拉与 `normalized` 共用）。
-    pub const POSITIONS: &'static [&'static str] = &[
-        "top-left",
-        "top-center",
-        "top-right",
-        "bottom-left",
-        "bottom-center",
-        "bottom-right",
-    ];
-
-    /// 归一化：颜色只收 `#RGB` / `#RRGGBB`（非法回落默认，避免把任意字符串塞进 CSS）；
-    /// 字号 / 停留时间钳到界面范围；未知位置回落默认，手改 JSON 写坏不至于让浮层消失。
-    pub fn normalized(mut self) -> Self {
-        self.color = normalize_hex_color(&self.color, &default_keycast_color());
-        if !Self::POSITIONS.contains(&self.position.as_str()) {
-            self.position = default_keycast_position();
-        }
-        self.font_size = self.font_size.clamp(Self::FONT_SIZE_RANGE.0, Self::FONT_SIZE_RANGE.1);
-        self.hide_ms = self.hide_ms.clamp(Self::HIDE_MS_RANGE.0, Self::HIDE_MS_RANGE.1);
-        self
-    }
-}
-
-impl Default for Keycast {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            color: default_keycast_color(),
-            position: default_keycast_position(),
-            font_size: default_keycast_font_size(),
-            hide_ms: default_keycast_hide_ms(),
-            ignore_single_char: true,
-        }
-    }
-}
-
-/// 按键回显文字色的缺省值。
-pub fn default_keycast_color() -> String {
-    "#ffd9cf".to_string()
-}
-
-/// 按键回显位置的缺省值（顶部居中，避开底部的状态指示）。
-pub fn default_keycast_position() -> String {
-    "top-center".to_string()
-}
-
-/// 按键回显字号的缺省值（像素）。
-pub fn default_keycast_font_size() -> u16 {
-    32
-}
-
-/// 按键回显停留时间的缺省值（毫秒）。
-pub fn default_keycast_hide_ms() -> u64 {
-    1200
-}
-
-/// 按键回显的一句话：`Ctrl+Alt+K ↓`（按下）/ `… ↑`（抬起）；`None` = 这条事件不显示。
-///
-/// 纯函数（壳层在钩子回调里调它），规则集中在这里好单测：
-/// - 只显示物理键盘：鼠标键与滚轮（`MouseMiddle` / `WheelUp` …）一律不显示；
-/// - 裸修饰键只显示自己（`Ctrl ↓`），不重复成 `Ctrl+Ctrl`；
-/// - `ignore_single_char` 打开时，**没有修饰键**的单字符键（字母 / 数字 / 标点）不显示——
-///   正常打字不该刷屏；`Ctrl+C` 这类组合仍显示。
-pub fn keycast_text(
-    key: Key,
-    mods: &BTreeSet<Modifier>,
-    down: bool,
-    ignore_single_char: bool,
-) -> Option<String> {
-    if matches!(
-        key,
-        Key::MouseMiddle
-            | Key::MouseBack
-            | Key::MouseForward
-            | Key::WheelUp
-            | Key::WheelDown
-    ) {
-        return None;
-    }
-    let own = key.as_modifier();
-    if ignore_single_char
-        && own.is_none()
-        && mods.is_empty()
-        && key_name(key).chars().count() == 1
-    {
-        return None;
-    }
-    let mut parts: Vec<&str> = Vec::new();
-    for (m, name) in [
-        (Modifier::Ctrl, "Ctrl"),
-        (Modifier::Alt, "Alt"),
-        (Modifier::Shift, "Shift"),
-        (Modifier::Meta, "Meta"),
-    ] {
-        if mods.contains(&m) && Some(m) != own {
-            parts.push(name);
-        }
-    }
-    parts.push(key_name(key));
-    Some(format!("{} {}", parts.join("+"), if down { "↓" } else { "↑" }))
-}
-
 /// 复制快捷菜单（EXT-13）：选中文字后**双击 Ctrl+C** 在光标处弹出动作菜单。
 ///
 /// 触发是**旁路观察**（不吞键，复制行为仍是系统 / 前台程序自己的），菜单本身只做展示；
@@ -2790,6 +2656,11 @@ pub struct Settings {
     /// 静默拿不到这个指示。
     #[serde(default = "default_true")]
     pub show_status_hud: bool,
+    /// 触发提醒：每次触发（快捷键 / 改键 / 文本扩展 / 手势 / 触发角 / 边缘滚动）在右下角
+    /// 弹一条 3 秒气泡，显示动作名 + 触发键。缺字段取 `true`（老行为），关掉只影响这类
+    /// 「已触发」气泡，不影响错误 / 命令结果等普通消息。
+    #[serde(default = "default_true")]
+    pub trigger_toast: bool,
     /// 文本注入方式：`clipboard`（默认）剪贴板 + 粘贴 / `unicode` 逐字直发字符事件。
     ///
     /// 缺字段取剪贴板（[`TextInjectMode::Clipboard`]）：默认方案对中文最稳；只有目标程序
@@ -2912,9 +2783,6 @@ pub struct Settings {
     /// 手势未命中时的失败色（`#RRGGBB`）。
     #[serde(default = "default_gesture_fail_color")]
     pub gesture_fail_color: String,
-    /// 屏幕按键回显（EXT-12）：当前按键 + 修饰键组合，见 [`Keycast`]。缺字段 = 关闭。
-    #[serde(default)]
-    pub keycast: Keycast,
     /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
     #[serde(default)]
     pub clipboard_menu: ClipboardMenu,
@@ -3002,6 +2870,7 @@ impl Default for Settings {
             sequence_timeout_ms: DEFAULT_SEQUENCE_TIMEOUT_MS,
             chord_timeout_ms: DEFAULT_CHORD_TIMEOUT_MS,
             show_status_hud: true,
+            trigger_toast: true,
             text_inject_mode: TextInjectMode::Clipboard,
             hints: HintsWindow::default(),
             snippet_index_url: default_snippet_index_url(),
@@ -3024,7 +2893,6 @@ impl Default for Settings {
             gesture_label_font_size: default_gesture_label_font_size(),
             gesture_label_offset: default_gesture_label_offset(),
             gesture_fail_color: default_gesture_fail_color(),
-            keycast: Keycast::default(),
             clipboard_menu: ClipboardMenu::default(),
             hot_corners: HotCorners::default(),
             wheel_edges: WheelEdges::default(),
@@ -4458,7 +4326,6 @@ impl Config {
         }
         self.migrate_legacy_mouse_regions();
         self.settings.hints = std::mem::take(&mut self.settings.hints).normalized();
-        self.settings.keycast = std::mem::take(&mut self.settings.keycast).normalized();
         self.settings.clipboard_menu =
             std::mem::take(&mut self.settings.clipboard_menu).normalized();
     }
@@ -7762,95 +7629,6 @@ mod hints_window_tests {
         assert_eq!(cfg.settings.hints.scale, HintsWindow::SCALE_RANGE.0, "缩成 0 等于把窗口弄没");
         assert_eq!(cfg.settings.hints.opacity, HintsWindow::OPACITY_RANGE.1);
         assert!(cfg.settings.hints.visible, "钳值不该顺手改可见性");
-    }
-}
-
-#[cfg(test)]
-mod keycast_tests {
-    use super::*;
-
-    fn mods(list: &[Modifier]) -> BTreeSet<Modifier> {
-        list.iter().copied().collect()
-    }
-
-    /// 老配置（写于按键回显之前）缺 `keycast`：默认**关**，外观有正经初值。
-    #[test]
-    fn old_config_without_keycast_gets_defaults() {
-        let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
-        assert!(!old.settings.keycast.enabled);
-        assert_eq!(old.settings.keycast.position, default_keycast_position());
-        assert!(old.settings.keycast.ignore_single_char);
-        assert!(old.settings.keycast.font_size > 0);
-    }
-
-    /// 开关 + 外观要能原样往返（重启后保持用户调好的颜色 / 位置 / 字号 / 停留）。
-    #[test]
-    fn keycast_roundtrip_keeps_look() {
-        let cfg = Config {
-            settings: Settings {
-                keycast: Keycast {
-                    enabled: true,
-                    color: "#00ff00".into(),
-                    position: "bottom-right".into(),
-                    font_size: 48,
-                    hide_ms: 2500,
-                    ignore_single_char: false,
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
-        assert_eq!(back.settings, cfg.settings);
-    }
-
-    /// 加载路径只 `migrate()`：坏颜色 / 越界数值 / 未知位置必须在这里被钳住。
-    #[test]
-    fn migrate_clamps_keycast_look() {
-        let mut cfg = Config {
-            settings: Settings {
-                keycast: Keycast {
-                    enabled: true,
-                    color: "not-a-color".into(),
-                    position: "middle-of-nowhere".into(),
-                    font_size: 999,
-                    hide_ms: 5,
-                    ignore_single_char: true,
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        cfg.migrate();
-        assert_eq!(cfg.settings.keycast.color, default_keycast_color());
-        assert_eq!(cfg.settings.keycast.position, default_keycast_position());
-        assert_eq!(cfg.settings.keycast.font_size, Keycast::FONT_SIZE_RANGE.1);
-        assert_eq!(cfg.settings.keycast.hide_ms, Keycast::HIDE_MS_RANGE.0);
-        assert!(cfg.settings.keycast.enabled, "钳值不该顺手改开关");
-    }
-
-    #[test]
-    fn keycast_text_shows_combo_and_direction() {
-        assert_eq!(
-            keycast_text(Key::K, &mods(&[Modifier::Ctrl, Modifier::Alt]), true, true),
-            Some("Ctrl+Alt+K ↓".into())
-        );
-        assert_eq!(keycast_text(Key::F5, &BTreeSet::new(), false, true), Some("F5 ↑".into()));
-    }
-
-    /// 裸修饰键只显示自己；单字符键按开关过滤；鼠标 / 滚轮永不显示。
-    #[test]
-    fn keycast_text_filters_noise() {
-        assert_eq!(
-            keycast_text(Key::Control, &mods(&[Modifier::Ctrl]), true, true),
-            Some("Ctrl ↓".into())
-        );
-        assert_eq!(keycast_text(Key::A, &BTreeSet::new(), true, true), None);
-        assert_eq!(keycast_text(Key::A, &BTreeSet::new(), true, false), Some("A ↓".into()));
-        assert_eq!(keycast_text(Key::Comma, &BTreeSet::new(), true, true), None);
-        assert_eq!(keycast_text(Key::Space, &BTreeSet::new(), true, true), Some("Space ↓".into()));
-        assert_eq!(keycast_text(Key::MouseBack, &BTreeSet::new(), true, false), None);
-        assert_eq!(keycast_text(Key::WheelUp, &BTreeSet::new(), true, false), None);
     }
 }
 

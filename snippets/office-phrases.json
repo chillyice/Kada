@@ -1,0 +1,32 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "办公沟通短语",
+    "description": "收到、稍后回复、会议信息、周报骨架这些日常回复：输入 ;;recv 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用。",
+    "author": "Kada",
+    "tags": ["文本扩展", "办公", "沟通", "全平台"]
+  },
+  "expansions": [
+    { "name": "收到并跟进", "trigger": ";;recv", "replace": "收到，我这边跟进。", "enabled": true },
+    { "name": "稍后回复", "trigger": ";;later", "replace": "我稍后回复你。", "enabled": true },
+    { "name": "已完成", "trigger": ";;done", "replace": "已完成，请查收。", "enabled": true },
+    { "name": "好的没问题", "trigger": ";;okok", "replace": "好的，没问题。", "enabled": true },
+    {
+      "name": "会议信息模板",
+      "trigger": ";;meet",
+      "replace": "会议信息：\n时间：\n地点 / 链接：\n议题：",
+      "enabled": true
+    },
+    {
+      "name": "周报骨架",
+      "trigger": ";;week",
+      "replace": "本周进展：\n1. \n2. \n下周计划：\n1. ",
+      "enabled": true
+    },
+    { "name": "抱歉刚看到", "trigger": ";;apol", "replace": "抱歉，刚看到消息，我马上处理。", "enabled": true },
+    { "name": "道谢", "trigger": ";;tx", "replace": "多谢，辛苦了！", "enabled": true },
+    { "name": "地址标签", "trigger": ";;adr", "replace": "地址：", "enabled": true },
+    { "name": "电话标签", "trigger": ";;tel", "replace": "电话：", "enabled": true },
+    { "name": "邮箱标签", "trigger": ";;mail", "replace": "邮箱：", "enabled": true }
+  ]
+}

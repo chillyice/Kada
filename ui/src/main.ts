@@ -175,6 +175,8 @@ type Settings = {
   chord_timeout_ms: number;
   /** 输入状态悬浮指示：有层 / 修饰键生效时在屏幕下方浮一条状态，没有时自动消失。 */
   show_status_hud: boolean;
+  /** 触发提醒：每次触发在右下角弹 3 秒气泡。缺字段按开。 */
+  trigger_toast?: boolean;
   /**
    * 文本注入方式（规划 7.3-㉒）：`clipboard` 剪贴板粘贴（默认，老配置缺字段也按它）
    * / `unicode` 逐字直发——目标程序吞粘贴（游戏 / 终端）时切这个。
@@ -278,18 +280,6 @@ type Settings = {
   gesture_label_offset?: number;
     /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
     gesture_fail_color?: string;
-    /**
-     * 屏幕按键回显（EXT-12）：当前按键 + 修饰键组合的浮层。缺字段 = 关（后端
-     * `Keycast::default`）；外观字段缺省时按后端默认回落。
-     */
-    keycast?: {
-      enabled: boolean;
-      color?: string;
-      position?: string;
-      font_size?: number;
-      hide_ms?: number;
-      ignore_single_char?: boolean;
-    };
     /**
      * 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单。缺字段 = 关（后端
      * `ClipboardMenu::default`）；`enabled` 缺省即 true（条目里的）。
@@ -453,6 +443,7 @@ type Section =
   | "hotcorners"
   | "wheeledges"
   | "layers"
+  | "market"
   | "messages"
   | "settings"
   | "help";
@@ -1414,6 +1405,7 @@ let cfg: Config = {
     sequence_timeout_ms: 1000,
     chord_timeout_ms: 1000,
     show_status_hud: true,
+    trigger_toast: true,
     hints: { visible: false, scale: 100, opacity: 92 },
   },
 };
@@ -1465,7 +1457,10 @@ type DragPayload =
   | { kind: "shortcut"; idx: number }
   | { kind: "folder"; id: string }
   | { kind: "remap"; idx: number }
-  | { kind: "expansion"; idx: number };
+  | { kind: "expansion"; idx: number }
+  | { kind: "gesture"; idx: number }
+  | { kind: "hotcorner"; idx: number }
+  | { kind: "wheeledge"; idx: number };
 type DropZone =
   | { kind: "root" }
   | { kind: "folder"; folderId: string; pos: "before" | "into" | "after" }
@@ -1967,6 +1962,7 @@ function render() {
   renderDetail();
   renderMessages();
   if (section === "layers") renderLayers();
+  if (section === "market") renderMarketPage();
 }
 
 function renderListPane() {
@@ -1985,7 +1981,11 @@ function renderListPane() {
         : null;
   document.getElementById("list-pane")!.classList.toggle(
     "hidden",
-    section === "settings" || section === "layers" || section === "messages" || section === "help",
+    section === "settings" ||
+      section === "layers" ||
+      section === "market" ||
+      section === "messages" ||
+      section === "help",
   );
   // 多选集按各份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
   const all: object[] = [
@@ -2077,7 +2077,7 @@ const KIND_ICON: Record<ListKind, string> = {
   gesture:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7v6a4 4 0 0 0 4 4h9.5"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
   hotcorner:
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4h16"/><path d="M4 8a4 4 0 0 1 4-4"/></svg>',
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4h16"/><path d="M4 13a9 9 0 0 1 9-9"/></svg>',
   wheeledge:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="9" y="10" width="6" height="8" rx="1"/><path d="M12 11v2m0 0 1-1m-1 1-1-1"/></svg>',
 };
@@ -2318,6 +2318,7 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
   if (!g.enabled) li.title = tr("已停用（右键可启用）");
   listRow(li, g, "gesture", idx);
+  attachDragStart(li, { kind: "gesture", idx });
   const trig = el("span", "row-trigger");
   trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
   li.append(
@@ -2374,6 +2375,7 @@ function hotCornerRow(r: HotCornerRule, idx: number, depth: number): HTMLElement
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
   if (!r.enabled) li.title = tr("已停用（右键可启用）");
   listRow(li, r, "hotcorner", idx);
+  attachDragStart(li, { kind: "hotcorner", idx });
   const trig = el("span", "row-trigger");
   trig.append(el("span", "row-trigger-text", spotLabel(r.spot)));
   li.append(
@@ -2396,6 +2398,7 @@ function wheelEdgeRow(r: WheelEdgeRule, idx: number, depth: number): HTMLElement
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
   if (!r.enabled) li.title = tr("已停用（右键可启用）");
   listRow(li, r, "wheeledge", idx);
+  attachDragStart(li, { kind: "wheeledge", idx });
   const trig = el("span", "row-trigger");
   trig.append(el("span", "row-trigger-text", spotLabel(r.edge)));
   li.append(
@@ -2592,10 +2595,10 @@ async function exportFragment(picks: SnippetPick[]) {
   }
 }
 
-// ---- 卡带市场（规划 7.2-㉕）：浏览索引 / 搜索 / 一键安装 ----
+// ---- 卡带市场（规划 7.2-㉕）：左栏一级页 / 搜索 / 标签筛选 / 一键安装 ----
 //
-// 没有服务端：索引是一份能下载到的 JSON（地址在设置里，默认指向仓库的 snippets/index.json），
-// 搜索在本地做——几百条以内不值得为它加一个服务端。
+// 没有服务端：索引是一份能下载到的静态 JSON（地址在设置里，默认指向 ihomy 的
+// snippets/index.json）。索引一次拿全，搜索与筛选都在本地做——几百条以内不值得为它加服务端。
 
 type IndexEntry = {
   name: string;
@@ -2618,40 +2621,113 @@ type SnippetFetch = {
 };
 
 let marketEntries: IndexEntry[] = [];
+// 成功拿到过索引；失败不置位，重新进页面会自动重试。
+let marketLoaded = false;
+let marketLoading = false;
+let marketError = "";
+let marketQuery = "";
+let marketTag: string | null = null;
+// 本次会话里装过的卡带：只给卡片标一下，不落盘——用户可能随后删掉条目，
+// 持久化成「已安装」会骗人。
+const marketInstalled = new Set<string>();
+
 // 预览框点「安装」时要用：null = 没待装的卡带。
 let snippetPending: { text: string; name: string } | null = null;
 
-async function openMarket() {
-  document.getElementById("market-modal")!.classList.remove("hidden");
-  const note = document.getElementById("market-note")!;
-  const list = document.getElementById("market-list")!;
-  note.textContent = tr("正在拉取索引…");
-  list.replaceChildren();
+function marketSourceLabel(): string {
+  return cfg.settings.snippet_index_url?.trim() || tr("内置地址");
+}
+
+// 进页面 / 点「重新拉取」时调用；`force` = 忽略已拿到的索引重新下载。
+async function loadMarket(force = false) {
+  if (marketLoading) return;
+  if (marketLoaded && !force) {
+    renderMarketPage();
+    return;
+  }
+  marketLoading = true;
+  marketError = "";
+  renderMarketPage();
   try {
     marketEntries = await invoke<IndexEntry[]>("fetch_snippet_index");
-    const set = cfg.settings.snippet_index_url?.trim();
-    note.textContent = trt`共 ${marketEntries.length} 条 · 索引：${set || tr("内置地址")}`;
+    marketLoaded = true;
   } catch (e) {
     marketEntries = [];
-    note.textContent = trt`拉取失败：${e}（可在「卡带索引地址」里换一个）`;
+    marketError = String(e);
+  } finally {
+    marketLoading = false;
+    renderMarketPage();
   }
-  renderMarket();
 }
 
-function hideMarket() {
-  document.getElementById("market-modal")!.classList.add("hidden");
+// 索引里的标签按出现次数排序（同次数按字典序）：常用的分类先出现，列表不会每次刷新换个顺序。
+function marketTags(): string[] {
+  const count = new Map<string, number>();
+  for (const e of marketEntries) {
+    for (const raw of e.tags ?? []) {
+      const tag = raw.trim();
+      if (tag) count.set(tag, (count.get(tag) ?? 0) + 1);
+    }
+  }
+  return [...count.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0], "zh"))
+    .map(([tag]) => tag);
 }
 
-function renderMarket() {
-  const q = (document.getElementById("market-search") as HTMLInputElement).value
-    .trim()
-    .toLowerCase();
-  const list = document.getElementById("market-list")!;
-  const hit = marketEntries.filter((e) =>
-    !q || [e.name, e.description ?? "", e.author ?? "", ...(e.tags ?? [])].join(" ").toLowerCase().includes(q),
-  );
+function renderMarketPage() {
+  const note = document.getElementById("market-note");
+  const tagsBox = document.getElementById("market-tags");
+  const list = document.getElementById("market-list");
+  if (!note || !tagsBox || !list) return;
+
+  note.textContent = marketLoading
+    ? tr("正在拉取索引…")
+    : marketError
+      ? trt`拉取失败：${marketError}（可在「设置 → 配置与数据」里换索引地址）`
+      : marketLoaded
+        ? trt`共 ${marketEntries.length} 条 · 索引：${marketSourceLabel()}`
+        : tr("还没拉取索引");
+
+  // 索引换了（或第一条标签被删掉）时把已选标签收掉，免得停在一个不存在的标签上筛出空列表。
+  const tags = marketTags();
+  if (marketTag && !tags.includes(marketTag)) marketTag = null;
+  tagsBox.classList.toggle("hidden", tags.length < 2);
+  const tagButton = (tag: string | null, label: string): HTMLButtonElement => {
+    const b = el("button", "market-tag", label) as HTMLButtonElement;
+    const on = tag === marketTag;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", String(on));
+    b.addEventListener("click", () => {
+      marketTag = tag;
+      renderMarketPage();
+    });
+    return b;
+  };
+  tagsBox.replaceChildren(tagButton(null, tr("全部")), ...tags.map((t) => tagButton(t, t)));
+
+  if (marketLoading) {
+    list.replaceChildren(el("p", "market-empty", tr("正在拉取索引…")));
+    return;
+  }
+  if (marketError) {
+    list.replaceChildren(
+      el("p", "market-empty", tr("索引拉不下来：检查网络，或在「设置 → 配置与数据」里换一个索引地址后点「重新拉取」。")),
+    );
+    return;
+  }
+  const q = marketQuery.trim().toLowerCase();
+  const hit = marketEntries.filter((e) => {
+    if (marketTag && !(e.tags ?? []).includes(marketTag)) return false;
+    if (!q) return true;
+    return [e.name, e.description ?? "", e.author ?? "", ...(e.tags ?? [])]
+      .join(" ")
+      .toLowerCase()
+      .includes(q);
+  });
   if (!hit.length) {
-    list.replaceChildren(el("p", "market-empty", q ? tr("没有匹配的卡带") : tr("索引里一条卡带也没有")));
+    list.replaceChildren(
+      el("p", "market-empty", q || marketTag ? tr("没有匹配的卡带") : tr("索引里一条卡带也没有")),
+    );
     return;
   }
   list.replaceChildren(...hit.map(marketCard));
@@ -2660,14 +2736,42 @@ function renderMarket() {
 function marketCard(e: IndexEntry): HTMLElement {
   const card = el("div", "market-card");
   const head = el("div", "market-card-head");
-  const btn = el("button", "primary", tr("安装…")) as HTMLButtonElement;
+  const installed = marketInstalled.has(e.name);
+  const btn = el(
+    "button",
+    installed ? undefined : "primary",
+    installed ? tr("已安装") : tr("安装…"),
+  ) as HTMLButtonElement;
+  card.classList.toggle("installed", installed);
+  btn.title = installed
+    ? tr("再装一次只会补上缺失的条目（撞车的跳过）")
+    : tr("先预览里面的条目，确认后再合并进来");
   btn.addEventListener("click", () => void previewSnippet(e));
   head.append(el("span", "market-name", e.name), el("span", "flex-spacer"), btn);
   card.append(head);
   if (e.description) card.append(el("div", "market-desc", e.description));
-  const meta = [e.author, ...(e.tags ?? [])].filter(Boolean).join(" · ");
-  if (meta) card.append(el("div", "market-meta", meta));
+  if (e.tags?.length) {
+    const chips = el("div", "market-tags market-card-tags");
+    for (const t of e.tags) {
+      const chip = el("button", "market-tag", t) as HTMLButtonElement;
+      chip.title = trt`只看「${t}」标签`;
+      chip.addEventListener("click", () => {
+        marketTag = t;
+        renderMarketPage();
+      });
+      chips.append(chip);
+    }
+    card.append(chips);
+  }
+  if (e.author) card.append(el("div", "market-meta", trt`分享者：${e.author}`));
   return card;
+}
+
+// 「索引设置」：索引地址留在设置页（配置与数据），市场页只负责浏览——两件事不挤在一屏。
+async function gotoMarketSettings() {
+  await switchSection("settings");
+  document.getElementById("snippet-index-row")?.scrollIntoView({ block: "center", behavior: "smooth" });
+  (document.getElementById("set-snippet-index") as HTMLInputElement | null)?.focus();
 }
 
 // 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
@@ -2736,6 +2840,8 @@ async function confirmSnippetInstall() {
   try {
     const r = await invoke<ImportOutcome>("install_snippet", { text: pending.text });
     await load();
+    marketInstalled.add(pending.name);
+    renderMarketPage();
     showImportResult(r);
   } catch (e) {
     toast(trt`安装失败: ${e}`);
@@ -3286,6 +3392,19 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
 // 下一行是目录或没有就放进上面这个目录；列表顶端的缝落第一行之前。没有候选才回根。
 function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
   const kind = dragPayload?.kind;
+  // 鼠标类条目在根级数组里、不进目录树：只在同类行之间换位（顺序即同位置优先级）。
+  if (kind === "gesture" || kind === "hotcorner" || kind === "wheeledge") {
+    const rows = Array.from(list.querySelectorAll<HTMLElement>(`.row[data-kind="${kind}"]`));
+    const inside = rows.find((el) => {
+      const r = el.getBoundingClientRect();
+      return y >= r.top && y <= r.bottom;
+    });
+    if (inside) return zoneOfEl(inside, y);
+    const up = rows.filter((el) => el.getBoundingClientRect().bottom < y).pop();
+    const down = rows.find((el) => el.getBoundingClientRect().top > y);
+    const only = up ?? down;
+    return only ? zoneOfEl(only, y) : null;
+  }
   // 快捷键/改键/扩展与目录互为落点；own = 拖目录时的成环黑名单（含源目录自己）。
   const own = kind === "folder" ? collectDescendantIds(dragPayload!.id) : null;
   const sel = `.folder-row, .row[data-kind="${dragRowKind()}"]`;
@@ -3356,6 +3475,8 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
   if (!hit || !list.contains(hit)) return null; // 列表外视为无效落点
   const folderEl = hit.closest(".folder-row") as HTMLElement | null;
   if (folderEl) {
+    // 鼠标类条目不属于任何目录：悬浮在目录行上不放行。
+    if (dragRowKind() === "gesture" || dragRowKind() === "hotcorner" || dragRowKind() === "wheeledge") return null;
     const folderId = folderEl.dataset.folderId!;
     if (dragPayload?.kind === "folder") {
       const r = folderEl.getBoundingClientRect();
@@ -3449,6 +3570,26 @@ function applyDrop(zone: DropZone) {
   // 落回源行自己 = 原地不动（源行 pointer-events 让位，光标常就停在它身上）：不落盘、
   // 不重绘，免得「拿起又放下」白弹一次保存提示。
   if (zoneEl(zone) === dragState?.sourceEl) return;
+
+  // 鼠标类条目：只在同类数组里换位，落点只认同类行（顺序即优先级）。
+  if (dragPayload.kind === "gesture" || dragPayload.kind === "hotcorner" || dragPayload.kind === "wheeledge") {
+    if (zone.kind !== "row") return;
+    const kind = dragPayload.kind;
+    const arr = (
+      kind === "gesture" ? cfg.gestures : kind === "hotcorner" ? cfg.hot_corners : cfg.wheel_edges
+    ) as object[];
+    const srcIdx = dragPayload.idx;
+    const moved = arr[srcIdx];
+    if (!moved) return;
+    const at = zone.pos === "before" ? zone.idx : zone.idx + 1;
+    if ((at > srcIdx ? at - 1 : at) === srcIdx) return; // 原位放下
+    const sameSection = section === KIND_SECTION[kind];
+    const selObj = sameSection && selected !== null ? arr[selected] : null;
+    moveWithin(arr, srcIdx, at);
+    if (sameSection) selected = selObj ? arr.indexOf(selObj) : null;
+    void save();
+    return;
+  }
 
   // 改键/文本扩展：平铺换位 + 归目录（目录行上算「放进」，缝隙按 nearestDropZone 落位）。
   if (dragPayload.kind === "remap" || dragPayload.kind === "expansion") {
@@ -3652,6 +3793,7 @@ function renderDetail() {
   const entry = isListSection(section);
   document.getElementById("detail-entry")!.classList.toggle("hidden", !entry);
   document.getElementById("detail-layers")!.classList.toggle("hidden", section !== "layers");
+  document.getElementById("detail-market")!.classList.toggle("hidden", section !== "market");
   document.getElementById("detail-settings")!.classList.toggle("hidden", section !== "settings");
   document.getElementById("detail-messages")!.classList.toggle("hidden", section !== "messages");
   document.getElementById("detail-help")!.classList.toggle("hidden", section !== "help");
@@ -6996,6 +7138,9 @@ function syncSettings() {
   // 提示框默认「关」（后端 `HintsWindow::default` 也是 false）：老配置缺 `hints` 时显示为未勾选。
   (document.getElementById("set-hints") as HTMLInputElement).checked =
     cfg.settings.hints?.visible === true;
+  // 触发提醒缺字段按「开」（与后端 `default_true` 一致）。
+  (document.getElementById("set-trigger-toast") as HTMLInputElement).checked =
+    cfg.settings.trigger_toast !== false;
   // 缺字段的老配置按默认「剪贴板粘贴」显示，与后端 serde default 一致。
   (document.getElementById("set-text-inject") as HTMLSelectElement).value =
     cfg.settings.text_inject_mode ?? "clipboard";
@@ -7044,21 +7189,6 @@ function syncSettings() {
   );
   (document.getElementById("set-gesture-fail-color") as HTMLInputElement).value =
     cfg.settings.gesture_fail_color ?? "#ff5f56";
-  // 按键回显（EXT-12）：缺字段 = 关；外观回落后端默认（与 `Keycast::default` 一致）。
-  const keycast = cfg.settings.keycast;
-  (document.getElementById("set-keycast") as HTMLInputElement).checked = keycast?.enabled === true;
-  (document.getElementById("set-keycast-color") as HTMLInputElement).value =
-    keycast?.color ?? "#ffd9cf";
-  (document.getElementById("set-keycast-position") as HTMLSelectElement).value =
-    keycast?.position ?? "top-center";
-  (document.getElementById("set-keycast-font-size") as HTMLInputElement).value = String(
-    keycast?.font_size ?? 32,
-  );
-  (document.getElementById("set-keycast-hide-ms") as HTMLInputElement).value = String(
-    keycast?.hide_ms ?? 1200,
-  );
-  (document.getElementById("set-keycast-ignore-single") as HTMLInputElement).checked =
-    keycast?.ignore_single_char !== false;
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
@@ -7360,6 +7490,11 @@ function bindSettings() {
     cfg.settings.show_status_hud = statusHud.checked;
     void save();
   });
+  const triggerToast = document.getElementById("set-trigger-toast") as HTMLInputElement;
+  triggerToast.addEventListener("change", () => {
+    cfg.settings.trigger_toast = triggerToast.checked;
+    void save();
+  });
   // 提示框的开关：改动随整份配置落盘，后端 `set_config` 比对到 `visible` 变了就把窗口
   // 建出来 / 收起来，并把托盘菜单的勾对齐（见 `apply_hints_visible`）。
   hints.addEventListener("change", () => {
@@ -7375,6 +7510,8 @@ function bindSettings() {
   const snippetIndex = document.getElementById("set-snippet-index") as HTMLInputElement;
   snippetIndex.addEventListener("change", () => {
     cfg.settings.snippet_index_url = snippetIndex.value.trim();
+    // 换了索引地址，下次进市场页必须重新拉，别把旧索引继续挂在列表里。
+    marketLoaded = false;
     void save();
   });
   // 输入层环境诊断（规划 7.2-㊽）：关掉即「整条链路静默」——后端连探测都不做
@@ -7478,52 +7615,6 @@ function bindSettings() {
     cfg.settings.gesture_fail_color = gestureFailColor.value;
     void save();
   });
-  // 按键回显（EXT-12）：整组外观跟着开关一起落进 `settings.keycast`（缺省字段由后端补）。
-  const keycast = (): NonNullable<Settings["keycast"]> =>
-    (cfg.settings.keycast ??= {
-      enabled: false,
-      color: "#ffd9cf",
-      position: "top-center",
-      font_size: 32,
-      hide_ms: 1200,
-      ignore_single_char: true,
-    });
-  const keycastEnabled = document.getElementById("set-keycast") as HTMLInputElement;
-  keycastEnabled.addEventListener("change", () => {
-    keycast().enabled = keycastEnabled.checked;
-    void save();
-  });
-  const keycastColor = document.getElementById("set-keycast-color") as HTMLInputElement;
-  keycastColor.addEventListener("change", () => {
-    keycast().color = keycastColor.value;
-    void save();
-  });
-  const keycastPosition = document.getElementById("set-keycast-position") as HTMLSelectElement;
-  keycastPosition.addEventListener("change", () => {
-    keycast().position = keycastPosition.value;
-    void save();
-  });
-  const keycastFontSize = document.getElementById("set-keycast-font-size") as HTMLInputElement;
-  keycastFontSize.addEventListener("change", () => {
-    const v = Math.min(72, Math.max(12, Math.floor(Number(keycastFontSize.value) || 32)));
-    keycastFontSize.value = String(v);
-    keycast().font_size = v;
-    void save();
-  });
-  const keycastHideMs = document.getElementById("set-keycast-hide-ms") as HTMLInputElement;
-  keycastHideMs.addEventListener("change", () => {
-    const v = Math.min(10000, Math.max(200, Math.floor(Number(keycastHideMs.value) || 1200)));
-    keycastHideMs.value = String(v);
-    keycast().hide_ms = v;
-    void save();
-  });
-  const keycastIgnoreSingle = document.getElementById(
-    "set-keycast-ignore-single",
-  ) as HTMLInputElement;
-  keycastIgnoreSingle.addEventListener("change", () => {
-    keycast().ignore_single_char = keycastIgnoreSingle.checked;
-    void save();
-  });
   // 复制快捷菜单（双击 Ctrl+C）已删除：不再有设置项与条目编辑器。
   // 「重新检测」：结论本身在后端有 3 秒缓存，这里绕开不了它，但连点几次足以跨过缓存
   // ——退出厂商软件后想让结论立刻翻篇，这是最省事的手动刷新入口。
@@ -7569,12 +7660,14 @@ function bindSettings() {
   document.getElementById("sync-restore")!.addEventListener("click", () => void syncRestore());
   document.getElementById("import-config")!.addEventListener("click", () => void importConfig());
   document.getElementById("load-sample")!.addEventListener("click", () => void loadSampleConfig());
-  document.getElementById("open-market")!.addEventListener("click", () => void openMarket());
-  // 卡带市场：搜索是本地过滤（索引已全量拿在手上），改输入框就重画列表。
-  document.getElementById("market-search")!.addEventListener("input", renderMarket);
-  document.getElementById("market-reload")!.addEventListener("click", () => void openMarket());
-  document.getElementById("market-close")!.addEventListener("click", hideMarket);
-  document.getElementById("market-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideMarket);
+  // 卡带市场：设置页的按钮跳到独立市场页，搜索在本地过滤（索引已全量拿在手上）。
+  document.getElementById("open-market")!.addEventListener("click", () => void switchSection("market"));
+  document.getElementById("market-settings")!.addEventListener("click", () => void gotoMarketSettings());
+  document.getElementById("market-reload")!.addEventListener("click", () => void loadMarket(true));
+  document.getElementById("market-search")!.addEventListener("input", (e) => {
+    marketQuery = (e.target as HTMLInputElement).value;
+    renderMarketPage();
+  });
   document.getElementById("snippet-install")!.addEventListener("click", () => void confirmSnippetInstall());
   document.getElementById("snippet-cancel")!.addEventListener("click", hideSnippetPreview);
   document.getElementById("snippet-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideSnippetPreview);
@@ -8640,8 +8733,8 @@ function startBrandLogoLoop() {
   });
 }
 
-// rail 只有 5 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
-// （合并列表），所以落到「快捷键」上高亮，不另造页签；「键位层」是独立一级页。
+// rail 有 6 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
+// （合并列表），所以落到「快捷键」上高亮，不另造页签；「键位层」与「卡带市场」都是独立一级页。
 function syncRailTab(tab: Section) {
   // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
   const rail =
@@ -8675,6 +8768,8 @@ function switchSectionNow(tab: Section, opts?: { keepList?: boolean }) {
   hideRowMenu();
   if (tab === "messages") markRead();
   syncRailTab(tab);
+  // 市场页一进来就拉索引（已拿到的直接复用；上次失败的下次进来会重试）。
+  if (tab === "market") void loadMarket();
   render();
 }
 
@@ -9512,61 +9607,6 @@ async function bootstrapHints() {
   await listen<Config>("config-changed", (e) => render(e.payload));
 }
 
-// 按键回显浮层（独立窗口，加载 index.html#keycast，EXT-12）：
-// 后端每来一条物理按键就推一次，这里只画文字 + 按停留时间淡出；显示 / 隐藏与定位由后端管。
-type KeycastPayload = {
-  text: string;
-  down: boolean;
-  color: string;
-  font_size: number;
-  hide_ms: number;
-};
-
-async function bootstrapKeycast(preview = false) {
-  document.querySelector(".layout")?.remove();
-  document.querySelector("#result-modal")?.remove();
-  document.querySelector("#save-status")?.remove();
-
-  const box = el("div", "keycast-box");
-  const text = el("div", "keycast-text");
-  box.append(text);
-  document.body.append(box);
-  let fadeTimer: number | undefined;
-  const render = (p: KeycastPayload) => {
-    text.textContent = p.text;
-    text.style.color = p.color;
-    text.style.fontSize = `${p.font_size}px`;
-    box.classList.toggle("is-up", !p.down);
-    box.classList.remove("is-fading");
-    // 量完内容再回报尺寸：窗口按内容大小贴边角（与 hud / hints 同一个套路）。
-    // 注意量的是 `.keycast-text` 而不是铺满窗口的 `.keycast-box`（后者 inset:0，
-    // 量出来永远是当前窗口大小，窗口就永远缩不回去）。
-    requestAnimationFrame(() => {
-      const rect = text.getBoundingClientRect();
-      void invoke("keycast_ready", {
-        width: Math.ceil(rect.width) + 16,
-        height: Math.ceil(rect.height) + 16,
-      }).catch(() => {});
-    });
-    if (fadeTimer) window.clearTimeout(fadeTimer);
-    // 隐藏由后端到点执行；这里只提前淡出，避免「啪」一下消失。
-    fadeTimer = window.setTimeout(
-      () => box.classList.add("is-fading"),
-      Math.max(0, p.hide_ms - 180),
-    );
-  };
-  await listen<KeycastPayload>("keycast", (e) => render(e.payload));
-  // 首次懒创建后补一次拉取：第一次按键建窗要几百毫秒，emit 会早于监听器注册
-  // （与 hud / toast 同一个套路）。
-  const pending = await invoke<KeycastPayload | null>("get_keycast_payload").catch(() => null);
-  if (pending) {
-    render(pending);
-  } else if (preview) {
-    // 纯浏览器直开（`index.html#keycast`）给一份样例，方便调样式。
-    render({ text: "Ctrl+Alt+K ↓", down: true, color: "#ffd9cf", font_size: 32, hide_ms: 1200 });
-  }
-}
-
 // 手势轨迹浮层（独立窗口，加载 index.html#gesture，EXT-02）：
 // 画的时候背后端每帧推轨迹点，这里只画线 + 末端箭头；松手后显示动作名 / 失败色。
 // 窗口本身不可激活、鼠标穿透，显示与隐藏全由后端控制。
@@ -9676,7 +9716,6 @@ async function bootstrapClipboardMenu(preview = false) {
     "#unsaved-modal",
     "#import-modal",
     "#import-result-modal",
-    "#market-modal",
     "#snippet-modal",
   ]) {
     document.querySelector(sel)?.remove();
@@ -9732,7 +9771,7 @@ async function bootstrapClipboardMenu(preview = false) {
   };
 
   await listen<ClipboardMenuPayload>("clipboard-menu", (e) => render(e.payload));
-  // 首次建窗时 emit 可能早于监听器注册（与 keycast 同一个套路）：拉一次兜底。
+  // 首次建窗时 emit 可能早于监听器注册（与 hud / toast 同一个套路）：拉一次兜底。
   const pending = await invoke<ClipboardMenuPayload | null>("get_clipboard_menu_payload").catch(
     () => null,
   );
@@ -9909,11 +9948,6 @@ if (location.hash === "#toast") {
   void bootstrapToast();
 } else if (location.hash === "#gesture") {
   void bootstrapGesture();
-} else if (location.hash === "#keycast") {
-  // 纯浏览器直开时给一份样例载荷（壳内自动跳过），方便调样式。
-  const preview = !("__TAURI_INTERNALS__" in window);
-  installBrowserMock();
-  void bootstrapKeycast(preview);
 } else if (location.hash === "#hud") {
   // 演示模式只在没有 Tauri 壳时生效（`index.html#hud` 纯浏览器直开时给一份样例载荷，
   // 方便调样式；壳内自动跳过）。触发气泡那边不装，因为它没有可预览的静态内容。
@@ -9924,7 +9958,7 @@ if (location.hash === "#toast") {
   installBrowserMock();
   void bootstrapHints();
 } else if (location.hash === "#clipboard-menu") {
-  // 同 `#keycast`：纯浏览器直开时给一份样例菜单，方便调样式。
+  // 同 `#hud`：纯浏览器直开时给一份样例菜单，方便调样式。
   const preview = !("__TAURI_INTERNALS__" in window);
   installBrowserMock();
   void bootstrapClipboardMenu(preview);

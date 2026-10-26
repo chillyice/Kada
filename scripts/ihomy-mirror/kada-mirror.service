@@ -10,6 +10,9 @@ Type=oneshot
 User=ihomy
 Group=ihomy
 ExecStart=/usr/local/bin/kada-mirror
+# 直连 github.com/releases/download 会挂住 / 只有几十 KB/s；走代理前缀下载资产
+# （api.github.com 拿 Release 元数据仍直连）。代理不可用时删掉这一行即回落直连。
+Environment=KADA_MIRROR_GH_BASE=https://ghfast.top/
 # 备份类任务的同款低优先级设置：每日一次，不跟后端争磁盘与网络。
 Nice=10
 IOSchedulingClass=idle

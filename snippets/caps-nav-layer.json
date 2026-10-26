@@ -1,0 +1,70 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "CapsLock 导航层（短按 Esc / 按住 HJKL 移光标）",
+    "description": "小拇指够得到的 CapsLock 当导航键：短按出 Esc，按住后 H/J/K/L 变方向键、U/I 跳行首行尾。松开立刻回到正常打字，全平台可用。",
+    "author": "Kada",
+    "tags": ["capslock", "改键", "层", "方向键", "全平台"]
+  },
+  "layers": [{ "id": "snip-caps-nav", "name": "CapsLock 导航层", "mark": "🧭" }],
+  "remaps": [
+    {
+      "name": "CapsLock：短按 Esc / 按住进导航层",
+      "description": "短按（200 毫秒内）出 Escape；按住时进入导航层，下面的 H/J/K/L 才生效。",
+      "from": "CapsLock",
+      "to": "",
+      "tap": "Escape",
+      "hold_layer": "snip-caps-nav",
+      "tap_timeout_ms": 200,
+      "enabled": true
+    },
+    {
+      "name": "H → 左",
+      "from": "H",
+      "to": "Left",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "J → 下",
+      "from": "J",
+      "to": "Down",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "K → 上",
+      "from": "K",
+      "to": "Up",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "L → 右",
+      "from": "L",
+      "to": "Right",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "U → 行首",
+      "from": "U",
+      "to": "Home",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    },
+    {
+      "name": "I → 行尾",
+      "from": "I",
+      "to": "End",
+      "layer": "snip-caps-nav",
+      "tap_timeout_ms": 0,
+      "enabled": true
+    }
+  ]
+}

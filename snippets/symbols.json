@@ -1,0 +1,33 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "常用符号与中文标点",
+    "description": "破折号、省略号、箭头、数学符号、货币与版权符号：输入 ;;dd 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用，不改键、不执行任何命令。",
+    "author": "Kada",
+    "tags": ["文本扩展", "符号", "标点", "全平台"]
+  },
+  "expansions": [
+    { "name": "中文省略号", "trigger": ";;dd", "replace": "……", "enabled": true },
+    { "name": "中文破折号", "trigger": ";;po", "replace": "——", "enabled": true },
+    { "name": "右箭头", "trigger": ";;ar", "replace": "→", "enabled": true },
+    { "name": "左箭头", "trigger": ";;lf", "replace": "←", "enabled": true },
+    { "name": "上箭头", "trigger": ";;up", "replace": "↑", "enabled": true },
+    { "name": "下箭头", "trigger": ";;dn", "replace": "↓", "enabled": true },
+    { "name": "对勾", "trigger": ";;chk", "replace": "✓", "enabled": true },
+    { "name": "叉号", "trigger": ";;crs", "replace": "✗", "enabled": true },
+    { "name": "大于等于", "trigger": ";;ge", "replace": "≥", "enabled": true },
+    { "name": "小于等于", "trigger": ";;le", "replace": "≤", "enabled": true },
+    { "name": "不等于", "trigger": ";;ne", "replace": "≠", "enabled": true },
+    { "name": "正负号", "trigger": ";;pm", "replace": "±", "enabled": true },
+    { "name": "度", "trigger": ";;deg", "replace": "°", "enabled": true },
+    { "name": "摄氏度", "trigger": ";;cel", "replace": "℃", "enabled": true },
+    { "name": "人民币", "trigger": ";;rmb", "replace": "¥", "enabled": true },
+    { "name": "欧元", "trigger": ";;eur", "replace": "€", "enabled": true },
+    { "name": "乘号", "trigger": ";;mul", "replace": "×", "enabled": true },
+    { "name": "除号", "trigger": ";;div", "replace": "÷", "enabled": true },
+    { "name": "间隔点", "trigger": ";;mid", "replace": "·", "enabled": true },
+    { "name": "商标", "trigger": ";;tm", "replace": "™", "enabled": true },
+    { "name": "版权", "trigger": ";;cop", "replace": "©", "enabled": true },
+    { "name": "注册商标", "trigger": ";;reg", "replace": "®", "enabled": true }
+  ]
+}

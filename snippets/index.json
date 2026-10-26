@@ -2,6 +2,30 @@
   "version": 1,
   "snippets": [
     {
+      "name": "办公沟通短语",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/office-phrases.json",
+      "description": "收到、稍后回复、会议信息、周报骨架这些日常回复：输入 ;;recv 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用。",
+      "author": "Kada",
+      "tags": [
+        "文本扩展",
+        "办公",
+        "沟通",
+        "全平台"
+      ]
+    },
+    {
+      "name": "常用符号与中文标点",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/symbols.json",
+      "description": "破折号、省略号、箭头、数学符号、货币与版权符号：输入 ;;dd 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用，不改键、不执行任何命令。",
+      "author": "Kada",
+      "tags": [
+        "文本扩展",
+        "符号",
+        "标点",
+        "全平台"
+      ]
+    },
+    {
       "name": "常用中文热串",
       "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/phrases.json",
       "description": "写文档 / 聊天高频短语与日期时间：;ok、;thx、;brb、;addr、;sig、;date、;time。触发词后打空格 / 回车 / Tab 展开。",
@@ -52,6 +76,18 @@
       ]
     },
     {
+      "name": "开发协作短语",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/dev-phrases.json",
+      "description": "提 PR、复测、复现步骤、验收这些高频回复：输入 ;;pr 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用。",
+      "author": "Kada",
+      "tags": [
+        "文本扩展",
+        "开发",
+        "协作",
+        "全平台"
+      ]
+    },
+    {
       "name": "搜索入口（浏览器 / 站点搜索）",
       "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/search-web.json",
       "description": "OpenUrl 动作把常用搜索页收成快捷键：用系统默认浏览器打开带查询词的地址。把 URL 里 q= 后面的词换成你要搜的内容即可。",
@@ -86,6 +122,19 @@
         "PauseMs",
         "动作链",
         "常用动作"
+      ]
+    },
+    {
+      "name": "CapsLock 导航层（短按 Esc / 按住 HJKL 移光标）",
+      "url": "https://raw.githubusercontent.com/chillyice/Kada/main/snippets/caps-nav-layer.json",
+      "description": "小拇指够得到的 CapsLock 当导航键：短按出 Esc，按住后 H/J/K/L 变方向键、U/I 跳行首行尾。松开立刻回到正常打字，全平台可用。",
+      "author": "Kada",
+      "tags": [
+        "capslock",
+        "改键",
+        "层",
+        "方向键",
+        "全平台"
       ]
     },
     {

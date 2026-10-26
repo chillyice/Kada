@@ -1,0 +1,28 @@
+{
+  "kada_snippet": {
+    "version": 1,
+    "name": "开发协作短语",
+    "description": "提 PR、复测、复现步骤、验收这些高频回复：输入 ;;pr 这类短码后打空格 / 回车 / Tab 展开。纯文本扩展，全平台可用。",
+    "author": "Kada",
+    "tags": ["文本扩展", "开发", "协作", "全平台"]
+  },
+  "expansions": [
+    { "name": "可以合并", "trigger": ";;lgtm", "replace": "LGTM 👍", "enabled": true },
+    { "name": "请评审", "trigger": ";;ptal", "replace": "PTAL（麻烦有空看一下）", "enabled": true },
+    { "name": "还在改", "trigger": ";;wip", "replace": "WIP：还在改，先别合并。", "enabled": true },
+    { "name": "待办标记", "trigger": ";;todo", "replace": "TODO：", "enabled": true },
+    { "name": "待修标记", "trigger": ";;fixme", "replace": "FIXME：", "enabled": true },
+    { "name": "备注标记", "trigger": ";;note", "replace": "NOTE：", "enabled": true },
+    { "name": "已提 PR", "trigger": ";;pr", "replace": "已提 PR，麻烦有空看下，谢谢～", "enabled": true },
+    { "name": "已修复待复测", "trigger": ";;fixed", "replace": "已修复，麻烦复测一下。", "enabled": true },
+    {
+      "name": "复现步骤模板",
+      "trigger": ";;repro",
+      "replace": "复现步骤：\n1. \n2. \n预期结果：\n实际结果：",
+      "enabled": true
+    },
+    { "name": "已合并", "trigger": ";;merged", "replace": "已合并到 main。", "enabled": true },
+    { "name": "已发布待验收", "trigger": ";;deploy", "replace": "已发布到生产环境，麻烦验收。", "enabled": true },
+    { "name": "本地验证结论", "trigger": ";;tested", "replace": "已在本地验证：构建通过、相关用例通过。", "enabled": true }
+  ]
+}

@@ -527,10 +527,6 @@ case "run_entry":
         // 悬浮指示窗渲染完回报尺寸（演示模式不真的改窗口大小）。
         case "hud_ready":
           return null;
-        // 按键回显窗同理：演示模式只画样例，不改真实窗口大小 / 位置。
-        case "keycast_ready":
-        case "get_keycast_payload":
-          return null;
         // 快捷键提示框：演示模式给一份「常显」状态，`index.html#hints` 直开即可看样式
         // （真实位置 / 外观只有壳内的窗口会记）。
         case "get_hints_state":

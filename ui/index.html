@@ -32,6 +32,10 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m12 2 9 5-9 5-9-5 9-5Z"/><path d="m3 12 9 5 9-5"/><path d="m3 17 9 5 9-5"/></svg>
             <span>键位层</span>
           </button>
+          <button class="rail-item" data-tab="market">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="5" width="20" height="14" rx="2"/><circle cx="8" cy="14.5" r="1.8"/><circle cx="16" cy="14.5" r="1.8"/><path d="M7 5V3h10v2M7 19v2h10v-2"/></svg>
+            <span>卡带市场</span>
+          </button>
           <button class="rail-item" data-tab="messages">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span>消息</span>
@@ -295,6 +299,35 @@
           </div>
         </section>
 
+        <!-- 卡带市场（规划 7.2-㉕）：独立一级页。没有服务端——索引是一份能下载到的静态 JSON，
+             列表拿到后在本地搜索 / 按标签筛选；每条卡带点「安装」先出预览，确认后按合并语义装进来。
+             索引地址不在这页改（设置 → 配置与数据），避免把「浏览」和「配置」混在同一屏。 -->
+        <section id="detail-market" class="detail hidden">
+          <div class="market-page">
+            <header class="market-head">
+              <div class="market-head-main">
+                <h2 class="market-h">卡带市场</h2>
+                <p id="market-note" class="market-note"></p>
+              </div>
+              <div class="market-head-actions">
+                <button id="market-settings" class="ghost" title="索引地址在「设置 → 配置与数据」里改">索引设置</button>
+                <button id="market-reload" class="primary">重新拉取</button>
+              </div>
+            </header>
+            <div class="market-bar">
+              <input
+                id="market-search"
+                class="search market-search"
+                type="text"
+                placeholder="搜索名称 / 说明 / 作者 / 标签"
+                spellcheck="false"
+              />
+            </div>
+            <div id="market-tags" class="market-tags"></div>
+            <div id="market-list" class="market-list"></div>
+          </div>
+        </section>
+
         <!-- 设置详情：按用途分卡片（外观与提示 / 通用行为 / 输入与响应 / 配置与数据 /
              软件更新），卡片里一律「左标签 + 右控件」、行间一条细分隔线，每项配一行小字说明。
              原先十项平铺成一列各带边框的小方块、宽度还只有下面整宽区块的一半（空着大半个窗口），
@@ -341,6 +374,13 @@
                       <span class="set-sub">常显的速查小窗：滚轮缩放、Ctrl+滚轮调透明度、鼠标放上去让位</span>
                     </span>
                     <input type="checkbox" id="set-hints" class="toggle" />
+                  </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">显示触发提醒</span>
+                      <span class="set-sub">快捷键 / 改键 / 文本扩展 / 手势 / 触发角 / 边缘滚动触发时，右下角弹一条 3 秒气泡</span>
+                    </span>
+                    <input type="checkbox" id="set-trigger-toast" class="toggle" />
                   </label>
                 </div>
                 <details class="hint-fold">
@@ -389,6 +429,13 @@
                       <option value="CapsLock">双击 CapsLock</option>
                     </select>
                   </label>
+                  <label class="set-row">
+                    <span class="set-main">
+                      <span class="set-name">全局排除程序</span>
+                      <span class="set-sub">命中的程序里所有触发都不生效：快捷键 / 改键 / 文本扩展 / 鼠标手势一律放行，不吞键也不执行动作（手势仍按未命中回放右键）。每行一个进程名，支持 * / ? 通配、不区分大小写；与「手势排除程序」独立。</span>
+                    </span>
+                    <textarea id="set-exclude-apps" rows="4" spellcheck="false" placeholder="game.exe&#10;*remote*desktop*"></textarea>
+                  </label>
                 </div>
               </section>
 
@@ -434,20 +481,6 @@
                   <p class="hint">「序列等待」/「和弦等待」超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
                   <p class="hint">「文本注入」默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
                 </details>
-              </section>
-
-              <!-- 全局排除程序（EXT-04）：命中的程序里所有 Kada 触发一律不生效。 -->
-              <section class="set-card" id="exclude-apps-card">
-                <div class="set-card-head"><span>全局排除程序</span></div>
-                <div class="set-rows">
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">这些程序里不启用 Kada</span>
-                      <span class="set-sub">命中的程序里所有触发都不生效：快捷键 / 改键 / 文本扩展 / 鼠标手势一律放行，不吞键也不执行动作（手势仍按未命中回放右键）。每行一个进程名，支持 * / ? 通配、不区分大小写；与下面的「手势排除程序」独立。</span>
-                    </span>
-                    <textarea id="set-exclude-apps" rows="4" spellcheck="false" placeholder="game.exe&#10;*remote*desktop*"></textarea>
-                  </label>
-                </div>
               </section>
 
               <!-- 鼠标操作（规划 7.2-MG）：新鼠标功能总开关。
@@ -546,66 +579,6 @@
                 </details>
               </section>
 
-              <section class="set-card" id="keycast-card">
-                <div class="set-card-head"><span>按键回显</span></div>
-                <div class="set-rows">
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">显示当前按键</span>
-                      <span class="set-sub">默认关闭；在屏幕上浮一条当前按键与修饰键组合（如 Ctrl+Alt+K ↓）；不抢焦点、鼠标穿透，暂停 / 全屏暂停 / 排除程序里不显示</span>
-                    </span>
-                    <input type="checkbox" id="set-keycast" class="toggle" />
-                  </label>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">文字颜色</span>
-                      <span class="set-sub">按键文字与方向箭头的颜色</span>
-                    </span>
-                    <input type="color" id="set-keycast-color" />
-                  </label>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">位置</span>
-                      <span class="set-sub">回显浮层贴哪个屏幕边角（主显示器工作区）</span>
-                    </span>
-                    <select id="set-keycast-position">
-                      <option value="top-left">左上</option>
-                      <option value="top-center">顶部居中</option>
-                      <option value="top-right">右上</option>
-                      <option value="bottom-left">左下</option>
-                      <option value="bottom-center">底部居中</option>
-                      <option value="bottom-right">右下</option>
-                    </select>
-                  </label>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">字号</span>
-                      <span class="set-sub">文字大小（像素，12~72）</span>
-                    </span>
-                    <input type="number" id="set-keycast-font-size" min="12" max="72" step="1" />
-                  </label>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">停留时间</span>
-                      <span class="set-sub">最后一次按键后停留多久再淡出（毫秒，200~10000）</span>
-                    </span>
-                    <input type="number" id="set-keycast-hide-ms" min="200" max="10000" step="50" />
-                  </label>
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">忽略单字符</span>
-                      <span class="set-sub">正常打字的单字符键（字母 / 数字 / 标点）不显示，只在组合键与功能键时出现，避免刷屏</span>
-                    </span>
-                    <input type="checkbox" id="set-keycast-ignore-single" class="toggle" />
-                  </label>
-                </div>
-                <details class="hint-fold">
-                  <summary>按键回显怎么用</summary>
-                  <p class="hint">打开后每次物理按键都会浮一条「组合键 + ↓（按下）/ ↑（抬起）」。它只是看板：不可点击、鼠标直接穿透、永不抢焦点，也不会让前台切换复位输入状态。</p>
-                  <p class="hint">暂停快捷键、全屏程序自动暂停、全局排除程序命中时都不显示；Kada 自己注入的按键也不会回显。</p>
-                </details>
-              </section>
-
               <!-- 复制快捷菜单（双击 Ctrl+C）已按要求删除：设置卡与运行时触发一并下线。 -->
 
               <!-- 输入层环境：厂商软件把按键 divert 走后，钩子看不到这次按下（规划 7.2-㊽）。
@@ -698,10 +671,10 @@
                     </span>
                     <button id="load-sample" title="示例会合并进来；「示例」文件夹下的条目可删掉该文件夹整体清除">载入示例</button>
                   </div>
-                  <div class="set-row set-row-merged">
+                  <div class="set-row set-row-merged" id="snippet-index-row">
                     <span class="set-main">
                       <span class="set-name">卡带市场</span>
-                      <span class="set-sub">浏览索引里的卡带，一键合并进配置（装之前先给你看清里面是什么）</span>
+                      <span class="set-sub">索引地址与市场入口：在左栏「卡带市场」里浏览、搜索并一键安装（装之前先给你看清里面是什么）</span>
                     </span>
                     <div class="set-controls">
                       <input
@@ -711,7 +684,7 @@
                         placeholder="索引地址（留空 = 内置）"
                         title="卡带索引地址：一份能下载到的 JSON 索引；留空 = 用内置地址，自建索引就填自己的"
                       />
-                      <button id="open-market">打开…</button>
+                      <button id="open-market">打开卡带市场</button>
                     </div>
                   </div>
                   <div class="set-row set-row-merged">
@@ -915,6 +888,9 @@
               <a class="friend-link" href="https://ihomy.top/kada" target="_blank" rel="noreferrer">
                 <span class="friend-ico">⌨️</span><span>咔哒</span>
               </a>
+              <a class="friend-link" href="https://keylol.com/" target="_blank" rel="noreferrer">
+                <span class="friend-ico">🎮</span><span>其乐</span>
+              </a>
             </div>
 
             <!-- 外链靠 `target=_blank`：壳层主窗口的 on_new_window 会把它拦给系统浏览器
@@ -1008,26 +984,6 @@
           <span class="flex-spacer"></span>
           <button id="import-result-ok" class="primary">知道了</button>
         </footer>
-      </div>
-    </div>
-
-    <!-- 卡带市场（规划 7.2-㉕）：没有服务端，索引就是一份能下载到的 JSON；
-         搜索在本地做（索引一次性拿全，几百条以内不值得为它加服务端）。 -->
-    <div id="market-modal" class="modal hidden">
-      <div class="modal-mask"></div>
-      <div class="modal-box">
-        <header class="modal-head">
-          <span class="modal-title">卡带市场</span>
-          <button id="market-close" class="detail-close" title="关闭">×</button>
-        </header>
-        <div class="modal-body">
-          <div class="market-bar">
-            <input type="text" id="market-search" class="search market-search" placeholder="搜索名称 / 说明 / 标签" spellcheck="false" />
-            <button id="market-reload" class="ghost">重新拉取</button>
-          </div>
-          <p id="market-note" class="confirm-hint"></p>
-          <div id="market-list" class="market-list"></div>
-        </div>
       </div>
     </div>
 
