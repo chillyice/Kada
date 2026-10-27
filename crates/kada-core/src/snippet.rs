@@ -13,9 +13,10 @@
 //!
 //! 与 Tauri 无关，纯函数，可单测。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::Config;
 
@@ -29,6 +30,20 @@ pub const SNIPPET_INDEX_VERSION: u32 = 1;
 /// 生成、作为公开备份。**没有任何服务端**：索引就是一份能 GET 到的静态 JSON。
 pub const DEFAULT_SNIPPET_INDEX_URL: &str =
     "https://ihomy.top/files/kada/snippets/index.json";
+
+/// 社区发布卡的索引（人工审核通过后由 ihomy 生成）。默认与官方索引分开：镜像每天覆盖
+/// 官方索引，社区卡不能写进那份文件，否则会被下一次同步抹掉。
+pub const DEFAULT_SNIPPET_COMMUNITY_INDEX_URL: &str =
+    "https://ihomy.top/files/kada/snippets/community/index.json";
+
+/// 卡带发布提交地址（只由官方市场使用；自定义索引不发到官方）。
+pub const DEFAULT_SNIPPET_PUBLISH_URL: &str =
+    "https://ihomy.top/api/public/kada/snippets/submit";
+
+/// 发布内容的体积 / 条目 / 嵌套上限（本机机审与服务端机审同一口径）。
+pub const SNIPPET_MAX_BYTES: usize = 256 * 1024;
+pub const SNIPPET_MAX_ENTRIES: usize = 200;
+pub const SNIPPET_MAX_DEPTH: usize = 16;
 
 /// 索引里的一条卡带（展示用；卡带本体是另一个 JSON，走现有「导入 → 合并」）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -46,6 +61,10 @@ pub struct IndexEntry {
     /// 搜索关键词，可空。
     #[serde(default)]
     pub tags: Vec<String>,
+    /// 机器判定危险等级（0 安全 / 1 低 / 2 中 / 3 高）。只有社区发布的卡带带这个字段；
+    /// 官方内置索引没有，读成 None = 不显示徽标。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub level: Option<u8>,
 }
 
 /// 索引文件本体（顶层）。`snippets` 之外的字段忽略，方便索引方再塞自己的东西。
@@ -125,16 +144,19 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
                 out.expansions.push(e);
             }
             PickKind::Gesture => {
-                // 手势没有目录归属，也没有层引用，原样带走即可（`when` 也跟着走）。
-                let Some(g) = cfg.gestures.get(p.idx).cloned() else { continue };
+                // 手势没有层引用；目录归属在导出时剥掉（与快捷键同一口径）。
+                let Some(mut g) = cfg.gestures.get(p.idx).cloned() else { continue };
+                g.folder = None;
                 out.gestures.push(g);
             }
             PickKind::Hotcorner => {
-                let Some(r) = cfg.hot_corners.get(p.idx).cloned() else { continue };
+                let Some(mut r) = cfg.hot_corners.get(p.idx).cloned() else { continue };
+                r.folder = None;
                 out.hot_corners.push(r);
             }
             PickKind::Wheeledge => {
-                let Some(r) = cfg.wheel_edges.get(p.idx).cloned() else { continue };
+                let Some(mut r) = cfg.wheel_edges.get(p.idx).cloned() else { continue };
+                r.folder = None;
                 out.wheel_edges.push(r);
             }
         }
@@ -173,6 +195,266 @@ pub fn snippet_title(part: &Config) -> String {
     } else {
         format!("卡带（{n} 项）")
     }
+}
+
+/// 卡带机审结果：危险等级 + 解释性发现 + 法务关键词标记。
+///
+/// **等级只用于提示，不代替人工审核**：官方市场要求所有发布卡带先机器扫描、再经
+/// ihomy 人工通过。等级口径两边（本机 / 服务端）必须一致，见 [`scan_snippet`]。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnippetScan {
+    /// 0 安全 / 1 低 / 2 中 / 3 高。
+    pub level: u8,
+    /// 卡带里的条目总数。
+    pub entries: usize,
+    /// 风险说明（人话，给发布者与审核员看）。
+    pub findings: Vec<String>,
+    /// 命中的法务关键词分类（**只标记、不自动拒绝**，交给人工判断）。
+    pub legal_flags: Vec<String>,
+}
+
+/// 发布时填的元信息（写进卡带顶层 `kada_snippet`，也是索引卡片的展示字段）。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct SnippetMeta {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub tags: Vec<String>,
+}
+
+/// 会把东西执行起来的动作类型 → (等级, 说明)。按 serde 的 `type` 标签匹配，
+/// 不依赖 `Action` 的 feature 门控（基础版也要能审自动化卡带）。
+fn action_risk(kind: &str) -> Option<(u8, &'static str)> {
+    match kind {
+        "command" | "cmd" | "powershell" | "script" => {
+            Some((3, "执行命令 / 脚本（可运行任意代码）"))
+        }
+        "launch" | "open_folder" | "close_program" | "os" | "system" | "app" | "open_url"
+        | "window" | "capture" | "tool" | "brightness" => {
+            Some((2, "启动程序 / 打开文件或网址 / 改系统状态"))
+        }
+        "text" | "keys" | "mouse" | "clipboard" | "transform" | "send_to" => {
+            Some((1, "注入按键或文本 / 操作鼠标 / 改剪贴板"))
+        }
+        "pause_ms" | "group" | "if" | "parallel" => Some((0, "")),
+        _ => None,
+    }
+}
+
+/// 法务关键词分类。命中只进 `legal_flags` 供人工审核，不会自动拒绝——
+/// 同一个词可能出现在「防诈骗提醒」这种正常文本里，机器判定不了语境。
+const LEGAL_RULES: &[(&str, &[&str])] = &[
+    (
+        "分裂国家 / 颠覆",
+        &["分裂国家", "颠覆国家", "台独", "藏独", "疆独", "港独", "东突", "法轮功", "六四事件"],
+    ),
+    ("侮辱 / 人身攻击", &["傻逼", "操你妈", "去死", "贱人", "杂种", "狗东西"]),
+    (
+        "违法 / 违禁",
+        &["毒品", "冰毒", "K粉", "买枪", "枪支弹药", "赌博", "代开发票", "洗钱", "诈骗", "裸聊", "成人视频"],
+    ),
+];
+
+/// 常见命令混淆指纹（小写匹配）。只加一条发现，不抬高等级——命令动作本来就是 3 级。
+const SUSPICIOUS_PATTERNS: &[&str] = &[
+    "-encodedcommand",
+    "frombase64string",
+    "invoke-expression",
+    "iex(",
+    "downloadstring",
+    "downloadfile",
+    "certutil -urlcache",
+    "bitsadmin",
+    "mshta ",
+    "rundll32 ",
+    "regsvr32 ",
+    "schtasks ",
+    "vssadmin delete",
+    "bcdedit ",
+    "netsh advfirewall",
+    "set-mppreference",
+    "add-mppreference",
+    "mimikatz",
+    "-windowstyle hidden",
+    "powershell -w hidden",
+];
+
+fn scan_walk(
+    value: &Value,
+    depth: usize,
+    level: &mut u8,
+    findings: &mut BTreeMap<String, usize>,
+    legal: &mut BTreeMap<String, BTreeSet<String>>,
+) {
+    if depth > SNIPPET_MAX_DEPTH {
+        *level = 3;
+        *findings.entry("结构嵌套过深（超过 16 层）".into()).or_insert(0) += 1;
+        return;
+    }
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(kind)) = map.get("type") {
+                match action_risk(kind) {
+                    Some((lv, desc)) => {
+                        if lv > *level {
+                            *level = lv;
+                        }
+                        if !desc.is_empty() {
+                            *findings.entry(format!("{desc}")).or_insert(0) += 1;
+                        }
+                    }
+                    None => {
+                        *level = 3;
+                        *findings
+                            .entry(format!("未知动作类型「{kind}」（可能来自更新版本，需人工确认）"))
+                            .or_insert(0) += 1;
+                    }
+                }
+            }
+            for v in map.values() {
+                scan_walk(v, depth + 1, level, findings, legal);
+            }
+        }
+        Value::Array(items) => {
+            for v in items {
+                scan_walk(v, depth + 1, level, findings, legal);
+            }
+            if items.len() > SNIPPET_MAX_ENTRIES {
+                *findings
+                    .entry(format!("单个列表条目过多（{} 条）", items.len()))
+                    .or_insert(0) += 1;
+            }
+        }
+        Value::String(text) => {
+            let lower = text.to_lowercase();
+            for pat in SUSPICIOUS_PATTERNS {
+                if lower.contains(pat) {
+                    *findings
+                        .entry(format!("疑似命令混淆 / 下载执行：{}", pat.trim()))
+                        .or_insert(0) += 1;
+                }
+            }
+            for (category, terms) in LEGAL_RULES {
+                for term in *terms {
+                    if text.contains(term) {
+                        legal
+                            .entry((*category).to_string())
+                            .or_default()
+                            .insert((*term).to_string());
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+/// 对卡带文本做本机机审：危险等级（0~3）、条目数、风险发现、法务关键词。
+///
+/// **纯函数**：只读 JSON，不执行内容、不访问网络。服务端 ihomy 用同一套规则重算，
+/// 客户端算出来的结果只用于发布前提示，不作为上架依据。
+pub fn scan_snippet(text: &str) -> Result<SnippetScan, String> {
+    if text.len() > SNIPPET_MAX_BYTES {
+        return Err(format!("卡带太大（{} KB），上限 {} KB", text.len() / 1024, SNIPPET_MAX_BYTES / 1024));
+    }
+    let root: Value = serde_json::from_str(text).map_err(|e| format!("卡带解析失败：{e}"))?;
+    let obj = root.as_object().ok_or("卡带顶层必须是 JSON 对象")?;
+    let mut entries = 0usize;
+    for key in ["shortcuts", "remaps", "expansions", "gestures", "hot_corners", "wheel_edges"] {
+        if let Some(Value::Array(items)) = obj.get(key) {
+            entries += items.len();
+        }
+    }
+    if entries > SNIPPET_MAX_ENTRIES {
+        return Err(format!("卡带条目过多（{entries} 条），上限 {SNIPPET_MAX_ENTRIES} 条"));
+    }
+
+    let mut level = 0u8;
+    let mut findings = BTreeMap::new();
+    let mut legal = BTreeMap::new();
+    scan_walk(&root, 0, &mut level, &mut findings, &mut legal);
+
+    let mut finding_list: Vec<String> = findings
+        .into_iter()
+        .map(|(desc, n)| if n > 1 { format!("{desc} × {n}") } else { desc })
+        .collect();
+    let legal_flags: Vec<String> = legal
+        .into_iter()
+        .map(|(category, hits)| format!("{category}（{}）", hits.into_iter().collect::<Vec<_>>().join("、")))
+        .collect();
+    for flag in &legal_flags {
+        finding_list.push(format!("法务关键词：{flag}"));
+    }
+    Ok(SnippetScan { level, entries, findings: finding_list, legal_flags })
+}
+
+/// 生成**可发布**的卡带文本：只带被点名的条目、剥掉目录与设置、写入元信息，并跑一次机审。
+///
+/// 与「导出为卡带」同一个子集口径；区别只是把 `kada_snippet` 填全（导出只填名字），
+/// 发布页的机器检查与提交用的是同一份字节——审核员通过后市场里下载到的就是它。
+pub fn publish_payload(
+    cfg: &Config,
+    picks: &[SnippetPick],
+    meta: &SnippetMeta,
+) -> Result<(String, SnippetScan), String> {
+    let mut part = snippet(cfg, picks);
+    let name = meta.name.trim();
+    let name = if name.is_empty() { snippet_title(&part) } else { name.to_string() };
+    let description = meta.description.trim().to_string();
+    let author = meta.author.trim().to_string();
+    let mut tags: Vec<String> = Vec::new();
+    for t in &meta.tags {
+        let t = t.trim();
+        if !t.is_empty() && !tags.iter().any(|x| x == t) {
+            tags.push(t.to_string());
+        }
+    }
+    if name.chars().count() > 60 {
+        return Err("名称最多 60 个字".into());
+    }
+    if description.chars().count() > 500 {
+        return Err("说明最多 500 个字".into());
+    }
+    if author.chars().count() > 40 {
+        return Err("作者最多 40 个字".into());
+    }
+    if tags.len() > 8 || tags.iter().any(|t| t.chars().count() > 20) {
+        return Err("标签最多 8 个、每个最多 20 个字".into());
+    }
+    let n = part.shortcuts.len()
+        + part.remaps.len()
+        + part.expansions.len()
+        + part.gestures.len()
+        + part.hot_corners.len()
+        + part.wheel_edges.len();
+    if n == 0 {
+        return Err("没有可发布的条目".into());
+    }
+    // 目录是本机 UUID、设置不进卡带：真被点到也得先剥掉（`snippet` 已经剥目录，这里兜底）。
+    part.folders.clear();
+    part.settings = crate::Settings::default();
+
+    let mut val = serde_json::to_value(&part).map_err(|e| e.to_string())?;
+    let obj = val.as_object_mut().ok_or("卡带序列化失败")?;
+    obj.remove("settings");
+    obj.remove("folders");
+    obj.insert(
+        "kada_snippet".into(),
+        serde_json::json!({
+            "version": 1,
+            "name": name,
+            "description": description,
+            "author": author,
+            "tags": tags,
+        }),
+    );
+    let text = serde_json::to_string_pretty(&val).map_err(|e| e.to_string())?;
+    let scan = scan_snippet(&text)?;
+    Ok((text, scan))
 }
 
 #[cfg(test)]
@@ -308,5 +590,108 @@ mod tests {
         assert!(parse_snippet_index("not json").is_err());
         // 缺 version 的索引按 v1 读（默认走 default_snippet_index_version）。
         assert!(parse_snippet_index(r#"{"snippets":[]}"#).is_ok());
+    }
+
+    #[test]
+    fn scan_levels_follow_action_kind() {
+        let text_only = serde_json::json!({
+            "expansions": [{ "trigger": ";a", "replace": "甲" }]
+        })
+        .to_string();
+        assert_eq!(scan_snippet(&text_only).unwrap().level, 0);
+
+        let inject = serde_json::json!({
+            "shortcuts": [{ "triggers": ["F1"], "actions": [{ "type": "keys", "keys": ["Ctrl+C"] }] }]
+        })
+        .to_string();
+        assert_eq!(scan_snippet(&inject).unwrap().level, 1);
+
+        let open = serde_json::json!({
+            "shortcuts": [{ "triggers": ["F1"], "actions": [{ "type": "open_url", "url": "https://example.com" }] }]
+        })
+        .to_string();
+        assert_eq!(scan_snippet(&open).unwrap().level, 2);
+
+        let command = serde_json::json!({
+            "shortcuts": [{ "triggers": ["F1"], "actions": [{ "type": "command", "shell": "powershell", "command": "rm -rf /" }] }]
+        })
+        .to_string();
+        let scan = scan_snippet(&command).unwrap();
+        assert_eq!(scan.level, 3);
+        assert!(scan.findings.iter().any(|f| f.contains("命令")));
+    }
+
+    #[test]
+    fn scan_flags_legal_terms_without_rejecting() {
+        let text = serde_json::json!({
+            "expansions": [{ "trigger": ";x", "replace": "台独 傻逼" }]
+        })
+        .to_string();
+        let scan = scan_snippet(&text).unwrap();
+        assert_eq!(scan.level, 0, "法务关键词不抬高危险等级");
+        assert_eq!(scan.legal_flags.len(), 2);
+        assert!(scan.legal_flags.iter().any(|f| f.contains("分裂国家")));
+        assert!(scan.legal_flags.iter().any(|f| f.contains("侮辱")));
+    }
+
+    #[test]
+    fn scan_flags_obfuscated_command_and_unknown_action() {
+        let text = serde_json::json!({
+            "shortcuts": [{ "triggers": ["F1"], "actions": [
+                { "type": "command", "shell": "powershell", "command": "powershell -EncodedCommand AAAA" },
+                { "type": "future_action" }
+            ] }]
+        })
+        .to_string();
+        let scan = scan_snippet(&text).unwrap();
+        assert_eq!(scan.level, 3);
+        assert!(scan.findings.iter().any(|f| f.contains("命令混淆")));
+        assert!(scan.findings.iter().any(|f| f.contains("未知动作类型")));
+    }
+
+    #[test]
+    fn scan_rejects_invalid_or_oversized_text() {
+        assert!(scan_snippet("not json").is_err());
+        assert!(scan_snippet("[]").is_err());
+        let huge = " ".repeat(SNIPPET_MAX_BYTES + 1);
+        assert!(scan_snippet(&huge).unwrap_err().contains("太大"));
+    }
+
+    #[test]
+    fn publish_payload_strips_local_data_and_writes_meta() {
+        let (text, scan) = publish_payload(
+            &base(),
+            &[pick(PickKind::Shortcut, 0), pick(PickKind::Expansion, 0)],
+            &SnippetMeta {
+                name: "  测试卡带  ".into(),
+                description: "说明".into(),
+                author: "小明".into(),
+                tags: vec![" 测试 ".into(), "测试".into(), "".into()],
+            },
+        )
+        .unwrap();
+        assert_eq!(scan.entries, 2);
+        let v: Value = serde_json::from_str(&text).unwrap();
+        assert!(v.get("settings").is_none(), "发布内容不带设置");
+        assert!(v.get("folders").is_none(), "发布内容不带本机目录");
+        let meta = v.get("kada_snippet").unwrap();
+        assert_eq!(meta["name"], "测试卡带");
+        assert_eq!(meta["author"], "小明");
+        assert_eq!(meta["tags"], serde_json::json!(["测试"]), "标签去空去重");
+        assert!(v["shortcuts"][0]["folder"].is_null(), "条目的目录引用也要剥掉");
+    }
+
+    #[test]
+    fn publish_payload_rejects_empty_and_long_fields() {
+        let empty = publish_payload(&Config::default(), &[], &SnippetMeta::default()).unwrap_err();
+        assert!(empty.contains("没有可发布"));
+        let long = "字".repeat(61);
+        assert!(publish_payload(
+            &base(),
+            &[pick(PickKind::Shortcut, 0)],
+            &SnippetMeta { name: long, ..Default::default() }
+        )
+        .unwrap_err()
+        .contains("名称"));
     }
 }

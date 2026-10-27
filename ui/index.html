@@ -11,8 +11,8 @@
       <!-- 最左：图标导航栏 -->
       <aside class="rail">
         <div class="rail-brand" title="咔哒 Kada">
-          <img class="brand-logo brand-logo-dark" src="./src/assets/brand/simple-dark-128.png" alt="咔哒 Kada" draggable="false" />
-          <img class="brand-logo brand-logo-light" src="./src/assets/brand/simple-light-128.png" alt="咔哒 Kada" draggable="false" />
+          <span class="brand-logo brand-logo-dark" role="img" aria-label="咔哒 Kada"></span>
+          <span class="brand-logo brand-logo-light" role="img" aria-label="咔哒 Kada"></span>
           <span class="brand-word" aria-hidden="true"><span class="bw bw-cyan">K</span><span class="bw bw-yellow">a</span><span class="bw bw-red">d</span><span class="bw bw-indigo">a</span></span>
           <span class="brand-burst" aria-hidden="true">
             <i class="bz bz-ray bz-r1"></i>
@@ -104,7 +104,7 @@
                 <ul id="mode-menu" class="mode-menu hidden">
                   <li class="mode-item" data-kind="shortcut" title="快捷键：按下组合键 / 序列 / 和弦触发一串动作"><span class="mi-icon"></span><span class="mi-label">快捷键</span></li>
                   <li class="mode-item" data-kind="gesture" title="鼠标操作：按住右键画一条轨迹，按方向串触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">鼠标操作</span></li>
-                  <li class="mode-item" data-kind="hotcorner" title="触发角：光标碰到屏幕四角时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">触发角</span></li>
+                  <li class="mode-item" data-kind="hotcorner" title="角动作：光标碰到屏幕四角时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">角动作</span></li>
                   <li class="mode-item" data-kind="wheeledge" title="边缘滚动：光标贴屏幕边缘滚动滚轮时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">边缘滚动</span></li>
                   <li class="mode-item" data-kind="remap" title="改键：把一个键改成另一个键（含长按、切层、单次、粘滞等形态）"><span class="mi-icon"></span><span class="mi-label">改键</span></li>
                   <li class="mode-item" data-kind="expansion" title="文本扩展：输入触发词自动展开成一段文本"><span class="mi-icon"></span><span class="mi-label">文本扩展</span></li>
@@ -140,7 +140,7 @@
                 <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
               </div>
-              <!-- 触发角：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
+              <!-- 角动作：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
               <div class="key-view hidden" id="key-hotcorner"></div>
               <!-- 边缘滚动：模拟显示器，点一条边选中位置 -->
               <div class="key-view hidden" id="key-wheeledge"></div>
@@ -299,6 +299,7 @@
                 <p id="market-note" class="market-note"></p>
               </div>
               <div class="market-head-actions">
+                <button id="market-publish" class="ghost" title="发布卡带：先本机机器检查，再到 ihomy 服务器复检 + 人工审核，通过后才上架">发布卡带…</button>
                 <button id="market-settings" class="ghost" title="索引地址在「设置 → 配置与数据」里改">索引设置</button>
                 <button id="market-reload" class="primary">重新拉取</button>
               </div>
@@ -367,7 +368,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">显示触发提醒</span>
-                      <span class="set-sub">快捷键 / 改键 / 文本扩展 / 手势 / 触发角 / 边缘滚动触发时，右下角弹一条 3 秒气泡</span>
+                      <span class="set-sub">快捷键 / 改键 / 文本扩展 / 手势 / 角动作 / 边缘滚动触发时，右下角弹一条 3 秒气泡</span>
                     </span>
                     <input type="checkbox" id="set-trigger-toast" class="toggle" />
                   </label>
@@ -464,7 +465,7 @@
               </section>
 
               <!-- 鼠标操作（规划 7.2-MG）：新鼠标功能总开关。
-                   默认**关**；关掉 → 入口隐藏（快捷键页不出现鼠标操作 / 触发角 / 边缘滚动）+ 行为不生效，
+                   默认**关**；关掉 → 入口隐藏（快捷键页不出现鼠标操作 / 角动作 / 边缘滚动）+ 行为不生效，
                    配置保留（重新打开即恢复）。总开关开着才显示下面的参数设置块。 -->
               <section class="set-card" id="experimental-card">
                 <div class="set-card-head"><span>鼠标操作</span></div>
@@ -549,7 +550,7 @@
                   </label>
                   </div>
                 </div>
-                <p class="hint">在快捷键页新增条目选「鼠标操作 / 触发角 / 边缘滚动」；方向串 U 上 D 下 L 左 R 右，多段用逗号分隔（如 D,R）。</p>
+                <p class="hint">在快捷键页新增条目选「鼠标操作 / 角动作 / 边缘滚动」；方向串 U 上 D 下 L 左 R 右，多段用逗号分隔（如 D,R）。</p>
               </section>
 
               <!-- 复制快捷菜单（双击 Ctrl+C）已按要求删除：设置卡与运行时触发一并下线。 -->
@@ -953,13 +954,73 @@
         <div class="modal-body">
           <p id="snippet-name" class="confirm-text"></p>
           <ul id="snippet-list" class="report-list"></ul>
+          <div id="snippet-scan" class="snippet-scan"></div>
           <p id="snippet-warn" class="confirm-hint hidden"></p>
+          <label id="snippet-consent-row" class="publish-consent hidden">
+            <input type="checkbox" id="snippet-consent" />
+            <span>我已了解这个卡带会执行的动作与风险，确认安装。</span>
+          </label>
           <p class="confirm-hint">按「合并」装进来：只新增，触发键撞车的条目跳过，本机设置与现有条目不动。</p>
         </div>
         <footer class="modal-foot">
           <span class="flex-spacer"></span>
           <button id="snippet-cancel">取消</button>
           <button id="snippet-install" class="primary">安装</button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 发布卡带：本机机审 → ihomy 服务端复检 → 人工审核。发布内容只带选中条目，
+         目录 / 设置 / 本机路径一律剥掉；危险等级与法务关键词只作提示，由人工最终判定。 -->
+    <div id="publish-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="publish-title">
+      <div class="modal-mask"></div>
+      <div class="modal-box publish-box">
+        <header class="modal-head">
+          <span id="publish-title" class="modal-title">发布卡带</span>
+          <button id="publish-close" class="detail-close" title="关闭">×</button>
+        </header>
+        <div class="modal-body publish-body">
+          <div class="publish-grid">
+            <div class="publish-pick">
+              <div class="publish-pick-head">
+                <span class="set-name">选择条目</span>
+                <span id="publish-count" class="set-sub"></span>
+                <span class="flex-spacer"></span>
+                <button id="publish-select-all" class="ghost">全选</button>
+                <button id="publish-select-none" class="ghost">清空</button>
+              </div>
+              <div id="publish-picks" class="publish-picks"></div>
+            </div>
+            <div class="publish-meta">
+              <label class="publish-field">
+                <span>名称</span>
+                <input id="publish-name" type="text" maxlength="60" placeholder="市场里显示的卡带名称" />
+              </label>
+              <label class="publish-field">
+                <span>说明</span>
+                <textarea id="publish-desc" rows="3" maxlength="500" placeholder="一句话说清它做什么、适合谁"></textarea>
+              </label>
+              <label class="publish-field">
+                <span>作者</span>
+                <input id="publish-author" type="text" maxlength="40" placeholder="昵称，可留空（显示为匿名）" />
+              </label>
+              <label class="publish-field">
+                <span>标签</span>
+                <input id="publish-tags" type="text" maxlength="180" placeholder="逗号分隔，如：文本扩展, 办公" />
+              </label>
+            </div>
+          </div>
+          <div id="publish-scan" class="publish-scan"></div>
+          <p class="hint">提交后先在 ihomy 服务器再跑一遍机器审核、再由人工审核；通过前不会出现在市场。请勿发布含违法、侮辱、侵权内容或恶意代码的卡带。</p>
+          <label class="publish-consent">
+            <input type="checkbox" id="publish-consent" />
+            <span>我确认这份卡带不含违法 / 侮辱 / 侵权内容，并已了解它会执行的动作与风险（提交内容会经过机器与人工审核）。</span>
+          </label>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="publish-cancel">取消</button>
+          <button id="publish-submit" class="primary" disabled>提交审核</button>
         </footer>
       </div>
     </div>

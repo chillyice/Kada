@@ -149,8 +149,10 @@ pub use merge::{merge_configs, MergeReport};
 /// 配置卡带（分享用）：摘出被点名的条目组成可分享的子集配置（见规划 7.2-㉕）。
 mod snippet;
 pub use snippet::{
-    parse_snippet_index, snippet, snippet_title, IndexEntry, PickKind, SnippetIndex, SnippetPick,
-    DEFAULT_SNIPPET_INDEX_URL, SNIPPET_INDEX_VERSION,
+    parse_snippet_index, publish_payload, scan_snippet, snippet, snippet_title, IndexEntry,
+    PickKind, SnippetIndex, SnippetMeta, SnippetPick, SnippetScan,
+    DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL, DEFAULT_SNIPPET_PUBLISH_URL,
+    SNIPPET_INDEX_VERSION, SNIPPET_MAX_BYTES, SNIPPET_MAX_DEPTH, SNIPPET_MAX_ENTRIES,
 };
 
 /// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
@@ -1350,6 +1352,10 @@ pub enum TransformOperation {
 
 /// `serde` 的 `skip_serializing_if` 帮手：`false` 的布尔字段不落盘——默认值写进 JSON 只是噪音
 /// （配置、导出卡带、分享出去的卡带都会带上）。
+pub(crate) fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -1425,6 +1431,19 @@ pub enum Action {
     /// 算法动作（EXT-18）：base64 / URL 编解码、SHA-256 / SHA-512 哈希。
     /// `input` 支持 `{变量}` 占位符；结果写进变量 `var`，`inject` 为真时再按文本注入当前焦点。
     Transform { operation: TransformOperation, #[serde(default)] input: String, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "is_false")] inject: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    /// 设置变量：弹一个输入框，把用户填的内容写进变量 `var`（文本动作的变量来源之一）。
+    /// `prompt` / `default` 支持 `{变量}` 占位符；取消或留空 = 本次执行报错中止。
+    #[cfg(feature = "automation")]
+    Ask {
+        #[serde(default)]
+        var: String,
+        #[serde(default)]
+        prompt: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        default: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 动作分组：**纯粹的组织结构**，成员按顺序执行（等价于把它们直接摊在这一层）。
     /// 只影响编辑页的展示与执行记录的分层（成员记录挂在分组这一步下面），不改执行语义；
     /// 可嵌套（分组里还能放分组 / 条件判断 / 并行执行）。
@@ -1564,6 +1583,12 @@ impl Action {
                 if !*inject && var.trim().is_empty() {
                     return Err("算法动作要填结果变量名，或勾选「直接注入结果」".into());
                 }
+                Ok(())
+            }
+            #[cfg(feature = "automation")]
+            Action::Ask { var, prompt, .. } => {
+                non_empty("变量名", var)?;
+                non_empty("提示语", prompt)?;
                 Ok(())
             }
             Action::Mouse { op, .. } => match op {
@@ -2427,7 +2452,7 @@ impl HotCornerSpot {
     }
 }
 
-/// 一条触发角规则：位置 + 名称 + 动作链。缺字段 = 关闭。
+/// 一条角动作规则：位置 + 名称 + 动作链。缺字段 = 关闭。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotCornerRule {
     #[serde(default)]
@@ -2444,6 +2469,13 @@ pub struct HotCornerRule {
     #[cfg(feature = "automation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Condition>,
+    /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// 统一展示顺序：鼠标操作 / 角动作 / 边缘滚动共用一个序列，只影响列表顺序；
+    /// 匹配仍是「同类型、同位置 / 同方向串」内按数组顺序取第一条。缺字段 = 0。
+    #[serde(default, skip_serializing_if = "crate::is_zero_u64")]
+    pub order: u64,
     #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
@@ -2525,6 +2557,13 @@ pub struct WheelEdgeRule {
     #[cfg(feature = "automation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub when: Option<Condition>,
+    /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// 统一展示顺序：鼠标操作 / 角动作 / 边缘滚动共用一个序列，只影响列表顺序；
+    /// 匹配仍是「同类型、同位置 / 同方向串」内按数组顺序取第一条。缺字段 = 0。
+    #[serde(default, skip_serializing_if = "crate::is_zero_u64")]
+    pub order: u64,
     #[serde(default)]
     pub actions: Vec<Action>,
     #[serde(default)]
@@ -4348,6 +4387,8 @@ impl Config {
                     layer: None,
                     #[cfg(feature = "automation")]
                     when: None,
+                    folder: None,
+                    order: 0,
                     actions: entry.actions.clone(),
                     enabled: hc.enabled && entry.enabled,
                 });
@@ -4368,6 +4409,8 @@ impl Config {
                     layer: None,
                     #[cfg(feature = "automation")]
                     when: None,
+                    folder: None,
+                    order: 0,
                     actions: entry.actions.clone(),
                     enabled: we.enabled && entry.enabled,
                 });
@@ -4722,6 +4765,13 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     let mut seen_gesture: Vec<(String, WhenKey)> = Vec::new();
     for g in &cfg.gestures {
         let label = g.label();
+        let mut item = g.clone();
+        if let Some(fid) = &item.folder {
+            if !valid_folder_ids.contains(fid) {
+                ignored.push(format!("鼠标手势「{label}」所属文件夹已忽略：文件夹不存在"));
+                item.folder = None;
+            }
+        }
         let pattern = normalize_pattern(&g.pattern);
         if pattern.is_empty() {
             ignored.push(format!("鼠标手势「{label}」已忽略：方向串无法解析"));
@@ -4734,7 +4784,6 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             ignored.push(format!("鼠标手势「{label}」已忽略：方向串「{pattern}」与前面的手势重复"));
             continue;
         }
-        let mut item = g.clone();
         item.pattern = pattern.clone();
         let mut kept_actions = Vec::new();
         for a in &item.actions {
@@ -4759,6 +4808,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     for rule in &cfg.hot_corners {
         let label = rule.label();
         let mut item = rule.clone();
+        if let Some(fid) = &item.folder {
+            if !valid_folder_ids.contains(fid) {
+                ignored.push(format!("角动作「{label}」所属文件夹已忽略：文件夹不存在"));
+                item.folder = None;
+            }
+        }
         if let Some(name) = &item.name {
             let trimmed = name.trim().to_string();
             item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
@@ -4791,6 +4846,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     for rule in &cfg.wheel_edges {
         let label = rule.label();
         let mut item = rule.clone();
+        if let Some(fid) = &item.folder {
+            if !valid_folder_ids.contains(fid) {
+                ignored.push(format!("边缘滚动「{label}」所属文件夹已忽略：文件夹不存在"));
+                item.folder = None;
+            }
+        }
         if let Some(name) = &item.name {
             let trimmed = name.trim().to_string();
             item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
@@ -6623,6 +6684,28 @@ mod new_action_and_folder_tests {
         }
         .validate()
         .is_err());
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn ask_action_requires_var_and_prompt() {
+        let ok = Action::Ask {
+            var: "version".into(),
+            prompt: "版本号".into(),
+            default: "1.2.3".into(),
+            description: None,
+        };
+        ok.validate().unwrap();
+        let json = serde_json::to_string(&ok).unwrap();
+        let back: Action = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, ok);
+
+        for bad in [
+            Action::Ask { var: " ".into(), prompt: "p".into(), default: String::new(), description: None },
+            Action::Ask { var: "v".into(), prompt: " ".into(), default: String::new(), description: None },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
     }
 
     #[test]
@@ -8560,6 +8643,8 @@ mod hot_corner_tests {
                     when: None,
                     actions: vec![text("a")],
                     enabled: true,
+                    folder: None,
+                    order: 0,
                 },
                 HotCornerRule {
                     spot: HotCornerSpot::TopLeft,
@@ -8570,6 +8655,8 @@ mod hot_corner_tests {
                     when: None,
                     actions: vec![text("b")],
                     enabled: true,
+                    folder: None,
+                    order: 0,
                 },
             ],
             wheel_edges: vec![WheelEdgeRule {
@@ -8581,6 +8668,8 @@ mod hot_corner_tests {
                 when: None,
                 actions: vec![text("c")],
                 enabled: true,
+                folder: None,
+                order: 0,
             }],
             ..Default::default()
         };
@@ -8605,6 +8694,8 @@ mod hot_corner_tests {
             when: None,
             actions: vec![text("a")],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         assert!(config_needs_mouse_hook(&cfg));
         assert!(!config_uses_mouse(&cfg));
@@ -8628,6 +8719,8 @@ mod hot_corner_tests {
             when: None,
             actions: vec![text("a")],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         let hits = detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() });
         assert_eq!(hits.len(), 1);
@@ -8652,6 +8745,8 @@ mod hot_corner_tests {
                 Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
             ],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         let (clean, ignored) = sanitize_config(&cfg);
         assert_eq!(clean.hot_corners[0].name.as_deref(), Some("左上"));
@@ -8673,6 +8768,8 @@ mod hot_corner_tests {
             when: None,
             actions: vec![text("a")],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         assert!(config_needs_mouse_hook(&cfg));
         assert!(!config_uses_mouse(&cfg));
@@ -8696,6 +8793,8 @@ mod hot_corner_tests {
             when: None,
             actions: vec![text("a")],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         let hits = detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() });
         assert_eq!(hits.len(), 1);
@@ -8720,6 +8819,8 @@ mod hot_corner_tests {
                 Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
             ],
             enabled: true,
+            folder: None,
+            order: 0,
         });
         let (clean, ignored) = sanitize_config(&cfg);
         assert_eq!(clean.wheel_edges[0].name.as_deref(), Some("桌面"));

@@ -453,6 +453,7 @@ case "run_entry":
               author: "Kada",
               tags: ["vim", "改键"],
               url: "https://demo.invalid/vim.json",
+              level: 1,
             },
             {
               name: "常用中文短语",
@@ -460,12 +461,14 @@ case "run_entry":
               author: "Kada",
               tags: ["文本扩展"],
               url: "https://demo.invalid/phrases.json",
+              level: 0,
             },
           ];
         case "fetch_snippet":
           return args?.url?.toString().includes("phrases")
             ? {
                 text: JSON.stringify({ demo: true }),
+                scan: { level: 0, entries: 2, findings: [], legal_flags: [] },
                 preview: {
                   shortcuts: [],
                   remaps: [],
@@ -477,6 +480,12 @@ case "run_entry":
               }
             : {
                 text: JSON.stringify({ demo: true }),
+                scan: {
+                  level: 3,
+                  entries: 3,
+                  findings: ["执行命令 / 脚本（可运行任意代码） × 1"],
+                  legal_flags: [],
+                },
                 preview: {
                   shortcuts: [
                     {
@@ -497,6 +506,15 @@ case "run_entry":
                   expansions: [],
                 },
               };
+        case "prepare_publish": {
+          const picks = (args?.picks as unknown[] | undefined) ?? [];
+          return {
+            content: JSON.stringify({ demo: true }),
+            scan: { level: picks.length ? 1 : 0, entries: picks.length, findings: [], legal_flags: [] },
+          };
+        }
+        case "submit_publish":
+          return { id: 42, status: "PENDING", level: 1 };
         case "install_snippet":
           return { mode: "merge", added: 3, notes: [], backup: null };
         case "start_record":

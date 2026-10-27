@@ -4048,6 +4048,197 @@ pre.msg-v {
   font-size: var(--fs-xs);
 }
 
+/* 机器判定的危险等级：市场卡片 / 安装预览 / 发布页共用。颜色只表达等级，
+   文案与 tooltip 说明「为什么是这个等级」。 */
+.risk-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0.9;
+}
+
+.risk-badge.risk-0 {
+  color: #3fbf7f;
+  background: color-mix(in srgb, #3fbf7f 14%, transparent);
+}
+
+.risk-badge.risk-1 {
+  color: #5aa9e6;
+  background: color-mix(in srgb, #5aa9e6 14%, transparent);
+}
+
+.risk-badge.risk-2 {
+  color: #e0a13a;
+  background: color-mix(in srgb, #e0a13a 14%, transparent);
+}
+
+.risk-badge.risk-3 {
+  color: #e05a4a;
+  background: color-mix(in srgb, #e05a4a 16%, transparent);
+}
+
+/* 机器检查结果块（发布页 / 安装预览）：只显示结论与命中项，不渲染卡带内容。 */
+.publish-scan,
+.snippet-scan {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.publish-scan:empty,
+.snippet-scan:empty {
+  display: none;
+}
+
+.scan-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.scan-count,
+.scan-empty,
+.scan-error {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.scan-error {
+  color: var(--accent);
+}
+
+.scan-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.7;
+}
+
+.scan-legal {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--accent);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+}
+
+.scan-legal strong {
+  color: var(--text);
+}
+
+/* 发布页：左边挑条目、右边填元信息；窄窗口收成一列。 */
+.publish-box {
+  width: min(900px, 94vw);
+  max-height: 88vh;
+}
+
+.publish-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .publish-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.publish-pick-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.publish-picks {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+}
+
+.publish-pick-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+}
+
+.publish-pick-row:last-child {
+  border-bottom: 0;
+}
+
+.publish-pick-row:hover {
+  background: var(--hover-bg);
+}
+
+.publish-pick-kind {
+  flex-shrink: 0;
+  min-width: 52px;
+  color: var(--muted);
+  font-size: var(--fs-xs);
+}
+
+.publish-pick-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.publish-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.publish-field input,
+.publish-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.publish-field textarea {
+  resize: vertical;
+}
+
+.publish-consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  cursor: pointer;
+}
+
+.publish-consent input {
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
 /* 空态 / 错误态跨满网格，别只占一列。 */
 .market-empty {
   grid-column: 1 / -1;
@@ -4516,14 +4707,37 @@ html[data-theme="crt"]:has(.layout)::after {
 .brand-logo {
   width: 100%;
   height: 100%;
-  object-fit: cover;
+  display: none;
+  background-color: var(--muted);
+  -webkit-mask-position: center;
+  mask-position: center;
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-size: contain;
+  mask-size: contain;
+  transition: background-color 0.15s ease, filter 0.15s ease;
   user-select: none;
-  -webkit-user-drag: none;
 }
 
 [data-theme="dark"] .brand-logo-dark,
 [data-theme="light"] .brand-logo-light {
   display: block;
+}
+
+[data-theme="dark"] .brand-logo-dark {
+  -webkit-mask-image: url("./assets/brand/simple-dark-128.png");
+  mask-image: url("./assets/brand/simple-dark-128.png");
+}
+
+[data-theme="light"] .brand-logo-light {
+  -webkit-mask-image: url("./assets/brand/simple-light-128.png");
+  mask-image: url("./assets/brand/simple-light-128.png");
+}
+
+/* 与导航项一致：平时字体灰，悬停变亮（深色主题下再带一点同色辉光）。 */
+.brand-logo:hover {
+  background-color: var(--text);
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--text) 45%, transparent));
 }
 
 [data-theme="crt"] .rail-brand {

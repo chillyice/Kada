@@ -116,7 +116,8 @@ type Action =
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
-  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string };
+  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string; mark?: string | null };
 type ShortcutItem = {
@@ -286,7 +287,7 @@ type Settings = {
      */
     clipboard_menu?: ClipboardMenu;
     /**
-     * 旧版触发角配置（EXT-10）：只在老配置里出现，后端加载时迁移到根级 `hot_corners`。
+     * 旧版角动作配置（EXT-10）：只在老配置里出现，后端加载时迁移到根级 `hot_corners`。
      */
     hot_corners?: unknown;
     /**
@@ -302,9 +303,9 @@ type MenuEntry =
   | { kind: "submenu"; label: string; enabled?: boolean; items: MenuEntry[] }
   | { kind: "separator" };
 type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntry[] };
-/** 触发角位置（后端 `HotCornerSpot`）。 */
+/** 角动作位置（后端 `HotCornerSpot`）。 */
 type HotCornerSpot = "top_left" | "top_right" | "bottom_left" | "bottom_right";
-/** 一条触发角规则（后端 `HotCornerRule`）：同位置可有多条，取第一条启用的。 */
+/** 一条角动作规则（后端 `HotCornerRule`）：同位置可有多条，取第一条启用的。 */
 type HotCornerRule = {
   spot: HotCornerSpot;
   name?: string | null;
@@ -316,6 +317,10 @@ type HotCornerRule = {
   when?: Condition | null;
   enabled: boolean;
   actions: Action[];
+  /** 归属文件夹（null / 缺省 = 根级）。 */
+  folder?: string | null;
+  /** 统一展示顺序（三类共用；只影响列表顺序）。 */
+  order?: number;
 };
 /** 边缘滚动位置（后端 `WheelEdgeSpot`）。 */
 type WheelEdgeSpot = "top" | "bottom" | "left" | "right";
@@ -331,6 +336,10 @@ type WheelEdgeRule = {
   when?: Condition | null;
   enabled: boolean;
   actions: Action[];
+  /** 归属文件夹（null / 缺省 = 根级）。 */
+  folder?: string | null;
+  /** 统一展示顺序（三类共用；只影响列表顺序）。 */
+  order?: number;
 };
 /**
  * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
@@ -346,6 +355,10 @@ type Gesture = {
   actions: Action[];
   /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在，回放右键。 */
   when?: Condition | null;
+  /** 归属文件夹（null / 缺省 = 根级）。 */
+  folder?: string | null;
+  /** 统一展示顺序（三类共用；只影响列表顺序）。 */
+  order?: number;
 };
 type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
@@ -539,6 +552,7 @@ type RunRecord = {
 // ---- 动作类型预设 ----
 const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
   { value: "text", label: tr("文本操作") },
+  { value: "ask", label: tr("设置变量") },
   { value: "command", label: tr("执行命令") },
   { value: "script", label: tr("执行脚本") },
   { value: "app", label: tr("应用操作") },
@@ -569,6 +583,7 @@ const REMOVED_TYPE_LABELS: Partial<Record<Action["type"], string>> = {
 // 动作类型图标（收起态展示用）。
 const ACTION_ICONS: Record<Action["type"], string> = {
   text: "✏️",
+  ask: "📝",
   command: "💻",
   script: "📜",
   keys: "⌨️",
@@ -614,6 +629,7 @@ function actionVarWrites(a: Action): string[] {
   switch (a.type) {
     case "command":
     case "script":
+    case "ask":
       return a.var.trim() ? [a.var.trim()] : [];
     case "os":
       return a.operation.op === "get_file_props" && a.operation.var.trim()
@@ -653,6 +669,9 @@ function actionVarReads(a: Action): string[] {
       break;
     case "script":
       texts.push(a.path, a.interpreter ?? "");
+      break;
+    case "ask":
+      texts.push(a.prompt, a.default ?? "");
       break;
     case "os": {
       const o = a.operation;
@@ -953,6 +972,8 @@ function newAction(type: Action["type"]): Action {
   switch (type) {
     case "text":
       return { type: "text", text: "", mode: "input", masked: false };
+    case "ask":
+      return { type: "ask", var: "", prompt: "", default: "" };
     case "command":
       return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
     case "script":
@@ -1094,6 +1115,8 @@ function actionHasContent(a: Action): boolean {
       return a.ms > 0;
     case "transform":
       return a.input.trim().length > 0 && (a.var.trim().length > 0 || !!a.inject);
+    case "ask":
+      return a.var.trim().length > 0 && a.prompt.trim().length > 0;
     case "os":
       return osHasContent(a.operation);
     // 虚拟桌面 / 回收站这类没有要填的字段（方向有默认值），新建出来就是可执行的；
@@ -1335,6 +1358,8 @@ function actionSummary(a: Action): string {
       return mouseSummary(a.op);
     case "clipboard":
       return clipboardSummary(a.operation);
+    case "ask":
+      return trt`设置变量 ${a.var || "?"}：${a.prompt}`;
     case "transform": {
       const sink = [a.var.trim() ? `→ ${a.var.trim()}` : "", a.inject ? tr("并注入") : ""]
         .filter(Boolean)
@@ -1416,7 +1441,7 @@ let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保�
 let remapDraft: Remap | null = null; // 改键编辑草稿
 let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
 let gestureDraft: Gesture | null = null; // 鼠标操作（手势）编辑草稿
-let hotcornerDraft: HotCornerRule | null = null; // 触发角编辑草稿
+let hotcornerDraft: HotCornerRule | null = null; // 角动作编辑草稿
 let wheeledgeDraft: WheelEdgeRule | null = null; // 边缘滚动编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
 // 见「未保存改动守卫」一节。
@@ -1464,7 +1489,7 @@ type DragPayload =
 type DropZone =
   | { kind: "root" }
   | { kind: "folder"; folderId: string; pos: "before" | "into" | "after" }
-  | { kind: "row"; idx: number; pos: "before" | "after" };
+  | { kind: "row"; idx: number; pos: "before" | "after"; targetKind?: ListKind };
 let dragPayload: DragPayload | null = null; // 拖拽源
 let dragOverEl: HTMLElement | null = null; // 当前高亮目标（用于清 class）
 const COLLAPSED_KEY = "kada.collapsedFolders";
@@ -2109,18 +2134,23 @@ function renderEntries() {
     cfg.expansions.forEach((e, i) => {
       if ((e.folder ?? null) === folderId && expansionVisible(e)) list.append(expansionRow(e, i, depth));
     });
-    // 鼠标操作（手势）/ 触发角 / 边缘滚动没有目录归属（全局触发源），只排在根级。
-    if (folderId === null) {
-      (cfg.gestures ?? []).forEach((g, i) => {
-        if (gestureVisible(g)) list.append(gestureRow(g, i, depth));
-      });
-      (cfg.hot_corners ?? []).forEach((r, i) => {
-        if (hotCornerVisible(r)) list.append(hotCornerRow(r, i, depth));
-      });
-      (cfg.wheel_edges ?? []).forEach((r, i) => {
-        if (wheelEdgeVisible(r)) list.append(wheelEdgeRow(r, i, depth));
-      });
-    }
+    // 鼠标类三类（手势 / 角动作 / 边缘滚动）共用 `order`，可互相换位并放进任意目录。
+    const mouseRows: { kind: "gesture" | "hotcorner" | "wheeledge"; idx: number; order: number; rank: number; row: () => HTMLElement }[] = [];
+    (cfg.gestures ?? []).forEach((g, i) => {
+      if ((g.folder ?? null) === folderId && gestureVisible(g))
+        mouseRows.push({ kind: "gesture", idx: i, order: g.order ?? 0, rank: 0, row: () => gestureRow(g, i, depth) });
+    });
+    (cfg.hot_corners ?? []).forEach((r, i) => {
+      if ((r.folder ?? null) === folderId && hotCornerVisible(r))
+        mouseRows.push({ kind: "hotcorner", idx: i, order: r.order ?? 0, rank: 1, row: () => hotCornerRow(r, i, depth) });
+    });
+    (cfg.wheel_edges ?? []).forEach((r, i) => {
+      if ((r.folder ?? null) === folderId && wheelEdgeVisible(r))
+        mouseRows.push({ kind: "wheeledge", idx: i, order: r.order ?? 0, rank: 2, row: () => wheelEdgeRow(r, i, depth) });
+    });
+    mouseRows
+      .sort((a, b) => a.order - b.order || a.rank - b.rank || a.idx - b.idx)
+      .forEach((m) => list.append(m.row()));
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
@@ -2304,7 +2334,7 @@ function mouseFeaturesEnabled(): boolean {
   return cfg.settings.experimental === true;
 }
 
-/** 触发角 / 边缘滚动：位置 + 动作（详情 / 层 / 条件与其它条目同口径）。 */
+/** 角动作 / 边缘滚动：位置 + 动作（详情 / 层 / 条件与其它条目同口径）。 */
 // 鼠标操作（手势）行：方向串占「组合键」那一格，后面跟名称。
 // **鼠标操作总开关关着时整类不显示**（入口隐藏），配置本身留着。
 function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
@@ -2363,7 +2393,7 @@ function spotLabel(spot: HotCornerSpot | WheelEdgeSpot): string {
   );
 }
 
-// 触发角 / 边缘滚动行：位置作「触发键」那一格，后面跟名称。
+// 角动作 / 边缘滚动行：位置作「触发键」那一格，后面跟名称。
 function hotCornerRow(r: HotCornerRule, idx: number, depth: number): HTMLElement {
   const li = el(
     "li",
@@ -2606,17 +2636,29 @@ type IndexEntry = {
   description?: string;
   author?: string;
   tags?: string[];
+  level?: number;
+};
+
+// 卡带机审结果（后端 `scan_snippet`）：0 安全 / 1 低 / 2 中 / 3 高。
+type SnippetScan = {
+  level: number;
+  entries: number;
+  findings: string[];
+  legal_flags: string[];
 };
 
 // 卡带下载结果（后端 `fetch_snippet`）：清洗后的条目 + 原文（装的时候回传原文，
 // 保证「看到什么装什么」）。
 type SnippetFetch = {
   text: string;
+  scan: SnippetScan;
   preview: {
     shortcuts: ShortcutItem[];
     remaps: Remap[];
     expansions: TextExpansion[];
     gestures?: Gesture[];
+    hot_corners?: HotCornerRule[];
+    wheel_edges?: WheelEdgeRule[];
   };
 };
 
@@ -2631,8 +2673,8 @@ let marketTag: string | null = null;
 // 持久化成「已安装」会骗人。
 const marketInstalled = new Set<string>();
 
-// 预览框点「安装」时要用：null = 没待装的卡带。
-let snippetPending: { text: string; name: string } | null = null;
+// 预览框点「安装」时要用：null = 没待装的卡带。`level` = 机审危险等级（高危要额外确认）。
+let snippetPending: { text: string; name: string; level: number } | null = null;
 
 function marketSourceLabel(): string {
   return cfg.settings.snippet_index_url?.trim() || tr("内置地址");
@@ -2687,6 +2729,9 @@ function renderMarketPage() {
       : marketLoaded
         ? trt`共 ${marketEntries.length} 条 · 索引：${marketSourceLabel()}`
         : tr("还没拉取索引");
+  // 发布只对官方市场开放：自定义索引是别人的市场，把卡带发到 ihomy 既不在用户眼前，
+  // 也没有取得同意（服务端也不认自定义索引里的规则）。
+  document.getElementById("market-publish")?.classList.toggle("hidden", !marketIsOfficial());
 
   // 索引换了（或第一条标签被删掉）时把已选标签收掉，免得停在一个不存在的标签上筛出空列表。
   const tags = marketTags();
@@ -2733,6 +2778,74 @@ function renderMarketPage() {
   list.replaceChildren(...hit.map(marketCard));
 }
 
+function riskLevel(level: number | undefined): number {
+  return typeof level === "number" ? Math.max(0, Math.min(3, level)) : -1;
+}
+
+function riskLabel(level: number): string {
+  return level <= 0
+    ? tr("安全")
+    : level === 1
+      ? tr("低风险")
+      : level === 2
+        ? tr("中风险")
+        : tr("高风险");
+}
+
+function riskHint(level: number): string {
+  return level <= 0
+    ? tr("只有文本 / 改键 / 层这类内容，不执行程序")
+    : level === 1
+      ? tr("会注入按键或文本、操作鼠标 / 剪贴板")
+      : level === 2
+        ? tr("会启动程序、打开文件 / 网址或改系统状态")
+        : tr("含命令 / 脚本动作，可能运行任意代码");
+}
+
+function riskBadge(level: number): HTMLElement {
+  const b = el("span", `risk-badge risk-${riskLevel(level)}`, riskLabel(level));
+  b.title = riskHint(level);
+  return b;
+}
+
+// 机器检查结果块：发布页与安装预览共用。只显示结论与命中项，不渲染卡带内容。
+function renderScanBox(box: HTMLElement, scan: SnippetScan | null, error = "") {
+  box.replaceChildren();
+  if (error) {
+    box.append(el("p", "scan-error", error));
+    return;
+  }
+  if (!scan) {
+    box.append(el("p", "scan-empty", tr("选择条目后开始机器检查")));
+    return;
+  }
+  const level = riskLevel(scan.level);
+  const head = el("div", "scan-head");
+  head.append(riskBadge(level), el("span", "scan-count", trt`共 ${scan.entries} 条`));
+  box.append(head);
+  if (scan.findings.length) {
+    const ul = el("ul", "scan-list");
+    for (const f of scan.findings) ul.append(el("li", undefined, f));
+    box.append(ul);
+  }
+  if (scan.legal_flags.length) {
+    const flags = el("div", "scan-legal");
+    flags.append(el("strong", undefined, tr("法务关键词（会重点人工审核）：")));
+    for (const f of scan.legal_flags) flags.append(el("span", undefined, f));
+    box.append(flags);
+  }
+  if (!scan.findings.length && !scan.legal_flags.length) {
+    box.append(el("p", "scan-empty", tr("未发现风险动作或法务关键词")));
+  }
+}
+
+const DEFAULT_SNIPPET_INDEX_URL = "https://ihomy.top/files/kada/snippets/index.json";
+
+function marketIsOfficial(): boolean {
+  const url = cfg.settings.snippet_index_url?.trim();
+  return !url || url === DEFAULT_SNIPPET_INDEX_URL;
+}
+
 function marketCard(e: IndexEntry): HTMLElement {
   const card = el("div", "market-card");
   const head = el("div", "market-card-head");
@@ -2747,7 +2860,9 @@ function marketCard(e: IndexEntry): HTMLElement {
     ? tr("再装一次只会补上缺失的条目（撞车的跳过）")
     : tr("先预览里面的条目，确认后再合并进来");
   btn.addEventListener("click", () => void previewSnippet(e));
-  head.append(el("span", "market-name", e.name), el("span", "flex-spacer"), btn);
+  head.append(el("span", "market-name", e.name));
+  if (typeof e.level === "number") head.append(riskBadge(e.level));
+  head.append(el("span", "flex-spacer"), btn);
   card.append(head);
   if (e.description) card.append(el("div", "market-desc", e.description));
   if (e.tags?.length) {
@@ -2774,23 +2889,20 @@ async function gotoMarketSettings() {
   (document.getElementById("set-snippet-index") as HTMLInputElement | null)?.focus();
 }
 
-// 卡带装进来就会跑：这些动作类型（或它们的嵌套）会在本机执行东西，安装前必须显眼提示。
-function actionCanRun(a: Action): boolean {
-  if (a.type === "command" || a.type === "script" || a.type === "os" || a.type === "app" || a.type === "open_url" || a.type === "system" || a.type === "brightness")
-    return true;
-  if (a.type === "if") return a.then.some(actionCanRun) || a.otherwise.some(actionCanRun);
-  if (a.type === "parallel") return a.actions.some(actionCanRun);
-  if (a.type === "group") return a.actions.some(actionCanRun);
-  return false;
-}
-
+// 卡带装进来就会跑：危险等级由后端 `scan_snippet` 统一判定（发布页与安装预览同源）。
 async function previewSnippet(e: IndexEntry) {
   try {
     const r = await invoke<SnippetFetch>("fetch_snippet", { url: e.url });
     const p = r.preview;
     const total =
-      p.shortcuts.length + p.remaps.length + p.expansions.length + (p.gestures?.length ?? 0);
-    snippetPending = { text: r.text, name: e.name };
+      p.shortcuts.length +
+      p.remaps.length +
+      p.expansions.length +
+      (p.gestures?.length ?? 0) +
+      (p.hot_corners?.length ?? 0) +
+      (p.wheel_edges?.length ?? 0);
+    const level = riskLevel(r.scan.level);
+    snippetPending = { text: r.text, name: e.name, level };
     document.getElementById("snippet-name")!.textContent = trt`${e.name}：共 ${total} 条`;
     const lines: HTMLElement[] = [];
     for (const s of p.shortcuts)
@@ -2817,11 +2929,42 @@ async function previewSnippet(e: IndexEntry) {
             .join(" → ")}`,
         ),
       );
+    for (const c of p.hot_corners ?? [])
+      lines.push(
+        el(
+          "li",
+          undefined,
+          trt`角动作 ${c.spot}${c.name ? ` · ${c.name}` : ""} → ${c.actions
+            .map(actionSummary)
+            .join(" → ")}`,
+        ),
+      );
+    for (const w of p.wheel_edges ?? [])
+      lines.push(
+        el(
+          "li",
+          undefined,
+          trt`边缘滚动 ${w.edge}${w.name ? ` · ${w.name}` : ""} → ${w.actions
+            .map(actionSummary)
+            .join(" → ")}`,
+        ),
+      );
     document.getElementById("snippet-list")!.replaceChildren(...lines);
+    renderScanBox(document.getElementById("snippet-scan")!, r.scan);
+    const dangerous = level >= 2;
     const warn = document.getElementById("snippet-warn")!;
-    const risky = p.shortcuts.some((s) => s.actions.some(actionCanRun));
-    warn.classList.toggle("hidden", !risky);
-    if (risky) warn.textContent = tr("⚠ 这个卡带含命令 / 脚本 / 打开程序之类的动作，装进来照着触发键就会执行。");
+    warn.classList.toggle("hidden", !dangerous);
+    if (dangerous) {
+      warn.textContent =
+        level >= 3
+          ? tr("⚠ 危险等级：高。这个卡带含命令 / 脚本动作，装进来照着触发键就会执行任意代码。")
+          : tr("⚠ 危险等级：中。这个卡带会启动程序、打开文件 / 网址或改系统状态，请先看清动作。");
+    }
+    const consentRow = document.getElementById("snippet-consent-row")!;
+    const consent = document.getElementById("snippet-consent") as HTMLInputElement;
+    consentRow.classList.toggle("hidden", !dangerous);
+    consent.checked = false;
+    (document.getElementById("snippet-install") as HTMLButtonElement).disabled = dangerous;
     document.getElementById("snippet-modal")!.classList.remove("hidden");
   } catch (err) {
     toast(trt`卡带下载失败：${err}`);
@@ -2836,6 +2979,13 @@ function hideSnippetPreview() {
 async function confirmSnippetInstall() {
   const pending = snippetPending;
   if (!pending) return;
+  if (pending.level >= 2) {
+    const consent = document.getElementById("snippet-consent") as HTMLInputElement;
+    if (!consent.checked) {
+      toast(tr("请先勾选「我已了解风险」再安装"));
+      return;
+    }
+  }
   hideSnippetPreview();
   try {
     const r = await invoke<ImportOutcome>("install_snippet", { text: pending.text });
@@ -2845,6 +2995,208 @@ async function confirmSnippetInstall() {
     showImportResult(r);
   } catch (e) {
     toast(trt`安装失败: ${e}`);
+  }
+}
+
+// ---- 卡带发布（本机机审 → ihomy 服务端复检 → 人工审核）----
+//
+// 发布内容 = 选中的条目组成子集配置（与「导出卡带」同一口径），目录 / 设置 / 本机路径
+// 一律不进 JSON。危险等级与法务关键词只做提示：真正能不能上架由 ihomy 的人工审核决定。
+
+type PublishPick = { kind: ListKind; idx: number };
+type PreparedPublish = { content: string; scan: SnippetScan };
+type PublishReceipt = { id: number; status: string; level: number };
+
+const PUBLISH_KINDS: ListKind[] = [
+  "shortcut",
+  "remap",
+  "expansion",
+  "gesture",
+  "hotcorner",
+  "wheeledge",
+];
+
+let publishSelected = new Set<string>();
+let publishScan: SnippetScan | null = null;
+let publishScanError = "";
+let publishScanBusy = false;
+let publishNameTouched = false;
+let publishSubmitting = false;
+let publishSeq = 0;
+let publishTimer: number | undefined;
+
+function publishKey(kind: ListKind, idx: number): string {
+  return `${kind}:${idx}`;
+}
+
+function publishPicks(): PublishPick[] {
+  const picks: PublishPick[] = [];
+  for (const kind of PUBLISH_KINDS) {
+    arrOf(kind).forEach((_, idx) => {
+      if (publishSelected.has(publishKey(kind, idx))) picks.push({ kind, idx });
+    });
+  }
+  return picks;
+}
+
+function readPublishMeta() {
+  const value = (id: string) => (document.getElementById(id) as HTMLInputElement).value.trim();
+  const tags = value("publish-tags")
+    .split(/[,，]/)
+    .map((t) => t.trim())
+    .filter(Boolean);
+  return {
+    name: value("publish-name"),
+    description: (document.getElementById("publish-desc") as HTMLTextAreaElement).value.trim(),
+    author: value("publish-author"),
+    tags,
+  };
+}
+
+// 未手动改过名称时，按选择自动起名（单条取条目名，多条报条数）。
+function syncPublishName() {
+  if (publishNameTouched) return;
+  const picks = publishPicks();
+  const name =
+    picks.length === 0
+      ? ""
+      : picks.length === 1
+        ? labelOf(arrOf(picks[0].kind)[picks[0].idx] as object)
+        : trt`卡带（${picks.length} 项）`;
+  (document.getElementById("publish-name") as HTMLInputElement).value = name;
+}
+
+function renderPublishPicks() {
+  const box = document.getElementById("publish-picks");
+  if (!box) return;
+  const rows: HTMLElement[] = [];
+  for (const kind of PUBLISH_KINDS) {
+    arrOf(kind).forEach((o, idx) => {
+      const key = publishKey(kind, idx);
+      const row = el("label", "publish-pick-row");
+      const cb = el("input") as HTMLInputElement;
+      cb.type = "checkbox";
+      cb.checked = publishSelected.has(key);
+      cb.addEventListener("change", () => {
+        if (cb.checked) publishSelected.add(key);
+        else publishSelected.delete(key);
+        document.getElementById("publish-count")!.textContent = trt`已选 ${publishSelected.size} 条`;
+        syncPublishName();
+        schedulePublishScan();
+      });
+      row.append(cb, el("span", "publish-pick-kind", kindLabel(kind)), el("span", "publish-pick-name", labelOf(o as object)));
+      rows.push(row);
+    });
+  }
+  if (!rows.length) rows.push(el("p", "scan-empty", tr("当前配置里没有可发布的条目")));
+  box.replaceChildren(...rows);
+  document.getElementById("publish-count")!.textContent = trt`已选 ${publishSelected.size} 条`;
+}
+
+function updatePublishSubmit() {
+  const consent = document.getElementById("publish-consent") as HTMLInputElement;
+  const btn = document.getElementById("publish-submit") as HTMLButtonElement;
+  btn.disabled =
+    publishSubmitting ||
+    publishScanBusy ||
+    !publishScan ||
+    !!publishScanError ||
+    publishSelected.size === 0 ||
+    !consent.checked;
+}
+
+function schedulePublishScan() {
+  if (publishTimer !== undefined) window.clearTimeout(publishTimer);
+  const box = document.getElementById("publish-scan");
+  if (publishSelected.size === 0) {
+    publishSeq++;
+    publishScan = null;
+    publishScanError = "";
+    publishScanBusy = false;
+    if (box) renderScanBox(box, null);
+    updatePublishSubmit();
+    return;
+  }
+  publishScanBusy = true;
+  publishScan = null;
+  publishScanError = "";
+  if (box) box.replaceChildren(el("p", "scan-empty", tr("正在做机器检查…")));
+  updatePublishSubmit();
+  publishTimer = window.setTimeout(() => void runPublishScan(), 250);
+}
+
+async function runPublishScan() {
+  const seq = ++publishSeq;
+  const picks = publishPicks();
+  const meta = readPublishMeta();
+  const box = document.getElementById("publish-scan");
+  try {
+    const r = await invoke<PreparedPublish>("prepare_publish", { picks, meta });
+    if (seq !== publishSeq) return;
+    publishScan = r.scan;
+    publishScanError = "";
+    if (box) renderScanBox(box, r.scan);
+  } catch (e) {
+    if (seq !== publishSeq) return;
+    publishScan = null;
+    publishScanError = String(e);
+    if (box) renderScanBox(box, null, publishScanError);
+  } finally {
+    if (seq === publishSeq) {
+      publishScanBusy = false;
+      updatePublishSubmit();
+    }
+  }
+}
+
+function openPublish(initial: PublishPick[] = []) {
+  if (!marketIsOfficial()) {
+    toast(tr("当前使用自定义索引，不能发布到官方市场；请先在设置里换回内置地址"));
+    return;
+  }
+  publishSelected = new Set(initial.map((p) => publishKey(p.kind, p.idx)));
+  publishNameTouched = false;
+  publishScan = null;
+  publishScanError = "";
+  publishScanBusy = false;
+  publishSubmitting = false;
+  publishSeq++;
+  if (publishTimer !== undefined) window.clearTimeout(publishTimer);
+  (document.getElementById("publish-desc") as HTMLTextAreaElement).value = "";
+  (document.getElementById("publish-tags") as HTMLInputElement).value = "";
+  (document.getElementById("publish-author") as HTMLInputElement).value =
+    localStorage.getItem("kada.publish.author") ?? "";
+  (document.getElementById("publish-consent") as HTMLInputElement).checked = false;
+  renderPublishPicks();
+  syncPublishName();
+  renderScanBox(document.getElementById("publish-scan")!, null);
+  updatePublishSubmit();
+  document.getElementById("publish-modal")!.classList.remove("hidden");
+  schedulePublishScan();
+}
+
+function closePublish() {
+  document.getElementById("publish-modal")!.classList.add("hidden");
+  if (publishTimer !== undefined) window.clearTimeout(publishTimer);
+  publishSeq++;
+  publishSubmitting = false;
+}
+
+async function submitPublish() {
+  if (publishSubmitting || !publishScan || publishScanError || publishSelected.size === 0) return;
+  const meta = readPublishMeta();
+  publishSubmitting = true;
+  updatePublishSubmit();
+  try {
+    const r = await invoke<PublishReceipt>("submit_publish", { picks: publishPicks(), meta });
+    localStorage.setItem("kada.publish.author", meta.author);
+    closePublish();
+    toast(trt`已提交审核（编号 #${r.id}，服务端判定：${riskLabel(r.level)}）；人工通过后才会出现在市场`);
+  } catch (e) {
+    toast(trt`发布失败：${e}`);
+  } finally {
+    publishSubmitting = false;
+    updatePublishSubmit();
   }
 }
 
@@ -2868,6 +3220,7 @@ function selectionMenuItems(): MenuItem[] {
     { label: tr("复制"), run: () => copySelection(false) },
     { label: tr("剪切"), run: () => copySelection(true) },
     { label: n > 1 ? trt`导出为卡带（${n} 项）` : tr("导出为卡带"), run: () => void exportFragment(picksOfSelection()) },
+    { label: n > 1 ? trt`发布为卡带（${n} 项）` : tr("发布为卡带…"), run: () => openPublish(picksOfSelection()) },
     { label: n > 1 ? trt`删除（${n} 项）` : tr("删除"), run: () => void deleteSelection() },
     { label: tr("启用"), run: () => void setPickedEnabled(true) },
     { label: tr("禁用"), run: () => void setPickedEnabled(false) },
@@ -3033,6 +3386,9 @@ const FOLDER_ENTRY_KINDS: [string, () => FolderEntry[]][] = [
   [tr("快捷键"), () => cfg.shortcuts],
   [tr("改键"), () => cfg.remaps],
   [tr("文本扩展"), () => cfg.expansions],
+  [tr("鼠标操作"), () => (cfg.gestures ?? []) as unknown as FolderEntry[]],
+  [tr("角动作"), () => (cfg.hot_corners ?? []) as unknown as FolderEntry[]],
+  [tr("边缘滚动"), () => (cfg.wheel_edges ?? []) as unknown as FolderEntry[]],
 ];
 
 // 这批目录（含子目录）里各类条目各有多少条，0 条的不报。
@@ -3138,7 +3494,7 @@ function kindLabel(kind: ListKind | null): string {
         : kind === "gesture"
           ? tr("鼠标操作")
           : kind === "hotcorner"
-            ? tr("触发角")
+            ? tr("角动作")
             : kind === "wheeledge"
               ? tr("边缘滚动")
               : tr("条目");
@@ -3342,6 +3698,36 @@ function wouldCycle(zone: DropZone): boolean {
 }
 
 // 合并列表里三类行同处一个 <ul>：落点必须先认 kind（下标分属不同数组，串了就是搬错条目）。
+function isMouseKind(kind: string | null | undefined): boolean {
+  return kind === "gesture" || kind === "hotcorner" || kind === "wheeledge";
+}
+
+/** 鼠标类三类共用的展示序列（`order` → 类型 → 数组下标，同一套比较器用于渲染与拖动）。 */
+function mouseSequence(): { kind: "gesture" | "hotcorner" | "wheeledge"; item: Gesture | HotCornerRule | WheelEdgeRule; rank: number; idx: number }[] {
+  const rank = { gesture: 0, hotcorner: 1, wheeledge: 2 } as const;
+  const out: { kind: "gesture" | "hotcorner" | "wheeledge"; item: Gesture | HotCornerRule | WheelEdgeRule; rank: number; idx: number }[] = [];
+  (cfg.gestures ?? []).forEach((g, i) => out.push({ kind: "gesture", item: g, rank: rank.gesture, idx: i }));
+  (cfg.hot_corners ?? []).forEach((r, i) => out.push({ kind: "hotcorner", item: r, rank: rank.hotcorner, idx: i }));
+  (cfg.wheel_edges ?? []).forEach((r, i) => out.push({ kind: "wheeledge", item: r, rank: rank.wheeledge, idx: i }));
+  return out.sort((a, b) => (a.item.order ?? 0) - (b.item.order ?? 0) || a.rank - b.rank || a.idx - b.idx);
+}
+
+/** 新建条目排到最前：重排三类共用的 `order`（新条目拿 0，其余顺延）。 */
+function mouseOrderFront(item: Gesture | HotCornerRule | WheelEdgeRule) {
+  const seq = mouseSequence().filter((e) => e.item !== item);
+  seq.unshift({ kind: "gesture", item, rank: 0, idx: 0 });
+  seq.forEach((e, i) => {
+    e.item.order = i;
+  });
+}
+
+function mouseItemOf(kind: ListKind, idx: number): (Gesture & HotCornerRule & WheelEdgeRule) | null {
+  if (kind === "gesture") return ((cfg.gestures ?? [])[idx] as never) ?? null;
+  if (kind === "hotcorner") return ((cfg.hot_corners ?? [])[idx] as never) ?? null;
+  if (kind === "wheeledge") return ((cfg.wheel_edges ?? [])[idx] as never) ?? null;
+  return null;
+}
+
 function dragRowKind(): ListKind {
   if (!dragPayload) return "shortcut";
   return dragPayload.kind === "folder" ? "shortcut" : dragPayload.kind;
@@ -3356,8 +3742,9 @@ function zoneEl(zone: DropZone): HTMLElement | null {
       `.folder-row[data-folder-id="${zone.folderId}"]`,
     ) as HTMLElement | null;
   }
+  const kind = zone.targetKind ?? dragRowKind();
   return list.querySelector(
-    `.row[data-kind="${dragRowKind()}"][data-idx="${zone.idx}"]`,
+    `.row[data-kind="${kind}"][data-idx="${zone.idx}"]`,
   ) as HTMLElement | null;
 }
 
@@ -3382,6 +3769,7 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
     kind: "row",
     idx: Number(el.dataset.idx),
     pos: y < r.top + r.height / 2 ? "before" : "after",
+    targetKind: el.dataset.kind as ListKind,
   };
 }
 
@@ -3392,18 +3780,33 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
 // 下一行是目录或没有就放进上面这个目录；列表顶端的缝落第一行之前。没有候选才回根。
 function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
   const kind = dragPayload?.kind;
-  // 鼠标类条目在根级数组里、不进目录树：只在同类行之间换位（顺序即同位置优先级）。
-  if (kind === "gesture" || kind === "hotcorner" || kind === "wheeledge") {
-    const rows = Array.from(list.querySelectorAll<HTMLElement>(`.row[data-kind="${kind}"]`));
-    const inside = rows.find((el) => {
+  // 鼠标类三类共用一条展示序列：候选是三类行 + 目录行，可互相换位、也可放进目录。
+  if (isMouseKind(kind)) {
+    const cands = Array.from(
+      list.querySelectorAll<HTMLElement>(
+        '.row[data-kind="gesture"], .row[data-kind="hotcorner"], .row[data-kind="wheeledge"], .folder-row',
+      ),
+    );
+    const inside = cands.find((el) => {
       const r = el.getBoundingClientRect();
       return y >= r.top && y <= r.bottom;
     });
-    if (inside) return zoneOfEl(inside, y);
-    const up = rows.filter((el) => el.getBoundingClientRect().bottom < y).pop();
-    const down = rows.find((el) => el.getBoundingClientRect().top > y);
+    const asZone = (el: HTMLElement): DropZone =>
+      el.classList.contains("folder-row")
+        ? { kind: "folder", folderId: el.dataset.folderId!, pos: "into" }
+        : zoneOfEl(el, y);
+    if (inside) return asZone(inside);
+    // 整份列表首行之上 / 末行之下留一点空白：拖到那里 = 回根级（鼠标类只靠拖动改归属）。
+    const allRows = Array.from(list.querySelectorAll<HTMLElement>(".row, .folder-row"));
+    if (cands.length && allRows.length) {
+      const first = allRows[0].getBoundingClientRect();
+      const last = allRows[allRows.length - 1].getBoundingClientRect();
+      if (y < first.top - 6 || y > last.bottom + 6) return { kind: "root" };
+    }
+    const up = cands.filter((el) => el.getBoundingClientRect().bottom < y).pop();
+    const down = cands.find((el) => el.getBoundingClientRect().top > y);
     const only = up ?? down;
-    return only ? zoneOfEl(only, y) : null;
+    return only ? asZone(only) : { kind: "root" };
   }
   // 快捷键/改键/扩展与目录互为落点；own = 拖目录时的成环黑名单（含源目录自己）。
   const own = kind === "folder" ? collectDescendantIds(dragPayload!.id) : null;
@@ -3475,8 +3878,6 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
   if (!hit || !list.contains(hit)) return null; // 列表外视为无效落点
   const folderEl = hit.closest(".folder-row") as HTMLElement | null;
   if (folderEl) {
-    // 鼠标类条目不属于任何目录：悬浮在目录行上不放行。
-    if (dragRowKind() === "gesture" || dragRowKind() === "hotcorner" || dragRowKind() === "wheeledge") return null;
     const folderId = folderEl.dataset.folderId!;
     if (dragPayload?.kind === "folder") {
       const r = folderEl.getBoundingClientRect();
@@ -3489,13 +3890,18 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
     return { kind: "folder", folderId, pos: "into" };
   }
   const rowEl = hit.closest(".row") as HTMLElement | null;
-  if (rowEl && rowEl.dataset.kind === dragRowKind()) {
-    const r = rowEl.getBoundingClientRect();
-    return {
-      kind: "row",
-      idx: Number(rowEl.dataset.idx),
-      pos: y - r.top < r.height / 2 ? "before" : "after",
-    };
+  if (rowEl) {
+    const rowKind = rowEl.dataset.kind as ListKind;
+    const ok = isMouseKind(dragRowKind()) ? isMouseKind(rowKind) : rowKind === dragRowKind();
+    if (ok) {
+      const r = rowEl.getBoundingClientRect();
+      return {
+        kind: "row",
+        idx: Number(rowEl.dataset.idx),
+        pos: y - r.top < r.height / 2 ? "before" : "after",
+        targetKind: rowKind,
+      };
+    }
   }
   return nearestDropZone(list, y);
 }
@@ -3571,22 +3977,52 @@ function applyDrop(zone: DropZone) {
   // 不重绘，免得「拿起又放下」白弹一次保存提示。
   if (zoneEl(zone) === dragState?.sourceEl) return;
 
-  // 鼠标类条目：只在同类数组里换位，落点只认同类行（顺序即优先级）。
-  if (dragPayload.kind === "gesture" || dragPayload.kind === "hotcorner" || dragPayload.kind === "wheeledge") {
-    if (zone.kind !== "row") return;
-    const kind = dragPayload.kind;
-    const arr = (
-      kind === "gesture" ? cfg.gestures : kind === "hotcorner" ? cfg.hot_corners : cfg.wheel_edges
-    ) as object[];
-    const srcIdx = dragPayload.idx;
-    const moved = arr[srcIdx];
+  // 鼠标类：三类共用一条展示序列，可互相换位、放进目录或拖回根级。
+  const payload = dragPayload;
+  if (payload.kind === "gesture" || payload.kind === "hotcorner" || payload.kind === "wheeledge") {
+    const srcKind = payload.kind;
+    const moved = mouseItemOf(srcKind, payload.idx);
     if (!moved) return;
-    const at = zone.pos === "before" ? zone.idx : zone.idx + 1;
-    if ((at > srcIdx ? at - 1 : at) === srcIdx) return; // 原位放下
-    const sameSection = section === KIND_SECTION[kind];
-    const selObj = sameSection && selected !== null ? arr[selected] : null;
-    moveWithin(arr, srcIdx, at);
-    if (sameSection) selected = selObj ? arr.indexOf(selObj) : null;
+    let destFolder: string | null = null;
+    if (zone.kind === "folder") destFolder = zone.folderId;
+    else if (zone.kind === "row") {
+      const target = mouseItemOf(zone.targetKind ?? srcKind, zone.idx);
+      if (!target) return;
+      destFolder = target.folder ?? null;
+    } else if (zone.kind !== "root") return;
+
+    // 同一类内换位仍要动数组（顺序 = 同位置 / 同方向串的优先级）；跨类型只改展示顺序。
+    if (zone.kind === "row" && zone.targetKind === srcKind) {
+      const target = mouseItemOf(srcKind, zone.idx);
+      const arr = arrOf(srcKind);
+      const from = arr.indexOf(moved);
+      const ti = target ? arr.indexOf(target) : -1;
+      if (from >= 0 && ti >= 0) {
+        let at = zone.pos === "before" ? ti : ti + 1;
+        if (at > from) at--;
+        moveWithin(arr, from, at);
+      }
+    }
+    moved.folder = destFolder;
+    const seq = mouseSequence().filter((e) => e.item !== moved);
+    let at = seq.length;
+    if (zone.kind === "row") {
+      const target = mouseItemOf(zone.targetKind ?? srcKind, zone.idx);
+      const pos = seq.findIndex((e) => e.item === target);
+      if (pos >= 0) at = zone.pos === "before" ? pos : pos + 1;
+    } else if (zone.kind === "folder") {
+      let last = -1;
+      seq.forEach((e, i) => {
+        if ((e.item.folder ?? null) === destFolder) last = i;
+      });
+      at = last >= 0 ? last + 1 : seq.length;
+    }
+    seq.splice(at, 0, { kind: srcKind, item: moved, rank: 0, idx: 0 });
+    seq.forEach((e, i) => {
+      e.item.order = i;
+    });
+    const movedIdx = arrOf(srcKind).indexOf(moved);
+    if (section === KIND_SECTION[srcKind] && movedIdx >= 0) selected = movedIdx;
     void save();
     return;
   }
@@ -3643,7 +4079,7 @@ function applyDrop(zone: DropZone) {
       moveShortcut(srcIdx, targetFolder, zone.pos === "before" ? zone.idx : zone.idx + 1);
     }
   } else {
-    const srcId = dragPayload.id;
+    const srcId = (dragPayload as { kind: "folder"; id: string }).id;
     if (zone.kind === "root") {
       moveFolder(srcId, null);
     } else if (zone.kind === "folder") {
@@ -4279,7 +4715,7 @@ function syncEntry() {
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展没有「层」；快捷键 / 改键 / 鼠标操作 / 触发角 / 边缘滚动都能归属层。
+  // 文本扩展没有「层」；快捷键 / 改键 / 鼠标操作 / 角动作 / 边缘滚动都能归属层。
   // 条件（when）与快捷键同语义，改键 / 鼠标类触发也都支持；六类条目都有「详情」页签。
   const hasLayer = kind !== "expansion";
   const hasWhen = kind !== "expansion";
@@ -4382,7 +4818,7 @@ function deleteCurrentEntry() {
     if (!hotcornerDraft) return;
     if (draftNew) return discardNewDraft();
     const r = hotcornerDraft;
-    void deleteDetailEntry(tr("触发角"), r.name?.trim() || spotLabel(r.spot), () => {
+    void deleteDetailEntry(tr("角动作"), r.name?.trim() || spotLabel(r.spot), () => {
       if (selected !== null) (cfg.hot_corners ?? []).splice(selected, 1);
     });
   } else {
@@ -4701,6 +5137,7 @@ async function saveGestureDetail(): Promise<boolean> {
   const list = cfg.gestures ?? (cfg.gestures = []);
   if (draftNew) {
     list.unshift(item);
+    mouseOrderFront(item);
   } else if (selected !== null && list[selected]) {
     item.enabled = list[selected].enabled;
     list[selected] = item;
@@ -4714,7 +5151,7 @@ async function saveGestureDetail(): Promise<boolean> {
   return ok;
 }
 
-// 触发角 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
+// 角动作 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
 async function saveHotCornerDetail(): Promise<boolean> {
   if (section !== "hotcorners" || !hotcornerDraft) return false;
   hotcornerDraft.description = domValue("edit-desc") || null;
@@ -4723,6 +5160,7 @@ async function saveHotCornerDetail(): Promise<boolean> {
   const list = cfg.hot_corners ?? (cfg.hot_corners = []);
   if (draftNew) {
     list.unshift(item);
+    mouseOrderFront(item);
   } else if (selected !== null && list[selected]) {
     item.enabled = list[selected].enabled;
     list[selected] = item;
@@ -4744,6 +5182,7 @@ async function saveWheelEdgeDetail(): Promise<boolean> {
   const list = cfg.wheel_edges ?? (cfg.wheel_edges = []);
   if (draftNew) {
     list.unshift(item);
+    mouseOrderFront(item);
   } else if (selected !== null && list[selected]) {
     item.enabled = list[selected].enabled;
     list[selected] = item;
@@ -4903,7 +5342,7 @@ function draftLabel(): string {
     return trt`鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || tr("未命名")}」`;
   }
   if (section === "hotcorners") {
-    return trt`触发角「${hotcornerDraft?.name?.trim() || spotLabel(hotcornerDraft?.spot ?? "top_left")}」`;
+    return trt`角动作「${hotcornerDraft?.name?.trim() || spotLabel(hotcornerDraft?.spot ?? "top_left")}」`;
   }
   if (section === "wheeledges") {
     return trt`边缘滚动「${wheeledgeDraft?.name?.trim() || spotLabel(wheeledgeDraft?.edge ?? "top")}」`;
@@ -6011,6 +6450,43 @@ function actionFields(
   ctx?: { actions: Action[]; idx: number },
 ): HTMLElement {
   const body = el("div", "action-body");
+  if (a.type === "ask") {
+    const vline = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = tr("变量名（后面用 {变量名} 引用）");
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    vline.append(el("span", "unit-hint", tr("存为变量")), vname);
+    body.append(vline);
+
+    const pline = el("div", "action-line");
+    const ptext = el("input", "action-input") as HTMLInputElement;
+    ptext.type = "text";
+    ptext.value = a.prompt;
+    ptext.placeholder = tr("弹框提示语（支持 {变量名} 占位符）");
+    ptext.addEventListener("input", () => {
+      a.prompt = ptext.value;
+    });
+    pline.append(el("span", "unit-hint", tr("提示语")), ptext);
+    body.append(pline);
+
+    const dline = el("div", "action-line");
+    const dtext = el("input", "action-input") as HTMLInputElement;
+    dtext.type = "text";
+    dtext.value = a.default ?? "";
+    dtext.placeholder = tr("默认值（可空，支持 {变量名} 占位符）");
+    dtext.addEventListener("input", () => {
+      a.default = dtext.value;
+    });
+    dline.append(el("span", "unit-hint", tr("默认值")), dtext);
+    body.append(dline);
+
+    body.append(el("div", "unit-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")));
+    return body;
+  }
   if (a.type === "text") {
     if (a.mode === "input") {
       // 隐藏态不渲染真文本（连长度都不露），编辑框位置换成一块 *** 占位；要改内容先关掉开关。
@@ -7671,6 +8147,45 @@ function bindSettings() {
   document.getElementById("snippet-install")!.addEventListener("click", () => void confirmSnippetInstall());
   document.getElementById("snippet-cancel")!.addEventListener("click", hideSnippetPreview);
   document.getElementById("snippet-modal")!.querySelector(".modal-mask")!.addEventListener("click", hideSnippetPreview);
+  (document.getElementById("snippet-consent") as HTMLInputElement).addEventListener("change", (e) => {
+    (document.getElementById("snippet-install") as HTMLButtonElement).disabled = !(e.target as HTMLInputElement).checked;
+  });
+
+  // 发布卡带：入口在市场标题行与行菜单（⋯ / 右键）都开同一个发布页。
+  document.getElementById("market-publish")!.addEventListener("click", () => openPublish());
+  document.getElementById("publish-close")!.addEventListener("click", closePublish);
+  document.getElementById("publish-cancel")!.addEventListener("click", closePublish);
+  document.getElementById("publish-modal")!.querySelector(".modal-mask")!.addEventListener("click", closePublish);
+  document.getElementById("publish-select-all")!.addEventListener("click", () => {
+    for (const kind of PUBLISH_KINDS) {
+      arrOf(kind).forEach((_, idx) => publishSelected.add(publishKey(kind, idx)));
+    }
+    syncPublishName();
+    renderPublishPicks();
+    schedulePublishScan();
+  });
+  document.getElementById("publish-select-none")!.addEventListener("click", () => {
+    publishSelected.clear();
+    syncPublishName();
+    renderPublishPicks();
+    schedulePublishScan();
+  });
+  (document.getElementById("publish-name") as HTMLInputElement).addEventListener("input", () => {
+    publishNameTouched = true;
+    schedulePublishScan();
+  });
+  (document.getElementById("publish-desc") as HTMLTextAreaElement).addEventListener("input", schedulePublishScan);
+  (document.getElementById("publish-author") as HTMLInputElement).addEventListener("input", schedulePublishScan);
+  (document.getElementById("publish-tags") as HTMLInputElement).addEventListener("input", schedulePublishScan);
+  (document.getElementById("publish-consent") as HTMLInputElement).addEventListener("change", updatePublishSubmit);
+  document.getElementById("publish-submit")!.addEventListener("click", () => void submitPublish());
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (!document.getElementById("publish-modal")!.classList.contains("hidden")) {
+      e.preventDefault();
+      closePublish();
+    }
+  });
   // 更新源：写进配置后下一次检查（含手动「检查更新」）立即生效，后端每次检查都重读设置。
   const updateSource = document.getElementById("set-update-source") as HTMLSelectElement;
   updateSource.addEventListener("change", () => {

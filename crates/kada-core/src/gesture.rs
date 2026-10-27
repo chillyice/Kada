@@ -28,6 +28,13 @@ pub struct Gesture {
     #[serde(default)]
     pub pattern: String,
     /// 触发后按顺序执行的多个动作（复用 [`Action`]，与快捷键同一套动作引擎）。
+    /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// 统一展示顺序：鼠标操作 / 角动作 / 边缘滚动共用一个序列，只影响列表顺序；
+    /// 匹配仍是「同类型、同位置 / 同方向串」内按数组顺序取第一条。缺字段 = 0。
+    #[serde(default, skip_serializing_if = "crate::is_zero_u64")]
+    pub order: u64,
     #[serde(default)]
     pub actions: Vec<Action>,
     /// 触发侧条件门控（`when`，规划 7.2-MG 余项）：仅当条件成立时这条才参与匹配，
@@ -446,6 +453,8 @@ mod tests {
             #[cfg(feature = "automation")]
             when: None,
             enabled: true,
+            folder: None,
+            order: 0,
         }
     }
 

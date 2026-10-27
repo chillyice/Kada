@@ -15,7 +15,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
@@ -26,11 +26,14 @@ use kada_actions::{
 };
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
-    matches, parse_snippet_index, sanitize_config, snippet, snippet_title, Action,
+    matches, parse_snippet_index, publish_payload, sanitize_config, scan_snippet, snippet,
+    snippet_title, Action,
     ClipboardMenu,
     ClipboardOperation, Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent,
-    Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetPick, TextExpansion, TextInjectMode,
-    TriggerContext, Vars, DEFAULT_SNIPPET_INDEX_URL, SYSTEM_SHORTCUTS,
+    Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan,
+    TextExpansion, TextInjectMode,
+    TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL,
+    DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -3832,6 +3835,84 @@ mod tests {
         assert!(conflicts.is_empty(), "内置示例自带冲突：{conflicts:?}");
     }
 
+    /// 卡带发布：POST 的 Content-Type / body 与响应解析。发布端点固定为官方地址
+    /// （`http_post_json` 不接受前端传 URL），这里只验传输层与机审判级。
+    #[test]
+    fn snippet_publish_posts_json_and_scans() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel::<String>();
+        std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut buf = Vec::new();
+            let mut tmp = [0u8; 1024];
+            while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                let n = s.read(&mut tmp).unwrap_or(0);
+                if n == 0 { break; }
+                buf.extend_from_slice(&tmp[..n]);
+            }
+            let head = String::from_utf8_lossy(&buf).to_string();
+            let len = head
+                .lines()
+                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .unwrap_or(0);
+            let already = buf.len() - (head.find("\r\n\r\n").unwrap_or(0) + 4);
+            let mut body = buf[buf.len() - already..].to_vec();
+            while body.len() < len {
+                let n = s.read(&mut tmp).unwrap_or(0);
+                if n == 0 { break; }
+                body.extend_from_slice(&tmp[..n]);
+            }
+            let _ = tx.send(format!("{head}\n---\n{}", String::from_utf8_lossy(&body)));
+            let resp = br#"{"code":0,"message":"ok","data":{"id":7,"status":"PENDING","level":2}}"#;
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                resp.len()
+            );
+            let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(resp));
+        });
+
+        let text = tauri::async_runtime::block_on(http_post_json(
+            &base,
+            r#"{"name":"测试","content":"{}"}"#,
+        ))
+        .unwrap();
+        let seen = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        assert!(seen.to_ascii_lowercase().contains("content-type: application/json"));
+        assert!(seen.contains(r#"{"name":"测试","content":"{}"}"#));
+        let env: PublishEnvelope = serde_json::from_str(&text).unwrap();
+        assert_eq!(env.code, 0);
+        assert_eq!(env.data.unwrap().level, 2);
+
+        let scan = scan_snippet(r#"{"shortcuts":[{"triggers":["F1"],"actions":[{"type":"command","shell":"cmd","command":"whoami"}]}]}"#).unwrap();
+        assert_eq!(scan.level, 3);
+    }
+
+    /// 社区索引合并：社区在前、同一 URL 只留一份（社区卡若与官方同 URL，以官方那条为准）。
+    #[test]
+    fn community_index_merges_before_official_without_duplicates() {
+        let entry = |name: &str, url: &str, level: Option<u8>| IndexEntry {
+            name: name.into(),
+            url: url.into(),
+            description: String::new(),
+            author: String::new(),
+            tags: vec![],
+            level,
+        };
+        let official = vec![entry("官方 A", "https://x/a.json", None), entry("官方 B", "https://x/b.json", None)];
+        let community = vec![
+            entry("社区 C", "https://x/c.json", Some(2)),
+            entry("重复 B", "https://x/b.json", Some(3)),
+        ];
+        let merged = merge_index_entries(official, community);
+        assert_eq!(
+            merged.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(),
+            vec!["社区 C", "官方 A", "官方 B"]
+        );
+        assert_eq!(merged[0].level, Some(2));
+    }
+
     /// 单线程的「静态文件服务」：回一个请求就够测试用（每条连接单独 spawn）。
     fn serve_dir(dir: &str) -> (String, Arc<AtomicBool>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("端口绑定失败");
@@ -5758,17 +5839,7 @@ async fn http_get_text(url: &str) -> Result<String, String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err(format!("不是 http(s) 地址：{url}"));
     }
-    // reqwest 用的是 `rustls-no-provider`：TLS 后端由**进程级** crypto provider 决定。updater
-    // 是自己在建 client 前才装的 provider——没检查过更新的进程里没人装过，这里建 client 会
-    // 直接 panic。装一次即可（已装时静默跳过）。
-    if rustls::crypto::CryptoProvider::get_default().is_none() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    }
-    let client = reqwest::Client::builder()
-        .timeout(SNIPPET_FETCH_TIMEOUT)
-        .user_agent(concat!("kada/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| format!("网络初始化失败：{e}"))?;
+    let client = http_client(SNIPPET_FETCH_TIMEOUT)?;
     let resp = client
         .get(url)
         .send()
@@ -5784,6 +5855,44 @@ async fn http_get_text(url: &str) -> Result<String, String> {
     String::from_utf8(body.to_vec()).map_err(|_| "下载内容不是 UTF-8 文本".to_string())
 }
 
+/// 发一段 JSON 到**固定**的官方发布端点。
+///
+/// 地址不接受前端传入：发布能力只对官方市场开放，避免客户端被诱导把配置 POST 到任意地址。
+async fn http_post_json(url: &str, body: &str) -> Result<String, String> {
+    let client = http_client(Duration::from_secs(30))?;
+    let resp = client
+        .post(url)
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| format!("发布失败：{e}"))?;
+    let status = resp.status();
+    let bytes = resp.bytes().await.map_err(|e| format!("发布响应中断：{e}"))?;
+    if bytes.len() > 1024 * 1024 {
+        return Err("发布接口返回内容过大".into());
+    }
+    let text = String::from_utf8(bytes.to_vec()).map_err(|_| "发布接口返回的不是 UTF-8".to_string())?;
+    if !status.is_success() {
+        let brief: String = text.chars().take(200).collect();
+        return Err(format!("发布失败：HTTP {status} {brief}"));
+    }
+    Ok(text)
+}
+
+/// 统一的 reqwest 客户端：进程级 rustls provider 装一次（updater 之外没人装过，
+/// 直接建 client 会 panic），再带上超时与 UA。
+fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .user_agent(concat!("kada/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| format!("网络初始化失败：{e}"))
+}
+
 /// 索引地址：设置里留空等价于「用内置默认」（见 `Settings::snippet_index_url`）。
 fn snippet_index_url(state: &KadaState) -> String {
     let url = state.config.read().unwrap().settings.snippet_index_url.trim().to_string();
@@ -5795,17 +5904,43 @@ fn snippet_index_url(state: &KadaState) -> String {
 }
 
 /// 拉取卡带索引（浏览 / 搜索 / 一键安装都从它出发）。地址取设置里的索引地址。
+///
+/// 用官方索引时再并一份**社区发布索引**（人工审核通过的卡带）：两份分开存放，
+/// 镜像每天覆盖官方索引也不会把社区卡带抹掉。社区索引拉失败只当没有，不影响官方的。
 #[tauri::command]
 async fn fetch_snippet_index(
     state: tauri::State<'_, KadaState>,
 ) -> Result<Vec<IndexEntry>, String> {
     let url = snippet_index_url(&state);
     let text = http_get_text(&url).await?;
-    let entries = parse_snippet_index(&text)?;
+    let mut entries = parse_snippet_index(&text)?;
+    if url == DEFAULT_SNIPPET_INDEX_URL {
+        let bust = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let community_url = format!("{DEFAULT_SNIPPET_COMMUNITY_INDEX_URL}?t={bust}");
+        if let Ok(text) = http_get_text(&community_url).await {
+            if let Ok(community) = parse_snippet_index(&text) {
+                entries = merge_index_entries(entries, community);
+            }
+        }
+    }
     if entries.is_empty() {
         return Err(format!("索引里一条卡带也没有（{url}）"));
     }
     Ok(entries)
+}
+
+/// 官方索引 + 社区索引：社区在前（新上架的更容易被看到），同一 `url` 只留一份。
+/// 社区索引单独一份文件，镜像每天覆盖官方 `index.json` 不会影响它。
+fn merge_index_entries(official: Vec<IndexEntry>, community: Vec<IndexEntry>) -> Vec<IndexEntry> {
+    let mut merged: Vec<IndexEntry> = community
+        .into_iter()
+        .filter(|e| !official.iter().any(|x| x.url == e.url))
+        .collect();
+    merged.extend(official);
+    merged
 }
 
 /// 一个卡带的下载结果：原文 + 清洗后的条目。
@@ -5815,6 +5950,7 @@ async fn fetch_snippet_index(
 #[derive(Serialize)]
 struct SnippetFetch {
     text: String,
+    scan: SnippetScan,
     preview: SnippetPreview,
 }
 
@@ -5825,11 +5961,14 @@ struct SnippetPreview {
     remaps: Vec<Remap>,
     expansions: Vec<TextExpansion>,
     gestures: Vec<kada_core::Gesture>,
+    hot_corners: Vec<kada_core::HotCornerRule>,
+    wheel_edges: Vec<kada_core::WheelEdgeRule>,
 }
 
 /// 下载一个卡带并给出预览，**不落盘**。
 ///
 /// 预览这步不能省：卡带能带命令 / 脚本动作，等于「装进来就会跑」，必须让人先看清里面是什么。
+/// 同时跑一遍机审：危险等级与法务标记随预览一起给前端，装之前就能看到。
 #[tauri::command]
 async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
     let text = http_get_text(&url).await?;
@@ -5839,16 +5978,22 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
         && part.remaps.is_empty()
         && part.expansions.is_empty()
         && part.gestures.is_empty()
+        && part.hot_corners.is_empty()
+        && part.wheel_edges.is_empty()
     {
         return Err("卡带里没有可用的条目（全是坏条目或本来就是空的）".into());
     }
+    let scan = scan_snippet(&text)?;
     Ok(SnippetFetch {
         text,
+        scan,
         preview: SnippetPreview {
             shortcuts: part.shortcuts,
             remaps: part.remaps,
             expansions: part.expansions,
             gestures: part.gestures,
+            hot_corners: part.hot_corners,
+            wheel_edges: part.wheel_edges,
         },
     })
 }
@@ -5862,6 +6007,96 @@ fn install_snippet(
 ) -> Result<ImportOutcome, String> {
     let part: Config = serde_json::from_str(&text).map_err(|e| format!("卡带解析失败：{e}"))?;
     merge_into_config(&app, &state, part)
+}
+
+// ---- 卡带发布（机器审核在本机与 ihomy 各跑一遍，人工审核在 ihomy OPS 页） ----
+
+/// 发布草稿：提交前给用户看的机器检查结果与最终 JSON。
+#[derive(Serialize)]
+struct PreparedPublish {
+    content: String,
+    scan: SnippetScan,
+}
+
+/// 社区发布只对官方市场开放：用自定义索引的人看到的是另一份市场，把卡带发到 ihomy
+/// 既不在他眼前、也没经过他同意。
+fn snippet_market_is_official(state: &KadaState) -> bool {
+    let url = state.config.read().unwrap().settings.snippet_index_url.trim().to_string();
+    url.is_empty() || url == DEFAULT_SNIPPET_INDEX_URL
+}
+
+/// 生成发布草稿并跑本机机审（不联网、不落盘）。发布页改选项 / 改元信息时反复调用。
+#[tauri::command]
+fn prepare_publish(
+    state: tauri::State<'_, KadaState>,
+    picks: Vec<SnippetPick>,
+    meta: SnippetMeta,
+) -> Result<PreparedPublish, String> {
+    if !snippet_market_is_official(&state) {
+        return Err("当前使用自定义索引，不能发布到官方市场".into());
+    }
+    let (content, scan) = publish_payload(&state.config.read().unwrap(), &picks, &meta)?;
+    Ok(PreparedPublish { content, scan })
+}
+
+/// 发布受理结果（ihomy 返回）：id + 待审状态 + 服务端机审判定的危险等级。
+#[derive(Deserialize, Serialize)]
+struct PublishReceipt {
+    id: i64,
+    status: String,
+    #[serde(default)]
+    level: u8,
+}
+
+#[derive(Deserialize)]
+struct PublishEnvelope {
+    code: i32,
+    #[serde(default)]
+    message: String,
+    #[serde(default)]
+    data: Option<PublishReceipt>,
+}
+
+/// 提交发布：本机再算一遍（不信任前端拼的字节）→ POST 到固定官方端点 → 进入人工审核。
+///
+/// **人工审核通过前不会出现在市场**；服务端会独立重算危险等级与法务标记，本机结果只作提示。
+#[tauri::command]
+async fn submit_publish(
+    state: tauri::State<'_, KadaState>,
+    picks: Vec<SnippetPick>,
+    meta: SnippetMeta,
+) -> Result<PublishReceipt, String> {
+    if !snippet_market_is_official(&state) {
+        return Err("当前使用自定义索引，不能发布到官方市场".into());
+    }
+    let (content, local_scan) = publish_payload(&state.config.read().unwrap(), &picks, &meta)?;
+    let name = serde_json::from_str::<serde_json::Value>(&content)
+        .ok()
+        .and_then(|v| v["kada_snippet"]["name"].as_str().map(str::to_string))
+        .unwrap_or_else(|| meta.name.trim().to_string());
+    let body = serde_json::json!({
+        "name": name,
+        "description": meta.description.trim(),
+        "author": meta.author.trim(),
+        "tags": meta.tags,
+        "content": content,
+    })
+    .to_string();
+    let text = http_post_json(DEFAULT_SNIPPET_PUBLISH_URL, &body).await?;
+    let envelope: PublishEnvelope =
+        serde_json::from_str(&text).map_err(|e| format!("发布接口返回异常：{e}"))?;
+    if envelope.code != 0 {
+        return Err(if envelope.message.trim().is_empty() {
+            "发布失败".into()
+        } else {
+            envelope.message
+        });
+    }
+    let mut receipt = envelope.data.ok_or("发布接口没有返回受理编号")?;
+    if receipt.level == 0 {
+        receipt.level = local_scan.level;
+    }
+    Ok(receipt)
 }
 
 /// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
@@ -6072,6 +6307,8 @@ pub fn run() {
                 fetch_snippet_index,
                 fetch_snippet,
                 install_snippet,
+                prepare_publish,
+                submit_publish,
             import_config,
             load_sample_config,
             set_paused,

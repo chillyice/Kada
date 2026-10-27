@@ -142,7 +142,19 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
     // 触发角 / 边缘滚动：同位置允许多条，按「完整相等」去重（重复导入同一份文件保持幂等），
     // 不做「同位置只留一条」的合并——那会悄悄吃掉用户本来配好的第二条。
     for hc in &incoming.hot_corners {
-        if out.hot_corners.contains(hc) {
+        // 去重不看 `folder` / `order`（纯展示归属）：同一规则换个位置放，不该被当成新条目。
+        let probe = {
+            let mut c = hc.clone();
+            c.folder = None;
+            c.order = 0;
+            c
+        };
+        if out.hot_corners.iter().any(|x| {
+            let mut c = x.clone();
+            c.folder = None;
+            c.order = 0;
+            c == probe
+        }) {
             report
                 .skipped
                 .push(format!("触发角「{}」未导入：相同的条目已存在", hc.label()));
@@ -152,7 +164,18 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         report.hot_corners += 1;
     }
     for we in &incoming.wheel_edges {
-        if out.wheel_edges.contains(we) {
+        let probe = {
+            let mut c = we.clone();
+            c.folder = None;
+            c.order = 0;
+            c
+        };
+        if out.wheel_edges.iter().any(|x| {
+            let mut c = x.clone();
+            c.folder = None;
+            c.order = 0;
+            c == probe
+        }) {
             report
                 .skipped
                 .push(format!("边缘滚动「{}」未导入：相同的条目已存在", we.label()));

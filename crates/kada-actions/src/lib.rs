@@ -346,6 +346,8 @@ fn action_kind(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Script { .. } => "script",
         #[cfg(feature = "automation")]
+        Action::Ask { .. } => "ask",
+        #[cfg(feature = "automation")]
         Action::If { .. } => "if",
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "parallel",
@@ -802,6 +804,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::Mouse { .. } => "鼠标模拟失败",
         Action::Clipboard { .. } => "剪贴板操作失败",
         Action::Transform { .. } => "算法动作失败",
+        #[cfg(feature = "automation")]
+        Action::Ask { .. } => "设置变量失败",
         Action::Group { .. } => "分组执行失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
@@ -957,6 +961,8 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             TextMode::ToUpper => "把选中/剪贴板文本转为大写".into(),
             TextMode::ToLower => "把选中/剪贴板文本转为小写".into(),
         },
+        #[cfg(feature = "automation")]
+        Action::Ask { var, prompt, .. } => format!("输入 {} → {var}", preview(&sub(prompt))),
         Action::Keys { keys, mode, .. } => match mode {
             KeysMode::Tap => format!("按下 {}", keys.join("+")),
             KeysMode::Press => format!("按住 {}", keys.join("+")),
@@ -1327,6 +1333,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Mouse { description, .. }
         | Action::Clipboard { description, .. }
         | Action::Transform { description, .. } => description.as_deref(),
+        #[cfg(feature = "automation")]
+        Action::Ask { description, .. } => description.as_deref(),
         // 分组没有 `description`：用户填的 `name` 就是这一步的标题。
         Action::Group { name, .. } => {
             let n = name.trim();
@@ -1687,6 +1695,22 @@ fn run_action(
                 ctx,
                 vars,
             );
+        }
+        #[cfg(feature = "automation")]
+        Action::Ask {
+            var,
+            prompt,
+            default,
+            ..
+        } => {
+            let prompt = substitute_vars(prompt, vars);
+            let default = substitute_vars(default, vars);
+            let text = prompt_input(&prompt, &default, ctx)?;
+            vars.insert(
+                var.trim().to_string(),
+                Value::Text(TextValue { text, exit_code: None }),
+            );
+            return Ok(None);
         }
         #[cfg(feature = "automation")]
         Action::Script {
@@ -2595,6 +2619,20 @@ fn run_with_limits(
     label: &str,
     ctx: &Ctx,
 ) -> Result<CmdOutput, String> {
+    run_with_deadline(cmd, label, ctx, ctx.timeout)
+}
+
+/// 同 `run_with_limits`，但超时由调用方指定（输入框要等人，传 `Duration::ZERO` = 不限时）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn run_with_deadline(
+    cmd: &mut std::process::Command,
+    label: &str,
+    ctx: &Ctx,
+    timeout: Duration,
+) -> Result<CmdOutput, String> {
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     make_process_group(cmd);
     let mut child = cmd.spawn().map_err(|e| format!("执行 {label} 失败: {e}"))?;
@@ -2614,10 +2652,10 @@ fn run_with_limits(
         })
     });
 
-    let deadline = if ctx.timeout.is_zero() {
+    let deadline = if timeout.is_zero() {
         None
     } else {
-        Some(Instant::now() + ctx.timeout)
+        Some(Instant::now() + timeout)
     };
     let killed = loop {
         if abort::aborted(ctx.gen) {
@@ -2625,7 +2663,7 @@ fn run_with_limits(
         }
         if let Some(d) = deadline {
             if Instant::now() >= d {
-                break Some(format!("执行超时（超过 {} 秒）", fmt_secs(ctx.timeout)));
+                break Some(format!("执行超时（超过 {} 秒）", fmt_secs(timeout)));
             }
         }
         match child.try_wait() {
@@ -2818,6 +2856,94 @@ fn run_script(
         no_console_window(&mut cmd);
     }
     run_with_limits(&mut cmd, "脚本", ctx)
+}
+
+/// 弹一个系统输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
+///
+/// 输入框不套动作超时（`run_with_deadline` 传 0）：人填多久都行，但「停止执行」仍能杀掉进程。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn prompt_input(prompt: &str, default: &str, ctx: &Ctx) -> Result<String, String> {
+    let out = prompt_dialog(prompt, default, ctx)?;
+    let text = out.stdout.trim_end_matches(['\r', '\n']).to_string();
+    if out.killed.is_some() || out.exit_code.is_some_and(|c| c != 0) {
+        return Err("已取消输入".into());
+    }
+    if text.is_empty() {
+        return Err("输入为空（已取消）".into());
+    }
+    Ok(text)
+}
+
+#[cfg(all(target_os = "windows", feature = "automation"))]
+fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, String> {
+    let escape = |s: &str| s.replace('\'', "''");
+    let script = format!(
+        "Add-Type -AssemblyName Microsoft.VisualBasic\n\
+         $r = [Microsoft.VisualBasic.Interaction]::InputBox('{}', 'Kada', '{}')\n\
+         [Console]::Out.Write($r)\n",
+        escape(prompt),
+        escape(default)
+    );
+    let path = std::env::temp_dir().join(format!(
+        "kada_prompt_{}_{}.ps1",
+        std::process::id(),
+        ctx.next_step_id()
+    ));
+    let mut bytes = vec![0xEF, 0xBB, 0xBF];
+    bytes.extend_from_slice(script.as_bytes());
+    std::fs::write(&path, bytes).map_err(|e| format!("写输入框脚本失败: {e}"))?;
+    let mut cmd = std::process::Command::new("powershell.exe");
+    cmd.arg("-NoProfile")
+        .arg("-NonInteractive")
+        .arg("-STA")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-File")
+        .arg(&path);
+    no_console_window(&mut cmd);
+    let out = run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO);
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
+#[cfg(all(target_os = "macos", feature = "automation"))]
+fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, String> {
+    let escape = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    let script = format!(
+        "text returned of (display dialog \"{}\" default answer \"{}\" with title \"Kada\")",
+        escape(prompt),
+        escape(default)
+    );
+    let mut cmd = std::process::Command::new("osascript");
+    cmd.arg("-e").arg(script);
+    run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO)
+}
+
+#[cfg(all(target_os = "linux", feature = "automation"))]
+fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, String> {
+    let mut zenity = std::process::Command::new("zenity");
+    zenity
+        .arg("--entry")
+        .arg("--title=Kada")
+        .arg(format!("--text={prompt}"))
+        .arg(format!("--entry-text={default}"));
+    match run_with_deadline(&mut zenity, "输入框", ctx, Duration::ZERO) {
+        Ok(out) => Ok(out),
+        Err(e) if e.contains("失败") => {
+            let mut kdialog = std::process::Command::new("kdialog");
+            kdialog
+                .arg("--title")
+                .arg("Kada")
+                .arg("--inputbox")
+                .arg(prompt)
+                .arg(default);
+            run_with_deadline(&mut kdialog, "输入框", ctx, Duration::ZERO)
+        }
+        Err(e) => Err(e),
+    }
 }
 
 /// 把变量表序列化为 JSON 对象字符串（供脚本环境变量 `KADA_VARS` 使用）。

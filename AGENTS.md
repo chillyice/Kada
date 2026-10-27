@@ -48,7 +48,7 @@
 
 - **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：唤窗、动作执行、注入一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
 - **注入事件一律放行**（Windows `LLKHF_INJECTED`）防回环；**`Block` / `Replace` 登记 `SWALLOWED`** 连 keyup 一起吞，但**所有 keyup 仍要回调 handler**
-- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）**或**有启用的手势 / 触发角 / 边缘滚动才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`
+- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）**或**有启用的手势 / 角动作 / 边缘滚动才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`
 - **滚轮只在绑了触发键时接管**（`config_uses_wheel` → `set_wheel_enabled`）：120 累积一格、换向清零；没绑就原样放行。**边缘滚动只在贴边时旁听、不吞滚轮**（`wheel_edge`）
 - **macOS 辅助功能是运行时授权**（`AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；**媒体键走独立 `NX_SYSDEFINED` tap**
 - **Linux 不抓触摸板 / 指点杆**（抓了等于废掉整个触摸板）
@@ -91,7 +91,7 @@
 
 - **卡带必须仍是合法的 `Config` JSON**（顶层多个被忽略的 `kada_snippet` 键）——对方靠现成的「导入 → 合并」吃下，**不要另立格式 / 解析器**
 - 摘取时**剥掉 `folder`**、带上被引用的层、**不带 `settings`**
-- **市场没有服务端**：索引 = 一份可下载的静态 JSON（默认 `snippets/index.json`）；**装之前必须先预览**
+- **市场静态、发布双审**：索引 = 静态 JSON；发布本机只提示，ihomy 复检 + 人工通过；等级 0~3、法务只标记；社区索引独立文件，仅官方索引合并
 
 ### 1.10 feature 门控
 
