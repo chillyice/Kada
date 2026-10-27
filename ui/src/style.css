@@ -2420,14 +2420,10 @@ button:disabled:hover {
   min-width: 0;
 }
 
-/* 卡片内的折叠说明：贴着卡片底边，与上面的设置行用一条分隔线断开。 */
-.set-card > .hint-fold {
-  padding: 8px 14px 10px;
-  border-top: 1px solid var(--line-soft);
-}
-
-.set-card > .hint-fold > .hint:first-of-type {
-  margin-top: 6px;
+/* 卡片底部的说明行：与上面的设置行左对齐。 */
+.set-card > .hint {
+  margin: 0;
+  padding: 6px 14px 10px;
 }
 
 /* 设置卡片里按总开关显隐的一组设置行：display:contents 让子行仍按 .set-rows 直接子元素布局。 */
@@ -2729,34 +2725,6 @@ button:disabled:hover {
   color: var(--muted);
   font-size: var(--fs-sm);
   margin-top: 12px;
-}
-
-/* 长说明收进折叠块（原生 <details>，零 JS）：摊在页面上就是一堵字墙，比上面的设置项本身还长；
-   收起时只留一行标题，需要时整段可读、可选中。问号气泡留给字段级短说明（.help）。 */
-.hint-fold > summary {
-  color: var(--muted);
-  font-size: var(--fs-sm);
-  cursor: pointer;
-  list-style: none;
-  padding: 2px 0;
-  user-select: none;
-}
-
-.hint-fold > summary::-webkit-details-marker {
-  display: none;
-}
-
-.hint-fold > summary::before {
-  content: "▸ ";
-  color: var(--accent);
-}
-
-.hint-fold[open] > summary::before {
-  content: "▾ ";
-}
-
-.hint-fold > summary:hover {
-  color: var(--text);
 }
 
 .conflict-head {

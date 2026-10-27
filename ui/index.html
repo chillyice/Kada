@@ -207,11 +207,7 @@
                   <label>改为（普通改键）</label>
                   <select id="remap-to"></select>
                 </div>
-                <details class="hint-fold">
-                  <summary>这些形态分别是什么意思</summary>
-                  <p class="hint">单次键 = 单击后该键应用到下一个按键（修饰键是常见用法：「单次 Ctrl」= 下一次按键带 Ctrl；非修饰键 = 替你按住它到下一个按键）；粘滞键 = 单击锁定、再击解锁（「粘滞 Shift」连打几个大写、侧键做「按住说话」）。短按 = 快速点击输出该键（双击/三击为连击不同义）；长按 = 按住超过阈值输出该键。这些形态与普通改键互斥，都留空则用「改为」。例：CapsLock 短按 Esc、长按 Ctrl。</p>
-                  <p class="hint">切层键（长按进入层 / 长按锁定层）在「层」页签里设。</p>
-                </details>
+                <p class="hint">单次 / 粘滞 / 短按 / 长按与「改为」互斥，都留空就用「改为」；切层键在「层」页签设。</p>
               </div>
               <div class="work-view hidden" id="work-expansion">
                 <div class="editor-row">
@@ -229,7 +225,7 @@
                   <label>所属层</label>
                   <select id="edit-layer"></select>
                 </div>
-                <p class="hint">条目只在归属层被切层键打开时生效；「基础层」= 始终生效。切层键在改键里设「长按进入层 / 长按锁定层」。</p>
+                <p class="hint">条目只在归属层被切层键打开时生效；基础层始终生效。</p>
               </div>
               <div class="work-view hidden" id="layer-remap">
                 <div class="editor-row">
@@ -244,10 +240,7 @@
                   <label>长按锁定层（切换式切层，可选）</label>
                   <select id="remap-lock-layer"></select>
                 </div>
-                <details class="hint-fold">
-                  <summary>两种切层键的区别</summary>
-                  <p class="hint">「长按进入层」= 按住切层键期间该层才生效，松手退回（层内放和弦/序列得一边按住切层键一边凑键，很难按）；「长按锁定层」= 长按一下切到该层并保持生效、再长按一下退出，适合层内放和弦/序列的用法。两者与「长按」互斥。</p>
-                </details>
+                <p class="hint">「长按进入层」按住才生效；「长按锁定层」长按一下进入、再长按退出。两者与「长按」互斥。</p>
               </div>
               <div class="work-view hidden" id="layer-expansion">
                 <p class="hint">文本扩展不参与键位层：它按输入内容匹配，与当前哪一层无关。</p>
@@ -257,14 +250,14 @@
                   <label>所属层</label>
                   <select id="hotcorner-layer"></select>
                 </div>
-                <p class="hint">激活层里的触发角优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。</p>
+                <p class="hint">激活层优先、基础层兜底；同一位置按列表顺序取第一条。</p>
               </div>
               <div class="work-view hidden" id="layer-wheeledge">
                 <div class="editor-row">
                   <label>所属层</label>
                   <select id="wheeledge-layer"></select>
                 </div>
-                <p class="hint">激活层里的边缘滚动优先，基础层兜底；同一位置可建多条，按列表顺序取第一条命中的。</p>
+                <p class="hint">激活层优先、基础层兜底；同一位置按列表顺序取第一条。</p>
               </div>
             </div>
 
@@ -289,11 +282,7 @@
                   <button id="add-layer-btn" class="ghost">＋ 新建层</button>
                 </div>
                 <div id="layer-list" class="layer-list"></div>
-                <details class="hint-fold" open>
-                  <summary>层是怎么生效的</summary>
-                  <p class="hint">层让同一按键在不同状态下干不同事：切层键把某层「打开」后，该层的快捷键 / 改键才生效；归属「基础层」的条目始终生效。切层键 = 改键里设「长按进入层」（按住期间生效）或「长按锁定层」（长按切换、保持生效，层内放和弦 / 序列用这种）。</p>
-                  <p class="hint">鼠标操作 / 触发角 / 边缘滚动也能归属到层：激活层里的条目优先，基础层条目兜底（与快捷键同一口径）。条目自己的「层」下拉在编辑页的「层」页签里。</p>
-                </details>
+                <p class="hint">条目只在归属层被切层键打开时生效，基础层始终生效；切层键在改键的「层」页签里设。</p>
               </section>
             </div>
           </div>
@@ -353,7 +342,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">界面语言</span>
-                      <span class="set-sub">切换后界面会重新加载（语言只记在本机，不随配置同步）</span>
+                      <span class="set-sub">切换后界面会重新加载</span>
                     </span>
                     <select id="set-lang">
                       <option value="system">跟随系统</option>
@@ -383,11 +372,7 @@
                     <input type="checkbox" id="set-trigger-toast" class="toggle" />
                   </label>
                 </div>
-                <details class="hint-fold">
-                  <summary>这两个浮窗的细节</summary>
-                  <p class="hint">「输入状态悬浮指示」显示当前激活层与注入中的修饰键（<strong>按住</strong> / <strong>粘滞</strong> / <strong>单次</strong>），没有东西生效时自动消失；托盘图标右键悬停也能看到同一句摘要。关掉它就只剩托盘提示。长按锁定层会一直挂着这条指示——这是有意的，锁定层生效期间基础层按键会被遮蔽，「看不见状态」正是最容易被误判成「按键失灵」的时候。</p>
-                  <p class="hint">「快捷键提示框」把所有<strong>已启用</strong>的快捷键按层列出来（基础层在最上）。<strong>鼠标放上去会让位</strong>（穿透 + 变淡，不挡住你正点的页面），停在上面 2 秒才恢复可交互；<strong>拖面板任意位置</strong>移动；<strong>滚轮调大小</strong>、<strong>Ctrl+滚轮调透明度</strong>（缩小字号能一屏塞下更多条目）；列表太长时 <strong>Shift+滚轮</strong> 或拖滚动条滚动。位置、大小、透明度都随配置保存，下次启动还在原地。点窗口上的 × 关掉后，回到本页重新勾选、或点托盘图标的「快捷键提示」都能再打开。</p>
-                </details>
+                <p class="hint">状态条显示当前层与注入中的修饰键；提示框可拖动，滚轮调大小、Ctrl+滚轮调透明度，鼠标放上去会变淡穿透。</p>
               </section>
 
               <!-- 通用行为 -->
@@ -411,7 +396,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">全屏程序里暂停</span>
-                      <span class="set-sub">前台是全屏程序（游戏 / 视频 / F11）时所有触发（快捷键 / 改键 / 文本扩展 / 手势）一律不生效，不吞键；退出全屏自动恢复。仅 Windows 判定</span>
+                      <span class="set-sub">前台全屏（游戏 / 视频 / F11）时所有触发不生效、不吞键；仅 Windows</span>
                     </span>
                     <input type="checkbox" id="set-ignore-fullscreen" class="toggle" />
                   </label>
@@ -432,7 +417,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">全局排除程序</span>
-                      <span class="set-sub">命中的程序里所有触发都不生效：快捷键 / 改键 / 文本扩展 / 鼠标手势一律放行，不吞键也不执行动作（手势仍按未命中回放右键）。每行一个进程名，支持 * / ? 通配、不区分大小写；与「手势排除程序」独立。</span>
+                      <span class="set-sub">命中的程序里所有触发放行、不吞键；每行一个进程名，支持 * / ? 通配，不区分大小写</span>
                     </span>
                     <textarea id="set-exclude-apps" rows="4" spellcheck="false" placeholder="game.exe&#10;*remote*desktop*"></textarea>
                   </label>
@@ -475,12 +460,7 @@
                     </select>
                   </label>
                 </div>
-                <details class="hint-fold">
-                  <summary>超时与注入的细节</summary>
-                  <p class="hint">命令 / 脚本动作超过「动作超时」会被连子进程一起强制终止并记进消息中心（脚本挂住会永久占住这条触发的执行线程，所以默认 30 秒）。想中止正在跑的动作，去「消息」页的「执行记录」里点那条记录的「执行中」状态右侧的 ■ 停止图标。</p>
-                  <p class="hint">「序列等待」/「和弦等待」超时都会把被吞掉的键原样补回（序列照常打出来、和弦按单个普通键输入）。默认 1000 毫秒：手慢嫌不够就调大，误触嫌等太久就调小；填 0 = 不限时（一直等到断链 / 成员抬起）。</p>
-                  <p class="hint">「文本注入」默认「剪贴板粘贴」整段一次到位、中文最稳，但会短暂占用并恢复剪贴板，且被吞粘贴的程序（多数游戏、部分终端）无视；「逐字直发」逐个字符合成按键、不经过剪贴板，专治吞粘贴的目标程序，代价是长文本逐字送、极速输入个别程序可能丢字。</p>
-                </details>
+                <p class="hint">超时会把吞掉的键原样补回，命令 / 脚本超时则整棵进程树强制终止；文本注入默认剪贴板粘贴，目标程序吞粘贴时改用逐字直发。</p>
               </section>
 
               <!-- 鼠标操作（规划 7.2-MG）：新鼠标功能总开关。
@@ -492,7 +472,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">启用鼠标操作</span>
-                      <span class="set-sub">默认关闭；关掉后鼠标手势 / 右键圈选截图 / 触发角 / 边缘滚动一律不可用（入口隐藏、行为不生效），配置保留</span>
+                      <span class="set-sub">默认关闭；关掉后所有鼠标功能不可用（配置保留）</span>
                     </span>
                     <input type="checkbox" id="set-experimental" class="toggle" />
                   </label>
@@ -500,35 +480,35 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">手势排除程序</span>
-                      <span class="set-sub">这些程序里不接管右键（每行一个进程名，支持 <code>*</code> / <code>?</code> 通配、不区分大小写）；游戏 / CAD / 远程桌面这类右键拖拽本是正常操作的程序建议加上</span>
+                      <span class="set-sub">这些程序里不接管右键；每行一个进程名，支持 <code>*</code> / <code>?</code> 通配，不区分大小写</span>
                     </span>
                     <textarea id="set-gesture-exclude" rows="3" spellcheck="false" placeholder="photoshop.exe&#10;*blender*"></textarea>
                   </label>
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">右键圈选截图（依赖 Snipaste）</span>
-                      <span class="set-sub">按住右键绕一圈，右键别松再点一下左键确认，直接调出 Snipaste 的截图界面。<strong>框选与标注都由你自己完成</strong>：矩形 / 椭圆 / 箭头等标注在 Snipaste 里画；它没在跑时给一条提示，不做任何裁剪。只画圈不截图，也不需要配置手势条目。目前仅 Windows。</span>
+                      <span class="set-sub">按住右键绕一圈，别松再点左键，调出 Snipaste 截图界面；仅 Windows</span>
                     </span>
                     <input type="checkbox" id="set-gesture-screenshot" class="toggle" />
                   </label>
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">起手距离</span>
-                      <span class="set-sub">光标移动超过这个距离才算开始画手势（像素，1~50）；调大能防手抖误触</span>
+                      <span class="set-sub">超过这个距离才开始画手势（像素，1~50）；调大防手抖</span>
                     </span>
                     <input type="number" id="set-gesture-start-distance" min="1" max="50" step="1" />
                   </label>
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">停顿超时</span>
-                      <span class="set-sub">画到一半停住超过这么久就放弃这次手势、按未命中回放右键（毫秒，500~3000）</span>
+                      <span class="set-sub">停住超过这么久就放弃本次手势、回放右键（毫秒，500~3000）</span>
                     </span>
                     <input type="number" id="set-gesture-timeout" min="500" max="3000" step="50" />
                   </label>
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">识别灵敏度</span>
-                      <span class="set-sub">一段方向至少移动这么多像素才被识别（4~40）；数值越小越灵敏，轻轻一划就成段，也更容易把手抖当成方向</span>
+                      <span class="set-sub">一段方向至少移动这么多像素才成立（4~40）；越小越灵敏</span>
                     </span>
                     <input type="number" id="set-gesture-min-segment" min="4" max="40" step="1" />
                   </label>
@@ -569,14 +549,7 @@
                   </label>
                   </div>
                 </div>
-                <details class="hint-fold">
-                  <summary>鼠标操作怎么用</summary>
-                  <p class="hint">总开关打开后到「<strong>快捷键</strong>」页新增条目：模式下拉里可选「<strong>鼠标操作</strong>」（按住右键画轨迹，按方向串匹配）、「<strong>触发角</strong>」（光标碰到屏幕四角）和「<strong>边缘滚动</strong>」（光标贴屏幕边缘时滚动滚轮）。触发角 / 边缘滚动的编辑页里点「位置：…」展开模拟显示器，选完自动收起，再在下面配动作。</p>
-                  <p class="hint">鼠标手势的方向串用 <code>U</code> 上 / <code>D</code> 下 / <code>L</code> 左 / <code>R</code> 右，斜向写两个字母如 <code>UR</code> 右上；<strong>多段用逗号分隔</strong>：<code>D,R</code> = 先下再右（两段），<code>DR</code> = 右下斜向（一段）。</p>
-                  <p class="hint">没匹配上手势时右键照常弹菜单（被吞掉的右键会补回来），只是会晚十几毫秒。手势开着时<strong>右键归手势</strong>：鼠标操作录制录不到右键，右键单击也会晚一点点。</p>
-                  <p class="hint">全屏程序（游戏 / 视频 / F11）和上图排除列表里的程序里一律让路：手势不接管右键，触发角 / 边缘滚动也不触发。</p>
-                  <p class="hint"><strong>右键圈选截图依赖 Snipaste</strong>：确认后自动调出 Snipaste 的截图界面，框选范围与矩形 / 椭圆 / 箭头等标注都由你自己画；Kada 不裁剪、不写剪贴板。没装或没运行 Snipaste 时只会提示一句，不会动屏幕内容。</p>
-                </details>
+                <p class="hint">在快捷键页新增条目选「鼠标操作 / 触发角 / 边缘滚动」；方向串 U 上 D 下 L 左 R 右，多段用逗号分隔（如 D,R）。</p>
               </section>
 
               <!-- 复制快捷菜单（双击 Ctrl+C）已按要求删除：设置卡与运行时触发一并下线。 -->
@@ -592,7 +565,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">识别厂商接管的按键</span>
-                      <span class="set-sub">探测有没有会「抢走按键」的厂商软件；配置用到鼠标键时给一条提示</span>
+                      <span class="set-sub">探测会「抢走按键」的厂商软件；仅配置用到鼠标键时提示</span>
                     </span>
                     <input type="checkbox" id="set-input-env" class="toggle" />
                   </label>
@@ -609,13 +582,7 @@
                     <div id="hidpp-report" class="env-line">罗技设备：点「查看罗技设备」扫描；被厂商软件接管的侧键可直接点「解锁侧键」。</div>
                   </div>
                 </div>
-                <details class="hint-fold">
-                  <summary>这是干什么的</summary>
-                  <p class="hint">有些厂商软件（Logi Options+ / G HUB / 雷云 等）会把某个按键<strong>转交给它自己</strong>：设备从此不再把这个键放进标准报文，系统的输入栈里根本没有这次按下——Kada 的钩子收不到，任何底层工具都收不到。这类接管只影响<strong>被转交的键</strong>（常见是鼠标侧键 / 额外键），键盘快捷键不受影响。</p>
-                  <p class="hint">认出这类软件后，Kada 会在「消息 → 冲突」里给一条提示（只在你的配置<strong>真用到鼠标键</strong>时才提示，避免打扰）。要让它放行：在厂商软件里把该按键设为「无操作 / 默认功能」，或直接退出它。详见「帮助 → 为什么按了没反应」。</p>
-                  <p class="hint"><strong>罗技鼠标可以直接解锁：</strong>「解锁侧键」会通过罗技 HID++ 把中键 / 侧键的「转交」关掉，按键回到标准报文。它<strong>不接管事件流</strong>——Kada 退出后按键仍是系统原生行为，延迟也不变；只在 Kada 运行期间保持（设备重连或厂商软件重启后会自动再关一次）。手势键等其它控件不动，免得破坏厂商软件的设置。</p>
-                  <p class="hint">这个开关关掉后<strong>完全不再探测</strong>（提示与检测都停）；「重新检测」用于退出厂商软件后立刻刷新结论（结论本身有 3 秒缓存）。</p>
-                </details>
+                <p class="hint">厂商软件会把某些键（常见是鼠标侧键）转交给它自己，Kada 收不到；在厂商软件里设为「无操作」或退出即放行。</p>
               </section>
 
               <!-- 提权窗口注入：前台是提权进程时，把注入交给一个按需拉起的提权进程去做
@@ -638,12 +605,7 @@
                 <div class="set-body">
                   <div id="elevated-report" class="set-status">正在检测…</div>
                 </div>
-                <details class="hint-fold">
-                  <summary>这是干什么的</summary>
-                  <p class="hint">Windows 有一条规则（UIPI）：低权限程序不能往<strong>更高权限</strong>的窗口发输入。所以 Kada 在「以管理员身份运行」的程序里注入会被系统拦掉——表现是「快捷键触发了，那个窗口里却没反应」（抓取没问题，是<strong>注入</strong>进不去）。</p>
-                  <p class="hint">打开这个开关后，点「启动提权进程」会拉起一个<strong>提权运行的 Kada</strong>（同一个程序、另一个模式，不建窗口也不读配置），注入改由它重放。首次会弹一次 UAC 授权；它平时不运行——你关掉开关或退出 Kada，它就跟着退出，不留在系统里。</p>
-                  <p class="hint">边界（如实说）：「安全桌面」——UAC 授权框本身、锁屏、登录界面——<strong>这套东西也进不去</strong>，这是系统设计如此。另外剪贴板方式输文本时，读回剪贴板的「转大小写」动作在提权窗口里仍不工作（读得到、写不回去）；改用「逐字符直发」注入方式即可。</p>
-                </details>
+                <p class="hint">低权限进程无法往管理员窗口注入（UIPI）；打开开关并启动提权进程即可，安全桌面（UAC / 锁屏）仍进不去。</p>
               </section>
 
               <!-- 配置与数据 -->
@@ -667,14 +629,14 @@
                   <div class="set-row">
                     <span class="set-main">
                       <span class="set-name">载入示例配置</span>
-                      <span class="set-sub">把内置示例合并进来（含窗口 / 搜索 / 剪贴板 / 文件 / 延时等常用动作；只增不删、不碰本机设置）</span>
+                      <span class="set-sub">把内置示例合并进来（只增不删、不动本机设置）</span>
                     </span>
                     <button id="load-sample" title="示例会合并进来；「示例」文件夹下的条目可删掉该文件夹整体清除">载入示例</button>
                   </div>
                   <div class="set-row set-row-merged" id="snippet-index-row">
                     <span class="set-main">
                       <span class="set-name">卡带市场</span>
-                      <span class="set-sub">索引地址与市场入口：在左栏「卡带市场」里浏览、搜索并一键安装（装之前先给你看清里面是什么）</span>
+                      <span class="set-sub">索引地址；在左栏「卡带市场」浏览、搜索并安装</span>
                     </span>
                     <div class="set-controls">
                       <input
@@ -700,13 +662,7 @@
                     </div>
                   </div>
                 </div>
-                <details class="hint-fold">
-                  <summary>导入与分享的规则</summary>
-                  <p class="hint">改动即时保存并生效。导入可选「合并」（只新增，触发键撞车的条目跳过、本机设置不动）或「替换」（整份覆盖，导入前自动留档），无效配置会被忽略并逐条列出。</p>
-                  <p class="hint">分享给别人：列表里选中若干条目（行内 ⋯ / 右键 → <strong>导出为卡带</strong>），或文件夹行 ⋯ → <strong>导出该文件夹为卡带</strong>，得到一个只含这几条的 JSON 文件——对方用这里的「导入配置 → 合并」就能加进来，不会覆盖他自己的配置。<strong>卡带</strong>就是一小组可分享的配置条目（快捷键 / 改键 / 文本扩展，连带它们用到的层），不含设置、也不含文件夹分组（文件夹是本机的）。</p>
-                  <p class="hint">卡带市场没有服务端：索引就是一个放在网上、能下载到的 JSON 文件，索引里每条再指向一个卡带文件。想收录自己的卡带，把导出的卡带文件按索引格式加进索引即可（内置索引在本仓库 <code>snippets/</code>，由 <code>scripts/build-snippet-index.mjs</code> 生成）。</p>
-                  <p class="hint"><strong>同步存档</strong>：选一个文件夹（如你的 OneDrive 文件夹），之后每次配置落盘都会在那文件夹里自动存一份 <code>kada-config.json</code>（保留一份 <code>.bak</code>）。换机器时在新机器的设置里选<strong>同一个文件夹</strong>，点「从存档恢复」即可把配置搬过去（可选合并或替换）。走的是本地文件夹、不登录任何账号——云端上传下载由 OneDrive 客户端自己负责。</p>
-                </details>
+                <p class="hint">导入可选合并（只增不删、设置不动）或替换（整份覆盖，先自动留档）；同步存档每次落盘都会在所选文件夹留一份副本。</p>
               </section>
 
               <!-- 软件更新 -->
@@ -719,7 +675,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">更新源</span>
-                      <span class="set-sub">国内默认走 ihomy 镜像（服务器每天从 GitHub 同步）；能直连 GitHub 的可切换</span>
+                      <span class="set-sub">国内默认走 ihomy 镜像；能直连 GitHub 可切换</span>
                     </span>
                     <select id="set-update-source">
                       <option value="ihomy">ihomy 镜像（默认）</option>
@@ -729,7 +685,7 @@
                   <label class="set-row">
                     <span class="set-main">
                       <span class="set-name">自动更新</span>
-                      <span class="set-sub">发现新版本后自动下载；电脑长时间空闲时自动安装（免安装版还会在下次启动时安装）</span>
+                      <span class="set-sub">发现新版本后自动下载，长时间空闲时自动安装</span>
                     </span>
                     <input type="checkbox" id="set-auto-update" class="toggle" />
                   </label>
@@ -738,7 +694,7 @@
                     <button id="download-update" class="primary">下载</button>
                     <button id="install-update" class="primary hidden">安装</button>
                   </div>
-                  <p class="set-note">检查版本是自动的（启动后与每 24 小时各一次）；更新包从所选源获取并校验签名。勾了「自动更新」才会自动下载，并在电脑长时间空闲时自动安装（免安装版另在下次启动时安装）；没勾则只能在这里手动点「下载」「安装」——安装会退出并重启应用。</p>
+                  <p class="set-note">启动后每 24 小时自动检查一次；勾了「自动更新」才会自动下载，长时间空闲时自动安装。</p>
                 </div>
               </section>
             </div>
