@@ -96,7 +96,7 @@ type KeysMode = "tap" | "press" | "release";
 type SendPayload =
   | { kind: "keys"; keys: string[] }
   | { kind: "text"; text: string };
-type Action =
+type ActionBase =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
   | { type: "command"; shell: Shell; command: string; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
@@ -118,6 +118,9 @@ type Action =
   | { type: "group"; name?: string; actions: Action[] }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
+/** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
+type DisabledAction = { type: "disabled"; action: Action };
+type Action = ActionBase | DisabledAction;
 type Folder = { id: string; name: string; parent?: string | null };
 type Layer = { id: string; name: string; mark?: string | null };
 type ShortcutItem = {
@@ -550,9 +553,10 @@ type RunRecord = {
 };
 
 // ---- 动作类型预设 ----
-const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
+// 「设置变量」不是独立类型：它是文本操作的子操作（见 `actionSubtypeSelect`），
+// 数据里仍是 `ask` 形态（后端 `Action::Ask`），老配置与卡带照旧能读。
+const ACTION_TYPES: { value: ActionBase["type"]; label: string }[] = [
   { value: "text", label: tr("文本操作") },
-  { value: "ask", label: tr("设置变量") },
   { value: "command", label: tr("执行命令") },
   { value: "script", label: tr("执行脚本") },
   { value: "app", label: tr("应用操作") },
@@ -571,17 +575,19 @@ const ACTION_TYPES: { value: Action["type"]; label: string }[] = [
 // 已从动作类型下拉移除的旧类型：老配置里还能看见、还能改类型，但不再提供新建入口。
 // （`clipboard` / `transform` 是用户要求删除的；`send_to` 并入「操作系统」、`window` 并入「应用」、
 //   `brightness` 并入「操作系统」。这三类在加载时已被后端迁移，这里留标签只为执行记录 / 防御性渲染。）
-const REMOVED_TYPE_LABELS: Partial<Record<Action["type"], string>> = {
+const REMOVED_TYPE_LABELS: Partial<Record<ActionBase["type"], string>> = {
   clipboard: tr("剪贴板（已移除）"),
   transform: tr("算法（已移除）"),
   capture: tr("截图（已移除）"),
   send_to: tr("后台发送"),
   window: tr("窗口操作"),
   brightness: tr("亮度"),
+  // 「设置变量」在类型下拉里挂在文本操作下面，选中它时标签要说得清。
+  ask: tr("文本操作 · 设置变量"),
 };
 
 // 动作类型图标（收起态展示用）。
-const ACTION_ICONS: Record<Action["type"], string> = {
+const ACTION_ICONS: Record<ActionBase["type"], string> = {
   text: "✏️",
   ask: "📝",
   command: "💻",
@@ -608,9 +614,9 @@ const ACTION_ICONS: Record<Action["type"], string> = {
 const ACTION_TYPE_LABELS = {
   ...Object.fromEntries(ACTION_TYPES.map((t) => [t.value, t.label])),
   ...REMOVED_TYPE_LABELS,
-} as Record<Action["type"], string>;
+} as Record<ActionBase["type"], string>;
 
-function actionTypeLabel(t: Action["type"]): string {
+function actionTypeLabel(t: ActionBase["type"]): string {
   return ACTION_TYPE_LABELS[t];
 }
 
@@ -623,10 +629,23 @@ function actionTypeChoices(includeTool = false): typeof ACTION_TYPES {
   return list;
 }
 
+/** 禁用标记（`{type:"disabled", action}`）：界面一律作用在被包住的那条动作上。 */
+function isDisabled(a: Action): a is DisabledAction {
+  return a.type === "disabled";
+}
+
+function unwrapAction(a: Action): ActionBase {
+  let cur: Action = a;
+  while (cur.type === "disabled") cur = cur.action;
+  return cur;
+}
+
 // ---- 变量流向（可视化编排的数据流标签） ----
 // 该动作会把结果写进哪个变量（没有则空）。
 function actionVarWrites(a: Action): string[] {
   switch (a.type) {
+    case "disabled":
+      return actionVarWrites(a.action);
     case "command":
     case "script":
     case "ask":
@@ -661,6 +680,8 @@ const VAR_DYNAMIC = new Set(["date", "time", "clipboard"]);
 function actionVarReads(a: Action): string[] {
   const texts: string[] = [];
   switch (a.type) {
+    case "disabled":
+      return actionVarReads(a.action);
     case "text":
       texts.push(a.text);
       break;
@@ -968,7 +989,7 @@ function newMouseOp(op: MouseOp["op"]): MouseOp {
   return { op: "move", dx: 100, dy: 0 };
 }
 
-function newAction(type: Action["type"]): Action {
+function newAction(type: ActionBase["type"]): ActionBase {
   switch (type) {
     case "text":
       return { type: "text", text: "", mode: "input", masked: false };
@@ -1080,6 +1101,9 @@ function appHasContent(o: AppOperation): boolean {
 
 function actionHasContent(a: Action): boolean {
   switch (a.type) {
+    // 禁用的动作即使还是空壳也留着：用户是「先禁掉」而不是「删掉」。
+    case "disabled":
+      return true;
     case "text":
       return a.mode === "input" ? a.text.trim().length > 0 : true;
     case "command":
@@ -1328,6 +1352,8 @@ function mouseSummary(op: MouseOp): string {
 
 function actionSummary(a: Action): string {
   switch (a.type) {
+    case "disabled":
+      return trt`已禁用：${actionSummary(a.action)}`;
     case "text":
       if (a.mode === "to_upper") return tr("文本转大写（选中/剪贴板）");
       if (a.mode === "to_lower") return tr("文本转小写（选中/剪贴板）");
@@ -1408,6 +1434,7 @@ function actionSummary(a: Action): string {
 // 收起态显示的描述：优先用用户填写的描述，否则回退到自动生成的动作摘要。
 // 分组没有描述字段，用户填的「分组名称」就是标题。
 function actionDescription(a: Action): string {
+  if (a.type === "disabled") return trt`已禁用：${actionDescription(a.action)}`;
   if (a.type === "group") {
     const n = a.name?.trim();
     return n ? trt`${n} · ${a.actions.length} 个动作` : actionSummary(a);
@@ -2275,7 +2302,13 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
   const name = el("span", "row-name", s.name || tr("（未命名）"));
 
   const more = moreButton((btn) => openRowMenu(btn, li, s));
-  li.append(kindIcon("shortcut"), trig, name, more);
+  li.append(
+    kindIcon("shortcut"),
+    trig,
+    name,
+    runButton(s.actions, s.name?.trim() || shortcutLabel(s)),
+    more,
+  );
   return li;
 }
 
@@ -2355,6 +2388,7 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
     kindIcon("gesture"),
     trig,
     el("span", "row-name", g.name?.trim() || tr("（未命名）")),
+    runButton(g.actions, g.name?.trim() || g.pattern || tr("鼠标操作")),
     moreButton((btn) => openRowMenu(btn, li, g)),
   );
   return li;
@@ -2412,6 +2446,7 @@ function hotCornerRow(r: HotCornerRule, idx: number, depth: number): HTMLElement
     kindIcon("hotcorner"),
     trig,
     el("span", "row-name", r.name?.trim() || tr("（未命名）")),
+    runButton(r.actions, r.name?.trim() || spotLabel(r.spot)),
     moreButton((btn) => openRowMenu(btn, li, r)),
   );
   return li;
@@ -2435,6 +2470,7 @@ function wheelEdgeRow(r: WheelEdgeRule, idx: number, depth: number): HTMLElement
     kindIcon("wheeledge"),
     trig,
     el("span", "row-name", r.name?.trim() || tr("（未命名）")),
+    runButton(r.actions, r.name?.trim() || spotLabel(r.edge)),
     moreButton((btn) => openRowMenu(btn, li, r)),
   );
   return li;
@@ -3206,6 +3242,21 @@ function moreButton(onClick: (btn: HTMLButtonElement) => void): HTMLButtonElemen
   b.addEventListener("click", (e) => {
     e.stopPropagation();
     onClick(b);
+  });
+  return b;
+}
+
+// 行内「执行」按钮（⋯ 左边）：把这条条目的动作串直接跑一遍。
+// 没有动作串的条目（改键 / 文本扩展）不出这个按钮。
+function runButton(actions: Action[], label: string): HTMLButtonElement {
+  const b = el("button", "row-more row-run") as HTMLButtonElement;
+  b.title = tr("执行");
+  b.setAttribute("aria-label", tr("执行"));
+  b.innerHTML =
+    '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>';
+  b.addEventListener("click", (e) => {
+    e.stopPropagation();
+    void runActions(actions, label);
   });
   return b;
 }
@@ -4161,8 +4212,8 @@ function onPointerUp(e: PointerEvent) {
       clearActionDropIndicators();
       if (res) applyActionDrop(list, index, res.target);
     } else {
-      // 未拖拽：单击手柄 → 切换展开/收起
-      const a = list[index];
+      // 未拖拽：单击手柄 → 切换展开/收起（按动作本体记，禁用壳已剥掉）
+      const a = unwrapAction(list[index]);
       if (collapsedActions.has(a)) collapsedActions.delete(a);
       else collapsedActions.add(a);
     }
@@ -4768,15 +4819,18 @@ function switchDraftKind(kind: ListKind) {
 // 标题行的执行按钮（只有快捷键会出现）：把当前草稿的动作串当一次触发跑掉（跑草稿 =
 // 保存前就能验证）。改键 / 文本扩展没有动作串，按钮本身不出现（syncEntry 里隐藏）。
 async function runCurrentEntry() {
-  if (!draft || !draft.actions.length) {
+  if (!draft) return;
+  await runActions(draft.actions, draft.name?.trim() || shortcutLabel(draft));
+}
+
+// 行内「执行」按钮与编辑页的「执行」共用这一支：直接把动作串丢给壳层跑一遍。
+async function runActions(actions: Action[], name: string) {
+  if (!actions.length) {
     toast(tr("还没有动作：先在「动作」页签添加"));
     return;
   }
   try {
-    await invoke("run_entry", {
-      actions: draft.actions,
-      name: draft.name?.trim() || shortcutLabel(draft),
-    });
+    await invoke("run_entry", { actions, name });
     toast(tr("已开始执行（结果见「消息」页）"));
   } catch (err) {
     toast(trt`执行失败: ${err}`);
@@ -5080,12 +5134,13 @@ async function saveRemapDetail(): Promise<boolean> {
     item.enabled = cfg.remaps[selected].enabled;
     cfg.remaps[selected] = item;
   }
-  remapDraft = null; // 改键保存后关闭编辑页（原行为）
+  // 保存后留在编辑页（草稿继续可改）：与快捷键同行为，别把用户刚存的条目关掉。
   draftNew = false;
-  selected = null;
-  draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow(cfg.remaps.indexOf(item), "remap");
+  selected = cfg.remaps.indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "remap");
   return ok;
 }
 
@@ -5111,12 +5166,13 @@ async function saveExpansionDetail(): Promise<boolean> {
     item.enabled = cfg.expansions[selected].enabled;
     cfg.expansions[selected] = item;
   }
-  expansionDraft = null; // 文本扩展保存后关闭编辑页（原行为）
+  // 保存后留在编辑页（与快捷键同行为）。
   draftNew = false;
-  selected = null;
-  draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow(cfg.expansions.indexOf(item), "expansion");
+  selected = cfg.expansions.indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "expansion");
   return ok;
 }
 
@@ -5142,12 +5198,13 @@ async function saveGestureDetail(): Promise<boolean> {
     item.enabled = list[selected].enabled;
     list[selected] = item;
   }
-  gestureDraft = null; // 鼠标操作保存后关闭编辑页（与改键 / 文本扩展同行为）
+  // 保存后留在编辑页（与快捷键同行为）。
   draftNew = false;
-  selected = null;
-  draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow((cfg.gestures ?? []).indexOf(item), "gesture");
+  selected = (cfg.gestures ?? []).indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "gesture");
   return ok;
 }
 
@@ -5165,12 +5222,13 @@ async function saveHotCornerDetail(): Promise<boolean> {
     item.enabled = list[selected].enabled;
     list[selected] = item;
   }
-  hotcornerDraft = null;
+  // 保存后留在编辑页（与快捷键同行为）。
   draftNew = false;
-  selected = null;
-  draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow((cfg.hot_corners ?? []).indexOf(item), "hotcorner");
+  selected = (cfg.hot_corners ?? []).indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "hotcorner");
   return ok;
 }
 
@@ -5187,12 +5245,13 @@ async function saveWheelEdgeDetail(): Promise<boolean> {
     item.enabled = list[selected].enabled;
     list[selected] = item;
   }
-  wheeledgeDraft = null;
+  // 保存后留在编辑页（与快捷键同行为）。
   draftNew = false;
-  selected = null;
-  draftBaseline = null;
   const ok = await save();
-  if (ok) flashRow((cfg.wheel_edges ?? []).indexOf(item), "wheeledge");
+  selected = (cfg.wheel_edges ?? []).indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "wheeledge");
   return ok;
 }
 
@@ -5495,14 +5554,16 @@ function renderActions(s: { actions: Action[]; triggers?: string[] }, start?: st
 // 递归把某个动作列表的所有动作标记为收起（打开已有多动作的快捷键时用）。
 function collapseAllActions(actions: Action[]) {
   for (const a of actions) {
-    collapsedActions.add(a);
-    if (a.type === "if") {
-      collapseAllActions(a.then);
-      collapseAllActions(a.otherwise);
-    } else if (a.type === "parallel") {
-      collapseAllActions(a.actions);
-    } else if (a.type === "group") {
-      collapseAllActions(a.actions);
+    // 收起状态按「动作本体」记（禁用壳已剥掉），与 flowStep 查找的 key 一致。
+    const act = unwrapAction(a);
+    collapsedActions.add(act);
+    if (act.type === "if") {
+      collapseAllActions(act.then);
+      collapseAllActions(act.otherwise);
+    } else if (act.type === "parallel") {
+      collapseAllActions(act.actions);
+    } else if (act.type === "group") {
+      collapseAllActions(act.actions);
     }
   }
 }
@@ -5522,9 +5583,12 @@ function flowTerminator(kind: "start" | "end", main: string, sub?: string): HTML
 // 单个流程节点：左侧时间线脊柱（序号圆点）+ 右侧动作卡片。
 // 拖拽命中计算用：把「所在列表 + 下标」直接挂在卡片元素上（非序列化属性）。
 function flowStep(a: Action, i: number, actions: Action[], rerender: () => void): HTMLElement {
-  const collapsed = collapsedActions.has(a);
-  const step = el("div", `flow-step type-${a.type}`);
-  const row = el("div", "action-row" + (collapsed ? " collapsed" : ""));
+  // 禁用的动作外面套了一层壳：编辑与展示一律落在里面那条上，开关只动壳。
+  const off = isDisabled(a);
+  const act = unwrapAction(a);
+  const collapsed = collapsedActions.has(act);
+  const step = el("div", `flow-step type-${act.type}` + (off ? " is-off" : ""));
+  const row = el("div", "action-row" + (collapsed ? " collapsed" : "") + (off ? " off" : ""));
   row.dataset.idx = String(i);
   (row as unknown as { _dropList?: Action[] })._dropList = actions;
   (row as unknown as { _dropIndex?: number })._dropIndex = i;
@@ -5534,37 +5598,40 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   dot.title = tr("拖动排序 / 嵌套；点击展开或收起");
   rail.append(dot);
 
-  // 第一行：拖动手柄 + 图标 + 类型名 + 标题（描述） + 变量流标签 + 删除
+  // 第一行：拖动手柄 + 图标 + 类型名 + 标题（描述） + 变量流标签 + 禁用 + 删除
   const head = el("div", "action-head");
 
-  const grip = el("span", "action-grip", "⋮⋮");
+  const grip = el("span", "action-grip");
   grip.title = tr("拖动排序 / 嵌套；点击展开或收起");
+  // 六个点的抓手：比原来的「⋮⋮」字号大一圈，命中区也一起放大（见 style.css）。
+  grip.innerHTML =
+    '<svg viewBox="0 0 12 18" aria-hidden="true" fill="currentColor"><circle cx="4" cy="4" r="1.5"/><circle cx="8" cy="4" r="1.5"/><circle cx="4" cy="9" r="1.5"/><circle cx="8" cy="9" r="1.5"/><circle cx="4" cy="14" r="1.5"/><circle cx="8" cy="14" r="1.5"/></svg>';
   head.append(grip);
 
-  const ico = el("span", "action-ico", ACTION_ICONS[a.type]);
-  ico.title = actionTypeLabel(a.type);
+  const ico = el("span", "action-ico", ACTION_ICONS[act.type]);
+  ico.title = actionTypeLabel(act.type);
   head.append(ico);
 
   // 类型名本身就是切换入口：点它弹出动作类型列表（收起态也能直接换）。
   const typePick = el("select", "action-type-name") as HTMLSelectElement;
   typePick.title = tr("点击切换动作类型");
   typePick.setAttribute("aria-label", tr("动作类型"));
-  for (const t of actionTypeChoices(a.type === "tool")) {
+  for (const t of actionTypeChoices(act.type === "tool")) {
     const o = el("option") as HTMLOptionElement;
     o.value = t.value;
     o.textContent = t.label;
     typePick.append(o);
   }
   // 已移除 / 已合并的类型仍要能在老配置里看到并改走，不给它一个空下拉。
-  if (!actionTypeChoices(a.type === "tool").some((t) => t.value === a.type)) {
+  if (!actionTypeChoices(act.type === "tool").some((t) => t.value === act.type)) {
     const o = el("option") as HTMLOptionElement;
-    o.value = a.type;
-    o.textContent = actionTypeLabel(a.type);
+    o.value = act.type;
+    o.textContent = actionTypeLabel(act.type);
     typePick.append(o);
   }
-  typePick.value = a.type;
+  typePick.value = act.type;
   typePick.addEventListener("change", () => {
-    switchActionType(a, actions, i, typePick.value as Action["type"], rerender);
+    switchActionType(act, actions, i, typePick.value as ActionBase["type"], rerender);
   });
   head.append(typePick);
 
@@ -5575,8 +5642,8 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
 
   // 变量流向标签：写出（⇒ var，绿）在前、引用（{var}，灰）在后，一眼看出数据怎么流。
   const tags = el("span", "action-vartags");
-  for (const w of actionVarWrites(a)) tags.append(el("span", "var-tag write", `⇒ ${w}`));
-  const reads = actionVarReads(a);
+  for (const w of actionVarWrites(act)) tags.append(el("span", "var-tag write", `⇒ ${w}`));
+  const reads = actionVarReads(act);
   for (const r of reads.slice(0, 3)) tags.append(el("span", "var-tag read", `{${r}}`));
   if (reads.length > 3) tags.append(el("span", "var-tag read", `+${reads.length - 3}`));
 
@@ -5584,7 +5651,7 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
     const title = el("span", "action-title", actionDescription(a));
     title.title = tr("点击展开");
     title.addEventListener("click", () => {
-      toggleActionCollapsed(a);
+      toggleActionCollapsed(act);
       rerender();
     });
     head.append(title, tags);
@@ -5592,44 +5659,57 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
     const titleInput = el("input", "action-input action-title-input") as HTMLInputElement;
     titleInput.type = "text";
     // 分组没有「标题」这一层：直接编辑分组名称（纯展示，不参与执行）。
-    if (a.type === "group") {
-      const group = a;
+    if (act.type === "group") {
+      const group = act;
       titleInput.value = group.name ?? "";
       titleInput.placeholder = tr("分组名称（可选）");
       titleInput.addEventListener("input", () => {
         group.name = titleInput.value;
       });
     } else {
-      titleInput.value = a.description ?? "";
+      titleInput.value = act.description ?? "";
       titleInput.placeholder = tr("动作标题（可选）");
       titleInput.addEventListener("input", () => {
-        a.description = titleInput.value.trim() || undefined;
+        act.description = titleInput.value.trim() || undefined;
       });
     }
+    // 禁用开关（删除键左侧）：执行时整条跳过，内容原样留着。
+    const offBtn = el("button", "action-off-btn" + (off ? " on" : "")) as HTMLButtonElement;
+    offBtn.title = off ? tr("启用这个动作") : tr("禁用这个动作（执行时跳过）");
+    offBtn.setAttribute("aria-label", offBtn.title);
+    offBtn.innerHTML = off
+      ? '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><path d="M14.12 14.12a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>'
+      : '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+    offBtn.addEventListener("click", () => {
+      actions[i] = off ? act : { type: "disabled", action: act };
+      rerender();
+    });
     const del = el("button", "action-del") as HTMLButtonElement;
     del.title = tr("删除动作");
     del.innerHTML =
       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>';
     del.addEventListener("click", () => {
       actions.splice(i, 1);
-      collapsedActions.delete(a);
+      collapsedActions.delete(act);
       rerender();
     });
-    head.append(titleInput, tags, del);
+    head.append(titleInput, tags, offBtn, del);
   }
 
   row.append(head);
 
   if (!collapsed) {
     // 第二行：子类型（类型本身由标题行的类型名切换，不再重复占一行）
-    const sub = actionSubtypeSelect(a, rerender);
+    const sub = actionSubtypeSelect(act, rerender, (next) => {
+      actions[i] = off ? { type: "disabled", action: next } : next;
+    });
     if (sub) {
       const typeRow = el("div", "action-type-row");
       typeRow.append(sub);
       row.append(typeRow);
     }
     // 第三行：其他输入内容
-    row.append(actionFields(a, rerender, { actions, idx: i }));
+    row.append(actionFields(act, rerender, { actions, idx: i }));
   }
 
   step.append(rail, row);
@@ -5676,18 +5756,24 @@ function toggleActionCollapsed(a: Action) {
 }
 
 // 换动作类型 = 换一个同位置的新动作；标题（description）能带就带。
+// 分组没有 description；两种形态互转时能带就带，带不了就落回默认。
+function convertedAction(from: ActionBase, type: ActionBase["type"]): ActionBase {
+  const next = newAction(type);
+  if (from.type !== "group" && next.type !== "group") next.description = from.description;
+  return next;
+}
+
+// `a` 是当前那条动作本体（禁用壳已剥掉），列表里那一格可能是套了壳的——壳要留着。
 function switchActionType(
-  a: Action,
+  a: ActionBase,
   actions: Action[],
   i: number,
-  type: Action["type"],
+  type: ActionBase["type"],
   rerender: () => void,
 ) {
   if (type === a.type) return;
-  const next = newAction(type);
-  // 分组没有 description；两种形态互转时能带就带，带不了就落回默认。
-  if (a.type !== "group" && next.type !== "group") next.description = a.description;
-  actions[i] = next;
+  const next = convertedAction(a, type);
+  actions[i] = actions[i]?.type === "disabled" ? { type: "disabled", action: next } : next;
   collapsedActions.delete(a);
   rerender();
 }
@@ -5749,6 +5835,7 @@ function actionListRows(el: HTMLElement): HTMLElement[] {
 
 // 某个动作内部还能落东西的列表（用于禁止把容器拖进自己肚子里）。
 function nestedActionLists(a: Action): Action[][] {
+  if (a.type === "disabled") return nestedActionLists(a.action);
   if (a.type === "if") {
     return [
       a.then,
@@ -5878,22 +5965,37 @@ function applyActionDrop(srcList: Action[], srcIndex: number, target: ActionDrop
 
 // 第二行的「子类型」筛选：随动作类型变化的二级下拉（文本方式 / Shell / OS 操作 / 应用操作 / 条件类型）。
 // 无子类型的动作（按键、延迟）返回 null。
-function actionSubtypeSelect(a: Action, rerender: () => void): HTMLElement | null {
-  if (a.type === "text") {
+// 「设置变量」不是独立动作类型，而是文本操作的第四种方式——选中它 = 换成 `ask` 形态。
+function actionSubtypeSelect(
+  a: ActionBase,
+  rerender: () => void,
+  replace?: (next: ActionBase) => void,
+): HTMLElement | null {
+  if (a.type === "text" || a.type === "ask") {
     const sel = el("select", "action-type") as HTMLSelectElement;
     for (const m of [
-      { value: "input" as TextMode, label: tr("输入文本") },
-      { value: "to_upper" as TextMode, label: tr("小写转大写（选中/剪贴板）") },
-      { value: "to_lower" as TextMode, label: tr("大写转小写（选中/剪贴板）") },
+      { value: "input", label: tr("输入文本") },
+      { value: "to_upper", label: tr("小写转大写（选中/剪贴板）") },
+      { value: "to_lower", label: tr("大写转小写（选中/剪贴板）") },
+      { value: "ask", label: tr("设置变量") },
     ]) {
       const opt = el("option") as HTMLOptionElement;
       opt.value = m.value;
       opt.textContent = m.label;
       sel.append(opt);
     }
-    sel.value = a.mode;
+    sel.value = a.type === "ask" ? "ask" : a.mode;
     sel.addEventListener("change", () => {
-      a.mode = sel.value as TextMode;
+      const v = sel.value;
+      if (v === "ask" || a.type === "ask") {
+        // 换形态要换整条动作（字段完全不同），走和类型下拉同一条路。
+        if (replace) {
+          replace(convertedAction(a, v === "ask" ? "ask" : "text"));
+          rerender();
+        }
+        return;
+      }
+      a.mode = v as TextMode;
       rerender();
     });
     return sel;
@@ -6445,46 +6547,59 @@ function sendToFields(
 }
 
 function actionFields(
-  a: Action,
+  a: ActionBase,
   rerender: () => void,
   ctx?: { actions: Action[]; idx: number },
 ): HTMLElement {
   const body = el("div", "action-body");
   if (a.type === "ask") {
-    const vline = el("div", "action-line");
-    const vname = el("input", "action-input") as HTMLInputElement;
+    // 设置变量（文本操作的第四种方式）：变量名单独一行做成「⇒ 结果写进哪」的标签块，
+    // 提示语 / 默认值并排；配色全走主题变量（CRT 主题的方角与像素字由全局规则接管）。
+    const form = el("div", "ask-form");
+
+    const varRow = el("div", "ask-var-row");
+    varRow.append(el("span", "ask-var-arrow", "⇒"));
+    const vname = el("input", "action-input ask-var-input") as HTMLInputElement;
     vname.type = "text";
     vname.value = a.var;
     vname.placeholder = tr("变量名（后面用 {变量名} 引用）");
     vname.addEventListener("input", () => {
       a.var = vname.value.trim();
     });
-    vline.append(el("span", "unit-hint", tr("存为变量")), vname);
-    body.append(vline);
+    varRow.append(vname);
+    form.append(varRow);
 
-    const pline = el("div", "action-line");
+    const grid = el("div", "ask-grid");
+
+    const pField = el("label", "ask-field") as HTMLLabelElement;
+    const pLabel = el("span", "ask-label", tr("提示语"));
     const ptext = el("input", "action-input") as HTMLInputElement;
     ptext.type = "text";
     ptext.value = a.prompt;
-    ptext.placeholder = tr("弹框提示语（支持 {变量名} 占位符）");
+    ptext.placeholder = tr("弹框里问用户的话（支持 {变量名}）");
     ptext.addEventListener("input", () => {
       a.prompt = ptext.value;
     });
-    pline.append(el("span", "unit-hint", tr("提示语")), ptext);
-    body.append(pline);
+    pField.append(pLabel, ptext);
 
-    const dline = el("div", "action-line");
+    const dField = el("label", "ask-field") as HTMLLabelElement;
+    const dLabel = el("span", "ask-label");
+    dLabel.append(el("span", undefined, tr("默认值")), el("em", undefined, tr("可空")));
     const dtext = el("input", "action-input") as HTMLInputElement;
     dtext.type = "text";
     dtext.value = a.default ?? "";
-    dtext.placeholder = tr("默认值（可空，支持 {变量名} 占位符）");
+    dtext.placeholder = tr("回车前先填好的内容（支持 {变量名}）");
     dtext.addEventListener("input", () => {
       a.default = dtext.value;
     });
-    dline.append(el("span", "unit-hint", tr("默认值")), dtext);
-    body.append(dline);
+    dField.append(dLabel, dtext);
 
-    body.append(el("div", "unit-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")));
+    grid.append(pField, dField);
+    form.append(grid);
+    form.append(
+      el("p", "ask-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")),
+    );
+    body.append(form);
     return body;
   }
   if (a.type === "text") {
@@ -7529,7 +7644,7 @@ function menuEntryEditor(
   box.append(head);
 
   if (item.kind === "action") {
-    const action = item.action;
+    const action = unwrapAction(item.action);
     const typeRow = el("div", "action-type-row");
     const typeSel = el("select", "action-type-name") as HTMLSelectElement;
     typeSel.title = tr("点击切换动作类型");
@@ -7542,15 +7657,21 @@ function menuEntryEditor(
     }
     typeSel.value = action.type;
     typeSel.addEventListener("change", () => {
-      item.action = newAction(typeSel.value as Action["type"]);
+      item.action = convertedAction(action, typeSel.value as ActionBase["type"]);
       rerender();
       void save();
     });
     typeRow.append(typeSel);
-    const sub = actionSubtypeSelect(action, () => {
-      rerender();
-      void save();
-    });
+    const sub = actionSubtypeSelect(
+      action,
+      () => {
+        rerender();
+        void save();
+      },
+      (next) => {
+        item.action = next;
+      },
+    );
     if (sub) typeRow.append(sub);
     box.append(typeRow);
     box.append(
@@ -9435,7 +9556,7 @@ function stepTitle(step: ActionStep): string {
 }
 
 function stepLabel(step: ActionStep): string {
-  const label = ACTION_TYPE_LABELS[step.kind as Action["type"]] ?? step.kind;
+  const label = ACTION_TYPE_LABELS[step.kind as ActionBase["type"]] ?? step.kind;
   const title = stepTitle(step);
   return title.startsWith(label) ? title : `${label} · ${title}`;
 }
@@ -9509,9 +9630,9 @@ function renderTimeline(run: RunRecord): HTMLElement {
     block.style.maxWidth = `calc(100% - ${left * 100}%)`;
     block.style.top = `${lane * TL_LANE_H}px`;
     block.style.zIndex = String(i + 1); // 后触发的盖在前一块尾巴上（标签页式遮盖）
-    block.title = `${ACTION_ICONS[step.kind as Action["type"]] ?? ""} ${stepLabel(step)}\n${clockAt(run, step.start_ms)} → ${clockAt(run, step.end_ms)}（${fmtMs(Math.max(0, step.end_ms - step.start_ms))}）`;
+    block.title = `${ACTION_ICONS[step.kind as ActionBase["type"]] ?? ""} ${stepLabel(step)}\n${clockAt(run, step.start_ms)} → ${clockAt(run, step.end_ms)}（${fmtMs(Math.max(0, step.end_ms - step.start_ms))}）`;
     const head = el("span", "tl-block-head");
-    head.append(el("span", "tl-block-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
+    head.append(el("span", "tl-block-ico", ACTION_ICONS[step.kind as ActionBase["type"]] ?? "•"));
     head.append(el("span", "tl-block-title", stepLabel(step)));
     const meta = el("span", "tl-block-meta");
     meta.append(el("span", "tl-block-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
@@ -9546,7 +9667,7 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
   const build = (step: ActionStep): HTMLElement => {
     const block = el("div", `pipe-block st-${step.status}`);
     const head = el("div", "pipe-head");
-    head.append(el("span", "pipe-ico", ACTION_ICONS[step.kind as Action["type"]] ?? "•"));
+    head.append(el("span", "pipe-ico", ACTION_ICONS[step.kind as ActionBase["type"]] ?? "•"));
     head.append(el("span", "pipe-title", stepLabel(step)));
     head.append(el("span", "pipe-ms", fmtMs(Math.max(0, step.end_ms - step.start_ms))));
     head.append(el("span", `pipe-flag st-${step.status}`, STEP_STATUS_LABEL[step.status] ?? step.status));

@@ -326,6 +326,8 @@ fn step_begin(
 fn action_kind(action: &Action) -> &'static str {
     match action {
         Action::Text { .. } => "text",
+        // 禁用标记：执行时整条跳过（见 `run_chain`），这里只为防御性地渲染老记录。
+        Action::Disabled { action } => action_kind(action),
         Action::Keys { .. } => "keys",
         Action::SendTo { .. } => "send_to",
         Action::PauseMs { .. } => "pause_ms",
@@ -505,6 +507,10 @@ fn run_chain(
             rep.commit(abort_result(ctx));
             rep.on_step(abort_step(ctx));
             return;
+        }
+        // 禁用的动作整条跳过：既不执行，也不占一条执行记录（界面上开关关着 = 它不存在）。
+        if matches!(action, Action::Disabled { .. }) {
+            continue;
         }
         let mut step = step_begin(action, ctx, parent, lane, vars);
         if let Action::Group {
@@ -799,6 +805,7 @@ fn action_label(action: &Action) -> &'static str {
         } => "文本注入失败",
         Action::Text { .. } => "大小写转换失败",
         Action::Keys { .. } => "按键注入失败",
+        Action::Disabled { .. } => "已禁用的动作",
         Action::SendTo { .. } => "后台发送失败",
         Action::PauseMs { .. } => "暂停失败",
         Action::Mouse { .. } => "鼠标模拟失败",
@@ -983,6 +990,8 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             transform_body(*operation, input, var, *inject, vars)
         }
         Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
+        // 禁用的动作执行不到（`run_chain` 直接跳过），摘要只给预览 / 老记录用。
+        Action::Disabled { action } => format!("已禁用：{}", action_body(action, vars)),
         #[cfg(feature = "automation")]
         Action::Command { command, .. }
         | Action::Cmd { command, .. }
@@ -1335,6 +1344,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Transform { description, .. } => description.as_deref(),
         #[cfg(feature = "automation")]
         Action::Ask { description, .. } => description.as_deref(),
+        // 禁用的动作沿用被包住那条的说明。
+        Action::Disabled { action } => action_description(action),
         // 分组没有 `description`：用户填的 `name` 就是这一步的标题。
         Action::Group { name, .. } => {
             let n = name.trim();
@@ -1402,6 +1413,8 @@ fn run_action(
             // 分组动作由 run_chain 递归处理（成员按顺序执行），不会到达这里。
             return Err("内部错误：分组动作应在运行器内处理".into());
         }
+        // 禁用的动作在 run_chain 里就被跳过了，不会到达这里。
+        Action::Disabled { .. } => return Ok(None),
         Action::Text { text, mode, .. } => {
             // 持链内注入锁：剪贴板 set → 粘贴 → 还原必须原子，否则并行的另一成员会覆盖剪贴板
             // （或读到别人刚写进去的内容）。转大小写路径同理（它内部再调 `inject_text`，
@@ -3267,6 +3280,27 @@ mod tests {
             results.iter().filter(|r| r.run_id == Some(7)).count(),
             results.len()
         );
+    }
+
+    /// 禁用的动作整条跳过：不执行、也不占一条执行记录（界面上的开关关着 = 它不存在）。
+    #[test]
+    fn disabled_action_is_skipped_without_a_step() {
+        let _g = abort::test_lock();
+        let actions = vec![
+            Action::Disabled {
+                action: Box::new(Action::PauseMs {
+                    ms: 30,
+                    description: None,
+                }),
+            },
+            Action::PauseMs {
+                ms: 10,
+                description: None,
+            },
+        ];
+        let (_results, steps, status) = run_all(&actions, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert_eq!(steps.len(), 1, "禁用的那条不该留下执行记录：{steps:?}");
     }
 
     /// 分组只是组织结构：成员按顺序跑，执行记录挂在分组这一步下面（嵌套分组再挂一层）。

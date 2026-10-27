@@ -1454,6 +1454,11 @@ pub enum Action {
         #[serde(default)]
         actions: Vec<Action>,
     },
+    /// 禁用标记（编辑页每条动作右侧的「禁用」开关）：内容原样保留，执行时整条跳过、
+    /// 不占一条执行记录。关掉开关即还原成被包住的那条动作。
+    Disabled {
+        action: Box<Action>,
+    },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
@@ -1572,6 +1577,8 @@ impl Action {
         };
         match self {
             Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            // 禁用的动作照样校验：打开开关后它要原样跑起来，别把非法配置藏到开关后面。
+            Action::Disabled { action } => action.validate(),
             Action::Clipboard { operation, .. } => match operation {
                 // 空文本 = 清空剪贴板，是合法操作。
                 ClipboardOperation::SetClipboard { .. } => Ok(()),
@@ -5200,6 +5207,24 @@ mod config_tests {
         );
         assert!(Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None }.validate().is_err());
         assert!(Action::Mouse { op: MouseOp::Scroll { dx: 0, dy: 0 }, description: None }.validate().is_err());
+    }
+
+    /// 禁用标记（编辑页的「禁用」开关）：外面套一层 `disabled`，内容原样往返，校验照旧落到里面那条。
+    #[test]
+    fn disabled_action_roundtrip_and_validate() {
+        let disabled = Action::Disabled {
+            action: Box::new(Action::PauseMs { ms: 500, description: None }),
+        };
+        assert!(disabled.validate().is_ok());
+        let json = serde_json::to_string(&disabled).unwrap();
+        assert!(json.contains("\"type\":\"disabled\""), "序列化带 type=disabled：{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), disabled);
+
+        // 打开开关后要能原样跑：里面的非法配置不能藏在禁用壳后面混过去。
+        let bad = Action::Disabled {
+            action: Box::new(Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None }),
+        };
+        assert!(bad.validate().is_err());
     }
 }
 

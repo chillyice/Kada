@@ -77,13 +77,14 @@
 ### 1.7 浮窗与界面外链（架构设计 §3.21 / §3.6）
 
 - 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu`）必须 `focusable(false)`（能被激活就抢前台 → `ResetWatch` 误判复位）；**可交互浮窗只有 `hints` / `clipboard-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单的触发（双击 Ctrl+C）只旁听、**不吞键**
-- **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后收不到任何鼠标事件，只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态要广播 `hints-peek`
+- **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态广播 `hints-peek`
 - **界面外链必须由壳层接住**（主窗口 `.on_new_window`）：一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**（真机验收见人工验证清单 §21）
 
 ### 1.8 动作执行与执行记录（`crates/kada-actions/`｜说明书 §5.4 / §5.7、架构设计 §3.17）
 
 - 命令 / 脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等；超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；**中止 = 代数计数器** `abort::request()`
 - **并行动作** `Parallel`：成员各起一线程、全部结束才进下一步；**链内注入锁**保注入串行；`vars` 成员私有、按下标合并提交
+- **禁用的动作**（`Action::Disabled`，删除键左侧）：内容保留，执行时**整条跳过、不占执行记录**，校验落到里面（说明书 §5.7）
 - **每个动作都要上报一步 `ActionStep`**（文本 / 按键 / 延迟这类不产命令结果的动作也必须有）。一次触发 = 一条 `RunRecord`（`fire` 先落 `running`，收尾定 `ok` / `error` / `abort`）；**「停止执行」只在 `running` 记录的「执行中」徽标右侧**
 - **普通消息**（`run_id === null` 才进列表；内存态、重启清空）：命令结果 / 中止 / 失败 / 配置事件都记入；`show_output` 开则弹结果弹窗，否则托盘红点。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）
 
@@ -118,9 +119,9 @@
 
 ### 1.14 软件更新（说明书 §5.5）
 
-- **私钥绝不入库**（公钥内嵌 `plugins.updater.pubkey`，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；**`latest.json` 由 `tauri-action` 生成，不手写、不入库**；端点只认**已发布** Release；**前端碰不到更新**（capabilities 不开 `updater:*`）
+- **私钥绝不入库**（公钥内嵌，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；**`latest.json` 由 `tauri-action` 生成，不手写、不入库**；端点只认**已发布** Release；**前端碰不到更新**（capabilities 不开 `updater:*`）
 - **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本
-- **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；CI 用 `signer sign --app-version` 签便携包。检查走 `build_updater`，**别用 `app.updater()`**
+- **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；检查走 `build_updater`，**别用 `app.updater()`**
 - **安装会退出应用**；其它平台装完 `app.restart()`
 
 ### 1.15 界面文案（i18n｜说明书 §6.9）
@@ -163,7 +164,7 @@ cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
 ```
 
-- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——**查不到 Tauri 壳**（要 gtk/webkit），壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
+- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
 - **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验
 - **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**Linux 包只能靠容器出**、**macOS 包只能靠 CI**
 - **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / 打包 targets 后必跑** `node scripts/verify-release.mjs`

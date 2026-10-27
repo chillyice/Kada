@@ -679,6 +679,18 @@ body.is-mac .titlebar {
   background: var(--line);
 }
 
+/* 行内「执行」（⋯ 左边）：▶ 小三角，悬停时亮成强调色，与「更多」区分开。 */
+.row-run svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  margin: 0 auto;
+}
+
+.row-run:hover {
+  color: var(--accent);
+}
+
 /* 目录行：padding-left 归零、gap 4、箭头列 11px —— 三者之和 15px = ITEM_OFF，
    条目行（margin = 层级×16 + 15）的框体左缘正好压在 📁 图标左缘上。 */
 .folder-row {
@@ -1569,8 +1581,8 @@ body.is-mac .titlebar {
 .flow-dot {
   position: relative;
   z-index: 1;
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1579,7 +1591,7 @@ body.is-mac .titlebar {
   border: 2px solid var(--type-color, var(--line));
   color: var(--type-color, var(--muted));
   font-family: Consolas, monospace;
-  font-size: var(--fs-xs);
+  font-size: var(--fs-sm);
   font-weight: 700;
   cursor: grab;
   user-select: none;
@@ -1657,19 +1669,31 @@ body.is-mac .titlebar {
 }
 
 /* 动作组件：收起态只显示 类型名 + 描述 + 变量标签；展开态为 标题行（类型名可点切换）/ 子类型行 / 输入行 */
+/* 拖动手柄：六个点的抓手，整块（22×ctl-h）都是命中区——原先是 6px 宽的「⋮⋮」小字，
+   鼠标很难按住，抓着也不像能拖的东西。 */
 .action-grip {
   flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: var(--ctl-h);
   color: var(--muted);
-  font-size: var(--fs-sm);
-  line-height: 1;
-  letter-spacing: -2px;
+  border-radius: 5px;
   cursor: grab;
   user-select: none;
-  padding: 4px 3px;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.action-grip svg {
+  width: 12px;
+  height: 18px;
+  display: block;
 }
 
 .action-grip:hover {
   color: var(--text);
+  background: var(--hover-bg);
 }
 
 .action-grip:active {
@@ -1766,7 +1790,8 @@ select.action-type-name:focus-visible {
   min-width: 0;
 }
 
-.action-del {
+.action-del,
+.action-off-btn {
   flex-shrink: 0;
   width: var(--ctl-h);
   height: var(--ctl-h);
@@ -1786,9 +1811,35 @@ select.action-type-name:focus-visible {
   background: var(--bg);
 }
 
-.action-del svg {
+/* 禁用开关：开着（已禁用）时按钮本身点亮，一眼看出这条不参与执行。 */
+.action-off-btn:hover {
+  color: var(--accent);
+  background: var(--bg);
+}
+
+.action-off-btn.on {
+  color: var(--accent);
+}
+
+.action-del svg,
+.action-off-btn svg {
   width: 100%;
   height: 100%;
+}
+
+/* 已禁用的动作整条压暗；鼠标进来 / 键盘聚焦时恢复，改内容不受影响。 */
+.action-row.off {
+  opacity: 0.55;
+}
+
+.action-row.off:hover,
+.action-row.off:focus-within {
+  opacity: 1;
+}
+
+.flow-step.is-off .flow-dot {
+  opacity: 0.5;
+  border-style: dashed;
 }
 
 .action-type-row {
@@ -1923,6 +1974,88 @@ select.action-type-name:focus-visible {
   color: var(--muted);
   font-size: var(--fs-sm);
   white-space: nowrap;
+}
+
+/* ---- 设置变量（文本操作的第四种方式）----
+   一块独立的表单卡：变量名单独占一行当「数据出口」，提示语 / 默认值两列并排。
+   颜色全走主题变量，CRT 的方角与像素字由全局规则接管，四种主题都不用另写一套。 */
+.ask-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left: 3px solid #4ec97a;
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.ask-var-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ask-var-arrow {
+  flex-shrink: 0;
+  color: #4ec97a;
+  font-family: Consolas, monospace;
+  font-size: var(--fs-lg);
+  font-weight: 700;
+}
+
+/* 变量名输入框要在全局 `input[type="text"]` 之后赢下来，选择器带上 `.ask-form` 前缀。 */
+.ask-form .ask-var-input {
+  font-family: Consolas, monospace;
+  color: #4ec97a;
+  background: rgba(78, 201, 122, 0.08);
+  border-color: rgba(78, 201, 122, 0.4);
+  font-weight: 600;
+}
+
+.ask-form .ask-var-input::placeholder {
+  color: var(--muted);
+  font-family: inherit;
+  font-weight: 400;
+}
+
+.ask-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 10px;
+}
+
+.ask-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ask-label {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+}
+
+.ask-label em {
+  font-style: normal;
+  font-size: var(--fs-xs);
+  opacity: 0.7;
+}
+
+.ask-hint {
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+/* CRT 主题的等宽输入统一用像素字体（其余主题沿用 Consolas）。 */
+[data-theme="crt"] .ask-var-arrow,
+[data-theme="crt"] .ask-var-input {
+  font-family: var(--font-pixel);
 }
 
 .help {
