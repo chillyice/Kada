@@ -3123,6 +3123,11 @@ fn chord_groups(cfg: &Config) -> Vec<(Option<String>, Vec<ChordEntry>)> {
 /// - 软冲突（[`Severity::Warn`]，仅提示）：触发键超集重叠（更宽松的组合会遮蔽更具体的组合）；
 ///   和弦之间「一个的要求被另一个全覆盖」（更宽松的那个会先凑齐 → 更严的永远轮不到）；
 ///   平台能力缺失（[`PlatformCaps`]：监听不到的触发键、注入不了的目标、恒不成立的前台条件）。
+///
+/// **层口径**：层语义是「激活层优先、基础层兜底」，所以「重复触发键 / 改键重复 / 超集重叠」
+/// 都只在**同层内**比较；两个不同的非基础层永远不会同时生效，不构成冲突。唯一跨层比较的是
+/// 「改键来源与快捷键主键相同」——基础层（`layer = None`）会兜进任何激活层，所以基础层条目与
+/// 层内条目也会互相影响。
 pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     use std::collections::HashMap;
 
@@ -3335,7 +3340,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
     }
 
-    // 3) 改键来源与快捷键主键相同
+    // 3) 改键来源与快捷键主键相同。层语义是「激活层优先、基础层兜底」：同层互相影响；
+    //    基础层（`None`）会兜进任何激活层，所以它与任一层的条目也会互相影响；**两个不同的
+    //    非基础层永远不会同时生效**，不算冲突。
     for r in &cfg.remaps {
         if !r.enabled {
             continue;
@@ -3344,6 +3351,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         let desc = r.describe();
         for s in &cfg.shortcuts {
             if !s.enabled {
+                continue;
+            }
+            if r.layer != s.layer && r.layer.is_some() && s.layer.is_some() {
                 continue;
             }
             for t in &s.triggers {
@@ -3365,15 +3375,19 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
     }
 
-    // 4) 触发键超集重叠（软冲突）
-    let mut items: Vec<(String, BTreeSet<Modifier>, Key)> = Vec::new();
+    // 4) 触发键超集重叠（软冲突，**同层内**）。`matches()` 的口径是「事件的修饰键是触发键的
+    //    超集」，所以同一层里更宽松的组合（`B`）会先命中，更具体的（`Alt+B`）永远轮不到。
+    //    **不同层不比较**：层是局部覆盖（激活层先判、没命中才回落基础层），基础层更具体的
+    //    `Alt+B` 只在该层激活期间被该层的 `B` 先命中，退出层就恢复——这是层的本分，不是
+    //    「配置写错了」，报进冲突面板只会让每个分层键都挂一条噪声（用户报过这一条）。
+    let mut items: Vec<(Option<String>, String, BTreeSet<Modifier>, Key)> = Vec::new();
     for s in &cfg.shortcuts {
         if !s.enabled {
             continue;
         }
         for t in &s.triggers {
             if let Ok(sc) = t.parse::<Shortcut>() {
-                items.push((t.clone(), sc.mods, sc.key));
+                items.push((s.layer.clone(), t.clone(), sc.mods, sc.key));
             }
         }
     }
@@ -3382,9 +3396,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             if i == j {
                 continue;
             }
-            let (ti, mi, ki) = &items[i];
-            let (tj, mj, kj) = &items[j];
-            if ki != kj || mi == mj || !mi.is_subset(mj) {
+            let (li, ti, mi, ki) = &items[i];
+            let (lj, tj, mj, kj) = &items[j];
+            if li != lj || ki != kj || mi == mj || !mi.is_subset(mj) {
                 continue;
             }
             // mi ⊂ mj：更宽松的 ti 会遮蔽更具体的 tj
@@ -5455,6 +5469,49 @@ mod conflict_tests {
         lo.layer = Some("L2".into());
         let cfg = Config { shortcuts: vec![hi, lo], ..Default::default() };
         assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
+    }
+
+    #[test]
+    fn superset_overlap_only_within_same_layer() {
+        // 用户报过：和弦层里绑 `B`、基础层里绑 `Alt+B`，不该报「B 遮蔽 Alt+B」——层里的
+        // 宽组合只在**该层激活期间**先命中，退出层就回到基础层，属于层的局部覆盖，不是配置
+        // 写错。同层里同样的两条仍然要报。
+        let mut layered = item("B");
+        layered.layer = Some("chords".into());
+        let cfg = Config {
+            shortcuts: vec![layered, item("Alt+B")],
+            ..Default::default()
+        };
+        assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
+
+        let cfg_same_layer = Config {
+            shortcuts: vec![item("B"), item("Alt+B")],
+            ..Default::default()
+        };
+        assert_eq!(warns(&cfg_same_layer).len(), 1, "同层仍应报遮蔽");
+    }
+
+    #[test]
+    fn remap_shadows_shortcut_only_when_layers_interact() {
+        // 两个不同的非基础层永远不会同时生效 → 不算冲突。
+        let mut r = remap("B", "Ctrl");
+        r.layer = Some("L1".into());
+        let mut s = item("B");
+        s.layer = Some("L2".into());
+        let cfg = Config {
+            shortcuts: vec![s.clone()],
+            remaps: vec![r],
+            ..Default::default()
+        };
+        assert!(errors(&cfg).is_empty(), "errs: {:?}", errors(&cfg));
+
+        // 基础层改键会兜进任何激活层 → 仍然拦截层内的同名快捷键。
+        let cfg_base = Config {
+            shortcuts: vec![s],
+            remaps: vec![remap("B", "Ctrl")],
+            ..Default::default()
+        };
+        assert_eq!(errors(&cfg_base).len(), 1);
     }
 }
 
