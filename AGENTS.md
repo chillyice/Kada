@@ -157,18 +157,19 @@ cargo test --workspace      # 全 workspace 测试
 cargo check -p kada         # Tauri 壳编译（完整版）
 cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation）
 cargo build --release -p kada --features custom-protocol   # 手动打 exe：**必须带 custom-protocol**（漏了只嵌壳不嵌前端 → 白屏）
-npm --prefix ui run build   # 前端构建（tsc + vite build）
+npm --prefix ui run build   # 前端构建
 node scripts/check-docs.mjs # 文档一致性（路径引用 / § 消歧 / 代码地图令牌 / AGENTS 体积）
 node scripts/check-i18n.mjs # 界面文案：中文必须包 tr()/trt()，i18n.en.json 覆盖全部 key
-cargo run -p kada-hook --example demo   # 冒烟 demo（三平台真人按键）
+cargo run -p kada-hook --example demo   # 冒烟 demo
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
+powershell scripts\clean-build.ps1 # 清 debug / 交叉产物（-Bundle 含安装包）
 ```
 
-- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——壳分支只有 CI / 容器构建（`scripts/linux-package/`）拦得住
-- **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——macOS 壳层分支只能靠 CI / 真机验
+- **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——壳分支只有 CI / 容器（`scripts/linux-package/`）拦得住
+- **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——壳层分支只能靠 CI / 真机验
 - **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**Linux 包只能靠容器出**、**macOS 包只能靠 CI**
-- **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / 打包 targets 后必跑** `node scripts/verify-release.mjs`
-- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版 + 卡带索引同步 + 文档检查）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**）
+- **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / targets 后必跑** `node scripts/verify-release.mjs`
+- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版 + 文档检查）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**）
 
 ## 4. 归档流程
 
