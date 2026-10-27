@@ -1775,6 +1775,16 @@ fn force_foreground(hwnd: HWND) {
     }
 }
 
+/// 把任意窗口提到前台（「设置变量」输入窗收起后，把焦点还给触发它的程序）。
+///
+/// 窗口已经关掉就什么也不做——用户可能在填框期间把它关了，这时只能任系统决定前台。
+pub fn focus_window(hwnd: isize) {
+    let hwnd = HWND(hwnd as *mut c_void);
+    if unsafe { IsWindow(Some(hwnd)) }.as_bool() {
+        force_foreground(hwnd);
+    }
+}
+
 /// 钩子结构 → [`Key`]：先按小键盘的扫描码还原，再走常规虚拟键码表。
 ///
 /// NumLock 关闭时，小键盘数字键报的是**导航类虚拟键码**（1 → `VK_END`、4 → `VK_LEFT`、

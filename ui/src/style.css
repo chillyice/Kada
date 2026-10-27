@@ -2916,6 +2916,69 @@ button:disabled:hover {
   text-align: center;
 }
 
+/* 「设置变量」输入窗（prompt 窗口，独立小浮层）：与其余浮窗相反——这个**能激活**，
+   用户要在里面打字。底色 / 边框 / 主按钮全走主题变量，CRT 的方角与像素字由全局规则接管。 */
+body:has(.prompt-card) {
+  background: transparent;
+  /* 内容按自然尺寸排：壳层拿量到的宽高开窗（同 HUD / 提示框）。 */
+  display: block;
+  padding: 14px;
+  overflow: hidden;
+}
+
+.prompt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  /* 内容撑宽，长的提示语在 `max-width` 处换行 */
+  width: max-content;
+  min-width: 280px;
+  max-width: 420px;
+  padding: 14px 16px;
+  background: var(--float-bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  /* 投影留在窗口那圈透明边里（`padding: 14px`）：blur 8 + 下移 2 < 14。 */
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.prompt-text {
+  font-size: var(--fs-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.prompt-input {
+  font-size: var(--fs-md);
+}
+
+.prompt-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* CRT：硬边投影（与其余浮窗同一口径），扫描线只叠在面板里的字上。 */
+[data-theme="crt"] .prompt-card {
+  position: relative;
+  overflow: hidden;
+  box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.66);
+}
+
+[data-theme="crt"] .prompt-card::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    #232323 0 1px,
+    rgba(35, 35, 35, 0.62) 1px 2px,
+    transparent 2px 4px
+  );
+  mix-blend-mode: color-dodge;
+}
+
 /* 触发气泡（toast 窗口，独立小浮层） */
 /* toast 窗口是 transparent 窗口，body 必须透明，否则会显示成实心深色矩形 */
 body:has(.toast-bubble) {

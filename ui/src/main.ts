@@ -6581,7 +6581,7 @@ function actionFields(
         tr("回车前先填好的内容（支持 {变量名}）"),
         (v) => (a.default = v),
       ),
-      el("div", "unit-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")),
+      el("div", "unit-hint", tr("触发时弹输入框（跟随主题），填的内容存进变量；点取消或留空则本次执行中止。")),
     );
     return body;
   }
@@ -9996,6 +9996,79 @@ async function bootstrapHud() {
   render(await invoke<StatusPayload | null>("get_status_payload").catch(() => null));
 }
 
+// 「设置变量」输入窗（独立窗口，加载 index.html#prompt）：动作链在壳层等着这里回传。
+// 文案与配色全走主题变量（与主界面 / 其余浮窗同一套），四个主题不用另写一套。
+type PromptPayload = { prompt: string; default: string };
+
+// CSS 投影占的透明边（`body` 的 padding），量尺寸时要一起报给壳层。
+const PROMPT_PAD = 14;
+
+async function bootstrapPrompt() {
+  for (const sel of [
+    ".layout",
+    "#result-modal",
+    "#save-status",
+    "#row-menu",
+    "#unsaved-modal",
+    "#import-modal",
+    "#import-result-modal",
+    "#snippet-modal",
+  ]) {
+    document.querySelector(sel)?.remove();
+  }
+  const card = el("form", "prompt-card");
+  const text = el("div", "prompt-text");
+  const input = el("input", "prompt-input") as HTMLInputElement;
+  input.type = "text";
+  const actions = el("div", "prompt-actions");
+  const cancel = el("button", "ghost", tr("取消")) as HTMLButtonElement;
+  cancel.type = "button";
+  const ok = el("button", "primary", tr("确定")) as HTMLButtonElement;
+  ok.type = "submit";
+  actions.append(cancel, ok);
+  card.append(text, input, actions);
+  document.body.append(card);
+
+  // 一次只填一个框；`armed` 挡住重复回传（回车 + 关窗都会走到 `finish`）。
+  let armed = false;
+  const finish = (value: string | null) => {
+    if (!armed) return;
+    armed = false;
+    void invoke("prompt_done", { value }).catch(() => {});
+  };
+  const render = (p: PromptPayload | null) => {
+    if (!p) return;
+    armed = true;
+    text.textContent = p.prompt || tr("请输入内容");
+    input.value = p.default;
+    // 量完内容再报尺寸：壳层据此缩放、居中并显示（与 HUD / 提示框同一套路）。
+    const rect = card.getBoundingClientRect();
+    void invoke("prompt_ready", {
+      width: Math.ceil(rect.width) + PROMPT_PAD * 2,
+      height: Math.ceil(rect.height) + PROMPT_PAD * 2,
+    })
+      .then(() => {
+        input.focus();
+        input.select();
+      })
+      .catch(() => {});
+  };
+  card.addEventListener("submit", (e) => {
+    e.preventDefault();
+    finish(input.value);
+  });
+  cancel.addEventListener("click", () => finish(null));
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.preventDefault();
+      finish(null);
+    }
+  });
+  await listen<PromptPayload>("prompt-show", (e) => render(e.payload));
+  // 首次懒创建后补一次拉取：窗口刚建好时 prompt-show 可能早于监听器注册。
+  render(await invoke<PromptPayload | null>("get_prompt_payload").catch(() => null));
+}
+
 // 快捷键提示框（独立窗口，加载 index.html#hints，见规划 7.3-㊳）：
 // 常显的快捷键速查表——内容来自配置（按层分组），位置 / 字号 / 透明度由后端持久化。
 // 交互：拖整块面板移动、滚轮调大小、Ctrl+滚轮调透明度、Shift+滚轮滚动长列表、× 关闭。
@@ -10582,6 +10655,10 @@ if (location.hash === "#toast") {
   const preview = !("__TAURI_INTERNALS__" in window);
   installBrowserMock();
   void bootstrapClipboardMenu(preview);
+} else if (location.hash === "#prompt") {
+  // 同 `#hud`：纯浏览器直开时给一份样例载荷，方便调样式。
+  installBrowserMock();
+  void bootstrapPrompt();
 } else {
   mountTitlebar();
   installBrowserMock();

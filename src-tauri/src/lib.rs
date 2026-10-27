@@ -73,7 +73,7 @@ impl Inject for SimulatedInject {
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
-        current_device, foreground_fullscreen, foreground_window, frontmost_context,
+        current_device, focus_window, foreground_fullscreen, foreground_window, frontmost_context,
         hotkey_occupied, process_running, reinstall_count, set_mouse_enabled, set_mouse_recorder,
         set_wheel_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
@@ -138,6 +138,10 @@ mod input {
         None
     }
 
+    /// 把窗口提到前台：Linux 拿不到前台窗口（见上），没有可还焦点的目标——输入窗收起后
+    /// 交给窗口管理器决定焦点落点。
+    pub fn focus_window(_hwnd: isize) {}
+
     /// 全屏程序自动暂停手势：Linux 拿不到前台窗口，恒 false（手势本也只在 Windows 采集）。
     pub fn foreground_fullscreen() -> bool {
         false
@@ -187,6 +191,10 @@ mod input {
         false
     }
 
+    /// 把窗口提到前台：macOS 的 `foreground_window()` 给的是 pid，还焦点要另走
+    /// `NSRunningApplication`——本档不做，输入窗收起后交给系统决定焦点落点。
+    pub fn focus_window(_hwnd: isize) {}
+
     /// 输入环境探测：libproc 进程表 + `DIVERTERS` 目录（见 `kada_hook::macos::input_env`）。
     pub fn input_env() -> kada_core::InputEnv {
         kada_hook::platform_input_env()
@@ -232,6 +240,9 @@ mod input {
     pub fn foreground_fullscreen() -> bool {
         false
     }
+
+    /// 无输入层实现：没有窗口可提到前台。
+    pub fn focus_window(_hwnd: isize) {}
 
     /// 无输入层实现：不做输入环境探测。
     pub fn input_env() -> kada_core::InputEnv {
@@ -478,6 +489,10 @@ struct KadaState {
     clipboard_menu_foreground: Mutex<Option<isize>>,
     /// 最近一次菜单载荷（菜单窗懒创建后，前端加载时兜底渲染）。
     clipboard_menu_payload: Mutex<Option<ClipboardMenuPayload>>,
+    /// 最近一次「设置变量」输入框载荷（输入窗懒创建后，前端加载时兜底渲染）。
+    prompt_payload: Mutex<Option<PromptPayload>>,
+    /// 输入窗的回传通道：`Some(值)` = 确定、`None` = 取消 / 关窗。在 [`ui_prompt`] 里填。
+    prompt_tx: Mutex<Option<std::sync::mpsc::Sender<Option<String>>>>,
     /// 托盘图标（用于运行时叠 / 去红点）。
     tray: Mutex<Option<TrayIcon>>,
     /// 托盘基础图标（无红点）。
@@ -2633,6 +2648,165 @@ fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
 #[tauri::command]
 fn get_status_payload(state: tauri::State<'_, KadaState>) -> Option<StatusPayload> {
     state.status.lock().unwrap().clone()
+}
+
+// ---- 「设置变量」输入窗（`Action::Ask` 的输入框）----
+//
+// 以前借系统输入框（Windows 的 PowerShell InputBox / macOS 的 osascript / Linux 的 zenity），
+// 灰白一套跟四套主题割裂。改成自己的小窗：文案与配色全走主题变量，跟随主界面
+// （同一个 origin，`localStorage["kada.theme"]` 直接生效）。
+// 与 toast / hud / hints / 菜单那几只浮窗的**根本差别**：这个窗要能激活——用户要在里面打字。
+
+const PROMPT_WINDOW: &str = "prompt";
+
+/// 发给输入窗的内容；也留在 state 里给懒创建后的前端兜底拉取。
+#[derive(Clone, Serialize)]
+struct PromptPayload {
+    prompt: String,
+    default: String,
+}
+
+/// 按需创建输入窗。**`focusable` 保持默认（true）**：其余浮窗用 `WS_EX_NOACTIVATE` 挡激活，
+/// 这个窗反过来——不激活就收不到键盘。`focused(false)` 只让首次显示不自己抢焦点，
+/// 随后的 [`prompt_ready`] 会按尺寸居中并主动 `set_focus`。
+fn ensure_prompt(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    if let Some(w) = app.get_webview_window(PROMPT_WINDOW) {
+        return Some(w);
+    }
+    let w = match tauri::WebviewWindowBuilder::new(
+        app,
+        PROMPT_WINDOW,
+        tauri::WebviewUrl::App("index.html#prompt".into()),
+    )
+    .decorations(false)
+    .transparent(true)
+    // 同其余浮窗：别借系统投影（那圈 DWM 边框会挂在面板外面），投影由 CSS 自己画。
+    .shadow(false)
+    .skip_taskbar(true)
+    .always_on_top(true)
+    .resizable(false)
+    .focused(false)
+    .inner_size(420.0, 190.0)
+    .visible(false)
+    .build()
+    {
+        Ok(w) => w,
+        Err(e) => {
+            eprintln!("创建输入框窗口失败: {e}");
+            return None;
+        }
+    };
+    // 用户按 Alt+F4 / 系统关窗 = 取消：不给回传就等于动作链一直等一个永远不会来的答案。
+    let handle = w.clone();
+    w.on_window_event(move |ev| {
+        if let WindowEvent::CloseRequested { api, .. } = ev {
+            api.prevent_close();
+            if let Some(state) = handle.app_handle().try_state::<KadaState>() {
+                if let Some(tx) = state.prompt_tx.lock().unwrap().take() {
+                    let _ = tx.send(None);
+                }
+            }
+            let _ = handle.hide();
+        }
+    });
+    Some(w)
+}
+
+/// 显示带主题的输入框并等用户填完（壳层注册给 `kada_actions::prompt` 的实现）。
+///
+/// 跑在动作链的执行线程上，**不在钩子回调里**，阻塞等答案是安全的。
+fn ui_prompt(app: &tauri::AppHandle, prompt: &str, default: &str) -> Result<String, String> {
+    // 同一时刻只开一个框：两条链同时要输入时后来者排队，别让两个窗抢同一个回传通道。
+    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
+    // 中止代数在**排队之前**取：排队期间被「停止执行」叫停的，拿完锁就该立刻退出。
+    let gen = actions_abort::generation();
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let state = app
+        .try_state::<KadaState>()
+        .ok_or("输入框不可用（状态未就绪）")?;
+    let Some(w) = ensure_prompt(app) else {
+        return Err("创建输入框窗口失败".into());
+    };
+    // 触发它的程序：收起窗口后要把焦点还回去（后面的文本注入打的是当前前台窗口）。
+    let prev = input::foreground_window();
+    let payload = PromptPayload {
+        prompt: prompt.to_string(),
+        default: default.to_string(),
+    };
+    state
+        .prompt_payload
+        .lock()
+        .unwrap()
+        .replace(payload.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    state.prompt_tx.lock().unwrap().replace(tx);
+    // 窗已存在时监听器早就在听；首次建窗时事件可能早于前端注册监听，前端还会自己拉一次载荷。
+    let _ = w.emit("prompt-show", &payload);
+    let answer = loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(v) => break Some(v),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // 「停止执行」：输入框没有子进程可杀，靠代数比对退出等待。
+                if actions_abort::aborted(gen) {
+                    break None;
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break None,
+        }
+    };
+    state.prompt_tx.lock().unwrap().take();
+    // 先还焦点再收起：Windows 隐藏前台窗不会自动把焦点还给下一个窗口。
+    if let Some(hwnd) = prev {
+        input::focus_window(hwnd);
+    }
+    let _ = w.hide();
+    match answer {
+        Some(Some(text)) => Ok(text),
+        Some(None) => Err("已取消输入".into()),
+        None => Err("已中止".into()),
+    }
+}
+
+/// 输入窗渲染完成（前端量出内容宽高）：居中到光标所在显示器、显示并拿到焦点。
+#[tauri::command]
+fn prompt_ready(app: tauri::AppHandle, width: f64, height: f64) {
+    let Some(w) = app.get_webview_window(PROMPT_WINDOW) else {
+        return;
+    };
+    // 尺寸来自界面，钳一下：提示语很长时别把窗口撑满屏幕。
+    let w_logical = width.clamp(260.0, 900.0);
+    let h_logical = height.clamp(120.0, 480.0);
+    let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
+    // 放到**光标所在显示器**中央：多屏时用户刚在哪儿操作就在哪儿弹。
+    let monitor = app
+        .cursor_position()
+        .ok()
+        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten());
+    if let Some(m) = monitor {
+        let scale = m.scale_factor();
+        let work = m.work_area();
+        let x =
+            (work.position.x as f64 + (work.size.width as f64 - w_logical * scale) / 2.0) / scale;
+        let y =
+            (work.position.y as f64 + (work.size.height as f64 - h_logical * scale) / 2.0) / scale;
+        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
+    }
+    let _ = w.show();
+    let _ = w.set_focus();
+}
+
+/// 输入窗回传结果：`Some` = 确定（空串按「留空」报错）、`None` = 取消 / Esc。
+#[tauri::command]
+fn prompt_done(state: tauri::State<'_, KadaState>, value: Option<String>) {
+    if let Some(tx) = state.prompt_tx.lock().unwrap().take() {
+        let _ = tx.send(value);
+    }
+}
+
+/// 读取当前输入框载荷（输入窗懒创建后，前端加载时兜底渲染）。
+#[tauri::command]
+fn get_prompt_payload(state: tauri::State<'_, KadaState>) -> Option<PromptPayload> {
+    state.prompt_payload.lock().unwrap().clone()
 }
 
 // ---- 复制快捷菜单（EXT-13） ----
@@ -6327,6 +6501,9 @@ pub fn run() {
             clipboard_menu_ready,
             clipboard_menu_exec,
             hud_ready,
+            prompt_ready,
+            prompt_done,
+            get_prompt_payload,
                 gesture_overlay_ready,
             get_hints_state,
             hints_ready,
@@ -6620,11 +6797,21 @@ pub fn run() {
                 clipboard_menu_anchor: Mutex::new(None),
                 clipboard_menu_foreground: Mutex::new(None),
                 clipboard_menu_payload: Mutex::new(None),
+                prompt_payload: Mutex::new(None),
+                prompt_tx: Mutex::new(None),
                 hints_tray: Mutex::new(None),
                 pause_tray: Mutex::new(None),
                 hints_placed: AtomicBool::new(false),
             };
             app.manage(state);
+            // 「设置变量」的输入框交给壳层画：动作链在后台线程里等，窗口按主题渲染
+            // （没装 Tauri 的调用方——单测 / 其它集成——仍用系统输入框，见 kada_actions::prompt）。
+            {
+                let app = app.handle().clone();
+                kada_actions::prompt::install(Box::new(move |prompt, default| {
+                    ui_prompt(&app, prompt, default)
+                }));
+            }
             // 外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），见 spawn_config_watcher。
             spawn_config_watcher(app.handle().clone());
             // 更新状态单独托管：设置页/托盘都要读，与配置无关（不进 config.json）。

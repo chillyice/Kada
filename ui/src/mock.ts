@@ -545,6 +545,12 @@ case "run_entry":
         // 悬浮指示窗渲染完回报尺寸（演示模式不真的改窗口大小）。
         case "hud_ready":
           return null;
+        // 「设置变量」输入窗：演示模式给一份样例，`index.html#prompt` 直开即可看样式。
+        case "get_prompt_payload":
+          return { prompt: "输入名字（支持 {变量名} 引用）", default: "Kada" };
+        case "prompt_ready":
+        case "prompt_done":
+          return null;
         // 快捷键提示框：演示模式给一份「常显」状态，`index.html#hints` 直开即可看样式
         // （真实位置 / 外观只有壳内的窗口会记）。
         case "get_hints_state":

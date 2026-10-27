@@ -27,6 +27,7 @@ use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod abort;
+pub mod prompt;
 
 use kada_core::{
     substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, SendPayload,
@@ -2871,19 +2872,25 @@ fn run_script(
     run_with_limits(&mut cmd, "脚本", ctx)
 }
 
-/// 弹一个系统输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
+/// 弹一个输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
 ///
-/// 输入框不套动作超时（`run_with_deadline` 传 0）：人填多久都行，但「停止执行」仍能杀掉进程。
+/// 壳层注册了带主题的宿主实现就用它（[`prompt::install`]），否则回落各平台的系统输入框。
+/// 输入框不套动作超时（`run_with_deadline` 传 0）：人填多久都行，但「停止执行」仍能取消。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
 fn prompt_input(prompt: &str, default: &str, ctx: &Ctx) -> Result<String, String> {
-    let out = prompt_dialog(prompt, default, ctx)?;
-    let text = out.stdout.trim_end_matches(['\r', '\n']).to_string();
-    if out.killed.is_some() || out.exit_code.is_some_and(|c| c != 0) {
-        return Err("已取消输入".into());
-    }
+    let text = match prompt::ask(prompt, default) {
+        Some(r) => r?,
+        None => {
+            let out = prompt_dialog(prompt, default, ctx)?;
+            if out.killed.is_some() || out.exit_code.is_some_and(|c| c != 0) {
+                return Err("已取消输入".into());
+            }
+            out.stdout.trim_end_matches(['\r', '\n']).to_string()
+        }
+    };
     if text.is_empty() {
         return Err("输入为空（已取消）".into());
     }
