@@ -582,14 +582,14 @@ const REMOVED_TYPE_LABELS: Partial<Record<ActionBase["type"], string>> = {
   send_to: tr("后台发送"),
   window: tr("窗口操作"),
   brightness: tr("亮度"),
-  // 「设置变量」在类型下拉里挂在文本操作下面，选中它时标签要说得清。
-  ask: tr("文本操作 · 设置变量"),
+  // 「设置变量」在类型下拉里归文本操作：类型名就显示「文本操作」，方式由子类型下拉表达。
+  ask: tr("文本操作"),
 };
 
 // 动作类型图标（收起态展示用）。
 const ACTION_ICONS: Record<ActionBase["type"], string> = {
   text: "✏️",
-  ask: "📝",
+  ask: "✏️",
   command: "💻",
   script: "📜",
   keys: "⌨️",
@@ -5587,7 +5587,9 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   const off = isDisabled(a);
   const act = unwrapAction(a);
   const collapsed = collapsedActions.has(act);
-  const step = el("div", `flow-step type-${act.type}` + (off ? " is-off" : ""));
+  // 「设置变量」用文本动作的类型名与配色（数据里仍是 `ask` 形态）。
+  const typeValue: ActionBase["type"] = act.type === "ask" ? "text" : act.type;
+  const step = el("div", `flow-step type-${typeValue}` + (off ? " is-off" : ""));
   const row = el("div", "action-row" + (collapsed ? " collapsed" : "") + (off ? " off" : ""));
   row.dataset.idx = String(i);
   (row as unknown as { _dropList?: Action[] })._dropList = actions;
@@ -5613,23 +5615,24 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
   head.append(ico);
 
   // 类型名本身就是切换入口：点它弹出动作类型列表（收起态也能直接换）。
+  // 「设置变量」是文本操作的一种方式，类型名就显示「文本操作」（具体方式看子类型下拉）。
   const typePick = el("select", "action-type-name") as HTMLSelectElement;
   typePick.title = tr("点击切换动作类型");
   typePick.setAttribute("aria-label", tr("动作类型"));
-  for (const t of actionTypeChoices(act.type === "tool")) {
+  for (const t of actionTypeChoices(typeValue === "tool")) {
     const o = el("option") as HTMLOptionElement;
     o.value = t.value;
     o.textContent = t.label;
     typePick.append(o);
   }
   // 已移除 / 已合并的类型仍要能在老配置里看到并改走，不给它一个空下拉。
-  if (!actionTypeChoices(act.type === "tool").some((t) => t.value === act.type)) {
+  if (!actionTypeChoices(typeValue === "tool").some((t) => t.value === typeValue)) {
     const o = el("option") as HTMLOptionElement;
-    o.value = act.type;
-    o.textContent = actionTypeLabel(act.type);
+    o.value = typeValue;
+    o.textContent = actionTypeLabel(typeValue);
     typePick.append(o);
   }
-  typePick.value = act.type;
+  typePick.value = typeValue;
   typePick.addEventListener("change", () => {
     switchActionType(act, actions, i, typePick.value as ActionBase["type"], rerender);
   });
@@ -6553,53 +6556,33 @@ function actionFields(
 ): HTMLElement {
   const body = el("div", "action-body");
   if (a.type === "ask") {
-    // 设置变量（文本操作的第四种方式）：变量名单独一行做成「⇒ 结果写进哪」的标签块，
-    // 提示语 / 默认值并排；配色全走主题变量（CRT 主题的方角与像素字由全局规则接管）。
-    const form = el("div", "ask-form");
-
-    const varRow = el("div", "ask-var-row");
-    varRow.append(el("span", "ask-var-arrow", "⇒"));
-    const vname = el("input", "action-input ask-var-input") as HTMLInputElement;
-    vname.type = "text";
-    vname.value = a.var;
-    vname.placeholder = tr("变量名（后面用 {变量名} 引用）");
-    vname.addEventListener("input", () => {
-      a.var = vname.value.trim();
-    });
-    varRow.append(vname);
-    form.append(varRow);
-
-    const grid = el("div", "ask-grid");
-
-    const pField = el("label", "ask-field") as HTMLLabelElement;
-    const pLabel = el("span", "ask-label", tr("提示语"));
-    const ptext = el("input", "action-input") as HTMLInputElement;
-    ptext.type = "text";
-    ptext.value = a.prompt;
-    ptext.placeholder = tr("弹框里问用户的话（支持 {变量名}）");
-    ptext.addEventListener("input", () => {
-      a.prompt = ptext.value;
-    });
-    pField.append(pLabel, ptext);
-
-    const dField = el("label", "ask-field") as HTMLLabelElement;
-    const dLabel = el("span", "ask-label");
-    dLabel.append(el("span", undefined, tr("默认值")), el("em", undefined, tr("可空")));
-    const dtext = el("input", "action-input") as HTMLInputElement;
-    dtext.type = "text";
-    dtext.value = a.default ?? "";
-    dtext.placeholder = tr("回车前先填好的内容（支持 {变量名}）");
-    dtext.addEventListener("input", () => {
-      a.default = dtext.value;
-    });
-    dField.append(dLabel, dtext);
-
-    grid.append(pField, dField);
-    form.append(grid);
-    form.append(
-      el("p", "ask-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")),
+    // 设置变量（文本操作的第四种方式）：沿用文本动作的通用行样式，不另立一套表单卡。
+    const line = (label: string, value: string, placeholder: string, set: (v: string) => void) => {
+      const row = el("div", "action-line");
+      const input = el("input", "action-input") as HTMLInputElement;
+      input.type = "text";
+      input.value = value;
+      input.placeholder = placeholder;
+      input.addEventListener("input", () => set(input.value));
+      row.append(el("span", "unit-hint", label), input);
+      return row;
+    };
+    body.append(
+      line(tr("变量名"), a.var, tr("变量名（后面用 {变量名} 引用）"), (v) => (a.var = v.trim())),
+      line(
+        tr("提示语"),
+        a.prompt,
+        tr("弹框里问用户的话（支持 {变量名}）"),
+        (v) => (a.prompt = v),
+      ),
+      line(
+        tr("默认值"),
+        a.default ?? "",
+        tr("回车前先填好的内容（支持 {变量名}）"),
+        (v) => (a.default = v),
+      ),
+      el("div", "unit-hint", tr("触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。")),
     );
-    body.append(form);
     return body;
   }
   if (a.type === "text") {
@@ -7655,7 +7638,8 @@ function menuEntryEditor(
       o.textContent = t.label;
       typeSel.append(o);
     }
-    typeSel.value = action.type;
+    // 「设置变量」归文本操作：类型名显示「文本操作」，方式看子类型下拉。
+    typeSel.value = action.type === "ask" ? "text" : action.type;
     typeSel.addEventListener("change", () => {
       item.action = convertedAction(action, typeSel.value as ActionBase["type"]);
       rerender();

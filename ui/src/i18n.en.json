@@ -930,7 +930,6 @@
   "触发时弹系统输入框，填的内容存进变量；点取消或留空则本次执行中止。": "Pops up a system input box on trigger and stores the answer in the variable; Cancel or an empty answer aborts this run.",
   "设置变量": "Set variable",
   "设置变量 {0}：{1}": "Set variable {0}: {1}",
-  "文本操作 · 设置变量": "Text action · Set variable",
   "已禁用：{0}": "Disabled: {0}",
   "启用这个动作": "Enable this action",
   "禁用这个动作（执行时跳过）": "Disable this action (skipped when running)",
