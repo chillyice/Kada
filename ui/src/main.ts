@@ -9417,8 +9417,9 @@ function markRead() {
   void invoke("mark_results_read");
 }
 
-function msgField(k: string, v: string, code = false): HTMLElement {
-  const row = el("div", "msg-field");
+// inline = 标签与值同排一行（用于「开始 / 结束 / 状态」这类紧凑的元信息）。
+function msgField(k: string, v: string, code = false, inline = false): HTMLElement {
+  const row = el("div", inline ? "msg-field inline" : "msg-field");
   row.append(el("span", "msg-k", k));
   const val = code ? el("pre", "msg-v") : el("span", "msg-v");
   val.textContent = v;
@@ -9548,10 +9549,14 @@ function stepLabel(step: ActionStep): string {
 // 时间线上一个动作块的详情（时间线模式下点块看这里）。
 function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
   const box = el("div", "msg-step-fields");
-  box.append(msgField(tr("开始"), `${clockAt(run, step.start_ms)}（+${fmtMs(step.start_ms)}）`));
-  box.append(msgField(tr("结束"), `${clockAt(run, step.end_ms)}（+${fmtMs(step.end_ms)}）`));
-  box.append(msgField(tr("耗时"), fmtMs(Math.max(0, step.end_ms - step.start_ms))));
-  box.append(msgField(tr("状态"), STEP_STATUS_LABEL[step.status] ?? step.status));
+  // 开始 / 结束 / 状态 挤在同一行（耗时不再单列：两个时刻相减即可看出）。
+  const meta = el("div", "msg-step-meta");
+  meta.append(
+    msgField(tr("开始"), `${clockAt(run, step.start_ms)}（+${fmtMs(step.start_ms)}）`, false, true),
+    msgField(tr("结束"), `${clockAt(run, step.end_ms)}（+${fmtMs(step.end_ms)}）`, false, true),
+    msgField(tr("状态"), STEP_STATUS_LABEL[step.status] ?? step.status, false, true),
+  );
+  box.append(meta);
   if (step.kind === "if" && step.detail) {
     const c = step.detail as Condition;
     box.append(msgField(tr("条件"), condSummary(c)));

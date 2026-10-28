@@ -3853,6 +3853,28 @@ pre.msg-v {
   gap: 10px;
 }
 
+/* 开始 / 结束 / 状态：同一行的紧凑元信息（标签与值并排）。 */
+.msg-step-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 20px;
+}
+
+.msg-field.inline {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.msg-field.inline .msg-k {
+  white-space: nowrap;
+}
+
+.msg-field.inline .msg-v {
+  word-break: normal;
+}
+
 /* 同一行的多个勾选项（如「弹窗显示结果」+「隐藏控制台窗口」） */
 .action-checks {
   display: flex;
