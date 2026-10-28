@@ -1146,9 +1146,27 @@ impl Condition {
 
 /// 前台进程名匹配：不区分大小写；模式含 `*`/`?` 时按通配匹配，否则按子串匹配。
 ///
+/// **整条路径也认**：用户常从任务管理器 / 快捷方式里把 `C:\...\chrome.exe` 整条粘进
+/// 排除列表（有时还带外层引号），而 `name` 只有文件名——比较前先剥掉引号与目录部分。
+/// 空模式一律不匹配（`contains("")` 恒真，不能让它排除一切）。
+///
 /// 不按 `automation` 门控：手势排除列表（[`gesture::app_excluded`]）在基础版里也用它。
 fn match_name(pattern: &str, name: &str) -> bool {
-    let p = pattern.to_lowercase();
+    let trimmed = pattern
+        .trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let p = trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(trimmed)
+        .to_lowercase();
+    if p.is_empty() {
+        return false;
+    }
     let n = name.to_lowercase();
     if p.contains('*') || p.contains('?') {
         wildcard_match(&p, &n)

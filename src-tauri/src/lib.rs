@@ -968,8 +968,10 @@ fn spawn_engine_ticker(
             });
             // 输入复位 = 「与物理键盘断过一次线」：触摸板手势正在采的缓冲一起丢掉
             // （不回放、不回调出口）。这里不持配置锁，锁序上只会拿采集状态。
+            // 轨迹浮层也得跟着收：复位没有出口回调，靠回调收浮层的那条路走不到。
             if reason.is_some() {
                 kada_hook::trackpad::reset();
+                hide_gesture_overlay(&app);
             }
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
@@ -1055,6 +1057,10 @@ fn spawn_engine_ticker(
             // 触摸板手势（7.2-MG）：只在按住触发键期间采集；关掉时钩子层清干净状态。
             if last_trackpad != Some(trackpad_on) {
                 kada_hook::trackpad::set_enabled(trackpad_on);
+                if !trackpad_on {
+                    // 关闸时若正画到一半，采集状态已被清掉、出口不会再回调：自己收浮层。
+                    hide_gesture_overlay(&app);
+                }
                 last_trackpad = Some(trackpad_on);
             }
             // 触发角（EXT-10）/ 边缘滚动（EXT-11）：总闸 + 四角/四边开关 + 显示器矩形推给
@@ -1810,6 +1816,10 @@ fn show_gesture_result(
 ///
 /// 钩子回调里只记点，**不往这里推**（回调超会被系统摘钩子）；这里轮询快照，
 /// 只在点数变化时发事件（16ms 一帧，跟手不刷屏）。
+///
+/// **两条来源共用一个浮层**：右键手势（`kada_hook::gesture`）与触摸板手势
+/// （`kada_hook::trackpad`，按住触发键采集）。两者不会同时进行——前者要按住右键、
+/// 后者要按住触发键，所以按「先右键、后触摸板」取一个即可。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
     std::thread::spawn(move || {
@@ -1819,9 +1829,22 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
         let mut last_len = usize::MAX;
         let mut preloaded = false;
         loop {
-            let interval = if kada_hook::gesture::enabled() { 16 } else { 120 };
+            // 采集期间快轮询（跟手），空闲时慢轮询：触摸板手势也要算进来，
+            // 否则按住触发键画的时候只有 8 帧/秒，轨迹一顿一顿的。
+            let interval = if kada_hook::gesture::enabled() || kada_hook::trackpad::enabled() {
+                16
+            } else {
+                120
+            };
             std::thread::sleep(Duration::from_millis(interval));
-            if !kada_hook::gesture::drawing() {
+            let (drawing, points) = if kada_hook::gesture::drawing() {
+                (true, kada_hook::gesture::points())
+            } else if kada_hook::trackpad::drawing() {
+                (true, kada_hook::trackpad::points())
+            } else {
+                (false, Vec::new())
+            };
+            if !drawing {
                 was_drawing = false;
                 shown = false;
                 suppressed = false;
@@ -1831,7 +1854,10 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !preloaded {
                     let on = {
                         let g = cfg.read().unwrap();
-                        g.settings.experimental && gesture_capture_enabled(&g)
+                        g.settings.experimental
+                            && (gesture_capture_enabled(&g)
+                                || (touchpad_gesture_enabled(&g)
+                                    && kada_hook::trackpad::supported()))
                     };
                     if on {
                         preloaded = ensure_gesture_overlay(&app).is_some();
@@ -1848,7 +1874,6 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
             if suppressed {
                 continue;
             }
-            let points = kada_hook::gesture::points();
             if points.len() < 2 {
                 continue;
             }
@@ -1857,7 +1882,10 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 (
                     gesture_visual_of(&g.settings),
                     g.settings.gesture_start_distance,
-                    g.settings.experimental && gesture_capture_enabled(&g),
+                    g.settings.experimental
+                        && (gesture_capture_enabled(&g)
+                            || (touchpad_gesture_enabled(&g)
+                                && kada_hook::trackpad::supported())),
                     g.settings.gesture_exclude.clone(),
                     g.settings.exclude_apps.clone(),
                 )
@@ -1899,9 +1927,14 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !GESTURE_OVERLAY_READY.load(Ordering::Relaxed) {
                     wait_gesture_overlay_ready();
                 }
-                if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial
-                    || !kada_hook::gesture::drawing()
-                {
+                // 等前端就绪的这段时间里，这一笔可能已经结束（右键已抬起 / 触发键
+                // 已松开）：来源一换就别再往浮层上画了。
+                let still_drawing = if kada_hook::gesture::drawing() {
+                    true
+                } else {
+                    kada_hook::trackpad::drawing()
+                };
+                if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial || !still_drawing {
                     continue;
                 }
             }
@@ -1996,23 +2029,28 @@ fn handle_trackpad_stroke(
         )
     };
     if !on {
+        hide_gesture_overlay(&app);
         return;
     }
     // 让路：全屏程序、全局排除列表、手势排除列表。触发键已经被吞了（它没有输出），
     // 所以这里只是「不执行」，不是「回放」。
     if input::foreground_fullscreen() {
+        hide_gesture_overlay(&app);
         return;
     }
     let fetch = || input::frontmost_context();
     let ctx = TriggerContext::lazy(&fetch, None);
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        hide_gesture_overlay(&app);
         return;
     }
     // 触摸板上画一笔本来就慢，`gesture_timeout_ms` 那套「画太久作废」不适用：
     // 收尾时机是**松键**，不存在右键按住不放的副作用。
     let pattern = kada_core::pattern_from_stroke(&stroke.points, min_len);
     if pattern.is_empty() {
-        // 太短 / 涂鸦 / 方向太多：不猜。静默返回（没有吞掉的东西要补）。
+        // 太短 / 涂鸦 / 作废（Esc、双指、停手太久）：不猜，并把轨迹浮层收起来
+        // （作废的那一笔靠这次回调收尾，否则浮层会一直挂着）。
+        hide_gesture_overlay(&app);
         return;
     }
     let hit = {
@@ -2023,8 +2061,9 @@ fn handle_trackpad_stroke(
             .map(|g| (g.label(), g.actions.clone()))
     };
     let Some((name, actions)) = hit else {
-        // 「看得见的反馈」：告诉用户这一笔被判成了什么——**第一阶段就是靠它录方向串**
-        // （录入界面还没做，照抄进配置里那条手势的 `pattern` 即可）。
+        // 轨迹 + 失败色 + 方向串留在浮层上（约 900ms 自动收），另弹气泡说明怎么用。
+        // 第一阶段就是靠它录方向串（录入界面还没做，照抄进配置里那条手势的 `pattern`）。
+        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
         show_toast_note(
             &app,
             &format!("触摸板手势未匹配：{pattern}"),
@@ -2033,6 +2072,7 @@ fn handle_trackpad_stroke(
         return;
     };
     if actions.is_empty() {
+        show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
         show_toast_note(
             &app,
             &format!("触摸板手势 {pattern} 没有动作"),
@@ -2040,6 +2080,7 @@ fn handle_trackpad_stroke(
         );
         return;
     }
+    show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
     fire(
         app,
         results,
@@ -6784,6 +6825,25 @@ pub fn run() {
                     // 「进入采集」的开关，没有任何输出）；抬起 = 把轨迹交给出口，识别与执行在
                     // 后台线程（钩子回调里不做识别）。放在三条让路判定**之后**，让路口径与
                     // 快捷键完全一致；采集期间的按键自动重复也一并吞掉（不然长按会往应用里打字）。
+                    // 采集期间 Esc = 作废这一笔（右键手势靠「松开右键」取消，触摸板这边手指还
+                    // 在板上，需要一个中途退出的口）；连按下带抬起一起吞，免得应用收到孤立 Esc。
+                    // **Esc 自己就是触发键时不算撤销**：那一下要走「触发键」那条路（按下起笔、
+                    // 抬起收尾），否则按住 Esc 画一笔永远作废。
+                    if kada_hook::trackpad::armed()
+                        && !kada_hook::trackpad::armed_with(Key::Escape)
+                        && matches!(
+                            &ev,
+                            Ev::Down { key: Key::Escape, .. } | Ev::Up { key: Key::Escape }
+                        )
+                    {
+                        if matches!(&ev, Ev::Down { .. }) {
+                            kada_hook::trackpad::cancel();
+                            // 收起轨迹浮层要在后台线程（钩子回调里不碰窗口）。
+                            let app = app_handle.clone();
+                            std::thread::spawn(move || hide_gesture_overlay(&app));
+                        }
+                        return input::HookAction::Block;
+                    }
                     if let Ev::Down { key, repeat, .. } = &ev {
                         if *repeat {
                             if kada_hook::trackpad::armed_with(*key) {

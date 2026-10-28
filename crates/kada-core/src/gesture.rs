@@ -1057,6 +1057,26 @@ mod tests {
     }
 
     #[test]
+    fn exclude_list_accepts_full_paths_and_ignores_blank_entries() {
+        // 真机反馈：用户从任务管理器里整条路径粘进来（`C:\...\OpenCode.exe`），
+        // 而钩子给的是文件名 —— 必须剥掉目录再比，否则「填了却不生效」。
+        let list = vec![
+            r"C:\Users\someone\AppData\Local\Apps\OpenCode.exe".to_string(),
+            "\"C:\\Program Files\\Mozilla Firefox\\firefox.exe\"".to_string(),
+            "/usr/bin/chromium".to_string(),
+            "   ".to_string(),
+        ];
+        assert!(app_excluded(&list, "OpenCode.exe"));
+        assert!(app_excluded(&list, "firefox.exe"), "任务管理器带引号的整条路径也认");
+        assert!(app_excluded(&list, "chromium"));
+        // 空白项不能变成「匹配一切」（`contains("")` 恒真）。
+        let blanks = vec!["".to_string(), "  ".to_string()];
+        assert!(!app_excluded(&blanks, "anything.exe"));
+        // 只填目录不填文件名不该命中（剥完是空串，不能再拿空串去 `contains`）。
+        assert!(!app_excluded(&[r"C:\Program Files\Some App\".to_string()], "anything.exe"));
+    }
+
+    #[test]
     fn gesture_enabled_requires_an_enabled_entry() {
         let mut cfg = Config::default();
         cfg.gestures = vec![gesture("D")];

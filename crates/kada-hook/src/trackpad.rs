@@ -13,7 +13,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::gesture::Stroke;
 use crate::Key;
@@ -40,6 +40,11 @@ struct Tracker {
     points: Vec<(i32, i32)>,
     /// 起笔位置（松键后把光标放回去）。
     anchor: Option<(i32, i32)>,
+    /// 上一次记下轨迹的时刻（空闲超时判定：停手太久 = 这一笔不连贯，作废）。
+    last_move: Option<Instant>,
+    /// 已作废（Esc / 双指滚动 / 空闲超时）：还在等触发键抬起，但**不执行**。
+    /// 保持 `armed` 是为了让抬起仍然被吞掉——按下被吞了、抬起放走，应用会收到一个孤立 keyup。
+    voided: bool,
     /// 上一个记下的点（抽稀用）。
     last: (i32, i32),
 }
@@ -50,6 +55,8 @@ static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
     start: None,
     points: Vec::new(),
     anchor: None,
+    last_move: None,
+    voided: false,
     last: (0, 0),
 });
 
@@ -57,6 +64,9 @@ static TRACKER: Mutex<Tracker> = Mutex::new(Tracker {
 const MAX_POINTS: usize = 512;
 /// 相邻两点的最小距离（像素）：小于它不记点（手抖）。
 const MIN_STEP: i32 = 1;
+/// 停手多久算「这一笔不连贯」（松键时判）：触摸板上一笔正常几秒内画完，
+/// 停 3 秒以上多半是走神 / 改主意了——按作废处理，别拿半截轨迹去执行动作。
+const IDLE_LIMIT: Duration = Duration::from_millis(3000);
 
 /// 本平台能不能采：目前只有 Windows 接了鼠标钩子的移动事件。
 ///
@@ -94,12 +104,19 @@ pub fn reset() {
     t.start = None;
     t.points.clear();
     t.anchor = None;
+    t.last_move = None;
+    t.voided = false;
     t.last = (0, 0);
 }
 
 /// 当前是不是正在采集（浮层按这个开关显示 / 收起）。
 pub fn armed() -> bool {
     enabled() && TRACKER.lock().unwrap().armed
+}
+
+/// 浮层预览用：采集期间（含已作废、等松键的那段）都算「在画」。
+pub fn drawing() -> bool {
+    armed()
 }
 
 /// 这次采集是不是 `key` 开的（壳层据此决定「这个键的重复按下 / 抬起要不要吞」）。
@@ -126,6 +143,8 @@ pub fn arm(key: Key) -> bool {
     t.start = Some(Instant::now());
     t.points.clear();
     t.anchor = None;
+    t.last_move = None;
+    t.voided = false;
     t.last = (0, 0);
     true
 }
@@ -139,11 +158,17 @@ pub fn on_move(pt: (i32, i32)) {
     if !t.armed {
         return;
     }
+    // 已作废（Esc / 双指）：这一笔不再收点——否则松手前继续滑动会把轨迹重新画回
+    // 浮层上，看上去像「Esc 没生效」。作废只能靠松键结束。
+    if t.voided {
+        return;
+    }
     if t.anchor.is_none() {
         // 起笔：第一个移动事件的位置就是光标锚点（松键后复位到这里）。
         t.anchor = Some(pt);
         t.points.push(pt);
         t.last = pt;
+        t.last_move = Some(Instant::now());
         return;
     }
     let dx = (pt.0 - t.last.0) as i64;
@@ -153,22 +178,25 @@ pub fn on_move(pt: (i32, i32)) {
     }
     t.points.push(pt);
     t.last = pt;
+    t.last_move = Some(Instant::now());
     if t.points.len() > MAX_POINTS {
         let drop = t.points.len() / 2;
         t.points.drain(0..drop);
     }
 }
 
-/// 放弃这次采集（双指滚动 / Esc / 前台切换）：轨迹丢掉，**不回调出口**。
+/// 作废这次采集（Esc / 双指滚动）：轨迹丢掉、**不执行**，但仍然等触发键抬起。
 ///
-/// 触发键的抬起仍由壳层吞掉（它本来就只是开关），所以这里不用管键的配对。
+/// 不在这里改成「没在采集」的原因见 [`Tracker::voided`]：按下被吞了，抬起必须也吞掉，
+/// 否则应用会收到一个没有对应按下的 keyup。
 pub fn cancel() {
     let mut t = TRACKER.lock().unwrap();
-    t.armed = false;
-    t.key = None;
-    t.start = None;
+    if !t.armed {
+        return;
+    }
+    t.voided = true;
     t.points.clear();
-    t.last = (0, 0);
+    t.last_move = None;
 }
 
 /// 起笔时记下的光标位置（松键后把光标放回去；`None` = 还没动过）。
@@ -186,6 +214,10 @@ pub fn points() -> Vec<(i32, i32)> {
 
 /// 触发键抬起：`true` = 这次抬起归我们（壳层吞掉），并把轨迹交给出口。
 ///
+/// 触发键抬起：`true` = 这次抬起归我们（壳层吞掉），并把轨迹交给出口。
+///
+/// **作废的（Esc / 双指 / 停手超过 [`IDLE_LIMIT`]）也照样回调出口**，只是带空点集——
+/// 壳层要靠这次回调去收起轨迹浮层（不然浮层会一直挂在屏幕上）。
 /// 出口在锁外调（它可能要开线程、要读配置）。
 pub fn finish(key: Key) -> bool {
     if !enabled() {
@@ -198,13 +230,24 @@ pub fn finish(key: Key) -> bool {
         }
         t.armed = false;
         t.key = None;
+        // 停手太久 = 这一笔不连贯（用户走神 / 改主意）：按作废处理。
+        let idle = t
+            .last_move
+            .map(|m| m.elapsed() > IDLE_LIMIT)
+            .unwrap_or(true);
+        let voided = std::mem::take(&mut t.voided) || idle;
         let elapsed_ms = t
             .start
             .take()
             .map(|s| s.elapsed().as_millis() as u64)
             .unwrap_or(0);
+        let mut points = std::mem::take(&mut t.points);
+        if voided {
+            points.clear();
+        }
+        t.last_move = None;
         let stroke = Stroke {
-            points: std::mem::take(&mut t.points),
+            points,
             elapsed_ms,
             lasso: None,
         };
@@ -262,20 +305,41 @@ mod tests {
         assert!(finish(Key::F9));
         assert_eq!(got.lock().unwrap().len(), 2);
 
-        // 取消（双指滚动 / Esc）：轨迹丢掉，不回调出口。
+        // 作废（双指滚动 / Esc）：轨迹丢掉，但**仍在采集**（等松键），抬起照样吞掉并回调
+        // 出口（带空点集——壳层要靠这次回调收起轨迹浮层）。
         assert!(arm(Key::F9));
         on_move((0, 0));
         on_move((60, 0));
         cancel();
-        assert!(!armed());
-        assert!(!finish(Key::F9));
-        assert_eq!(got.lock().unwrap().len(), 2, "取消不回调");
+        assert!(armed(), "作废后仍在采集，直到触发键抬起");
+        assert!(points().is_empty(), "作废后轨迹清空（浮层不再画）");
+        // 松键前继续滑动也不收点：否则轨迹会重新画回浮层，看上去像「Esc 没生效」。
+        on_move((120, 0));
+        assert!(points().is_empty(), "作废后不再收点");
+        assert!(finish(Key::F9), "抬起仍归我们（按下被吞过）");
+        {
+            let strokes = got.lock().unwrap();
+            assert_eq!(strokes.len(), 3, "作废也回调一次（为了收浮层）");
+            assert!(strokes[2].1.points.is_empty(), "但点集是空的，不执行");
+        }
 
         // 没动过就松手：空轨迹也交给出口（壳层按「太短」丢掉）。
         assert!(arm(Key::F9));
         assert!(finish(Key::F9));
-        assert_eq!(got.lock().unwrap().len(), 3);
+        assert_eq!(got.lock().unwrap().len(), 4);
         assert!(got.lock().unwrap().last().unwrap().1.points.is_empty());
+
+        // 停手超过 IDLE_LIMIT（默认 3 秒）再松键：这一笔不连贯 → 作废、不执行。
+        // 直接把「最后一次移动」拨到 4 秒前，不真睡（测试要快）。
+        assert!(arm(Key::F9));
+        on_move((0, 0));
+        on_move((90, 0));
+        TRACKER.lock().unwrap().last_move = Some(Instant::now() - Duration::from_secs(4));
+        assert!(finish(Key::F9));
+        assert!(
+            got.lock().unwrap().last().unwrap().1.points.is_empty(),
+            "停手太久不执行"
+        );
 
         // 关掉总闸：立刻清状态，触发键回到普通按键。
         assert!(arm(Key::F9));
