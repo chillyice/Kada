@@ -26,6 +26,9 @@ pub mod macos;
 /// 鼠标手势的采集（规划 7.2-MG）：平台无关的状态机 + 轨迹出口，识别在壳层做。
 pub mod gesture;
 
+/// 触摸板手势的采集（规划 7.2-MG）：按住触发键、在触摸板上画，松键收尾。
+pub mod trackpad;
+
 /// 触发角（EXT-10）：平台无关的坐标状态机 + 出口，执行在壳层做。
 pub mod hotcorner;
 pub mod wheel_edge;
@@ -76,8 +79,23 @@ pub fn secure_input_enabled() -> bool {
     }
 }
 
-/// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
+/// 把光标挪到指定屏幕坐标（触摸板手势松键后复位：画的这一笔只在屏幕上「借道」，
+/// 不该把用户的鼠标留在别处）。
 ///
+/// 只有 Windows 真做；其余平台是空实现（Wayland 没有绝对定位接口，macOS 的
+/// `CGWarpMouseCursorPosition` 还没接——**这两处没接线之前不要假装支持**）。
+pub fn set_cursor_pos(pt: (i32, i32)) {
+    #[cfg(windows)]
+    {
+        win::set_cursor_pos(pt);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pt;
+    }
+}
+
+/// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
 /// `None` = 本平台查不出来（Linux：X11 / Wayland 没有统一且免提升权的接口），调用方按
 /// 「不空闲」处理——**绝不因为查不出来就安装**。
 pub fn idle_seconds() -> Option<u64> {

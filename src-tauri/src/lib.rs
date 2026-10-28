@@ -26,8 +26,8 @@ use kada_actions::{
 };
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
-    matches, parse_snippet_index, publish_payload, sanitize_config, scan_snippet, snippet,
-    snippet_title, Action,
+    is_touchpad_trigger, matches, parse_snippet_index, publish_payload, sanitize_config,
+    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action,
     ClipboardMenu,
     ClipboardOperation, Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent,
     Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan,
@@ -932,6 +932,8 @@ fn spawn_engine_ticker(
         let mut last_wheel: Option<bool> = None;
         // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
         let mut last_gesture: Option<bool> = None;
+        // 上一次「触摸板手势采集是否开着」：只有按住触发键期间才采集，同样是变了才推。
+        let mut last_trackpad: Option<bool> = None;
         // 触发角（EXT-10）/ 边缘滚动（EXT-11）：上一次推给钩子层的「总闸 + 四角/四边开关
         // + 显示器矩形」。显示器几何每 ~3 秒重取一次（热插拔 / 改分辨率），两者共用。
         type HotCornerPush = (bool, [bool; 4], Vec<(i32, i32, i32, i32)>);
@@ -964,10 +966,25 @@ fn spawn_engine_ticker(
             } else {
                 None
             });
+            // 输入复位 = 「与物理键盘断过一次线」：触摸板手势正在采的缓冲一起丢掉
+            // （不回放、不回调出口）。这里不持配置锁，锁序上只会拿采集状态。
+            if reason.is_some() {
+                kada_hook::trackpad::reset();
+            }
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
             // （`Settings.sequence_timeout_ms` / `chord_timeout_ms`），而钩子回调路径也是
             // 「先读配置、再锁引擎」——两条路径的加锁顺序必须一致，反过来会死锁。
-            let (payload, hud_enabled, use_mouse, use_wheel, user_paused, elevated, gesture_on, toast_on) = {
+            let (
+                payload,
+                hud_enabled,
+                use_mouse,
+                use_wheel,
+                user_paused,
+                elevated,
+                gesture_on,
+                trackpad_on,
+                toast_on,
+            ) = {
                 let guard = cfg.read().unwrap();
                 let frozen = rec.lock().unwrap().is_some()
                     || pause_active(&paused_until)
@@ -1001,6 +1018,11 @@ fn spawn_engine_ticker(
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
                     // → 右键完全放行（回到系统行为，一个字节都不多吞）。
                     guard.settings.experimental && gesture_capture_enabled(&guard),
+                    // 触摸板手势的闸门：同样受总开关管；没有触摸板手势 / 本平台没接
+                    // 鼠标移动采集时不 arm（触发键照常输出，不是静默吞掉）。
+                    guard.settings.experimental
+                        && touchpad_gesture_enabled(&guard)
+                        && kada_hook::trackpad::supported(),
                     guard.settings.trigger_toast,
                 )
             };
@@ -1029,6 +1051,11 @@ fn spawn_engine_ticker(
             if last_gesture != Some(gesture_on) {
                 kada_hook::gesture::set_enabled(gesture_on);
                 last_gesture = Some(gesture_on);
+            }
+            // 触摸板手势（7.2-MG）：只在按住触发键期间采集；关掉时钩子层清干净状态。
+            if last_trackpad != Some(trackpad_on) {
+                kada_hook::trackpad::set_enabled(trackpad_on);
+                last_trackpad = Some(trackpad_on);
             }
             // 触发角（EXT-10）/ 边缘滚动（EXT-11）：总闸 + 四角/四边开关 + 显示器矩形推给
             // 钩子层（回调里只做纯坐标判断）。两者共用同一份显示器几何，任一启用就按 ~3 秒
@@ -1918,6 +1945,113 @@ fn spawn_gesture_listener(
         std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke));
     })));
     spawn_gesture_overlay(overlay_app, overlay_cfg);
+}
+
+/// 触摸板手势（7.2-MG）：注册轨迹出口。与右键手势同一个口径——回调在钩子线程上跑，
+/// 这里只「拷贝数据 + 开线程」，识别与动作执行都在新线程里。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn spawn_trackpad_listener(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+) {
+    kada_hook::trackpad::set_sink(Some(Arc::new(move |key, stroke| {
+        let app = app.clone();
+        let cfg = cfg.clone();
+        let results = results.clone();
+        let unread = unread.clone();
+        let runs = runs.clone();
+        std::thread::spawn(move || {
+            handle_trackpad_stroke(app, cfg, results, unread, runs, key, stroke)
+        });
+    })));
+}
+
+/// 一次触摸板手势的收尾：识别 → 命中就执行动作；**没命中什么都不用补**。
+///
+/// 与右键手势最大的不同：被吞掉的只有触发键本身（它只是「进入采集」的开关），
+/// 所以这里没有 `replay_right_click`（吞键铁律要求回放的是「本可以正常工作的输入」，
+/// 触发键不是）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn handle_trackpad_stroke(
+    app: tauri::AppHandle,
+    cfg: Arc<RwLock<Config>>,
+    results: Arc<Mutex<Vec<CommandResult>>>,
+    unread: Arc<AtomicBool>,
+    runs: Arc<Mutex<Vec<RunRecord>>>,
+    trigger: Key,
+    stroke: kada_hook::gesture::Stroke,
+) {
+    let (on, min_len, action_timeout, text_mode, exclude, exclude_apps) = {
+        let g = cfg.read().unwrap();
+        (
+            g.settings.experimental && touchpad_gesture_enabled(&g),
+            g.settings.gesture_start_distance as f64,
+            g.settings.action_timeout_ms,
+            g.settings.text_inject_mode,
+            g.settings.gesture_exclude.clone(),
+            g.settings.exclude_apps.clone(),
+        )
+    };
+    if !on {
+        return;
+    }
+    // 让路：全屏程序、全局排除列表、手势排除列表。触发键已经被吞了（它没有输出），
+    // 所以这里只是「不执行」，不是「回放」。
+    if input::foreground_fullscreen() {
+        return;
+    }
+    let fetch = || input::frontmost_context();
+    let ctx = TriggerContext::lazy(&fetch, None);
+    if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
+        return;
+    }
+    // 触摸板上画一笔本来就慢，`gesture_timeout_ms` 那套「画太久作废」不适用：
+    // 收尾时机是**松键**，不存在右键按住不放的副作用。
+    let pattern = kada_core::pattern_from_stroke(&stroke.points, min_len);
+    if pattern.is_empty() {
+        // 太短 / 涂鸦 / 方向太多：不猜。静默返回（没有吞掉的东西要补）。
+        return;
+    }
+    let hit = {
+        let g = cfg.read().unwrap();
+        // 方向串是硬判据；**兜底模板只在没命中时用**（只加召回、不改判）。
+        kada_core::find_gesture_for(&g, &pattern, Some(trigger), &ctx)
+            .or_else(|| kada_core::find_gesture_by_template(&g, &stroke.points, Some(trigger), &ctx))
+            .map(|g| (g.label(), g.actions.clone()))
+    };
+    let Some((name, actions)) = hit else {
+        // 「看得见的反馈」：告诉用户这一笔被判成了什么——**第一阶段就是靠它录方向串**
+        // （录入界面还没做，照抄进配置里那条手势的 `pattern` 即可）。
+        show_toast_note(
+            &app,
+            &format!("触摸板手势未匹配：{pattern}"),
+            "把这个方向串填进那条手势的「方向串」就能用了。",
+        );
+        return;
+    };
+    if actions.is_empty() {
+        show_toast_note(
+            &app,
+            &format!("触摸板手势 {pattern} 没有动作"),
+            "给这条手势配上动作才会执行。",
+        );
+        return;
+    }
+    fire(
+        app,
+        results,
+        unread,
+        runs,
+        actions,
+        format!("手势 {pattern}"),
+        name,
+        action_timeout,
+        text_mode,
+        stroke.points.first().copied(),
+    );
 }
 
 /// 一次手势的收尾：识别 → 命中就执行动作；**没命中（或压根没画出轨迹）就把右键补回来**。
@@ -6646,6 +6780,33 @@ pub fn run() {
                     if guard.settings.ignore_fullscreen && input::foreground_fullscreen() {
                         return input::HookAction::Allow;
                     }
+                    // 触摸板手势（7.2-MG）：触发键按下一瞬间 = 开始采集，这一下吞掉（它只是
+                    // 「进入采集」的开关，没有任何输出）；抬起 = 把轨迹交给出口，识别与执行在
+                    // 后台线程（钩子回调里不做识别）。放在三条让路判定**之后**，让路口径与
+                    // 快捷键完全一致；采集期间的按键自动重复也一并吞掉（不然长按会往应用里打字）。
+                    if let Ev::Down { key, repeat, .. } = &ev {
+                        if *repeat {
+                            if kada_hook::trackpad::armed_with(*key) {
+                                return input::HookAction::Block;
+                            }
+                        } else if kada_hook::trackpad::supported()
+                            && is_touchpad_trigger(&guard, *key)
+                            && kada_hook::trackpad::arm(*key)
+                        {
+                            return input::HookAction::Block;
+                        }
+                    }
+                    if let Ev::Up { key } = &ev {
+                        if kada_hook::trackpad::armed_with(*key) {
+                            let anchor = kada_hook::trackpad::anchor();
+                            kada_hook::trackpad::finish(*key);
+                            // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
+                            if let Some(pt) = anchor {
+                                kada_hook::set_cursor_pos(pt);
+                            }
+                            return input::HookAction::Block;
+                        }
+                    }
                     // 复制快捷菜单（双击 Ctrl+C）已删除：不再旁路观察，也不会再弹菜单。
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
@@ -6764,6 +6925,17 @@ pub fn run() {
             // 放在 `KadaState` 之前：`results` / `unread` / `runs` 三个 Arc 会被 state 拿走。
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_gesture_listener(
+                app.handle().clone(),
+                config.clone(),
+                results.clone(),
+                unread.clone(),
+                runs.clone(),
+            );
+
+            // 触摸板手势的轨迹出口（7.2-MG）：同样是钩子线程回调、壳层开线程识别。
+            // 开不开由定时器线程按配置推（总开关 + 有没有触摸板手势 + 平台是否接了鼠标移动）。
+            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+            spawn_trackpad_listener(
                 app.handle().clone(),
                 config.clone(),
                 results.clone(),

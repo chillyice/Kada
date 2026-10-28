@@ -114,8 +114,9 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         report.expansions += 1;
     }
 
-    // 鼠标手势按**归一化后的方向串 + when** 去重：同方向串同条件两条手势只会触发先配置的
-    // 那条，导入第二条等于白导入；不同 `when` 是两条独立条目（按前台分流），照常纳入。
+    // 鼠标手势按**归一化后的方向串 + 触发方式 + when** 去重：同方向串同条件两条手势只会触发
+    // 先配置的那条，导入第二条等于白导入；不同 `when` 是两条独立条目（按前台分流），照常
+    // 纳入；触发方式不同（右键拖动 vs 按住某个键）也是两条独立条目，方向串撞了不算重复。
     for g in &incoming.gestures {
         let pattern = crate::normalize_pattern(&g.pattern);
         if pattern.is_empty() {
@@ -124,11 +125,11 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
                 .push(format!("鼠标手势「{}」未导入：方向串无法解析", g.label()));
             continue;
         }
-        if out
-            .gestures
-            .iter()
-            .any(|x| crate::normalize_pattern(&x.pattern) == pattern && x.when_key() == g.when_key())
-        {
+        if out.gestures.iter().any(|x| {
+            x.trigger == g.trigger
+                && crate::normalize_pattern(&x.pattern) == pattern
+                && x.when_key() == g.when_key()
+        }) {
             report.skipped.push(format!(
                 "鼠标手势「{}」未导入：方向串「{pattern}」已存在",
                 g.label()

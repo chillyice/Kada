@@ -12,8 +12,29 @@
 //!
 //! 平台无关的**纯逻辑**：钩子只负责收集轨迹点，识别在壳层做（钩子回调里不许耗时）。
 
-use crate::{Action, Config, TriggerContext};
+use crate::{Action, Config, Key, TriggerContext};
 use serde::{Deserialize, Serialize};
+
+/// 触发键在配置里落成键名（`"CapsLock"`），与快捷键 / 改键的 `from` 同一套写法。
+/// `Key` 本身没有 serde 派生（配置里一律存字符串），这里只给 `Option<Key>` 用。
+mod key_serde {
+    use crate::Key;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<Key>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(k) => s.serialize_str(crate::key_name(*k)),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Key>, D::Error> {
+        match Option::<String>::deserialize(d)? {
+            Some(s) => s.parse::<Key>().map(Some).map_err(serde::de::Error::custom),
+            None => Ok(None),
+        }
+    }
+}
 
 /// 一条鼠标手势。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -27,6 +48,16 @@ pub struct Gesture {
     /// 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`；多段用逗号分隔（如 `D,R,U,L`）。
     #[serde(default)]
     pub pattern: String,
+    /// 触发方式：`None` = 按住**右键**画（鼠标手势）；`Some(key)` = 按住该键、在触摸板上画
+    /// （触摸板手势）。缺字段 = 右键（老配置原样读）。触发键本身被吞掉——它只是「进入
+    /// 采集」，没有输出，所以没命中时也没有右键要回放。
+    #[serde(default, with = "key_serde", skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Key>,
+    /// 个人形状模板（触摸板手势的兜底）：[`template_from_points`] 归一化后的 24 个点，
+    /// 每轴 `0..=1000`。**只在方向串匹配不上时才用**——匹配上了就不再拿它改判，
+    /// 免得别人分享的模板把你这台机器锁死。缺字段 = 没有模板。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<Vec<[i16; 2]>>,
     /// 触发后按顺序执行的多个动作（复用 [`Action`]，与快捷键同一套动作引擎）。
     /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -78,6 +109,11 @@ impl Gesture {
         {
             None
         }
+    }
+
+    /// 是不是**触摸板手势**（按住一个键来采集，而不是按住右键）。
+    pub fn is_touchpad(&self) -> bool {
+        self.trigger.is_some()
     }
 }
 
@@ -371,8 +407,338 @@ pub fn pattern_from_points(points: &[(i32, i32)], min_segment: i32) -> String {
     tokens.iter().map(|d| d.token()).collect::<Vec<_>>().join(",")
 }
 
-/// 轨迹是否绕成一个圈，返回包围盒 `(左, 上, 右, 下)`（屏幕坐标）。
+// ---------------------------------------------------------------------------
+// 触摸板轨迹（7.2-MG 触摸板手势）：尺度无关的方向串 + 形状模板
+//
+// 触摸板上画一笔只有几厘米、采样稀疏（钩子事件还可能被合并）、还要经过指针加速，
+// 右键拖拽那套**屏幕像素**阈值（`gesture_min_segment` / `eps = min/4`）在这里会直接崩：
+// 短笔画被切成锯齿、拐角被抹平。所以这里的阈值全部**按笔画自身尺寸取比例**。
+// ---------------------------------------------------------------------------
+
+/// 重采样后固定点数（方向量化与模板共用）。
+const STROKE_RESAMPLE: usize = 48;
+/// 掐头去尾的比例（按弧长）：手指落下 / 抬起那一下最容易带出一个小钩子。
+const STROKE_TRIM: f64 = 0.08;
+/// RDP 容差 = 包围盒对角线 × 这个比例。
+const STROKE_EPS_RATIO: f64 = 0.06;
+/// 一段至少占总行程的比例：不足的并进下一段（不落 token）。
+const STROKE_MIN_SEG_RATIO: f64 = 0.10;
+/// 「先轴后斜」的吸附角：离正方向不超过它就算正方向。
+const STROKE_AXIS_SNAP_DEG: f64 = 25.0;
+/// 一段轨迹最多吐几个 token：再多基本是误识（触摸板上画不了那么细）。
+const STROKE_MAX_TOKENS: usize = 4;
+/// 模板点数（存储与比较一致）。
+pub const TEMPLATE_POINTS: usize = 24;
+/// 模板匹配阈值：平均点距 / 归一化边长（0 = 完全一样，0.14 ≈ 形状明显走样）。
+pub const TEMPLATE_MAX_DISTANCE: f64 = 0.14;
+
+fn dist(a: (f64, f64), b: (f64, f64)) -> f64 {
+    ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt()
+}
+
+fn path_length(pts: &[(f64, f64)]) -> f64 {
+    pts.windows(2).map(|w| dist(w[0], w[1])).sum()
+}
+
+/// 去掉相邻重复点（触摸板会连发同一坐标的移动）。
+fn dedupe_path(points: &[(i32, i32)]) -> Vec<(f64, f64)> {
+    let mut out: Vec<(f64, f64)> = Vec::with_capacity(points.len());
+    for &(x, y) in points {
+        let p = (x as f64, y as f64);
+        if out.last() != Some(&p) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+/// 沿折线取「距起点 `want`」处的一点（超出总长取末点）。
+fn point_at(pts: &[(f64, f64)], want: f64) -> (f64, f64) {
+    let Some(&last) = pts.last() else {
+        return (0.0, 0.0);
+    };
+    let mut acc = 0.0f64;
+    for pair in pts.windows(2) {
+        let seg = dist(pair[0], pair[1]);
+        if seg <= f64::EPSILON {
+            continue;
+        }
+        if acc + seg >= want {
+            let t = ((want - acc) / seg).clamp(0.0, 1.0);
+            return (
+                pair[0].0 + (pair[1].0 - pair[0].0) * t,
+                pair[0].1 + (pair[1].1 - pair[0].1) * t,
+            );
+        }
+        acc += seg;
+    }
+    last
+}
+
+/// 按弧长剪掉首尾各 `ratio`（0..0.45）的行程，两端用插值点补齐。
+fn trim_path(pts: &[(f64, f64)], ratio: f64) -> Vec<(f64, f64)> {
+    let total = path_length(pts);
+    if total <= f64::EPSILON || pts.len() < 2 {
+        return pts.to_vec();
+    }
+    let ratio = ratio.clamp(0.0, 0.45);
+    let (lo, hi) = (total * ratio, total * (1.0 - ratio));
+    if hi <= lo {
+        return Vec::new();
+    }
+    let mut out = vec![point_at(pts, lo)];
+    let mut acc = 0.0f64;
+    for pair in pts.windows(2) {
+        acc += dist(pair[0], pair[1]);
+        if acc > lo && acc < hi {
+            out.push(pair[1]);
+        }
+    }
+    out.push(point_at(pts, hi));
+    out.dedup_by(|a, b| dist(*a, *b) < 1e-6);
+    out
+}
+
+/// 按弧长等距重采样成 `n` 个点。
+fn resample_by_length(pts: &[(f64, f64)], n: usize) -> Vec<(f64, f64)> {
+    let total = path_length(pts);
+    if total <= f64::EPSILON || n < 2 {
+        return Vec::new();
+    }
+    (0..n)
+        .map(|i| point_at(pts, total * i as f64 / (n - 1) as f64))
+        .collect()
+}
+
+/// 三点加权平滑（端点不动），两遍就够压掉量化噪声。
+fn smooth_path(pts: &mut [(f64, f64)], passes: usize) {
+    for _ in 0..passes {
+        if pts.len() < 3 {
+            return;
+        }
+        let src = pts.to_vec();
+        for i in 1..src.len() - 1 {
+            pts[i] = (
+                (src[i - 1].0 + 2.0 * src[i].0 + src[i + 1].0) / 4.0,
+                (src[i - 1].1 + 2.0 * src[i].1 + src[i + 1].1) / 4.0,
+            );
+        }
+    }
+}
+
+/// RDP 简化（浮点版）：与 [`simplify`] 同一算法，给重采样后的轨迹用。
+fn simplify_f(points: &[(f64, f64)], eps: f64) -> Vec<(f64, f64)> {
+    if points.len() <= 2 {
+        return points.to_vec();
+    }
+    let (first, last) = (points[0], points[points.len() - 1]);
+    let (dx, dy) = (last.0 - first.0, last.1 - first.1);
+    let len = (dx * dx + dy * dy).sqrt();
+    let mut idx = 0usize;
+    let mut max = 0.0f64;
+    for (i, p) in points.iter().enumerate().take(points.len() - 1).skip(1) {
+        let d = if len == 0.0 {
+            dist(*p, first)
+        } else {
+            ((dx * (first.1 - p.1) - (first.0 - p.0) * dy) / len).abs()
+        };
+        if d > max {
+            max = d;
+            idx = i;
+        }
+    }
+    if max <= eps {
+        return vec![first, last];
+    }
+    let mut left = simplify_f(&points[..=idx], eps);
+    let right = simplify_f(&points[idx..], eps);
+    left.pop();
+    left.extend(right);
+    left
+}
+
+fn bbox_diag(pts: &[(f64, f64)]) -> f64 {
+    let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
+    let (mut maxx, mut maxy) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in pts {
+        minx = minx.min(x);
+        miny = miny.min(y);
+        maxx = maxx.max(x);
+        maxy = maxy.max(y);
+    }
+    if !minx.is_finite() || !maxx.is_finite() {
+        return 0.0;
+    }
+    ((maxx - minx).powi(2) + (maxy - miny).powi(2)).sqrt()
+}
+
+/// 方向量化（触摸板口径）：**先轴后斜**。
 ///
+/// 离最近的正方向 ≤ [`STROKE_AXIS_SNAP_DEG`] 就算正方向，剩下来的扇区才给斜向。
+/// 触摸板上画斜向本来就难，把 30° 的歪斜判成「横向」比吐出用户没画的 `DR` 更安全。
+fn dir_of_run(dx: f64, dy: f64) -> Option<Dir> {
+    let mut deg = dy.atan2(dx).to_degrees();
+    if deg < 0.0 {
+        deg += 360.0;
+    }
+    let axis = (deg / 90.0).round() * 90.0;
+    let mut delta = (deg - axis).abs();
+    if delta > 180.0 {
+        delta = 360.0 - delta;
+    }
+    if delta <= STROKE_AXIS_SNAP_DEG {
+        return match (axis as i64).rem_euclid(360) {
+            0 => Some(Dir::R),
+            90 => Some(Dir::D),
+            180 => Some(Dir::L),
+            _ => Some(Dir::U),
+        };
+    }
+    Dir::from_vec(dx, dy)
+}
+
+/// 触摸板 / 任意鼠标移动的轨迹 → 方向串（**尺度无关**）。
+///
+/// 与 [`pattern_from_points`] 的分工：那边是右键拖拽（屏幕像素阈值够用），这边给
+/// 「按住一个键、在触摸板上画」用。差别：
+/// - 掐掉首尾各 8% 弧长（落下 / 抬起的钩子）；
+/// - 按弧长重采样 48 点 + 平滑两遍（采样稀疏时也不把直线切碎）；
+/// - RDP 容差与最小段长都按笔画自身尺寸取比例；
+/// - 方向量化先轴后斜。
+///
+/// `min_len_px` 只是「太小不算数」的闸（手抖点一下），识别本身不依赖绝对长度。
+pub fn pattern_from_stroke(points: &[(i32, i32)], min_len_px: f64) -> String {
+    let raw = dedupe_path(points);
+    if raw.len() < 2 {
+        return String::new();
+    }
+    let total = path_length(&raw);
+    if total < min_len_px.max(1.0) {
+        return String::new();
+    }
+    let trimmed = trim_path(&raw, STROKE_TRIM);
+    if trimmed.len() < 2 {
+        return String::new();
+    }
+    let mut path = resample_by_length(&trimmed, STROKE_RESAMPLE);
+    if path.len() < 3 {
+        return String::new();
+    }
+    let trimmed_walk = path_length(&trimmed);
+    smooth_path(&mut path, 2);
+    let walk = path_length(&path);
+    let span = bbox_diag(&path);
+    if span < 2.0 || walk < min_len_px.max(1.0) * 0.5 {
+        return String::new();
+    }
+    // 平滑吃掉大半行程 = 这一笔本身是来回抖 / 涂鸦：没有可识别的形状，别硬猜方向。
+    if walk < trimmed_walk * 0.35 {
+        return String::new();
+    }
+    // 来回涂鸦：行程远超包围盒，形状没有意义（正常一笔 walk 约为 span 的 1~3 倍）。
+    if walk > span * 3.5 {
+        return String::new();
+    }
+    let simplified = simplify_f(&path, (span * STROKE_EPS_RATIO).max(0.5));
+    let min_seg = (walk * STROKE_MIN_SEG_RATIO).max(1.0);
+    let mut runs: Vec<(f64, f64)> = Vec::new();
+    let mut anchor = simplified[0];
+    for &p in &simplified[1..] {
+        let (dx, dy) = (p.0 - anchor.0, p.1 - anchor.1);
+        if (dx * dx + dy * dy).sqrt() < min_seg {
+            continue;
+        }
+        let merged = match runs.last_mut() {
+            Some((rx, ry)) => match (Dir::from_vec(*rx, *ry), Dir::from_vec(dx, dy)) {
+                (Some(a), Some(b)) if a.adjacent(b) => {
+                    *rx += dx;
+                    *ry += dy;
+                    true
+                }
+                _ => false,
+            },
+            None => false,
+        };
+        if !merged {
+            runs.push((dx, dy));
+        }
+        anchor = p;
+    }
+    let mut tokens: Vec<Dir> = Vec::new();
+    for (dx, dy) in runs {
+        if let Some(dir) = dir_of_run(dx, dy) {
+            if tokens.last() != Some(&dir) {
+                tokens.push(dir);
+            }
+        }
+    }
+    if tokens.len() > STROKE_MAX_TOKENS {
+        return String::new();
+    }
+    tokens.iter().map(|d| d.token()).collect::<Vec<_>>().join(",")
+}
+
+/// 轨迹 → 归一化形状模板（[`TEMPLATE_POINTS`] 个点，每轴 `0..=1000`）。
+///
+/// 平移到包围盒原点、按**长边**缩放到 1000（保持长宽比、不旋转）：触摸板的方向对用户
+/// 是有意义的，允许旋转会把「横向一笔」的模板匹配到「竖向一笔」上。太小 / 全是同一点
+/// 的轨迹返回 `None`（没有形状可存）。
+pub fn template_from_points(points: &[(i32, i32)]) -> Option<Vec<[i16; 2]>> {
+    let raw = dedupe_path(points);
+    if raw.len() < 2 {
+        return None;
+    }
+    let trimmed = trim_path(&raw, STROKE_TRIM);
+    if path_length(&trimmed) < 1.0 {
+        return None;
+    }
+    let mut path = resample_by_length(&trimmed, TEMPLATE_POINTS);
+    if path.len() != TEMPLATE_POINTS {
+        return None;
+    }
+    smooth_path(&mut path, 2);
+    let (mut minx, mut miny) = (f64::INFINITY, f64::INFINITY);
+    let (mut maxx, mut maxy) = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for &(x, y) in &path {
+        minx = minx.min(x);
+        miny = miny.min(y);
+        maxx = maxx.max(x);
+        maxy = maxy.max(y);
+    }
+    let scale = (maxx - minx).max(maxy - miny);
+    if !scale.is_finite() || scale < 1.0 {
+        return None;
+    }
+    Some(
+        path.iter()
+            .map(|&(x, y)| {
+                [
+                    (((x - minx) / scale) * 1000.0).round() as i16,
+                    (((y - miny) / scale) * 1000.0).round() as i16,
+                ]
+            })
+            .collect(),
+    )
+}
+
+/// 两个模板的平均点距（按 1000 边长归一；`0` = 完全一样）。点数不一致 → `None`。
+pub fn template_distance(a: &[[i16; 2]], b: &[[i16; 2]]) -> Option<f64> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    let sum: f64 = a
+        .iter()
+        .zip(b)
+        .map(|(p, q)| {
+            let dx = (p[0] as f64 - q[0] as f64) / 1000.0;
+            let dy = (p[1] as f64 - q[1] as f64) / 1000.0;
+            (dx * dx + dy * dy).sqrt()
+        })
+        .sum();
+    Some(sum / a.len() as f64)
+}
+
+/// 轨迹是否绕成一个圈，返回包围盒 `(左, 上, 右, 下)`（屏幕坐标）。
 /// 判据是**绕包围盒中心的有向转角**累计超过 270°——手画的圈不必首尾贴合，椭的、歪的
 /// 都算；来回折线 / 八字（正负抵消）不算。盒子任一边小于 16px 也不算（防手抖点一下）。
 pub fn lasso_bbox(points: &[(i32, i32)]) -> Option<(i32, i32, i32, i32)> {
@@ -409,26 +775,55 @@ pub fn lasso_bbox(points: &[(i32, i32)]) -> Option<(i32, i32, i32, i32)> {
     }
 }
 
-/// 手势采集是否该开：有配置好的手势，或开了「圈选截图」（自带手势，不需要配置条目）。
+/// 手势采集是否该开：有配置好的**右键**手势，或开了「圈选截图」（自带手势，不需要配置条目）。
+///
+/// 触摸板手势不走这条：它们只在按住触发键期间采集（[`touchpad_gesture_enabled`]），
+/// 不该因为配了触摸板手势就全局抢右键。
 pub fn gesture_capture_enabled(cfg: &Config) -> bool {
     gesture_enabled(cfg) || cfg.settings.gesture_screenshot
 }
 
-/// 配置里有没有启用的手势（没手势时不该抢右键）。
+/// 配置里有没有启用的**右键**手势（没手势时不该抢右键）。
 pub fn gesture_enabled(cfg: &Config) -> bool {
+    cfg.gestures.iter().any(|g| {
+        g.enabled && !g.is_touchpad() && !normalize_pattern(&g.pattern).is_empty()
+    })
+}
+
+/// 配置里有没有启用的**触摸板**手势（按住触发键采集那一种）。
+pub fn touchpad_gesture_enabled(cfg: &Config) -> bool {
     cfg.gestures
         .iter()
-        .any(|g| g.enabled && !normalize_pattern(&g.pattern).is_empty())
+        .any(|g| g.enabled && g.is_touchpad() && !normalize_pattern(&g.pattern).is_empty())
+}
+
+/// 这个键是不是某条启用中的触摸板手势的**触发键**（壳层在按键回调里用它判「要不要进采集」）。
+pub fn is_touchpad_trigger(cfg: &Config, key: Key) -> bool {
+    cfg.gestures
+        .iter()
+        .any(|g| g.enabled && g.trigger == Some(key) && !normalize_pattern(&g.pattern).is_empty())
+}
+
+/// 按方向串找**右键**手势（精确匹配）。
+pub fn find_gesture<'a>(
+    cfg: &'a Config,
+    pattern: &str,
+    ctx: &TriggerContext,
+) -> Option<&'a Gesture> {
+    find_gesture_for(cfg, pattern, None, ctx)
 }
 
 /// 按方向串找手势（**精确匹配**，不做前缀匹配：`D` 不该吃掉 `DR`）。
 ///
 /// `D,R`（先下再右）与 `DR`（右下斜向）是两条不同的方向串，各自只命中自己。
+/// `trigger` 区分来源：`None` = 右键拖动，`Some(key)` = 按住该键（触摸板手势）——
+/// 同一个方向串在两种来源下可以各配一条，互不串味。
 /// 同方向串多条时按配置顺序取**第一条 `when` 成立**的（`when` 不成立 = 该条不存在，
 /// 落到下一条；规则与快捷键 / 改键一致）。
-pub fn find_gesture<'a>(
+pub fn find_gesture_for<'a>(
     cfg: &'a Config,
     pattern: &str,
+    trigger: Option<Key>,
     ctx: &TriggerContext,
 ) -> Option<&'a Gesture> {
     let pattern = normalize_pattern(pattern);
@@ -436,8 +831,33 @@ pub fn find_gesture<'a>(
         return None;
     }
     cfg.gestures.iter().find(|g| {
-        g.enabled && normalize_pattern(&g.pattern) == pattern && g.when_matches(ctx)
+        g.enabled
+            && g.trigger == trigger
+            && normalize_pattern(&g.pattern) == pattern
+            && g.when_matches(ctx)
     })
+}
+
+/// 方向串没命中时的**模板兜底**：取形状最近、且在 [`TEMPLATE_MAX_DISTANCE`] 以内的一条。
+///
+/// 只加召回、不改判：已经由方向串命中的结果不会被模板推翻（见 [`Gesture::template`]）。
+pub fn find_gesture_by_template<'a>(
+    cfg: &'a Config,
+    points: &[(i32, i32)],
+    trigger: Option<Key>,
+    ctx: &TriggerContext,
+) -> Option<&'a Gesture> {
+    let probe = template_from_points(points)?;
+    cfg.gestures
+        .iter()
+        .filter(|g| g.enabled && g.trigger == trigger && g.when_matches(ctx))
+        .filter_map(|g| {
+            let t = g.template.as_deref()?;
+            template_distance(t, &probe).map(|d| (d, g))
+        })
+        .filter(|(d, _)| *d <= TEMPLATE_MAX_DISTANCE)
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, g)| g)
 }
 
 #[cfg(test)]
@@ -449,6 +869,8 @@ mod tests {
             name: Some("测试".into()),
             description: None,
             pattern: pattern.into(),
+            trigger: None,
+            template: None,
             actions: Vec::new(),
             #[cfg(feature = "automation")]
             when: None,
@@ -687,5 +1109,190 @@ mod tests {
         assert_eq!(out.gestures.len(), 2);
         assert_eq!(report.gestures, 1);
         assert!(report.skipped.iter().any(|s| s.contains("方向串")));
+    }
+
+    // ---- 触摸板手势（7.2-MG）：尺度无关的方向串 + 模板 ----
+
+    /// 一笔从 `from` 到 `to` 的直线，带一点固定相位抖动（模拟触摸板噪声）。
+    fn line(from: (f64, f64), to: (f64, f64), steps: usize) -> Vec<(i32, i32)> {
+        (0..=steps)
+            .map(|i| {
+                let t = i as f64 / steps as f64;
+                let x = from.0 + (to.0 - from.0) * t;
+                let y = from.1 + (to.1 - from.1) * t;
+                let jitter = if i == 0 || i == steps { 0.0 } else { (i as f64 * 1.7).sin() * 0.8 };
+                ((x + jitter) as i32, (y + jitter * 0.5) as i32)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stroke_pattern_is_scale_invariant() {
+        // 同一形状、行程差 5 倍，方向串必须一致：阈值全是按比例取的。
+        let small = line((0.0, 0.0), (50.0, 0.0), 12);
+        let big = line((0.0, 0.0), (250.0, 0.0), 40);
+        assert_eq!(pattern_from_stroke(&small, 24.0), "R");
+        assert_eq!(pattern_from_stroke(&big, 24.0), "R");
+        for (dx, dy, want) in [(0.0, 1.0, "D"), (-1.0, 0.0, "L"), (0.0, -1.0, "U")] {
+            let a = line((100.0, 100.0), (100.0 + dx * 60.0, 100.0 + dy * 60.0), 15);
+            assert_eq!(pattern_from_stroke(&a, 24.0), want, "dx={dx} dy={dy}");
+        }
+    }
+
+    #[test]
+    fn stroke_pattern_swallows_take_off_hooks() {
+        // 手指落下 / 抬起那一下常带一个侧向小钩子：不能把「横向」判成 DR,R / R,DR。
+        let mut pts = vec![(0, 14), (2, 8), (5, 3)];
+        pts.extend(line((8.0, 0.0), (60.0, 0.0), 14));
+        pts.extend([(65, 2), (68, 7), (70, 12)]);
+        assert_eq!(pattern_from_stroke(&pts, 24.0), "R", "首尾钩子要掐掉");
+    }
+
+    #[test]
+    fn stroke_pattern_keeps_real_corners() {
+        // 先右后下：真拐角不能被平滑抹掉。
+        let mut pts = line((0.0, 0.0), (50.0, 0.0), 10);
+        pts.extend(line((50.0, 0.0), (50.0, 50.0), 10).into_iter().skip(1));
+        assert_eq!(pattern_from_stroke(&pts, 24.0), "R,D");
+    }
+
+    #[test]
+    fn stroke_pattern_snaps_to_axis_before_diagonal() {
+        // 偏 20° 的「横向」算横向；45° 才是斜向。触摸板上斜向难画，必须先轴后斜。
+        let flat = line((0.0, 0.0), (100.0, 36.0), 20); // ≈ 20°
+        assert_eq!(pattern_from_stroke(&flat, 24.0), "R", "20° 歪斜仍算横向");
+        let diag = line((0.0, 0.0), (100.0, 100.0), 20);
+        assert_eq!(pattern_from_stroke(&diag, 24.0), "DR");
+    }
+
+    #[test]
+    fn stroke_pattern_rejects_tiny_and_scribbles() {
+        assert_eq!(pattern_from_stroke(&line((0.0, 0.0), (8.0, 0.0), 4), 24.0), "");
+        assert_eq!(pattern_from_stroke(&[], 24.0), "");
+        // 原地来回涂鸦：行程远超包围盒，形状没有意义。
+        let mut scribble = Vec::new();
+        for i in 0..40 {
+            let x = if i % 2 == 0 { 0.0 } else { 40.0 };
+            scribble.push((x as i32, (i % 3) as i32));
+        }
+        assert_eq!(pattern_from_stroke(&scribble, 24.0), "", "涂鸦不吐方向串");
+    }
+
+    #[test]
+    fn stroke_pattern_never_exceeds_token_cap() {
+        // 画了很多段：宁可判「不认识」，也别吐一串猜出来的方向。
+        let mut pts = Vec::new();
+        let dirs = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, 0.0), (0.0, 1.0)];
+        let mut cur = (0.0f64, 0.0f64);
+        for (dx, dy) in dirs {
+            let next = (cur.0 + dx * 40.0, cur.1 + dy * 40.0);
+            pts.extend(line(cur, next, 8));
+            cur = next;
+        }
+        assert_eq!(pattern_from_stroke(&pts, 24.0), "");
+    }
+
+    #[test]
+    fn template_normalizes_scale_and_ignores_offsets() {
+        let mut a = line((0.0, 0.0), (40.0, 0.0), 10);
+        a.extend(line((40.0, 0.0), (40.0, 40.0), 10).into_iter().skip(1));
+        // 同一形状：放大 3 倍、整体平移。
+        let mut b: Vec<(i32, i32)> = a.iter().map(|(x, y)| (x * 3 + 500, y * 3 + 700)).collect();
+        let ta = template_from_points(&a).expect("模板");
+        let tb = template_from_points(&b).expect("模板");
+        assert_eq!(ta.len(), TEMPLATE_POINTS);
+        assert!(ta.iter().flatten().all(|v| (0..=1000).contains(v)));
+        let d = template_distance(&ta, &tb).expect("同点数");
+        assert!(d < 0.05, "同形状缩放平移后应该几乎重合，实际 {d}");
+
+        // 换一个形状：横向直线 vs L 形，必须明显更远。
+        b.truncate(0);
+        b.extend(line((500.0, 500.0), (900.0, 500.0), 20));
+        let tc = template_from_points(&b).expect("模板");
+        let dc = template_distance(&ta, &tc).expect("同点数");
+        assert!(dc > TEMPLATE_MAX_DISTANCE, "不同形状不该落进阈值，实际 {dc}");
+    }
+
+    #[test]
+    fn touchpad_and_right_drag_gestures_do_not_cross_match() {
+        let mut cfg = Config::default();
+        let mut right = gesture("D");
+        right.name = Some("右键".into());
+        let mut pad = gesture("D");
+        pad.name = Some("触摸板".into());
+        pad.trigger = Some(Key::CapsLock);
+        cfg.gestures = vec![right, pad];
+
+        let ctx = TriggerContext::empty();
+        let hit = find_gesture_for(&cfg, "D", None, &ctx).expect("右键那条");
+        assert_eq!(hit.name.as_deref(), Some("右键"));
+        let hit = find_gesture_for(&cfg, "D", Some(Key::CapsLock), &ctx).expect("触摸板那条");
+        assert_eq!(hit.name.as_deref(), Some("触摸板"));
+        assert!(find_gesture_for(&cfg, "D", Some(Key::F9), &ctx).is_none());
+        // 右键那条路径（`find_gesture`）不会命中触摸板条目。
+        assert_eq!(
+            find_gesture(&cfg, "D", &ctx).map(|g| g.is_touchpad()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn template_fallback_only_when_pattern_misses() {
+        let stroke = line((0.0, 0.0), (90.0, 60.0), 18);
+        let mut cfg = Config::default();
+        let mut g = gesture("R");
+        g.trigger = Some(Key::F9);
+        g.template = template_from_points(&stroke);
+        cfg.gestures = vec![g];
+        let ctx = TriggerContext::empty();
+        // 方向串没命中（R）→ 模板兜底命中同一条。
+        let hit = find_gesture_by_template(&cfg, &stroke, Some(Key::F9), &ctx).expect("模板兜底");
+        assert_eq!(hit.pattern, "R");
+        // 来源不同不串味。
+        assert!(find_gesture_by_template(&cfg, &stroke, None, &ctx).is_none());
+    }
+
+    #[test]
+    fn gesture_trigger_and_template_roundtrip_in_json() {
+        // 老配置（没有 trigger / template）原样读：仍是右键手势。
+        let old: Gesture = serde_json::from_str(r#"{"pattern":"D","enabled":true,"actions":[]}"#)
+            .expect("老配置要能读");
+        assert_eq!(old.trigger, None);
+        assert_eq!(old.template, None);
+
+        // 新配置：触发键落成键名（与快捷键 / 改键的 from 同一套写法），模板落成点数组。
+        let json = r#"{"pattern":"D","trigger":"CapsLock","enabled":true,"actions":[]}"#;
+        let g: Gesture = serde_json::from_str(json).expect("触发键要能读");
+        assert_eq!(g.trigger, Some(Key::CapsLock));
+        let back = serde_json::to_string(&g).expect("要能写回");
+        assert!(back.contains("\"trigger\":\"CapsLock\""), "{back}");
+
+        // 键名拼错 = 解析失败（不静默降级成右键手势，否则会把右键抢走）。
+        assert!(serde_json::from_str::<Gesture>(r#"{"pattern":"D","trigger":"NotAKey"}"#).is_err());
+
+        let mut g = gesture("D");
+        g.template = template_from_points(&line((0.0, 0.0), (60.0, 20.0), 12));
+        let back = serde_json::to_string(&g).expect("模板要能写回");
+        let again: Gesture = serde_json::from_str(&back).expect("模板要能读回");
+        assert_eq!(again.template, g.template);
+        assert_eq!(again.template.as_ref().map(|t| t.len()), Some(TEMPLATE_POINTS));
+    }
+
+    #[test]
+    fn touchpad_enable_switch_does_not_take_over_right_drag() {
+        let mut cfg = Config::default();
+        // 圈选截图自带手势采集，先关掉它，只看「配了触摸板手势」这一项。
+        cfg.settings.gesture_screenshot = false;
+        cfg.gestures = vec![Gesture {
+            pattern: "D".into(),
+            trigger: Some(Key::CapsLock),
+            enabled: true,
+            ..Default::default()
+        }];
+        assert!(touchpad_gesture_enabled(&cfg));
+        assert!(!gesture_enabled(&cfg), "只有触摸板手势时不该抢右键");
+        assert!(!gesture_capture_enabled(&cfg));
+        cfg.gestures[0].enabled = false;
+        assert!(!touchpad_gesture_enabled(&cfg));
     }
 }

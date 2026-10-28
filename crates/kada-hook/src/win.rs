@@ -500,6 +500,15 @@ fn cursor_pos() -> Result<(i32, i32), ()> {
     }
 }
 
+/// 把光标挪到指定屏幕坐标（触摸板手势松键后复位用：画的这一笔只在屏幕上「借道」，
+/// 不该把用户的鼠标留在别处）。
+pub fn set_cursor_pos(pt: (i32, i32)) {
+    // 注入事件带 `LLMHF_INJECTED`，不会被自己的钩子再吃一次（移动本身也不进键模型）。
+    unsafe {
+        let _ = SetCursorPos(pt.0, pt.1);
+    }
+}
+
 /// 自愈重装累计次数（诊断 / 冒烟测试用）。
 pub fn reinstall_count() -> u64 {
     REINSTALLS.load(Ordering::Relaxed)
@@ -651,6 +660,22 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         let ms = &*(lparam.0 as *const MSLLHOOKSTRUCT);
         // 注入事件一律放行，防回环（也不进录制——录制器只转录人手的动作）。
         if ms.flags & LLMHF_INJECTED == 0 {
+            // 触摸板手势（7.2-MG）：按住触发键期间，单指滑动就是「笔尖」——只记点。
+            // 期间的左右键与滚轮一律吞掉（不然画着画着就点到了下面的东西；双指滚动 =
+            // 出现滚轮消息 = 放弃这次采集，宁可不识别也不判错）。
+            if crate::trackpad::armed() {
+                match wparam.0 as u32 {
+                    WM_MOUSEMOVE => crate::trackpad::on_move((ms.pt.x, ms.pt.y)),
+                    WM_LBUTTONDOWN | WM_LBUTTONUP | WM_RBUTTONDOWN | WM_RBUTTONUP => {
+                        return LRESULT(1)
+                    }
+                    WM_MOUSEWHEEL => {
+                        crate::trackpad::cancel();
+                        return LRESULT(1);
+                    }
+                    _ => {}
+                }
+            }
             // 鼠标手势（规划 7.2-MG）：右键按下先吞、抬起时把轨迹交给壳层。
             // **手势开着时右键归手势**——所以这一步排在录制之前：被手势吞掉的右键不进录制。
             match wparam.0 as u32 {
