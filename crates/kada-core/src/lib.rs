@@ -1356,6 +1356,11 @@ pub(crate) fn is_zero_u64(v: &u64) -> bool {
     *v == 0
 }
 
+/// 同上，给 `u32`（如触发角的防误触停留毫秒）。
+pub(crate) fn is_zero_u32(v: &u32) -> bool {
+    *v == 0
+}
+
 fn is_false(v: &bool) -> bool {
     !*v
 }
@@ -2459,6 +2464,9 @@ impl HotCornerSpot {
     }
 }
 
+/// 防误触停留时长的上限（毫秒）：再长就等于「不触发」了，钳住免得一次误配挂死。
+pub const HOT_CORNER_DWELL_MAX_MS: u32 = 3000;
+
 /// 一条角动作规则：位置 + 名称 + 动作链。缺字段 = 关闭。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HotCornerRule {
@@ -2472,6 +2480,10 @@ pub struct HotCornerRule {
     /// 归属层：`None` = 基础层（恒生效）；`Some` = 仅在该层激活时参与匹配。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layer: Option<String>,
+    /// **防误触**：光标要在角上停留这么久才触发（毫秒；`0` / 缺省 = 碰即触发）。
+    /// 贴边扫过（关窗、拖滚动条、切窗口）常会蹭到角落，停留一下再触发才不会误动作。
+    #[serde(default, skip_serializing_if = "crate::is_zero_u32")]
+    pub dwell_ms: u32,
     /// 触发侧条件门控（同快捷键）：不成立 = 这条不存在，落到下一条同位置的规则。
     #[cfg(feature = "automation")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4406,6 +4418,7 @@ impl Config {
                     name: Some(entry.name.clone()).filter(|n| !n.trim().is_empty()),
                     description: None,
                     layer: None,
+                    dwell_ms: 0,
                     #[cfg(feature = "automation")]
                     when: None,
                     folder: None,
@@ -4845,6 +4858,8 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 item.layer = None;
             }
         }
+        // 防误触停留时长：超出范围的（手改 JSON 写了 10 秒）钳回上限，别让一次触发挂死。
+        item.dwell_ms = item.dwell_ms.min(HOT_CORNER_DWELL_MAX_MS);
         let mut kept = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -8721,6 +8736,7 @@ mod hot_corner_tests {
                     name: Some("调度台".into()),
                     description: Some("打开调度台".into()),
                     layer: None,
+                    dwell_ms: 0,
                     #[cfg(feature = "automation")]
                     when: None,
                     actions: vec![text("a")],
@@ -8733,6 +8749,7 @@ mod hot_corner_tests {
                     name: None,
                     description: None,
                     layer: None,
+                    dwell_ms: 0,
                     #[cfg(feature = "automation")]
                     when: None,
                     actions: vec![text("b")],
@@ -8772,6 +8789,7 @@ mod hot_corner_tests {
             name: None,
             description: None,
             layer: None,
+            dwell_ms: 0,
             #[cfg(feature = "automation")]
             when: None,
             actions: vec![text("a")],
@@ -8797,6 +8815,7 @@ mod hot_corner_tests {
             name: None,
             description: None,
             layer: None,
+            dwell_ms: 0,
             #[cfg(feature = "automation")]
             when: None,
             actions: vec![text("a")],
@@ -8820,6 +8839,7 @@ mod hot_corner_tests {
             name: Some("  左上  ".into()),
             description: None,
             layer: None,
+            dwell_ms: 0,
             #[cfg(feature = "automation")]
             when: None,
             actions: vec![
@@ -8834,6 +8854,35 @@ mod hot_corner_tests {
         assert_eq!(clean.hot_corners[0].name.as_deref(), Some("左上"));
         assert_eq!(clean.hot_corners[0].actions.len(), 1);
         assert!(ignored.iter().any(|m| m.contains("触发角")));
+    }
+
+    /// 防误触停留：超上限的值在清洗时钳回 3000；0 = 缺省，不写进 JSON（老配置 / 卡带没这个键）。
+    #[test]
+    fn hot_corner_dwell_is_clamped_and_omitted_when_zero() {
+        let mut cfg = Config::default();
+        cfg.hot_corners.push(HotCornerRule {
+            spot: HotCornerSpot::BottomRight,
+            name: None,
+            description: None,
+            layer: None,
+            dwell_ms: 10_000,
+            #[cfg(feature = "automation")]
+            when: None,
+            actions: vec![text("a")],
+            enabled: true,
+            folder: None,
+            order: 0,
+        });
+        let (mut clean, _) = sanitize_config(&cfg);
+        assert_eq!(clean.hot_corners[0].dwell_ms, HOT_CORNER_DWELL_MAX_MS);
+        let json = serde_json::to_value(&clean.hot_corners[0]).unwrap();
+        assert_eq!(json["dwell_ms"], HOT_CORNER_DWELL_MAX_MS);
+
+        clean.hot_corners[0].dwell_ms = 0;
+        let json = serde_json::to_value(&clean.hot_corners[0]).unwrap();
+        assert!(json.get("dwell_ms").is_none(), "0 = 缺省，不写进 JSON");
+        let back: HotCornerRule = serde_json::from_value(json).unwrap();
+        assert_eq!(back.dwell_ms, 0, "缺这个键的老配置照常读成 0");
     }
 
     /// 边缘滚动启用 → 要装鼠标钩子，但 `config_uses_mouse` 不受影响（不误报厂商接管）。

@@ -2124,6 +2124,11 @@ fn spawn_hot_corner_listener(
     })));
 }
 
+/// 防误触停留的「代次」：每次进角 +1。等够停留时长后只有**最后一次**进角的那条能触发——
+/// 用户等得心烦、离开又马上回来时，前一条等待线程不该替后一条提前执行（会双触发）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+static HOT_CORNER_DWELL_GEN: AtomicU64 = AtomicU64::new(0);
+
 /// 一次触发角的收尾：全屏 / 排除程序与手势同口径让路；命中就交给 `fire`。
 ///
 /// **不吞任何鼠标事件**，所以这里没有回放逻辑。触发时抓前台窗口由 `fire` 在调用线程上做。
@@ -2170,7 +2175,7 @@ fn handle_hot_corner(
         return;
     }
     // 层语义同快捷键：激活层里的规则优先，基础层兜底；`when` 不成立 = 这条不存在。
-    let pick = |want: Option<&str>| -> Option<(Vec<Action>, String)> {
+    let pick = |want: Option<&str>| -> Option<(Vec<Action>, String, u64)> {
         rules
             .iter()
             .find(|r| {
@@ -2179,15 +2184,28 @@ fn handle_hot_corner(
                     && r.layer_matches(want)
                     && r.when_matches(&ctx)
             })
-            .map(|r| (r.actions.clone(), r.label()))
+            .map(|r| (r.actions.clone(), r.label(), u64::from(r.dwell_ms)))
     };
-    let Some((actions, name)) = active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
+    let Some((actions, name, dwell_ms)) =
+        active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
     else {
         return;
     };
     // 没配动作 = 半条配置，什么也不做（没有可执行的链，也没有要回放的按键）。
     if actions.is_empty() {
         return;
+    }
+    // 防误触：等够停留时长再确认光标还在角上——扫过角落（关窗口、拖滚动条）不算触发。
+    // 钩子那边这个角已被占住（停留不重复上报），离开超过重新武装距离才清；所以等待期间
+    // 只有「离开又马上回来」会再进一枪，靠代次让旧等待作废，免得同一次停留执行两遍。
+    if dwell_ms > 0 {
+        let generation = HOT_CORNER_DWELL_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+        std::thread::sleep(Duration::from_millis(dwell_ms));
+        if HOT_CORNER_DWELL_GEN.load(Ordering::Relaxed) != generation
+            || !kada_hook::hotcorner::still_near(corner)
+        {
+            return;
+        }
     }
     fire(
         app,
@@ -6516,7 +6534,8 @@ pub fn run() {
             update::get_update_status,
             update::check_update,
             update::download_update,
-            update::install_update
+            update::install_update,
+            update::take_update_dialog
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;

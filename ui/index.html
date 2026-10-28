@@ -267,6 +267,15 @@
                 <label>触发条件（可选）</label>
                 <div id="edit-when" class="when-editor"></div>
               </div>
+              <!-- 防误触：只有触发角有（页签在触发角条目上会显示成「条件（防误触）」）。
+                   停留够时长再复查光标还在不在角上，扫过角落不算触发。 -->
+              <div class="editor-row hidden" id="hotcorner-dwell-row">
+                <label>防误触：停留</label>
+                <div class="action-line">
+                  <input id="hotcorner-dwell" class="action-input action-input-num" type="number" min="0" max="3000" step="50" />
+                  <span class="unit-hint">毫秒后触发（0 = 碰角立即触发）</span>
+                </div>
+              </div>
               <p class="hint">条件不成立时等价于「这条不存在」：落到下一条同触发键的条目，没有就放行原键。</p>
             </div>
           </div>
@@ -692,6 +701,7 @@
                   </label>
                   <p id="update-status" class="set-status">正在读取版本…</p>
                   <div id="update-actions" class="set-actions hidden">
+                    <button id="update-notes" class="ghost">查看更新日志</button>
                     <button id="download-update" class="primary">下载</button>
                     <button id="install-update" class="primary hidden">安装</button>
                   </div>
@@ -1041,6 +1051,27 @@
           <span class="flex-spacer"></span>
           <button id="confirm-cancel"></button>
           <button id="confirm-ok" class="danger"></button>
+        </footer>
+      </div>
+    </div>
+
+    <!-- 更新对话框（自绘）：手动「检查更新」的「已是最新 / 发现新版本（现在下载吗）/ 失败」
+         以及下载 / 安装阶段的提示都走这里。壳层只推标题、正文与「主按钮做什么」，
+         样式与按钮文案由界面决定——系统的灰白框跟四套主题割裂。 -->
+    <div id="update-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="update-title">
+      <div class="modal-mask"></div>
+      <div class="modal-box confirm-box update-box">
+        <header class="modal-head">
+          <span id="update-title" class="modal-title"></span>
+          <button id="update-close" class="detail-close" title="关闭">×</button>
+        </header>
+        <div class="modal-body">
+          <p id="update-text" class="confirm-text update-text"></p>
+        </div>
+        <footer class="modal-foot">
+          <span class="flex-spacer"></span>
+          <button id="update-cancel" class="hidden"></button>
+          <button id="update-ok" class="primary"></button>
         </footer>
       </div>
     </div>

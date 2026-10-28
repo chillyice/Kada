@@ -30,7 +30,6 @@ use kada_actions::CommandResult;
 use kada_core::UpdateSource;
 use serde::{Deserialize, Serialize};
 use tauri::{Manager, Url};
-use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_updater::{Error as UpdateError, Update, Updater, UpdaterExt};
 
 /// 启动后台检查的延迟（秒）：避开启动瞬间的钩子安装与窗口初始化。
@@ -71,7 +70,8 @@ pub enum UpdatePhase {
     /// 正在下载。
     Downloading { version: String, percent: Option<f64> },
     /// 已下载、等安装（手动等用户点「安装」；自动更新等空闲 / 下次启动）。
-    Ready { version: String },
+    /// `notes` 随包存进 `pending.json`：下载完 / 重启后仍能点「更新日志」看说明。
+    Ready { version: String, notes: Option<String> },
     /// 正在安装（安装版随后应用会退出并由安装器重启；免安装版换完 exe 立刻重启）。
     Installing { version: String },
     /// 出错（网络不通、签名校验失败等）。
@@ -197,6 +197,9 @@ struct PendingUpdate {
     /// 下载时的安装形态：**形态不匹配的包绝不能装**（用 NSIS 包替换便携 exe，或反过来，
     /// 都会把程序弄成半个安装版）。同一份配置目录可能被两种形态共用。
     kind: InstallKind,
+    /// 下载时清单里的更新说明（`latest.json` 的 `notes`）。老文件没有这个字段 → `None`。
+    #[serde(default)]
+    notes: Option<String>,
 }
 
 /// 更新状态快照：设置页 `get_update_status` 读取，也随 `update-status` 事件推送。
@@ -210,6 +213,20 @@ pub struct UpdateStatus {
     pub phase: UpdatePhase,
 }
 
+/// 更新对话框（界面自绘，不再借系统 `dialog()`）。
+///
+/// 壳层只给「说什么」与「主按钮要做什么」，样式、按钮文案全由界面决定：系统的灰白框
+/// 跟四套主题割裂（应用内其余确认框早已自绘），多行更新说明也没有排版余地。
+#[derive(Clone, Debug, Serialize)]
+pub struct UpdateDialog {
+    /// 语气：`info`（普通说明）/ `error`（失败，标题用错误色）。
+    pub tone: &'static str,
+    pub title: String,
+    pub text: String,
+    /// 主按钮动作：`download` = 点主按钮去下载当前版本；`None` = 只有一个「知道了」。
+    pub action: Option<&'static str>,
+}
+
 /// 更新器运行时状态（`app.manage` 托管）。
 pub struct UpdateState {
     status: Mutex<UpdateStatus>,
@@ -219,6 +236,9 @@ pub struct UpdateState {
     /// 上一次已记进消息中心的自动更新错误：自动安装每 10 分钟重试一次，
     /// 同样的错误只记一条，免得把「消息」页刷满。
     last_auto_error: Mutex<Option<String>>,
+    /// 唤起主窗口时页面还没加载完的那条对话框：事件会落空，界面挂载时靠
+    /// `take_update_dialog` 补取（取走即清，不会反复弹）。
+    dialog: Mutex<Option<UpdateDialog>>,
 }
 
 impl UpdateState {
@@ -227,7 +247,7 @@ impl UpdateState {
         let kind = install_kind();
         let pending = load_pending(&dir, &current, kind);
         let phase = match &pending {
-            Some(p) => UpdatePhase::Ready { version: p.version.clone() },
+            Some(p) => UpdatePhase::Ready { version: p.version.clone(), notes: p.notes.clone() },
             None => UpdatePhase::Idle,
         };
         Self {
@@ -235,6 +255,7 @@ impl UpdateState {
             dir,
             pending: Mutex::new(pending),
             last_auto_error: Mutex::new(None),
+            dialog: Mutex::new(None),
         }
     }
 
@@ -402,17 +423,39 @@ fn record_auto_failure(app: &tauri::AppHandle, message: &str) {
     );
 }
 
+/// 弹一条更新对话框：唤起主窗口 + 推 `update-dialog` 事件，由界面用与主界面同一套模态框渲染。
+///
+/// 主窗口只在使用时才创建，所以托盘「检查更新」往往是「先唤起窗口、界面还没加载完」——
+/// 那一刻事件必然落空。因此窗口此前不存在时先把内容存进状态，界面挂载时用
+/// [`take_update_dialog`] 补取一次。
+fn show_dialog(
+    app: &tauri::AppHandle,
+    tone: &'static str,
+    title: &str,
+    text: String,
+    action: Option<&'static str>,
+) {
+    let dialog = UpdateDialog { tone, title: title.to_string(), text, action };
+    if app.get_webview_window("main").is_none() {
+        if let Some(state) = app.try_state::<UpdateState>() {
+            state.dialog.lock().unwrap().replace(dialog.clone());
+        }
+    }
+    crate::show_main_window(app);
+    let _ = tauri::Emitter::emit(app, "update-dialog", dialog);
+}
+
+/// 界面挂载时补取「窗口刚建、事件已错过」的那条对话框（取走即清）。
+#[tauri::command]
+pub fn take_update_dialog(state: tauri::State<'_, UpdateState>) -> Option<UpdateDialog> {
+    state.dialog.lock().unwrap().take()
+}
+
 /// 记失败：写状态；手动模式弹窗，自动模式记进消息中心（不打扰使用，但留得下痕迹）。
 fn fail(app: &tauri::AppHandle, mode: Mode, message: String) {
     set_phase(app, UpdatePhase::Error { message: message.clone() });
     match mode {
-        Mode::Manual => {
-            app.dialog()
-                .message(message)
-                .title("更新失败")
-                .kind(MessageDialogKind::Error)
-                .show(|_| {});
-        }
+        Mode::Manual => show_dialog(app, "error", "更新失败", message, None),
         Mode::Auto => record_auto_failure(app, &message),
     }
 }
@@ -543,14 +586,17 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
         set_phase(&app, UpdatePhase::UpToDate);
         if mode == Mode::Manual {
             let current = app.package_info().version.to_string();
-            app.dialog()
-                .message(format!(
+            show_dialog(
+                &app,
+                "info",
+                "检查更新",
+                format!(
                     "当前版本 v{current}，已是最新版本。\n\n更新源：{}（{}）",
                     source_label(source),
                     source.endpoint()
-                ))
-                .title("检查更新")
-                .show(|_| {});
+                ),
+                None,
+            );
         }
         return;
     };
@@ -560,7 +606,7 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
 
     // 这个版本已经下过了（可能还是上一次运行里下的）：不重复下载，直接回到「待安装」。
     if app.state::<UpdateState>().pending().is_some_and(|p| p.version == version) {
-        set_phase(&app, UpdatePhase::Ready { version });
+        set_phase(&app, UpdatePhase::Ready { version, notes: update.body.clone() });
         return;
     }
 
@@ -599,16 +645,8 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
                     "发现新版本 v{version}（当前 v{current}）。\n\n更新说明：\n{notes}\n\n现在下载吗？下载完成后可在设置页点「安装」。"
                 )
             };
-            let app_for_confirm = app.clone();
-            app.dialog()
-                .message(message)
-                .title("发现新版本")
-                .buttons(MessageDialogButtons::OkCancelCustom("下载".into(), "稍后".into()))
-                .show(move |confirmed| {
-                    if confirmed {
-                        spawn_download(app_for_confirm);
-                    }
-                });
+            // 用户点「下载」时由界面调 `download_update`（与设置页那个按钮同一条路径）。
+            show_dialog(&app, "info", "发现新版本", message, Some("download"));
         }
     }
 }
@@ -633,19 +671,25 @@ pub fn spawn_download(app: tauri::AppHandle) {
             Ok(Some(update)) => update,
             Ok(None) => {
                 set_phase(&app, UpdatePhase::UpToDate);
-                app.dialog()
-                    .message(format!(
-                        "已是最新版本（更新源：{}），无需下载。",
-                        source_label(source)
-                    ))
-                    .title("检查更新")
-                    .show(|_| {});
+                show_dialog(
+                    &app,
+                    "info",
+                    "检查更新",
+                    format!("已是最新版本（更新源：{}），无需下载。", source_label(source)),
+                    None,
+                );
                 return;
             }
             Err(e) => return fail(&app, Mode::Manual, check_error_text(&e, source)),
         };
         if app.state::<UpdateState>().pending().is_some_and(|p| p.version == update.version) {
-            set_phase(&app, UpdatePhase::Ready { version: update.version.clone() });
+            set_phase(
+                &app,
+                UpdatePhase::Ready {
+                    version: update.version.clone(),
+                    notes: update.body.clone(),
+                },
+            );
             return;
         }
         if let Err(e) = download_into(&app, update).await {
@@ -657,6 +701,7 @@ pub fn spawn_download(app: tauri::AppHandle) {
 /// 下载并落盘：阶段从 [`UpdatePhase::Downloading`] 走到 [`UpdatePhase::Ready`]。
 async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), String> {
     let version = update.version.clone();
+    let notes = update.body.clone();
     set_phase(app, UpdatePhase::Downloading { version: version.clone(), percent: None });
 
     // 进度回调按「整数百分比变化」才推一次事件：下载分片回调极密集，
@@ -686,13 +731,18 @@ async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), Str
         .await
         .map_err(|e| download_error_text(&e))?;
 
-    persist(app, &version, &bytes)?;
-    set_phase(app, UpdatePhase::Ready { version });
+    persist(app, &version, &bytes, notes.clone())?;
+    set_phase(app, UpdatePhase::Ready { version, notes });
     Ok(())
 }
 
 /// 把下载好的包写进 updates 目录并记下 `pending.json`（重启后 [`UpdateState::new`] 能恢复）。
-fn persist(app: &tauri::AppHandle, version: &str, bytes: &[u8]) -> Result<(), String> {
+fn persist(
+    app: &tauri::AppHandle,
+    version: &str,
+    bytes: &[u8],
+    notes: Option<String>,
+) -> Result<(), String> {
     let state = app.state::<UpdateState>();
     let dir = state.dir.clone();
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建更新文件夹失败：{e}"))?;
@@ -700,7 +750,7 @@ fn persist(app: &tauri::AppHandle, version: &str, bytes: &[u8]) -> Result<(), St
     let tmp = dir.join(format!("{file}.tmp"));
     std::fs::write(&tmp, bytes).map_err(|e| format!("写入更新包失败：{e}"))?;
     std::fs::rename(&tmp, dir.join(&file)).map_err(|e| format!("写入更新包失败：{e}"))?;
-    let pending = PendingUpdate { version: version.to_string(), file, kind: install_kind() };
+    let pending = PendingUpdate { version: version.to_string(), file, kind: install_kind(), notes };
     write_pending(&dir, &pending)?;
     cleanup_packages(&dir, version);
     state.pending.lock().unwrap().replace(pending);
@@ -787,12 +837,14 @@ fn install_pending(app: &tauri::AppHandle, pending: &PendingUpdate, quiet: bool)
         clear_pending(app);
         set_phase(app, UpdatePhase::Idle);
         if !quiet {
-            app.dialog()
-                .message(
-                    "已下载的更新包与当前安装形态不匹配（安装版 / 免安装版），已丢弃。\n\n请重新下载。",
-                )
-                .title("安装更新")
-                .show(|_| {});
+            show_dialog(
+                app,
+                "info",
+                "安装更新",
+                "已下载的更新包与当前安装形态不匹配（安装版 / 免安装版），已丢弃。\n\n请重新下载。"
+                    .to_string(),
+                None,
+            );
         }
         return;
     }
@@ -827,13 +879,16 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
             clear_pending(&app);
             set_phase(&app, UpdatePhase::UpToDate);
             if !quiet {
-                app.dialog()
-                    .message(format!(
+                show_dialog(
+                    &app,
+                    "info",
+                    "安装更新",
+                    format!(
                         "更新清单显示已是最新版本（更新源：{}），已下载的更新包不再需要，已丢弃。",
                         source_label(source)
-                    ))
-                    .title("安装更新")
-                    .show(|_| {});
+                    ),
+                    None,
+                );
             }
             return;
         }
@@ -847,14 +902,17 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
             UpdatePhase::Available { version: update.version.clone(), notes: update.body.clone() },
         );
         if !quiet {
-            app.dialog()
-                .message(format!(
+            show_dialog(
+                &app,
+                "info",
+                "安装更新",
+                format!(
                     "更新清单上的版本已经变成 v{}（已下载的是 v{}），旧包已丢弃。\n\n\
                      请在设置页重新点「下载」。",
                     update.version, pending.version
-                ))
-                .title("安装更新")
-                .show(|_| {});
+                ),
+                None,
+            );
         }
         return;
     }
@@ -908,10 +966,13 @@ fn apply_portable_update(app: &tauri::AppHandle, pending: &PendingUpdate) -> Res
 /// 手动安装（设置页「安装」按钮）。没有下载过的包时只提示先下载。
 pub fn spawn_install(app: tauri::AppHandle) {
     let Some(pending) = app.state::<UpdateState>().pending() else {
-        app.dialog()
-            .message("还没有下载更新包，请先点「下载」。")
-            .title("安装更新")
-            .show(|_| {});
+        show_dialog(
+            &app,
+            "info",
+            "安装更新",
+            "还没有下载更新包，请先点「下载」。".to_string(),
+            None,
+        );
         return;
     };
     install_pending(&app, &pending, false);
@@ -950,7 +1011,7 @@ mod tests {
         assert!(!UpdatePhase::Idle.busy());
         assert!(!UpdatePhase::UpToDate.busy());
         assert!(!UpdatePhase::Available { version: "1".into(), notes: None }.busy());
-        assert!(!UpdatePhase::Ready { version: "1".into() }.busy());
+        assert!(!UpdatePhase::Ready { version: "1".into(), notes: None }.busy());
         assert!(!UpdatePhase::Error { message: "x".into() }.busy());
         assert!(UpdatePhase::Checking.busy());
         assert!(UpdatePhase::Downloading { version: "1".into(), percent: None }.busy());
@@ -975,11 +1036,12 @@ mod tests {
         let ready = serde_json::to_value(UpdateStatus {
             current: "0.1.0".into(),
             kind: InstallKind::Installed,
-            phase: UpdatePhase::Ready { version: "0.2.0".into() },
+            phase: UpdatePhase::Ready { version: "0.2.0".into(), notes: Some("修了些东西".into()) },
         })
         .unwrap();
         assert_eq!(ready["phase"], "ready");
         assert_eq!(ready["version"], "0.2.0");
+        assert_eq!(ready["notes"], "修了些东西");
         assert_eq!(ready["kind"], "installed");
     }
 
@@ -1034,6 +1096,7 @@ mod tests {
             version: "2.0.0".into(),
             file: "update-2.0.0.pkg".into(),
             kind: InstallKind::Portable,
+            notes: None,
         };
         write_pending(&dir, &pending).unwrap();
         assert!(load_pending(&dir, "1.0.0", InstallKind::Portable).is_some());

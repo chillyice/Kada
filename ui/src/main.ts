@@ -316,6 +316,8 @@ type HotCornerRule = {
   description?: string | null;
   /** 所属层：null / 缺省 = 基础层（恒生效）。 */
   layer?: string | null;
+  /** 防误触：光标在角上停留这么久才触发（毫秒；0 / 缺省 = 碰即触发）。 */
+  dwell_ms?: number;
   /** 触发侧条件门控（同快捷键）；缺省 = 无条件。 */
   when?: Condition | null;
   enabled: boolean;
@@ -4679,6 +4681,19 @@ function fillHotCornerEditor() {
     },
     refreshDirty,
   );
+  // 防误触停留：0 = 碰角立即触发；越界值钳进 0~3000（与壳层同一上限）。
+  const dwell = document.getElementById("hotcorner-dwell") as HTMLInputElement;
+  dwell.value = String(hotcornerDraft.dwell_ms ?? 0);
+  dwell.oninput = () => {
+    if (!hotcornerDraft) return;
+    const n = Math.round(Number(dwell.value) || 0);
+    hotcornerDraft.dwell_ms = Math.min(3000, Math.max(0, n));
+    refreshDirty();
+  };
+  dwell.onblur = () => {
+    if (!hotcornerDraft) return;
+    dwell.value = String(hotcornerDraft.dwell_ms ?? 0);
+  };
   const host = document.getElementById("key-hotcorner")!;
   host.replaceChildren(
     spotField("hotcorner", hotcornerDraft.spot, (spot) => {
@@ -4773,9 +4788,14 @@ function syncEntry() {
   const hasDetail = true;
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
   document.getElementById("tab-when")!.classList.toggle("hidden", !hasWhen);
+  // 触发角的「条件」里还带防误触停留，页签文字据此区分（其他类型仍是「条件」）。
+  document.getElementById("tab-when")!.textContent =
+    kind === "hotcorner" ? tr("条件（防误触）") : tr("条件");
   document.getElementById("tab-detail")!.classList.toggle("hidden", !hasDetail);
   document.getElementById("tab-work")!.textContent =
     kind === "remap" ? tr("操作") : kind === "expansion" ? tr("展开文本") : tr("动作");
+  // 防误触的停留输入只属于触发角，别的类型在「条件」页签里不出现。
+  document.getElementById("hotcorner-dwell-row")!.classList.toggle("hidden", kind !== "hotcorner");
   if ((entryTab === "layer" && !hasLayer) || (entryTab === "when" && !hasWhen)) entryTab = "detail";
   if (entryTab === "detail" && !hasDetail) entryTab = "work";
   applyEntryTab();
@@ -4990,6 +5010,7 @@ function openDetail(
           name: null,
           description: null,
           layer: null,
+          dwell_ms: 0,
           when: null,
           actions: [newAction("text")],
           enabled: true,
@@ -8459,7 +8480,7 @@ type UpdateStatus = { current: string; kind: "installed" | "portable" } & (
   | { phase: "up-to-date" }
   | { phase: "available"; version: string; notes?: string | null }
   | { phase: "downloading"; version: string; percent?: number | null }
-  | { phase: "ready"; version: string }
+  | { phase: "ready"; version: string; notes?: string | null }
   | { phase: "installing"; version: string }
   | { phase: "error"; message: string }
 );
@@ -8536,6 +8557,79 @@ function syncUpdate() {
       line.textContent = trt`更新失败：${updateStatus.message}`;
       break;
   }
+}
+
+// 点「查看更新日志」：把清单里的更新说明（`notes`）用同一个自绘模态框展示。
+// 说明只跟着发现 / 已下载两个阶段来（下载时已存进 `pending.json`，重启后仍在）；
+// 没有说明就如实说「暂无」，不另造 changelog 数据源。
+function openUpdateNotes() {
+  const s = updateStatus;
+  if (!s || (s.phase !== "available" && s.phase !== "ready")) return;
+  const notes = (s.notes ?? "").trim();
+  openUpdateDialog({
+    tone: "info",
+    title: trt`更新日志 v${s.version}`,
+    text: notes || tr("暂无更新说明"),
+    action: null,
+  });
+}
+
+// ---- 更新对话框（自绘）----
+// 壳层（`src-tauri/src/update.rs` 的 `show_dialog`）手动检查 / 下载 / 安装时的反馈都推
+// `update-dialog` 过来，这里用与主界面同一套模态框渲染，不再弹灰白系统框。
+// 托盘「检查更新」会先唤起主窗口，那条事件可能赶在页面加载完之前——挂载时再用
+// `take_update_dialog` 补取一次（后端存一份、取走即清）。
+type UpdateDialogPayload = {
+  tone: "info" | "error";
+  title: string;
+  text: string;
+  action?: "download" | null;
+};
+
+/** 主按钮要做什么；`null` = 纯说明（只有一个「知道了」）。 */
+let updateDialogAction: "download" | null = null;
+
+function openUpdateDialog(d: UpdateDialogPayload) {
+  const modal = document.getElementById("update-modal")!;
+  modal.classList.toggle("is-error", d.tone === "error");
+  document.getElementById("update-title")!.textContent = d.title;
+  document.getElementById("update-text")!.textContent = d.text;
+  const download = d.action === "download";
+  const ok = document.getElementById("update-ok") as HTMLButtonElement;
+  const cancel = document.getElementById("update-cancel") as HTMLButtonElement;
+  ok.textContent = download ? tr("下载") : tr("知道了");
+  ok.className = "primary";
+  cancel.textContent = tr("稍后");
+  cancel.classList.toggle("hidden", !download);
+  updateDialogAction = download ? "download" : null;
+  modal.classList.remove("hidden");
+  // 先摘 `hidden` 再 focus：`display:none` 的子树里 focus() 是空操作。
+  ok.focus();
+}
+
+/** `confirmed` = 点了主按钮（说明框的「知道了」也算）；只有下载询问框才真的去下载。 */
+function closeUpdateDialog(confirmed: boolean) {
+  document.getElementById("update-modal")!.classList.add("hidden");
+  const action = updateDialogAction;
+  updateDialogAction = null;
+  if (confirmed && action === "download") void invoke("download_update");
+}
+
+function bindUpdateDialog() {
+  document.getElementById("update-ok")!.addEventListener("click", () => closeUpdateDialog(true));
+  document.getElementById("update-cancel")!.addEventListener("click", () => closeUpdateDialog(false));
+  document.getElementById("update-close")!.addEventListener("click", () => closeUpdateDialog(false));
+  document.getElementById("update-notes")!.addEventListener("click", () => openUpdateNotes());
+  document.getElementById("update-modal")!.querySelector(".modal-mask")!.addEventListener("click", () =>
+    closeUpdateDialog(false),
+  );
+  // 与其它确认框同口径：Esc = 取消（下载询问框 = 不下载，纯说明框只是关掉）。
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "Escape") return;
+    if (document.getElementById("update-modal")!.classList.contains("hidden")) return;
+    e.preventDefault();
+    closeUpdateDialog(false);
+  });
 }
 
 // ---- 改键下拉 ----
@@ -9913,6 +10007,10 @@ async function initEvents() {
     updateStatus = event.payload;
     syncUpdate();
   });
+  await listen<UpdateDialogPayload>("update-dialog", (event) => openUpdateDialog(event.payload));
+  // 主窗口刚被唤起时事件可能已落空：补取后端暂存的那一条（取走即清，不会反复弹）。
+  const pendingDialog = await invoke<UpdateDialogPayload | null>("take_update_dialog").catch(() => null);
+  if (pendingDialog) openUpdateDialog(pendingDialog);
   // 配置文件被外部改动后由后端广播（见 applyExternalConfig）。
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);
@@ -10669,6 +10767,7 @@ if (location.hash === "#toast") {
   installBrowserMock();
   bind();
   bindMessages();
+  bindUpdateDialog();
   // 回到窗口时重新扫一遍外部工具：用户可能刚把比特口袋 / 自动化助手打开。
   // 只有「在跑的工具集合」真的变了才重画，避免每次切窗口都重置编辑区。
   window.addEventListener("focus", () => {

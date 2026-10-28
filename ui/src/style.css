@@ -4016,6 +4016,21 @@ pre.msg-v {
   color: #fff;
 }
 
+/* 更新对话框：正文里有「当前 / 新版本 / 更新说明」多段（后端用 \n 分行），保留换行；
+   说明可能很长，框宽与正文滚动沿用 .modal-box 的限高。 */
+#update-modal .modal-box {
+  width: min(520px, 90vw);
+}
+
+.update-text {
+  white-space: pre-wrap;
+  line-height: 1.7;
+}
+
+#update-modal.is-error .modal-title {
+  color: #e0574f;
+}
+
 .confirm-text {
   margin-bottom: 8px;
 }

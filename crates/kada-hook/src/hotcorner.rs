@@ -13,6 +13,9 @@ use std::sync::{Arc, Mutex};
 pub const SIZE: i32 = 3;
 /// 重新武装距离（像素）：光标离开角点超过它才算「真的离开了这个角」。
 pub const REARM_DISTANCE: i32 = 24;
+/// 防误触复查的容差（像素）：等够停留时长后再看光标还在不在角上——等待期间手会轻微抖，
+/// 按 3px 的触发区卡就永远等不到，给到半个重新武装距离。
+pub const DWELL_TOLERANCE: i32 = 12;
 
 /// 四个角。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -49,6 +52,8 @@ static ENABLED: AtomicBool = AtomicBool::new(false);
 static CONFIG: Mutex<Option<Config>> = Mutex::new(None);
 /// 当前所在的角（`monitor_index * 4 + corner_index`）；`None` = 不在任何触发区 / 待重新武装。
 static ACTIVE: Mutex<Option<usize>> = Mutex::new(None);
+/// 钩子最近一次记录的光标位置：防误触（停留判定）复查用，免得再向平台查一次光标。
+static LAST_POINT: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 
 /// 出口（壳层注册）。**回调在钩子线程上跑**，壳层要自己开线程做后续。
 pub type CornerSink = Arc<dyn Fn(Corner) + Send + Sync>;
@@ -71,6 +76,7 @@ pub fn set_sink(sink: Option<CornerSink>) {
 /// 清空状态（钩子重装 / 关开关时用）。
 pub fn reset() {
     *ACTIVE.lock().unwrap() = None;
+    *LAST_POINT.lock().unwrap() = None;
 }
 
 /// 是否启用（壳层 / 测试自检用）。
@@ -85,6 +91,7 @@ pub fn on_move(pt: (i32, i32)) -> Option<Corner> {
     if !enabled() {
         return None;
     }
+    *LAST_POINT.lock().unwrap() = Some(pt);
     let cfg = CONFIG.lock().unwrap().clone()?;
     if !cfg.enabled || cfg.monitors.is_empty() {
         return None;
@@ -123,6 +130,27 @@ fn within(cfg: &Config, i: usize, pt: (i32, i32), distance: i32) -> bool {
         Some(rect) => within_rect(*rect, Corner::from_index(i % 4), pt, distance),
         None => false,
     }
+}
+
+/// 防误触复查：等够停留时长后，光标是否还在这个角附近（[`DWELL_TOLERANCE`] 内）。
+///
+/// 等待期间用户可能只是**扫过**角落（关窗口、拖滚动条），那就不能触发。壳层拿不到光标，
+/// 所以由钩子最近一次记录的位置判断；多显示器时只要有一台的这个角还贴着就算。
+pub fn still_near(corner: Corner) -> bool {
+    if !enabled() {
+        return false;
+    }
+    let Some(pt) = *LAST_POINT.lock().unwrap() else {
+        return false;
+    };
+    let Some(cfg) = CONFIG.lock().unwrap().clone() else {
+        return false;
+    };
+    cfg.enabled
+        && cfg
+            .monitors
+            .iter()
+            .any(|rect| within_rect(*rect, corner, pt, DWELL_TOLERANCE))
 }
 
 /// `pt` 是否在角点附近 `distance` 像素内。
@@ -181,6 +209,15 @@ mod tests {
         assert_eq!(on_move((50, 50)), None, "屏幕中间不在任何角");
         assert_eq!(on_move((101, 1)), Some(Corner::TopLeft), "第二台显示器的左上角");
         assert_eq!(got.lock().unwrap().len(), 4);
+
+        // 防误触复查：等够停留时长后光标还在角附近（容差内抖动也算），走远了就不算。
+        assert!(still_near(Corner::TopLeft), "光标还贴着第二台显示器的左上角");
+        on_move((108, 8));
+        assert!(still_near(Corner::TopLeft), "容差内抖动仍算贴着");
+        on_move((300, 100));
+        assert!(!still_near(Corner::TopLeft), "走远了不再算贴着");
+        configure(false, [false; 4], Vec::new());
+        assert!(!still_near(Corner::TopLeft), "关掉后一律不算");
 
         set_sink(None);
         configure(false, [false; 4], Vec::new());

@@ -361,18 +361,28 @@ export function installBrowserMock() {
           return null;
         case "get_update_status":
           return { current: "0.6.0", kind: "installed", phase: "idle" };
+        case "take_update_dialog":
+          return null;
         case "check_update":
           // 推事件让设置页看到「检查中 → 发现新版本」；否则按钮点了没反应像坏了。
           emit("update-status", { current: "0.6.0", kind: "installed", phase: "checking" });
           setTimeout(
-            () =>
+            () => {
               emit("update-status", {
                 current: "0.6.0",
                 kind: "installed",
                 phase: "available",
                 version: "0.6.1",
                 notes: "演示模式：这是一条模拟的更新说明。",
-              }),
+              });
+              // 手动检查的「现在下载吗」对话框：浏览器里也能验收自绘样式。
+              emit("update-dialog", {
+                tone: "info",
+                title: "发现新版本",
+                text: "发现新版本 v0.6.1（当前 v0.6.0）。\n\n更新说明：\n演示模式：这是一条模拟的更新说明。\n\n现在下载吗？下载完成后可在设置页点「安装」。",
+                action: "download",
+              });
+            },
             600,
           );
           return null;
@@ -403,6 +413,7 @@ export function installBrowserMock() {
                 kind: "installed",
                 phase: "ready",
                 version: "0.6.1",
+                notes: "演示模式：这是一条模拟的更新说明。",
               }),
             1200,
           );
