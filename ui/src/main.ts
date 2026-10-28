@@ -347,8 +347,8 @@ type WheelEdgeRule = {
   order?: number;
 };
 /**
- * 一条鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
- * 后端模型见 `kada-core` 的 `Gesture`。
+ * 一条**鼠标手势**（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
+ * 后端模型见 `kada-core` 的 `Gesture`；触摸板手势是另一个类型 / 数组（见 `TouchpadGesture`）。
  */
 type Gesture = {
   name?: string | null;
@@ -356,20 +356,36 @@ type Gesture = {
   description?: string | null;
   /** 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`（如 `DRUL`）。 */
   pattern: string;
-  /** 触发方式：缺省 / null = 按住右键画；键名 = 按住该键在触摸板上画（触摸板手势）。 */
-  trigger?: string | null;
-  /** 形状模板（24 点归一化，触摸板手势「录一笔」时带上；只在方向串没命中时兜底）。 */
-  template?: [number, number][] | null;
   enabled: boolean;
   actions: Action[];
   /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在，回放右键。 */
   when?: Condition | null;
   /** 归属文件夹（null / 缺省 = 根级）。 */
   folder?: string | null;
-  /** 统一展示顺序（三类共用；只影响列表顺序）。 */
+  /** 统一展示顺序（鼠标操作三类共用；只影响列表顺序）。 */
   order?: number;
 };
-type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
+/** 一条**触摸板手势**（后端 `TouchpadGesture`）：按住触发键、在触摸板上画一笔。 */
+type TouchpadGesture = {
+  name?: string | null;
+  /** 简短描述（「详情」页签）。 */
+  description?: string | null;
+  /** 触发键：按住它进入采集；只能是键盘键（鼠标键由后端清洗掉）。 */
+  trigger?: string | null;
+  /** 方向串（同鼠标手势的写法）。 */
+  pattern: string;
+  /** 形状模板（24 点归一化；「录一笔」带上，只在方向串没命中时兜底）。 */
+  template?: [number, number][] | null;
+  enabled: boolean;
+  actions: Action[];
+  /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在。 */
+  when?: Condition | null;
+  /** 归属文件夹（null / 缺省 = 根级）。 */
+  folder?: string | null;
+  /** 展示顺序：触摸板手势自成一组，与鼠标操作各自的序列互不干扰。 */
+  order?: number;
+};
+type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; touchpad_gestures?: TouchpadGesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
 type StatusPayload = {
   /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
@@ -462,6 +478,7 @@ type Section =
   | "remaps"
   | "expansions"
   | "gestures"
+  | "touchpads"
   | "hotcorners"
   | "wheeledges"
   | "layers"
@@ -470,13 +487,22 @@ type Section =
   | "settings"
   | "help";
 // 合并列表里的条目类型：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
-// gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目，与快捷键/改键/文本扩展并列。
-type ListKind = "shortcut" | "remap" | "expansion" | "gesture" | "hotcorner" | "wheeledge";
+// gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目；
+// touchpad = **触摸板手势**：按住一个键盘键、在触摸板上画一笔触发的条目（单独分类）。
+type ListKind =
+  | "shortcut"
+  | "remap"
+  | "expansion"
+  | "gesture"
+  | "touchpad"
+  | "hotcorner"
+  | "wheeledge";
 const KIND_SECTION: Record<ListKind, Section> = {
   shortcut: "shortcuts",
   remap: "remaps",
   expansion: "expansions",
   gesture: "gestures",
+  touchpad: "touchpads",
   hotcorner: "hotcorners",
   wheeledge: "wheeledges",
 };
@@ -486,6 +512,7 @@ function isListSection(s: Section): boolean {
     s === "remaps" ||
     s === "expansions" ||
     s === "gestures" ||
+    s === "touchpads" ||
     s === "hotcorners" ||
     s === "wheeledges"
   );
@@ -498,17 +525,28 @@ function currentKind(): ListKind {
       ? "expansion"
       : section === "gestures"
         ? "gesture"
-        : section === "hotcorners"
-          ? "hotcorner"
-          : section === "wheeledges"
-            ? "wheeledge"
-            : "shortcut";
+        : section === "touchpads"
+          ? "touchpad"
+          : section === "hotcorners"
+            ? "hotcorner"
+            : section === "wheeledges"
+              ? "wheeledge"
+              : "shortcut";
 }
-function currentDraft(): ShortcutItem | Remap | TextExpansion | Gesture | HotCornerRule | WheelEdgeRule | null {
+function currentDraft():
+  | ShortcutItem
+  | Remap
+  | TextExpansion
+  | Gesture
+  | TouchpadGesture
+  | HotCornerRule
+  | WheelEdgeRule
+  | null {
   if (section === "shortcuts") return draft;
   if (section === "remaps") return remapDraft;
   if (section === "expansions") return expansionDraft;
   if (section === "gestures") return gestureDraft;
+  if (section === "touchpads") return touchpadDraft;
   if (section === "hotcorners") return hotcornerDraft;
   if (section === "wheeledges") return wheeledgeDraft;
   return null;
@@ -1473,7 +1511,8 @@ let draftNew = false; // 当前编辑是否为“新增”未保存项
 let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保存才写回 cfg）
 let remapDraft: Remap | null = null; // 改键编辑草稿
 let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
-let gestureDraft: Gesture | null = null; // 鼠标操作（手势）编辑草稿
+let gestureDraft: Gesture | null = null; // 鼠标操作（右键手势）编辑草稿
+let touchpadDraft: TouchpadGesture | null = null; // 触摸板手势编辑草稿
 let hotcornerDraft: HotCornerRule | null = null; // 角动作编辑草稿
 let wheeledgeDraft: WheelEdgeRule | null = null; // 边缘滚动编辑草稿
 // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
@@ -1517,6 +1556,7 @@ type DragPayload =
   | { kind: "remap"; idx: number }
   | { kind: "expansion"; idx: number }
   | { kind: "gesture"; idx: number }
+  | { kind: "touchpad"; idx: number }
   | { kind: "hotcorner"; idx: number }
   | { kind: "wheeledge"; idx: number };
 type DropZone =
@@ -1613,8 +1653,10 @@ async function save(): Promise<boolean> {
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
   cfg.expansions = cfg.expansions.filter((e) => e.trigger.trim().length > 0);
-  // 鼠标操作：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
+  // 鼠标操作 / 触摸板手势：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
   if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => g.pattern.trim().length > 0);
+  if (cfg.touchpad_gestures)
+    cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => g.pattern.trim().length > 0);
   let ignored: string[] = [];
   try {
     ignored = await invoke<string[]>("set_config", { config: cfg });
@@ -2051,6 +2093,7 @@ function renderListPane() {
     ...cfg.remaps,
     ...cfg.expansions,
     ...(cfg.gestures ?? []),
+    ...(cfg.touchpad_gestures ?? []),
     ...(cfg.hot_corners ?? []),
     ...(cfg.wheel_edges ?? []),
   ];
@@ -2136,6 +2179,9 @@ const KIND_ICON: Record<ListKind, string> = {
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 7v6a4 4 0 0 0 4 4h9.5"/><path d="M17 14l3 3-3 3"/><rect x="4" y="2" width="5" height="5"/><circle cx="20" cy="6" r="1.6"/></svg>',
   hotcorner:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20V4h16"/><path d="M4 13a9 9 0 0 1 9-9"/></svg>',
+  // 触摸板手势：一块触摸板 + 单指滑动轨迹（与鼠标手势的「右键方块」区分开）。
+  touchpad:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="3" width="16" height="18" rx="3"/><path d="M8.5 14c2.5-3.5 6-3.5 8 0"/><path d="M15 11.5l1.5 1.5-1.5 1.5"/></svg>',
   wheeledge:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><rect x="9" y="10" width="6" height="8" rx="1"/><path d="M12 11v2m0 0 1-1m-1 1-1-1"/></svg>',
 };
@@ -2184,6 +2230,15 @@ function renderEntries() {
     mouseRows
       .sort((a, b) => a.order - b.order || a.rank - b.rank || a.idx - b.idx)
       .forEach((m) => list.append(m.row()));
+    // 触摸板手势**自成一组**：自己的 `order` 序列、排在鼠标操作之后，不与它们跨类型换位。
+    const padRows: { idx: number; order: number; row: () => HTMLElement }[] = [];
+    (cfg.touchpad_gestures ?? []).forEach((g, i) => {
+      if ((g.folder ?? null) === folderId && touchpadVisible(g))
+        padRows.push({ idx: i, order: g.order ?? 0, row: () => touchpadRow(g, i, depth) });
+    });
+    padRows
+      .sort((a, b) => a.order - b.order || a.idx - b.idx)
+      .forEach((p) => list.append(p.row()));
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
@@ -2277,7 +2332,9 @@ function rowObject(li: HTMLElement): object | null {
         ? (cfg.expansions[idx] ?? null)
         : kind === "gesture"
           ? ((cfg.gestures ?? [])[idx] ?? null)
-          : null;
+          : kind === "touchpad"
+            ? ((cfg.touchpad_gestures ?? [])[idx] ?? null)
+            : null;
 }
 
 // 只选中这一行（右键/⋯菜单用）：不整棵重绘，菜单锚点还挂在按钮上，重绘会把它拆掉。
@@ -2389,8 +2446,6 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
   listRow(li, g, "gesture", idx);
   attachDragStart(li, { kind: "gesture", idx });
   const trig = el("span", "row-trigger");
-  // 触摸板手势：把触发键摆在方向串前面（`.row-key-badge`），一眼分开两类来源。
-  if (g.trigger) trig.append(el("span", "row-key-badge", g.trigger));
   trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
   li.append(
     kindIcon("gesture"),
@@ -2402,9 +2457,47 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
   return li;
 }
 
+// 触摸板手势行：触发键徽标 + 方向串 + 名称（单独分类，不再混在鼠标操作里）。
+function touchpadRow(g: TouchpadGesture, idx: number, depth: number): HTMLElement {
+  const li = el(
+    "li",
+    "row" +
+      (isSel("touchpad", idx) ? " selected" : "") +
+      (picked.has(g) ? " picked" : "") +
+      (g.enabled ? "" : " off"),
+  );
+  li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
+  if (!g.enabled) li.title = tr("已停用（右键可启用）");
+  listRow(li, g, "touchpad", idx);
+  attachDragStart(li, { kind: "touchpad", idx });
+  const trig = el("span", "row-trigger");
+  if (g.trigger) trig.append(el("span", "row-key-badge", g.trigger));
+  trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
+  li.append(
+    kindIcon("touchpad"),
+    trig,
+    el("span", "row-name", g.name?.trim() || tr("（未命名）")),
+    runButton(g.actions, g.name?.trim() || g.pattern || tr("触摸板手势")),
+    moreButton((btn) => openRowMenu(btn, li, g)),
+  );
+  return li;
+}
+
 // 鼠标操作条目的可见性：搜索命中名称 / 方向串 / 动作摘要；筛选只认「启用的」。
 function gestureVisible(g: Gesture): boolean {
   if (!mouseFeaturesEnabled()) return false; // 总闸关着 = 这一类不出现
+  const q = search.trim().toLowerCase();
+  if (q) {
+    const hay = `${g.pattern} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (listFilter.enabled && !g.enabled) return false;
+  return true;
+}
+
+// 触摸板手势的可见性：额外认触发键（用户常按「CapsLock」搜）。
+function touchpadVisible(g: TouchpadGesture): boolean {
+  if (!mouseFeaturesEnabled()) return false;
   const q = search.trim().toLowerCase();
   if (q) {
     const hay = `${g.pattern} ${g.trigger ?? ""} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
@@ -2701,6 +2794,7 @@ type SnippetFetch = {
     remaps: Remap[];
     expansions: TextExpansion[];
     gestures?: Gesture[];
+    touchpad_gestures?: TouchpadGesture[];
     hot_corners?: HotCornerRule[];
     wheel_edges?: WheelEdgeRule[];
   };
@@ -2943,6 +3037,7 @@ async function previewSnippet(e: IndexEntry) {
       p.remaps.length +
       p.expansions.length +
       (p.gestures?.length ?? 0) +
+      (p.touchpad_gestures?.length ?? 0) +
       (p.hot_corners?.length ?? 0) +
       (p.wheel_edges?.length ?? 0);
     const level = riskLevel(r.scan.level);
@@ -2969,6 +3064,16 @@ async function previewSnippet(e: IndexEntry) {
           "li",
           undefined,
           trt`鼠标操作 ${g.pattern}${g.name ? ` · ${g.name}` : ""} → ${g.actions
+            .map(actionSummary)
+            .join(" → ")}`,
+        ),
+      );
+    for (const g of p.touchpad_gestures ?? [])
+      lines.push(
+        el(
+          "li",
+          undefined,
+          trt`触摸板手势 ${g.trigger ?? ""}·${g.pattern}${g.name ? ` · ${g.name}` : ""} → ${g.actions
             .map(actionSummary)
             .join(" → ")}`,
         ),
@@ -3056,6 +3161,7 @@ const PUBLISH_KINDS: ListKind[] = [
   "remap",
   "expansion",
   "gesture",
+  "touchpad",
   "hotcorner",
   "wheeledge",
 ];
@@ -3446,6 +3552,7 @@ const FOLDER_ENTRY_KINDS: [string, () => FolderEntry[]][] = [
   [tr("改键"), () => cfg.remaps],
   [tr("文本扩展"), () => cfg.expansions],
   [tr("鼠标操作"), () => (cfg.gestures ?? []) as unknown as FolderEntry[]],
+  [tr("触摸板手势"), () => (cfg.touchpad_gestures ?? []) as unknown as FolderEntry[]],
   [tr("角动作"), () => (cfg.hot_corners ?? []) as unknown as FolderEntry[]],
   [tr("边缘滚动"), () => (cfg.wheel_edges ?? []) as unknown as FolderEntry[]],
 ];
@@ -3514,6 +3621,7 @@ type AnyEntry =
   | Remap
   | TextExpansion
   | Gesture
+  | TouchpadGesture
   | HotCornerRule
   | WheelEdgeRule;
 // **有目录归属的**条目（鼠标类触发源没有目录：它们是全局触发源，不参与目录树）。
@@ -3524,6 +3632,7 @@ function kindOf(o: object): ListKind | null {
   if ((cfg.remaps as object[]).includes(o)) return "remap";
   if ((cfg.expansions as object[]).includes(o)) return "expansion";
   if ((cfg.gestures as object[]).includes(o)) return "gesture";
+  if ((cfg.touchpad_gestures as object[]).includes(o)) return "touchpad";
   if ((cfg.hot_corners as object[]).includes(o)) return "hotcorner";
   if ((cfg.wheel_edges as object[]).includes(o)) return "wheeledge";
   return null;
@@ -3538,9 +3647,11 @@ function arrOf(kind: ListKind): AnyEntry[] {
         ? cfg.expansions
         : kind === "gesture"
           ? (cfg.gestures ?? [])
-          : kind === "hotcorner"
-            ? (cfg.hot_corners ?? [])
-            : (cfg.wheel_edges ?? []);
+          : kind === "touchpad"
+            ? (cfg.touchpad_gestures ?? [])
+            : kind === "hotcorner"
+              ? (cfg.hot_corners ?? [])
+              : (cfg.wheel_edges ?? []);
 }
 
 function kindLabel(kind: ListKind | null): string {
@@ -3552,11 +3663,13 @@ function kindLabel(kind: ListKind | null): string {
         ? tr("文本扩展")
         : kind === "gesture"
           ? tr("鼠标操作")
-          : kind === "hotcorner"
-            ? tr("角动作")
-            : kind === "wheeledge"
-              ? tr("边缘滚动")
-              : tr("条目");
+          : kind === "touchpad"
+            ? tr("触摸板手势")
+            : kind === "hotcorner"
+              ? tr("角动作")
+              : kind === "wheeledge"
+                ? tr("边缘滚动")
+                : tr("条目");
 }
 
 // 条目的展示名（确认框要与列表行对得上号）：有标题用标题，否则退回各自的兜底。
@@ -3573,6 +3686,10 @@ function labelOf(o: object): string {
   }
   if (kind === "gesture") {
     const g = o as Gesture;
+    return g.name?.trim() || g.pattern || tr("未命名");
+  }
+  if (kind === "touchpad") {
+    const g = o as TouchpadGesture;
     return g.name?.trim() || g.pattern || tr("未命名");
   }
   if (kind === "hotcorner") {
@@ -3593,6 +3710,7 @@ function selectedObject(): AnyEntry | null {
   if (section === "remaps") return cfg.remaps[selected] ?? null;
   if (section === "expansions") return cfg.expansions[selected] ?? null;
   if (section === "gestures") return (cfg.gestures ?? [])[selected] ?? null;
+  if (section === "touchpads") return (cfg.touchpad_gestures ?? [])[selected] ?? null;
   if (section === "hotcorners") return (cfg.hot_corners ?? [])[selected] ?? null;
   if (section === "wheeledges") return (cfg.wheel_edges ?? [])[selected] ?? null;
   return null;
@@ -3651,6 +3769,8 @@ async function deleteSelection() {
   cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
   cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
   if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
+  if (cfg.touchpad_gestures)
+    cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => !set.has(g));
   if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
   if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
   picked.clear();
@@ -3679,6 +3799,8 @@ function pasteIntoFolder(folderId: string | null) {
       cfg.remaps.push(copy as Remap);
     } else if (it.kind === "gesture") {
       (cfg.gestures ?? (cfg.gestures = [])).push(copy as Gesture);
+    } else if (it.kind === "touchpad") {
+      (cfg.touchpad_gestures ?? (cfg.touchpad_gestures = [])).push(copy as TouchpadGesture);
     } else if (it.kind === "hotcorner") {
       (cfg.hot_corners ?? (cfg.hot_corners = [])).push(copy as HotCornerRule);
     } else if (it.kind === "wheeledge") {
@@ -3693,6 +3815,8 @@ function pasteIntoFolder(folderId: string | null) {
     cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
     cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
     if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
+    if (cfg.touchpad_gestures)
+      cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => !set.has(g));
     if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
     if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
     clipboard = null;
@@ -3771,6 +3895,22 @@ function mouseSequence(): { kind: "gesture" | "hotcorner" | "wheeledge"; item: G
   return out.sort((a, b) => (a.item.order ?? 0) - (b.item.order ?? 0) || a.rank - b.rank || a.idx - b.idx);
 }
 
+/** 触摸板手势自己的展示序列（自成一组，序列与鼠标操作互不干扰）。 */
+function touchpadSequence(): { item: TouchpadGesture; idx: number }[] {
+  return (cfg.touchpad_gestures ?? [])
+    .map((item, idx) => ({ item, idx }))
+    .sort((a, b) => (a.item.order ?? 0) - (b.item.order ?? 0) || a.idx - b.idx);
+}
+
+/** 新建触摸板手势排到本组最前：重排本组 `order`（新条目拿 0，其余顺延）。 */
+function touchpadOrderFront(item: TouchpadGesture) {
+  const seq = (cfg.touchpad_gestures ?? []).filter((g) => g !== item);
+  seq.unshift(item);
+  seq.forEach((g, i) => {
+    g.order = i;
+  });
+}
+
 /** 新建条目排到最前：重排三类共用的 `order`（新条目拿 0，其余顺延）。 */
 function mouseOrderFront(item: Gesture | HotCornerRule | WheelEdgeRule) {
   const seq = mouseSequence().filter((e) => e.item !== item);
@@ -3785,6 +3925,10 @@ function mouseItemOf(kind: ListKind, idx: number): (Gesture & HotCornerRule & Wh
   if (kind === "hotcorner") return ((cfg.hot_corners ?? [])[idx] as never) ?? null;
   if (kind === "wheeledge") return ((cfg.wheel_edges ?? [])[idx] as never) ?? null;
   return null;
+}
+
+function touchpadItemOf(idx: number): TouchpadGesture | null {
+  return (cfg.touchpad_gestures ?? [])[idx] ?? null;
 }
 
 function dragRowKind(): ListKind {
@@ -3839,13 +3983,13 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
 // 下一行是目录或没有就放进上面这个目录；列表顶端的缝落第一行之前。没有候选才回根。
 function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
   const kind = dragPayload?.kind;
-  // 鼠标类三类共用一条展示序列：候选是三类行 + 目录行，可互相换位、也可放进目录。
-  if (isMouseKind(kind)) {
-    const cands = Array.from(
-      list.querySelectorAll<HTMLElement>(
-        '.row[data-kind="gesture"], .row[data-kind="hotcorner"], .row[data-kind="wheeledge"], .folder-row',
-      ),
-    );
+  // 鼠标类三类共用一条展示序列；触摸板手势自成一组，只与本组行 + 目录行互为落点。
+  const grouped = isMouseKind(kind) || kind === "touchpad";
+  if (grouped) {
+    const selector = isMouseKind(kind)
+      ? '.row[data-kind="gesture"], .row[data-kind="hotcorner"], .row[data-kind="wheeledge"], .folder-row'
+      : '.row[data-kind="touchpad"], .folder-row';
+    const cands = Array.from(list.querySelectorAll<HTMLElement>(selector));
     const inside = cands.find((el) => {
       const r = el.getBoundingClientRect();
       return y >= r.top && y <= r.bottom;
@@ -3951,7 +4095,12 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
   const rowEl = hit.closest(".row") as HTMLElement | null;
   if (rowEl) {
     const rowKind = rowEl.dataset.kind as ListKind;
-    const ok = isMouseKind(dragRowKind()) ? isMouseKind(rowKind) : rowKind === dragRowKind();
+    const dragKind = dragRowKind();
+    const ok = isMouseKind(dragKind)
+      ? isMouseKind(rowKind)
+      : dragKind === "touchpad"
+        ? rowKind === "touchpad"
+        : rowKind === dragKind;
     if (ok) {
       const r = rowEl.getBoundingClientRect();
       return {
@@ -4082,6 +4231,54 @@ function applyDrop(zone: DropZone) {
     });
     const movedIdx = arrOf(srcKind).indexOf(moved);
     if (section === KIND_SECTION[srcKind] && movedIdx >= 0) selected = movedIdx;
+    void save();
+    return;
+  }
+
+  // 触摸板手势：自成一组——可同组换位、放进目录 / 拖回根级，但不与鼠标操作跨类型换位。
+  if (payload.kind === "touchpad") {
+    const moved = touchpadItemOf(payload.idx);
+    if (!moved) return;
+    let destFolder: string | null = null;
+    if (zone.kind === "folder") destFolder = zone.folderId;
+    else if (zone.kind === "row") {
+      if (zone.targetKind !== "touchpad") return;
+      const target = touchpadItemOf(zone.idx);
+      if (!target) return;
+      destFolder = target.folder ?? null;
+    } else if (zone.kind !== "root") return;
+
+    const arr = cfg.touchpad_gestures ?? (cfg.touchpad_gestures = []);
+    if (zone.kind === "row") {
+      const target = touchpadItemOf(zone.idx);
+      const from = arr.indexOf(moved);
+      const ti = target ? arr.indexOf(target) : -1;
+      if (from >= 0 && ti >= 0) {
+        let at = zone.pos === "before" ? ti : ti + 1;
+        if (at > from) at--;
+        moveWithin(arr, from, at);
+      }
+    }
+    moved.folder = destFolder;
+    const seq = touchpadSequence().filter((e) => e.item !== moved);
+    let at = seq.length;
+    if (zone.kind === "row") {
+      const target = touchpadItemOf(zone.idx);
+      const pos = seq.findIndex((e) => e.item === target);
+      if (pos >= 0) at = zone.pos === "before" ? pos : pos + 1;
+    } else if (zone.kind === "folder") {
+      let last = -1;
+      seq.forEach((e, i) => {
+        if ((e.item.folder ?? null) === destFolder) last = i;
+      });
+      at = last >= 0 ? last + 1 : seq.length;
+    }
+    seq.splice(at, 0, { item: moved, idx: 0 });
+    seq.forEach((e, i) => {
+      e.item.order = i;
+    });
+    const movedIdx = arr.indexOf(moved);
+    if (section === KIND_SECTION.touchpad && movedIdx >= 0) selected = movedIdx;
     void save();
     return;
   }
@@ -4261,6 +4458,7 @@ async function setPickedEnabled(v: boolean) {
   for (const r of cfg.remaps) if (picked.has(r)) { r.enabled = v; n++; }
   for (const e of cfg.expansions) if (picked.has(e)) { e.enabled = v; n++; }
   for (const g of cfg.gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
+  for (const g of cfg.touchpad_gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
   for (const r of cfg.hot_corners ?? []) if (picked.has(r)) { r.enabled = v; n++; }
   for (const r of cfg.wheel_edges ?? []) if (picked.has(r)) { r.enabled = v; n++; }
   picked.clear();
@@ -4353,6 +4551,7 @@ function setEntryTitle() {
 function currentActionsHost(): { actions: Action[] } | null {
   if (section === "shortcuts") return draft;
   if (section === "gestures") return gestureDraft;
+  if (section === "touchpads") return touchpadDraft;
   if (section === "hotcorners") return hotcornerDraft;
   if (section === "wheeledges") return wheeledgeDraft;
   return null;
@@ -4607,8 +4806,8 @@ function openGesturePad(onDone: (pattern: string) => void) {
   document.body.append(mask);
 }
 
-// ---- 触摸板手势：触发方式 + 「从触摸板录一笔」 ----
-// 触发方式存在 `Gesture.trigger`（缺省 = 按住右键）。录制由壳层临时开采集：
+// ---- 触摸板手势：触发键 + 「从触摸板录一笔」 ----
+// 触发键是独立的 `TouchpadGesture.trigger`（必填、只能键盘键）。录制由壳层临时开采集：
 // 按触发键 → 在触摸板上画一笔 → 松键后壳层把方向串 + 形状模板推回来，**不执行动作**。
 type TrackpadRecordPayload = {
   pattern: string;
@@ -4620,14 +4819,14 @@ type TrackpadRecordPayload = {
 /** 正在「录一笔」时接收壳层回传的回调（`null` = 没在录）。 */
 let trackpadRecordSink: ((p: TrackpadRecordPayload) => void) | null = null;
 
-/** 触发方式下拉：第一项「按住右键」，其余是键盘键（鼠标键只走右键手势那条路）。 */
-function fillGestureTriggerSelect() {
-  const sel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
+/** 触发键下拉：只有键盘键（鼠标键只走右键手势那条路）。 */
+function fillTouchpadTriggerSelect() {
+  const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
   if (!sel || sel.options.length > 0) return;
-  const right = document.createElement("option");
-  right.value = "";
-  right.textContent = tr("按住右键");
-  sel.append(right);
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = tr("选择触发键…");
+  sel.append(placeholder);
   for (const k of KEY_OPTIONS) {
     if (k.startsWith("Mouse") || k.startsWith("Wheel")) continue;
     const o = document.createElement("option");
@@ -4637,18 +4836,18 @@ function fillGestureTriggerSelect() {
   }
 }
 
-/** 触发方式变了之后，把只对触摸板手势有意义的按钮 / 提示对齐。 */
-function syncGestureTriggerUi() {
-  const key = gestureDraft?.trigger ?? "";
-  document.getElementById("edit-gesture-capture")?.classList.toggle("hidden", !key);
+/** 触发键 / 模板变了之后，把「录一笔」「清除模板」与提示对齐。 */
+function syncTouchpadUi() {
+  const key = touchpadDraft?.trigger ?? "";
+  document.getElementById("edit-touchpad-capture")?.classList.toggle("hidden", !key);
   document
-    .getElementById("edit-gesture-drop-template")
-    ?.classList.toggle("hidden", !gestureDraft?.template);
-  const sel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
+    .getElementById("edit-touchpad-drop-template")
+    ?.classList.toggle("hidden", !touchpadDraft?.template);
+  const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
   if (sel) {
     sel.title = key
       ? trt`按住 ${key} 在触摸板上画一笔（触摸板手势）`
-      : tr("按住右键画轨迹（鼠标手势）");
+      : tr("先选一个触发键，再在触摸板上录一笔");
   }
 }
 
@@ -4686,17 +4885,17 @@ function openTrackpadRecord(key: string) {
   // 而面板已经看不见了（与录入暂停同一口径，见 `stopCapture`）。
   activeCaptureCleanup = stop;
   trackpadRecordSink = (p) => {
-    if (!gestureDraft) return;
+    if (!touchpadDraft) return;
     if (!p.pattern) {
       status.textContent = tr("这一笔没识别出来（太短 / 涂鸦 / 已作废），再画一笔");
       return;
     }
-    gestureDraft.pattern = p.pattern;
-    gestureDraft.template = p.template ?? null;
-    gestureDraft.trigger = key;
-    (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value = p.pattern;
-    renderActions(gestureDraft, p.pattern);
-    syncGestureTriggerUi();
+    touchpadDraft.pattern = p.pattern;
+    touchpadDraft.template = p.template ?? null;
+    touchpadDraft.trigger = key;
+    (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value = p.pattern;
+    renderActions(touchpadDraft, p.pattern);
+    syncTouchpadUi();
     refreshDirty();
     status.textContent = trt`已录入 ${p.pattern}（${p.points} 个点）`;
     toast(trt`已录入方向串 ${p.pattern}，记得保存`);
@@ -4721,13 +4920,6 @@ function fillGestureEditor() {
     gestureDraft.description ?? "";
   (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
     gestureDraft.pattern;
-  const triggerSel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
-  if (triggerSel) {
-    // 手改配置里塞了鼠标键 / 未知键名时，下拉里没有这一项 → 浏览器回落到空值（显示成
-    // 「按住右键」），但**不动草稿**：保存时后端清洗会照原样报错，别在界面上悄悄改配置。
-    triggerSel.value = gestureDraft.trigger ?? "";
-  }
-  syncGestureTriggerUi();
   renderWhenEditor(
     document.getElementById("edit-when")!,
     () => gestureDraft?.when,
@@ -4737,6 +4929,31 @@ function fillGestureEditor() {
     refreshDirty,
   );
   renderActions(gestureDraft, gestureDraft.pattern || tr("未设方向串"));
+  setEntryTitle();
+}
+
+function fillTouchpadEditor() {
+  if (!touchpadDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
+    touchpadDraft.description ?? "";
+  (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value =
+    touchpadDraft.pattern;
+  const triggerSel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
+  if (triggerSel) {
+    // 手改配置里塞了鼠标键 / 未知键名时，下拉没有这一项 → 回落到空值（显示「选择触发键…」），
+    // 但**不动草稿**：保存时后端清洗会照原样报错，别在界面上悄悄改用户配置。
+    triggerSel.value = touchpadDraft.trigger ?? "";
+  }
+  syncTouchpadUi();
+  renderWhenEditor(
+    document.getElementById("edit-when")!,
+    () => touchpadDraft?.when,
+    (c) => {
+      if (touchpadDraft) touchpadDraft.when = c;
+    },
+    refreshDirty,
+  );
+  renderActions(touchpadDraft, touchpadDraft.pattern || tr("未设方向串"));
   setEntryTitle();
 }
 
@@ -4872,14 +5089,20 @@ function syncEntry() {
     "remap",
     "expansion",
     "gesture",
+    "touchpad",
     "hotcorner",
     "wheeledge",
   ] as ListKind[]) {
     const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
     if (item) {
       item.classList.toggle("active", k === kind);
-      // 鼠标类新功能：总闸关着时这些项不出现（入口隐藏，配置留着）。
-      if (k === "gesture" || k === "hotcorner" || k === "wheeledge")
+      // 鼠标 / 触摸板类新功能：总闸关着时这些项不出现（入口隐藏，配置留着）。
+      if (
+        k === "gesture" ||
+        k === "touchpad" ||
+        k === "hotcorner" ||
+        k === "wheeledge"
+      )
         item.classList.toggle("hidden", !mouseFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
@@ -4894,17 +5117,22 @@ function syncEntry() {
     document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
     document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
   }
-  // 动作区：快捷键 / 鼠标类触发共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
+  // 动作区：快捷键 / 鼠标类触发 / 触摸板手势共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
   document.getElementById("work-shortcut")!.classList.toggle(
     "hidden",
-    kind !== "shortcut" && kind !== "gesture" && kind !== "hotcorner" && kind !== "wheeledge",
+    kind !== "shortcut" &&
+      kind !== "gesture" &&
+      kind !== "touchpad" &&
+      kind !== "hotcorner" &&
+      kind !== "wheeledge",
   );
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展没有「层」；快捷键 / 改键 / 鼠标操作 / 角动作 / 边缘滚动都能归属层。
-  // 条件（when）与快捷键同语义，改键 / 鼠标类触发也都支持；六类条目都有「详情」页签。
-  const hasLayer = kind !== "expansion";
+  // 文本扩展没有「层」；手势 / 触摸板手势也没有 `layer` 字段（与鼠标操作同一口径），
+  // 别显示一个空页签。快捷键 / 改键 / 角动作 / 边缘滚动能归属层。
+  const hasLayer =
+    kind !== "expansion" && kind !== "gesture" && kind !== "touchpad";
   const hasWhen = kind !== "expansion";
   const hasDetail = true;
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
@@ -5009,6 +5237,13 @@ function deleteCurrentEntry() {
     void deleteDetailEntry(tr("鼠标操作"), g.name?.trim() || g.pattern || tr("未命名"), () => {
       if (selected !== null) (cfg.gestures ?? []).splice(selected, 1);
     });
+  } else if (kind === "touchpad") {
+    if (!touchpadDraft) return;
+    if (draftNew) return discardNewDraft();
+    const g = touchpadDraft;
+    void deleteDetailEntry(tr("触摸板手势"), g.name?.trim() || g.pattern || tr("未命名"), () => {
+      if (selected !== null) (cfg.touchpad_gestures ?? []).splice(selected, 1);
+    });
   } else if (kind === "hotcorner") {
     if (!hotcornerDraft) return;
     if (draftNew) return discardNewDraft();
@@ -5074,6 +5309,7 @@ function openDetail(
   remapDraft = null;
   expansionDraft = null;
   gestureDraft = null;
+  touchpadDraft = null;
   hotcornerDraft = null;
   wheeledgeDraft = null;
   selected = i;
@@ -5114,9 +5350,8 @@ function openDetail(
       ? {
           name: null,
           description: null,
+          folder: folderId,
           pattern: "D",
-          trigger: null,
-          template: null,
           actions: [newAction("text")],
           enabled: true,
         }
@@ -5126,6 +5361,24 @@ function openDetail(
       if (seed.pattern) gestureDraft.pattern = seed.pattern;
     }
     fillGestureEditor();
+  } else if (section === "touchpads") {
+    touchpadDraft = isNew
+      ? {
+          name: null,
+          description: null,
+          folder: folderId,
+          trigger: null,
+          pattern: "D",
+          template: null,
+          actions: [newAction("text")],
+          enabled: true,
+        }
+      : deepClone((cfg.touchpad_gestures ?? [])[i]);
+    if (isNew && seed) {
+      touchpadDraft.name = seed.name ?? null;
+      if (seed.pattern) touchpadDraft.pattern = seed.pattern;
+    }
+    fillTouchpadEditor();
   } else if (section === "hotcorners") {
     hotcornerDraft = isNew
       ? {
@@ -5176,6 +5429,7 @@ function discardDraft() {
   remapDraft = null;
   expansionDraft = null;
   gestureDraft = null;
+  touchpadDraft = null;
   hotcornerDraft = null;
   wheeledgeDraft = null;
   draftBaseline = null;
@@ -5332,8 +5586,6 @@ async function saveGestureDetail(): Promise<boolean> {
     return false;
   }
   gestureDraft.pattern = pattern;
-  gestureDraft.trigger = gestureDraft.trigger || null;
-  gestureDraft.template = gestureDraft.template?.length ? gestureDraft.template : null;
   gestureDraft.description = domValue("edit-desc") || null;
   const item = deepClone(gestureDraft);
   const list = cfg.gestures ?? (cfg.gestures = []);
@@ -5351,6 +5603,49 @@ async function saveGestureDetail(): Promise<boolean> {
   if (ok) draftBaseline = draftSignature();
   render();
   if (ok) flashRow(selected ?? -1, "gesture");
+  return ok;
+}
+
+// 触摸板手势保存：**触发键与方向串都必填**（后端清洗会把缺触发键 / 空方向串整条丢掉），
+// 形状模板可空（没录过一笔就没有）；动作可空（空 = 只留条目不做事）。
+async function saveTouchpadDetail(): Promise<boolean> {
+  if (section !== "touchpads" || !touchpadDraft) return false;
+  const trigger = domValue("edit-touchpad-trigger");
+  if (!trigger) {
+    const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
+    showFieldError(sel, tr("请选择触发键"));
+    sel.focus();
+    toast(tr("请先选择一个键盘键作触发键"));
+    return false;
+  }
+  const pattern = domValue("edit-touchpad-pattern").trim().toUpperCase();
+  if (!pattern) {
+    const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
+    showFieldError(input, tr("请填写方向串"));
+    input.focus();
+    toast(tr("请先填写方向串（如 D、DL、DRUL），或用「录一笔」画出来"));
+    return false;
+  }
+  touchpadDraft.trigger = trigger;
+  touchpadDraft.pattern = pattern;
+  touchpadDraft.template = touchpadDraft.template?.length ? touchpadDraft.template : null;
+  touchpadDraft.description = domValue("edit-desc") || null;
+  const item = deepClone(touchpadDraft);
+  const list = cfg.touchpad_gestures ?? (cfg.touchpad_gestures = []);
+  if (draftNew) {
+    list.unshift(item);
+    touchpadOrderFront(item);
+  } else if (selected !== null && list[selected]) {
+    item.enabled = list[selected].enabled;
+    list[selected] = item;
+  }
+  // 保存后留在编辑页（与快捷键同行为）。
+  draftNew = false;
+  const ok = await save();
+  selected = (cfg.touchpad_gestures ?? []).indexOf(item);
+  if (ok) draftBaseline = draftSignature();
+  render();
+  if (ok) flashRow(selected ?? -1, "touchpad");
   return ok;
 }
 
@@ -5461,6 +5756,15 @@ function draftSignature(): string | null {
       pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
     });
   }
+  if (section === "touchpads") {
+    if (!touchpadDraft) return null;
+    return JSON.stringify({
+      ...touchpadDraft,
+      description: domValue("edit-desc") || null,
+      trigger: domValue("edit-touchpad-trigger") || null,
+      pattern: domValue("edit-touchpad-pattern").trim().toUpperCase(),
+    });
+  }
   if (section === "hotcorners")
     return hotcornerDraft
       ? JSON.stringify({
@@ -5517,6 +5821,9 @@ function revertDraft() {
   } else if (section === "gestures") {
     gestureDraft = JSON.parse(draftBaseline) as Gesture;
     fillGestureEditor();
+  } else if (section === "touchpads") {
+    touchpadDraft = JSON.parse(draftBaseline) as TouchpadGesture;
+    fillTouchpadEditor();
   } else if (section === "hotcorners") {
     hotcornerDraft = JSON.parse(draftBaseline) as HotCornerRule;
     fillHotCornerEditor();
@@ -5545,6 +5852,9 @@ function draftLabel(): string {
   }
   if (section === "gestures") {
     return trt`鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || tr("未命名")}」`;
+  }
+  if (section === "touchpads") {
+    return trt`触摸板手势「${touchpadDraft?.name?.trim() || touchpadDraft?.pattern || tr("未命名")}」`;
   }
   if (section === "hotcorners") {
     return trt`角动作「${hotcornerDraft?.name?.trim() || spotLabel(hotcornerDraft?.spot ?? "top_left")}」`;
@@ -5590,6 +5900,7 @@ async function saveCurrentDraft(): Promise<boolean> {
   if (section === "remaps") return await saveRemapDetail();
   if (section === "expansions") return await saveExpansionDetail();
   if (section === "gestures") return await saveGestureDetail();
+  if (section === "touchpads") return await saveTouchpadDetail();
   if (section === "hotcorners") return await saveHotCornerDetail();
   if (section === "wheeledges") return await saveWheelEdgeDetail();
   return false;
@@ -5630,6 +5941,7 @@ async function applyExternalConfig(next: Config) {
     remapDraft !== null ||
     expansionDraft !== null ||
     gestureDraft !== null ||
+    touchpadDraft !== null ||
     hotcornerDraft !== null ||
     wheeledgeDraft !== null;
   if (editing) {
@@ -7538,10 +7850,10 @@ async function pickDir(input: HTMLInputElement) {
 function renderConflictBubble() {
   const box = document.getElementById("conflict-list")!;
   box.replaceChildren();
-  // 「鼠标手势配了但总闸关着」也用气泡说一声：总闸关着时这一类**整类不显示**，
-  // 用户在列表里看不到自己的手势，只会觉得「配了没反应」——这里把原因摆出来。
-  const gestureCount = (cfg.gestures ?? []).length;
-  const gestureOff = isListSection(section) && gestureCount > 0 && !mouseFeaturesEnabled();
+  // 「鼠标 / 触摸板类配了但总闸关着」也用气泡说一声：总闸关着时这些类**整类不显示**，
+  // 用户在列表里看不到自己的条目，只会觉得「配了没反应」——这里把原因摆出来。
+  const offCount = (cfg.gestures ?? []).length + (cfg.touchpad_gestures ?? []).length;
+  const gestureOff = isListSection(section) && offCount > 0 && !mouseFeaturesEnabled();
   const hasConflict = isListSection(section) && conflicts.length > 0 && !conflictBubbleDismissed;
   const show = hasConflict || gestureOff;
   box.classList.toggle("hidden", !show);
@@ -7553,7 +7865,7 @@ function renderConflictBubble() {
       el(
         "span",
         "conflict-bubble-text",
-        trt`⚠ 已配置 ${gestureCount} 条鼠标手势，但「鼠标操作」未开启 → 不会触发`,
+        trt`⚠ 已配置 ${offCount} 条鼠标 / 触摸板条目，但总开关未开启 → 不会触发`,
       ),
       el("span", "conflict-bubble-hint", tr("点击开启")),
     );
@@ -9152,8 +9464,8 @@ function bind() {
 
   renderThanks();
 
-  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键、文本扩展与鼠标操作不从这里进——统一编辑页里
-  // 新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
+  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键、文本扩展、鼠标操作与触摸板手势不从这里进——
+  // 统一编辑页里新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
       { label: tr("新增快捷键"), run: () => void requestNew("shortcut") },
@@ -9272,29 +9584,29 @@ function bind() {
     renderActions(host);
   });
 
-  fillGestureTriggerSelect();
-  const gestureTrigger = document.getElementById("edit-gesture-trigger") as HTMLSelectElement;
-  gestureTrigger.addEventListener("change", () => {
-    if (section !== "gestures" || !gestureDraft) return;
-    gestureDraft.trigger = gestureTrigger.value || null;
-    // 换触发方式 = 这一笔的来源变了：形状模板跟着作废（右键手势根本不看模板）。
-    gestureDraft.template = null;
-    syncGestureTriggerUi();
+  fillTouchpadTriggerSelect();
+  const touchpadTrigger = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
+  touchpadTrigger.addEventListener("change", () => {
+    if (section !== "touchpads" || !touchpadDraft) return;
+    touchpadDraft.trigger = touchpadTrigger.value || null;
+    // 换触发键 = 换了「哪只手 / 哪个键」录的那一笔：形状模板跟着作废（要留就重录一笔）。
+    touchpadDraft.template = null;
+    syncTouchpadUi();
     refreshDirty();
   });
-  document.getElementById("edit-gesture-capture")!.addEventListener("click", () => {
-    if (section !== "gestures" || !gestureDraft) return;
-    const key = gestureDraft.trigger;
+  document.getElementById("edit-touchpad-capture")!.addEventListener("click", () => {
+    if (section !== "touchpads" || !touchpadDraft) return;
+    const key = touchpadDraft.trigger;
     if (!key) {
       toast(tr("先选一个键盘键作触发键，再用触摸板录一笔"));
       return;
     }
     openTrackpadRecord(key);
   });
-  document.getElementById("edit-gesture-drop-template")!.addEventListener("click", () => {
-    if (!gestureDraft?.template) return;
-    gestureDraft.template = null;
-    syncGestureTriggerUi();
+  document.getElementById("edit-touchpad-drop-template")!.addEventListener("click", () => {
+    if (!touchpadDraft?.template) return;
+    touchpadDraft.template = null;
+    syncTouchpadUi();
     refreshDirty();
     toast(tr("已清除形状模板，只保留方向串"));
   });
@@ -9307,10 +9619,24 @@ function bind() {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       if (gestureDraft) {
         gestureDraft.pattern = pattern;
-        // 画板画的是另一笔形状：旧模板不再对应，顺手清掉（要留就重录一笔）。
-        gestureDraft.template = null;
         renderActions(gestureDraft, pattern);
-        syncGestureTriggerUi();
+      }
+      toast(trt`已录入方向串 ${pattern}，记得保存`);
+    });
+  });
+
+  document.getElementById("edit-touchpad-record")!.addEventListener("click", () => {
+    if (section !== "touchpads" || !touchpadDraft) return;
+    openGesturePad((pattern) => {
+      const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
+      input.value = pattern;
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      if (touchpadDraft) {
+        touchpadDraft.pattern = pattern;
+        // 画板画的是另一笔形状：旧模板不再对应，顺手清掉（要留就重录一笔）。
+        touchpadDraft.template = null;
+        renderActions(touchpadDraft, pattern);
+        syncTouchpadUi();
       }
       toast(trt`已录入方向串 ${pattern}，记得保存`);
     });
@@ -9605,11 +9931,12 @@ function startBrandLogoLoop() {
 // rail 有 6 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
 // （合并列表），所以落到「快捷键」上高亮，不另造页签；「键位层」与「卡带市场」都是独立一级页。
 function syncRailTab(tab: Section) {
-  // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
+  // 改键 / 文本扩展 / 鼠标操作 / 触摸板手势都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
   const rail =
     tab === "remaps" ||
     tab === "expansions" ||
     tab === "gestures" ||
+    tab === "touchpads" ||
     tab === "hotcorners" ||
     tab === "wheeledges"
       ? "shortcuts"

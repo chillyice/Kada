@@ -167,13 +167,13 @@ pub use snippet::{
 /// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
 pub mod sample;
 
-/// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。纯逻辑，识别在壳层做。
+/// 鼠标手势 / 触摸板手势（规划 7.2-MG）：方向串 + 形状模板。纯逻辑，识别在壳层做。
 mod gesture;
 pub use gesture::{
-    app_excluded, find_gesture, find_gesture_by_template, find_gesture_for,
+    app_excluded, find_gesture, find_touchpad, find_touchpad_by_template,
     gesture_capture_enabled, gesture_enabled, is_touchpad_trigger, lasso_bbox, normalize_pattern,
     pattern_from_points, pattern_from_stroke, template_distance, template_from_points,
-    touchpad_gesture_enabled, Gesture, TEMPLATE_MAX_DISTANCE, TEMPLATE_POINTS,
+    touchpad_gesture_enabled, Gesture, TouchpadGesture, TEMPLATE_MAX_DISTANCE, TEMPLATE_POINTS,
 };
 
 mod parse {
@@ -3005,6 +3005,10 @@ pub struct Config {
     /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、松手按方向串匹配。
     #[serde(default)]
     pub gestures: Vec<Gesture>,
+    /// 触摸板手势：按住一个**键盘键**、在触摸板上画一笔，松手按方向串（或形状模板）匹配。
+    /// 与鼠标手势是两个分类（触发方式、吞吐口径、列表分组都不同），别混着塞进 `gestures`。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touchpad_gestures: Vec<TouchpadGesture>,
     /// 触发角（EXT-10）：光标碰到屏幕四角执行动作。同一位置可有多条，按顺序取第一条启用的。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hot_corners: Vec<HotCornerRule>,
@@ -3487,11 +3491,11 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     //    本身合法，只报 Warn 提示「在你这台机器上不会生效」。
     out.extend(platform_conflicts(cfg, caps));
 
-    // 7) 鼠标手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串、**触发方式**与
+    // 7) 鼠标手势 / 触摸板手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串、
     //    `when` 也相同 → 谁先谁后取决于配置顺序，用户会以为「我画了却触发了别的」。只报
     //    Warn（不拦保存）：重复方向串可能是有意为之（同名不同动作），但多数是手滑复制。
-    //    不同 `when` 是按条件分流（同快捷键规则）；右键拖动与触摸板手势是两种来源，不算冲突。
-    let mut seen: Vec<(Option<Key>, String, WhenKey, String)> = Vec::new();
+    //    不同 `when` 是按条件分流（同快捷键规则）；触摸板手势还要**触发键相同**才算重复。
+    let mut seen: Vec<(String, WhenKey, String)> = Vec::new();
     for g in cfg.gestures.iter().filter(|g| g.enabled) {
         let pattern = normalize_pattern(&g.pattern);
         if pattern.is_empty() {
@@ -3500,25 +3504,48 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         let label = g.label();
         match seen
             .iter()
-            .find(|(t, p, w, _)| *t == g.trigger && *p == pattern && *w == g.when_key())
+            .find(|(p, w, _)| *p == pattern && *w == g.when_key())
+        {
+            Some((_, _, first)) => out.push(Conflict {
+                severity: Severity::Warn,
+                platform: false,
+                message: format!(
+                    "鼠标手势「{label}」与「{first}」的方向串「{pattern}」相同：只会触发先配置的那条"
+                ),
+                name: label,
+            }),
+            None => seen.push((pattern, g.when_key(), label)),
+        }
+    }
+    let mut seen_pad: Vec<(Key, String, WhenKey, String)> = Vec::new();
+    for g in cfg.touchpad_gestures.iter().filter(|g| g.enabled) {
+        let Some(trigger) = g.trigger else { continue };
+        let pattern = normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            continue;
+        }
+        let label = g.label();
+        match seen_pad
+            .iter()
+            .find(|(k, p, w, _)| *k == trigger && *p == pattern && *w == g.when_key())
         {
             Some((_, _, _, first)) => out.push(Conflict {
                 severity: Severity::Warn,
                 platform: false,
                 message: format!(
-                    "{}「{label}」与「{first}」的方向串「{pattern}」相同：只会触发先配置的那条",
-                    if g.is_touchpad() { "触摸板手势" } else { "鼠标手势" }
+                    "触摸板手势「{label}」与「{first}」都绑在「{}」上画「{pattern}」：只会触发先配置的那条",
+                    key_name(trigger)
                 ),
                 name: label,
             }),
-            None => seen.push((g.trigger, pattern, g.when_key(), label)),
+            None => seen_pad.push((trigger, pattern, g.when_key(), label)),
         }
     }
 
     // 8) 触摸板手势的触发键同时用在快捷键 / 改键的触发侧：按住它会被手势**吞掉**，
     //    那条快捷键 / 改键永远等不到按下。只报 Warn（配置合法，只是不会按用户预期工作）。
     let mut reported: Vec<Key> = Vec::new();
-    for g in cfg.gestures.iter().filter(|g| g.enabled) {
+    for g in cfg.touchpad_gestures.iter().filter(|g| g.enabled) {
         let Some(k) = g.trigger else { continue };
         if reported.contains(&k) || !uses_key_as_trigger(cfg, |x| x == k) {
             continue;
@@ -3536,6 +3563,21 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     }
 
     out
+}
+
+/// 手势 / 触摸板手势的动作列表（平台能力扫描共用一份口径）：两个数组都要扫，
+/// 否则同一套动作在「鼠标操作」里报了缺口、在「触摸板手势」里却静默。
+fn gesture_action_sets(cfg: &Config) -> impl Iterator<Item = (&[Action], String)> {
+    cfg.gestures
+        .iter()
+        .filter(|g| g.enabled)
+        .map(|g| (g.actions.as_slice(), g.label()))
+        .chain(
+            cfg.touchpad_gestures
+                .iter()
+                .filter(|g| g.enabled)
+                .map(|g| (g.actions.as_slice(), g.label())),
+        )
 }
 
 /// 平台能力缺失扫描（[`detect_conflicts`] 的第 6 段）。全支持（[`PlatformCaps::is_full`]）
@@ -3683,65 +3725,66 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
+    // 鼠标手势与触摸板手势是两个数组，扫描口径共用 `gesture_action_sets`。
     #[cfg(feature = "automation")]
     if !caps.window_actions {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_window_action(&g.actions) {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_window_action(actions) {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「当前窗口」动作在当前平台用不了（只有 Windows 实现了前台窗口操作），执行到这一步会失败".into(),
-                    name: g.label(),
+                    name: label,
                 });
             }
         }
     }
     if !caps.mouse_absolute {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_absolute_move(&g.actions) {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_absolute_move(actions) {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
                     message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
-                    name: g.label(),
+                    name: label,
                 });
             }
         }
     }
     if !caps.background_input {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_background_input(&g.actions) {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_background_input(actions) {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「后台发送」动作在当前平台用不了（只有 Windows 用 PostMessage 实现），执行到这一步会失败".into(),
-                    name: g.label(),
+                    name: label,
                 });
             }
         }
     }
     #[cfg(feature = "automation")]
     if !caps.shell_actions {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_shell_actions(&g.actions) {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_shell_actions(actions) {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「定位文件 / 清空回收站 / 关闭显示器 / 切换桌面图标」当前平台用不了（只有 Windows 实现），执行到这一步会失败".into(),
-                    name: g.label(),
+                    name: label,
                 });
             }
         }
     }
     #[cfg(feature = "automation")]
     if !caps.brightness {
-        for g in cfg.gestures.iter().filter(|g| g.enabled) {
-            if uses_brightness(&g.actions) {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_brightness(actions) {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败".into(),
-                    name: g.label(),
+                    name: label,
                 });
             }
         }
@@ -4429,7 +4472,37 @@ impl Config {
                 .map(migrate_action)
                 .collect();
         }
-        for g in &mut self.gestures {
+        // 触摸板手势原本是 `gestures[]` 里带 `trigger` 的那些：搬到独立的
+        // `touchpad_gestures`，并清掉 `Gesture` 上的兼容字段（幂等）。搬过去之后右键手势
+        // 那一路不再有「来源」概念——识别 / 列表 / 卡带 / 合并都按数组分开。
+        let mut kept_gestures = Vec::with_capacity(self.gestures.len());
+        for mut g in std::mem::take(&mut self.gestures) {
+            g.actions = std::mem::take(&mut g.actions)
+                .into_iter()
+                .map(migrate_action)
+                .collect();
+            let Some(trigger) = g.trigger.take() else {
+                // 右键手势没有模板概念：老配置里混进来的模板直接丢掉（搬不走 = 用不上）。
+                g.template = None;
+                kept_gestures.push(g);
+                continue;
+            };
+            self.touchpad_gestures.push(TouchpadGesture {
+                name: g.name,
+                description: g.description,
+                trigger: Some(trigger),
+                pattern: g.pattern,
+                template: g.template.take(),
+                folder: g.folder,
+                order: g.order,
+                actions: g.actions,
+                #[cfg(feature = "automation")]
+                when: g.when,
+                enabled: g.enabled,
+            });
+        }
+        self.gestures = kept_gestures;
+        for g in &mut self.touchpad_gestures {
             g.actions = std::mem::take(&mut g.actions)
                 .into_iter()
                 .map(migrate_action)
@@ -4845,24 +4918,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     }
 
     // 鼠标手势（规划 7.2-MG）：方向串归一化后为空 = 没法匹配，整条忽略；
-    // 同方向串 + 同触发方式 + 同 `when` 才算重复（不同 `when` 是按条件分流，与快捷键同一口径；
-    // 右键拖动与触摸板手势是两种来源，方向串撞了不算重复）；
+    // 同方向串 + 同 `when` 才算重复（不同 `when` 是按条件分流，与快捷键同一口径）；
     // 动作逐个校验，坏动作单独摘掉（一条坏动作不该拖垮整条手势）。
-    let mut seen_gesture: Vec<(Option<Key>, String, WhenKey)> = Vec::new();
+    let mut seen_gesture: Vec<(String, WhenKey)> = Vec::new();
     for g in &cfg.gestures {
         let label = g.label();
         let mut item = g.clone();
-        // 触发键只接受键盘键：鼠标键已经是右键手势 / 改键那条路，混进来只会让人以为
-        // 「按住中键画」能用，实际永远采集不到。
-        if let Some(k) = item.trigger {
-            if k.is_mouse() {
-                ignored.push(format!(
-                    "鼠标手势「{label}」已忽略：触发键「{}」是鼠标键，触摸板手势只接受键盘键",
-                    key_name(k)
-                ));
-                continue;
-            }
-        }
         if let Some(fid) = &item.folder {
             if !valid_folder_ids.contains(fid) {
                 ignored.push(format!("鼠标手势「{label}」所属文件夹已忽略：文件夹不存在"));
@@ -4876,27 +4937,17 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         if seen_gesture
             .iter()
-            .any(|(t, p, w)| *t == item.trigger && *p == pattern && *w == g.when_key())
+            .any(|(p, w)| *p == pattern && *w == g.when_key())
         {
             ignored.push(format!(
-                "鼠标手势「{label}」已忽略：{}方向串「{pattern}」与前面的手势重复",
-                match item.trigger {
-                    Some(k) => format!("触发键「{}」的", key_name(k)),
-                    None => String::new(),
-                }
+                "鼠标手势「{label}」已忽略：方向串「{pattern}」与前面的手势重复"
             ));
             continue;
         }
         item.pattern = pattern.clone();
-        // 模板只是兜底，坏了就丢掉，不值得把整条手势也废掉。
-        if let Some(t) = &item.template {
-            let ok = t.len() == crate::gesture::TEMPLATE_POINTS
-                && t.iter().all(|p| p[0] >= 0 && p[0] <= 1000 && p[1] >= 0 && p[1] <= 1000);
-            if !ok {
-                ignored.push(format!("鼠标手势「{label}」的形状模板已忽略：点数或坐标不合法"));
-                item.template = None;
-            }
-        }
+        // 兼容字段只由 `migrate` 读；清洗后一律清掉，别让老字段又被写回磁盘。
+        item.trigger = None;
+        item.template = None;
         let mut kept_actions = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -4912,8 +4963,75 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 item.when = None;
             }
         }
-        seen_gesture.push((item.trigger, pattern, item.when_key()));
+        seen_gesture.push((pattern, item.when_key()));
         out.gestures.push(item);
+    }
+
+    // 触摸板手势：**触发键必填且只能是键盘键**（鼠标键 / 缺键 = 永远采集不到，整条忽略）；
+    // 判重指纹 = 触发键 + 归一化方向串 + `when`（同一个键画同一个方向才是重复）。
+    let mut seen_touchpad: Vec<(Key, String, WhenKey)> = Vec::new();
+    for g in &cfg.touchpad_gestures {
+        let label = g.label();
+        let mut item = g.clone();
+        let Some(trigger) = item.trigger else {
+            ignored.push(format!("触摸板手势「{label}」已忽略：没有触发键"));
+            continue;
+        };
+        if trigger.is_mouse() {
+            ignored.push(format!(
+                "触摸板手势「{label}」已忽略：触发键「{}」是鼠标键，只能选键盘键",
+                key_name(trigger)
+            ));
+            continue;
+        }
+        if let Some(fid) = &item.folder {
+            if !valid_folder_ids.contains(fid) {
+                ignored.push(format!("触摸板手势「{label}」所属文件夹已忽略：文件夹不存在"));
+                item.folder = None;
+            }
+        }
+        let pattern = normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            ignored.push(format!("触摸板手势「{label}」已忽略：方向串无法解析"));
+            continue;
+        }
+        if seen_touchpad
+            .iter()
+            .any(|(k, p, w)| *k == trigger && *p == pattern && *w == g.when_key())
+        {
+            ignored.push(format!(
+                "触摸板手势「{label}」已忽略：触发键「{}」的方向串「{pattern}」与前面的手势重复",
+                key_name(trigger)
+            ));
+            continue;
+        }
+        item.pattern = pattern.clone();
+        // 模板只是兜底，坏了就丢掉，不值得把整条手势也废掉。
+        if let Some(t) = &item.template {
+            let ok = t.len() == crate::gesture::TEMPLATE_POINTS
+                && t.iter().all(|p| p[0] >= 0 && p[0] <= 1000 && p[1] >= 0 && p[1] <= 1000);
+            if !ok {
+                ignored.push(format!("触摸板手势「{label}」的形状模板已忽略：点数或坐标不合法"));
+                item.template = None;
+            }
+        }
+        let mut kept_actions = Vec::new();
+        for a in &item.actions {
+            match a.validate() {
+                Ok(()) => kept_actions.push(a.clone()),
+                Err(e) => ignored.push(format!("触摸板手势「{label}」的某个动作已忽略：{e}")),
+            }
+        }
+        item.actions = kept_actions;
+        #[cfg(feature = "automation")]
+        if let Some(w) = &item.when {
+            if let Err(e) = w.validate() {
+                ignored.push(format!("触摸板手势「{label}」的触发条件已忽略：{e}"));
+                item.when = None;
+            }
+        }
+        seen_touchpad.push((trigger, pattern, item.when_key()));
+        out.touchpad_gestures.push(item);
     }
 
     // 触发角（EXT-10）：动作逐个校验，坏动作单独摘掉（与手势同一口径），规则本身保留。
@@ -5172,6 +5290,7 @@ mod config_tests {
             remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() }],
             expansions: vec![],
             gestures: vec![],
+            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             settings: Settings::default(),
@@ -5730,6 +5849,7 @@ mod os_and_sanitize_tests {
             ],
             expansions: vec![],
             gestures: vec![],
+            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             settings: Settings::default(),
@@ -6277,6 +6397,7 @@ mod os_and_sanitize_tests {
             ],
             expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true, ..Default::default() }],
             gestures: vec![],
+            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },

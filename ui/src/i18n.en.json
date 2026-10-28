@@ -963,5 +963,21 @@
   "已录入 {0}（{1} 个点）": "Recorded {0} ({1} points)",
   "没能开始录制：{0}": "Could not start recording: {0}",
   "先选一个键盘键作触发键，再用触摸板录一笔": "Pick a keyboard key as the trigger first, then record a stroke from the touchpad",
-  "已清除形状模板，只保留方向串": "Shape template cleared; the direction string is kept"
+  "已清除形状模板，只保留方向串": "Shape template cleared; the direction string is kept",
+  "⚠ 已配置 {0} 条鼠标 / 触摸板条目，但总开关未开启 → 不会触发": "⚠ {0} mouse / touchpad entries are configured, but the master switch is off → they will not fire",
+  "先选一个触发键，再在触摸板上录一笔": "Pick a trigger key, then record a stroke on the touchpad",
+  "共用部分": "Shared parts",
+  "启用开关与上面「鼠标操作」同一枚（关掉就不生效）；起手距离、手势排除程序、轨迹浮层颜色 / 字号也与鼠标手势共用": "Uses the same on/off switch as “Mouse gestures” above (nothing works while it is off); start distance, the gesture exclusion list and the trail overlay colour / font size are shared with mouse gestures",
+  "在哪配": "Where to configure",
+  "快捷键页「＋ 新增」→ 模式选「触摸板手势」→ 选触发键 → 点「录一笔」画一笔；它与鼠标操作各自一份列表、各自一套展示顺序": "Shortcut page → “+ Add” → pick the “Touchpad gestures” mode → choose a trigger key → click “Record a stroke”. It keeps its own list and its own display order, separate from mouse gestures",
+  "按住一个「键盘键」、在触摸板上画一笔（单指滑动被系统合成鼠标移动），松键按方向串 / 形状模板触发动作；触发键只当开关、不产生输出。目前只接了 Windows 采集": "Hold a keyboard key and draw one stroke on the touchpad (single-finger swipes are synthesised as mouse movement by the OS); releasing the key matches the direction string / shape template and fires the actions. The trigger key is only a switch and produces no output. Capture is currently Windows-only",
+  "独立分类": "Separate category",
+  "触摸板手势": "Touchpad gestures",
+  "触摸板手势 {0}·{1}{2} → {3}": "Touchpad gesture {0}·{1}{2} → {3}",
+  "触摸板手势「{0}」": "Touchpad gesture “{0}”",
+  "请先填写方向串（如 D、DL、DRUL），或用「录一笔」画出来": "Enter a direction string first (e.g. D, DL, DRUL), or draw one with “Record a stroke”",
+  "请先选择一个键盘键作触发键": "Pick a keyboard key as the trigger first",
+  "请选择触发键": "Choose a trigger key",
+  "选择触发键…": "Choose a trigger key…",
+  "默认关闭；关掉后所有鼠标功能与触摸板手势都不可用（配置保留）": "Off by default; when off, all mouse features and touchpad gestures stop working (the configuration is kept)"
 }

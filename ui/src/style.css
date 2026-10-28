@@ -940,10 +940,10 @@ body.is-mac .titlebar {
 }
 
 /* 当前模式用强调色，和 Postman 里那个绿色 GET 一样：一眼看出选的是哪种。
-   min-width 按最长的「文本扩展」定宽——三种模式切换时左边这段宽度不再跳。 */
+   min-width 按最长的「触摸板手势」定宽——七种模式切换时左边这段宽度不再跳。 */
 #mode-label {
   display: inline-block;
-  min-width: 4em;
+  min-width: 5em;
   text-align: center;
   color: var(--accent);
   font-weight: 600;
@@ -956,7 +956,7 @@ body.is-mac .titlebar {
 }
 
 /* 模式菜单：从框底浮出，图标 + 中文名，鼠标悬停另有整句说明（title）。
-   定宽：三项（快捷键 / 改键 / 文本扩展）排下来宽窄一致。 */
+   定宽：七项（快捷键 / 鼠标操作 / 角动作 / 边缘滚动 / 触摸板手势 / 改键 / 文本扩展）排下来宽窄一致。 */
 .mode-menu {
   position: absolute;
   top: calc(100% + 6px);

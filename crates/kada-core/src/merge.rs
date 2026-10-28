@@ -27,6 +27,7 @@ pub struct MergeReport {
     pub remaps: usize,
     pub expansions: usize,
     pub gestures: usize,
+    pub touchpad_gestures: usize,
     pub hot_corners: usize,
     pub wheel_edges: usize,
     /// 跳过的条目说明（逐条带名称/触发键，只报个数的话用户查不出是哪条没进来）。
@@ -42,6 +43,7 @@ impl MergeReport {
             + self.remaps
             + self.expansions
             + self.gestures
+            + self.touchpad_gestures
             + self.hot_corners
             + self.wheel_edges
     }
@@ -114,9 +116,9 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         report.expansions += 1;
     }
 
-    // 鼠标手势按**归一化后的方向串 + 触发方式 + when** 去重：同方向串同条件两条手势只会触发
-    // 先配置的那条，导入第二条等于白导入；不同 `when` 是两条独立条目（按前台分流），照常
-    // 纳入；触发方式不同（右键拖动 vs 按住某个键）也是两条独立条目，方向串撞了不算重复。
+    // 鼠标手势按**归一化后的方向串 + when** 去重：同方向串同条件两条手势只会触发先配置的
+    // 那条，导入第二条等于白导入；不同 `when` 是两条独立条目（按前台分流），照常纳入。
+    // 触摸板手势是另一个数组（判重额外带触发键），与右键手势互不影响。
     for g in &incoming.gestures {
         let pattern = crate::normalize_pattern(&g.pattern);
         if pattern.is_empty() {
@@ -125,11 +127,11 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
                 .push(format!("鼠标手势「{}」未导入：方向串无法解析", g.label()));
             continue;
         }
-        if out.gestures.iter().any(|x| {
-            x.trigger == g.trigger
-                && crate::normalize_pattern(&x.pattern) == pattern
-                && x.when_key() == g.when_key()
-        }) {
+        if out
+            .gestures
+            .iter()
+            .any(|x| crate::normalize_pattern(&x.pattern) == pattern && x.when_key() == g.when_key())
+        {
             report.skipped.push(format!(
                 "鼠标手势「{}」未导入：方向串「{pattern}」已存在",
                 g.label()
@@ -138,6 +140,34 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         }
         out.gestures.push(g.clone());
         report.gestures += 1;
+    }
+
+    // 触摸板手势：同一个触发键 + 同一个方向串 + 同一个 `when` 才算重复（换个触发键是另一条）。
+    for g in &incoming.touchpad_gestures {
+        let pattern = crate::normalize_pattern(&g.pattern);
+        if pattern.is_empty() {
+            report.skipped.push(format!(
+                "触摸板手势「{}」未导入：方向串无法解析",
+                g.label()
+            ));
+            continue;
+        }
+        if out.touchpad_gestures.iter().any(|x| {
+            x.trigger == g.trigger
+                && crate::normalize_pattern(&x.pattern) == pattern
+                && x.when_key() == g.when_key()
+        }) {
+            report.skipped.push(format!(
+                "触摸板手势「{}」未导入：{}方向串「{pattern}」已存在",
+                g.label(),
+                g.trigger
+                    .map(|k| format!("触发键「{}」的", crate::key_name(k)))
+                    .unwrap_or_default()
+            ));
+            continue;
+        }
+        out.touchpad_gestures.push(g.clone());
+        report.touchpad_gestures += 1;
     }
 
     // 触发角 / 边缘滚动：同位置允许多条，按「完整相等」去重（重复导入同一份文件保持幂等），

@@ -2116,8 +2116,8 @@ fn handle_trackpad_stroke(
     let hit = {
         let g = cfg.read().unwrap();
         // 方向串是硬判据；**兜底模板只在没命中时用**（只加召回、不改判）。
-        kada_core::find_gesture_for(&g, &pattern, Some(trigger), &ctx)
-            .or_else(|| kada_core::find_gesture_by_template(&g, &stroke.points, Some(trigger), &ctx))
+        kada_core::find_touchpad(&g, trigger, &pattern, &ctx)
+            .or_else(|| kada_core::find_touchpad_by_template(&g, &stroke.points, trigger, &ctx))
             .map(|g| (g.label(), g.actions.clone()))
     };
     let Some((name, actions)) = hit else {
@@ -6197,6 +6197,7 @@ fn bundled_examples() -> Result<Config, String> {
         cfg.remaps.extend(part.remaps);
         cfg.expansions.extend(part.expansions);
         cfg.gestures.extend(part.gestures);
+        cfg.touchpad_gestures.extend(part.touchpad_gestures);
     }
     Ok(cfg)
 }
@@ -6226,7 +6227,11 @@ fn export_fragment(
     picks: Vec<SnippetPick>,
 ) -> Result<usize, String> {
     let part = snippet(&state.config.read().unwrap(), &picks);
-    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len() + part.gestures.len();
+    let n = part.shortcuts.len()
+        + part.remaps.len()
+        + part.expansions.len()
+        + part.gestures.len()
+        + part.touchpad_gestures.len();
     if n == 0 {
         return Err("没有可导出的条目".into());
     }
@@ -6388,6 +6393,7 @@ struct SnippetPreview {
     remaps: Vec<Remap>,
     expansions: Vec<TextExpansion>,
     gestures: Vec<kada_core::Gesture>,
+    touchpad_gestures: Vec<kada_core::TouchpadGesture>,
     hot_corners: Vec<kada_core::HotCornerRule>,
     wheel_edges: Vec<kada_core::WheelEdgeRule>,
 }
@@ -6405,6 +6411,7 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
         && part.remaps.is_empty()
         && part.expansions.is_empty()
         && part.gestures.is_empty()
+        && part.touchpad_gestures.is_empty()
         && part.hot_corners.is_empty()
         && part.wheel_edges.is_empty()
     {
@@ -6419,6 +6426,7 @@ async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
             remaps: part.remaps,
             expansions: part.expansions,
             gestures: part.gestures,
+            touchpad_gestures: part.touchpad_gestures,
             hot_corners: part.hot_corners,
             wheel_edges: part.wheel_edges,
         },

@@ -36,7 +36,7 @@ mod key_serde {
     }
 }
 
-/// 一条鼠标手势。
+/// 一条**鼠标手势**（按住右键画轨迹）。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Gesture {
     /// 条目标题（列表 / 气泡展示用）。
@@ -48,22 +48,20 @@ pub struct Gesture {
     /// 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`；多段用逗号分隔（如 `D,R,U,L`）。
     #[serde(default)]
     pub pattern: String,
-    /// 触发方式：`None` = 按住**右键**画（鼠标手势）；`Some(key)` = 按住该键、在触摸板上画
-    /// （触摸板手势）。缺字段 = 右键（老配置原样读）。触发键本身被吞掉——它只是「进入
-    /// 采集」，没有输出，所以没命中时也没有右键要回放。
+    /// **兼容字段，只由 [`crate::Config::migrate`] 读**：老配置里「触摸板手势」是
+    /// `gestures[]` 里带 `trigger` 的那些，加载时会被搬进 `Config.touchpad_gestures`
+    /// 并清空。加载后恒为 `None`，新代码不要读写它（真实字段在 [`TouchpadGesture::trigger`]）。
     #[serde(default, with = "key_serde", skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Key>,
-    /// 个人形状模板（触摸板手势的兜底）：[`template_from_points`] 归一化后的 24 个点，
-    /// 每轴 `0..=1000`。**只在方向串匹配不上时才用**——匹配上了就不再拿它改判，
-    /// 免得别人分享的模板把你这台机器锁死。缺字段 = 没有模板。
+    /// **兼容字段**：同 [`Gesture::trigger`]，老配置的触摸板模板迁移时一并搬走。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<Vec<[i16; 2]>>,
     /// 触发后按顺序执行的多个动作（复用 [`Action`]，与快捷键同一套动作引擎）。
     /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder: Option<String>,
-    /// 统一展示顺序：鼠标操作 / 角动作 / 边缘滚动共用一个序列，只影响列表顺序；
-    /// 匹配仍是「同类型、同位置 / 同方向串」内按数组顺序取第一条。缺字段 = 0。
+    /// 统一展示顺序：鼠标操作（手势 / 角动作 / 边缘滚动）共用一个序列，只影响列表顺序；
+    /// 匹配仍是「同类型、同方向串」内按数组顺序取第一条。缺字段 = 0。
     #[serde(default, skip_serializing_if = "crate::is_zero_u64")]
     pub order: u64,
     #[serde(default)]
@@ -110,10 +108,81 @@ impl Gesture {
             None
         }
     }
+}
 
-    /// 是不是**触摸板手势**（按住一个键来采集，而不是按住右键）。
-    pub fn is_touchpad(&self) -> bool {
-        self.trigger.is_some()
+/// 一条**触摸板手势**：按住一个键盘键，在触摸板上画一笔，松键按方向串（或形状模板）匹配。
+///
+/// 与鼠标手势（[`Gesture`]）是两个分类、两个数组：触发方式不同（键盘键 vs 右键）、
+/// 采集与吞吐口径也不同（触发键是纯开关，没命中不回放）。列表 / 编辑页 / 卡带 / 合并
+/// 都按类分开，**不要**再往 `Gesture` 里塞 `trigger` 来省一个类型。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct TouchpadGesture {
+    /// 条目标题（列表 / 气泡展示用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 条目描述（只做展示）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 触发键：按住它进入采集。**只能是键盘键**——[`crate::sanitize_config`] 会丢掉
+    /// 鼠标键 / 缺触发键的条目，所以落盘的一定是合法值。触发键本身被吞掉（纯开关，
+    /// 没有输出），没命中时什么都不用回放。
+    #[serde(default, with = "key_serde", skip_serializing_if = "Option::is_none")]
+    pub trigger: Option<Key>,
+    /// 方向串（同 [`Gesture::pattern`]）。
+    #[serde(default)]
+    pub pattern: String,
+    /// 个人形状模板（兜底）：[`template_from_points`] 归一化后的 24 个点，每轴 `0..=1000`。
+    /// **只在方向串匹配不上时才用**——匹配上了就不再拿它改判。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<Vec<[i16; 2]>>,
+    /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
+    /// 展示顺序：触摸板手势**自成一组**，这个序列与鼠标操作各自的 `order` 互不干扰。
+    #[serde(default, skip_serializing_if = "crate::is_zero_u64")]
+    pub order: u64,
+    #[serde(default)]
+    pub actions: Vec<Action>,
+    /// 触发侧条件门控：不成立 = 这条不存在（落到下一条同方向串的）。
+    #[cfg(feature = "automation")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<crate::Condition>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+impl TouchpadGesture {
+    /// 展示名：有标题用标题，否则退回方向串。
+    pub fn label(&self) -> String {
+        self.name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| self.pattern.clone())
+    }
+
+    /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
+    pub fn when_matches(&self, ctx: &TriggerContext) -> bool {
+        #[cfg(feature = "automation")]
+        {
+            ctx.when_ok(self.when.as_ref())
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            let _ = ctx;
+            true
+        }
+    }
+
+    /// `when` 的判重指纹（见 [`crate::WhenKey`]）。
+    pub(crate) fn when_key(&self) -> crate::WhenKey {
+        #[cfg(feature = "automation")]
+        {
+            self.when.clone()
+        }
+        #[cfg(not(feature = "automation"))]
+        {
+            None
+        }
     }
 }
 
@@ -785,54 +854,57 @@ pub fn gesture_capture_enabled(cfg: &Config) -> bool {
 
 /// 配置里有没有启用的**右键**手势（没手势时不该抢右键）。
 pub fn gesture_enabled(cfg: &Config) -> bool {
-    cfg.gestures.iter().any(|g| {
-        g.enabled && !g.is_touchpad() && !normalize_pattern(&g.pattern).is_empty()
-    })
+    cfg.gestures
+        .iter()
+        .any(|g| g.enabled && !normalize_pattern(&g.pattern).is_empty())
 }
 
 /// 配置里有没有启用的**触摸板**手势（按住触发键采集那一种）。
 pub fn touchpad_gesture_enabled(cfg: &Config) -> bool {
-    cfg.gestures
+    cfg.touchpad_gestures
         .iter()
-        .any(|g| g.enabled && g.is_touchpad() && !normalize_pattern(&g.pattern).is_empty())
+        .any(|g| g.enabled && g.trigger.is_some() && !normalize_pattern(&g.pattern).is_empty())
 }
 
 /// 这个键是不是某条启用中的触摸板手势的**触发键**（壳层在按键回调里用它判「要不要进采集」）。
 pub fn is_touchpad_trigger(cfg: &Config, key: Key) -> bool {
-    cfg.gestures
-        .iter()
-        .any(|g| g.enabled && g.trigger == Some(key) && !normalize_pattern(&g.pattern).is_empty())
+    cfg.touchpad_gestures.iter().any(|g| {
+        g.enabled
+            && g.trigger == Some(key)
+            && !g.trigger.is_some_and(|k| k.is_mouse())
+            && !normalize_pattern(&g.pattern).is_empty()
+    })
 }
 
 /// 按方向串找**右键**手势（精确匹配）。
-pub fn find_gesture<'a>(
-    cfg: &'a Config,
-    pattern: &str,
-    ctx: &TriggerContext,
-) -> Option<&'a Gesture> {
-    find_gesture_for(cfg, pattern, None, ctx)
-}
-
-/// 按方向串找手势（**精确匹配**，不做前缀匹配：`D` 不该吃掉 `DR`）。
-///
-/// `D,R`（先下再右）与 `DR`（右下斜向）是两条不同的方向串，各自只命中自己。
-/// `trigger` 区分来源：`None` = 右键拖动，`Some(key)` = 按住该键（触摸板手势）——
-/// 同一个方向串在两种来源下可以各配一条，互不串味。
-/// 同方向串多条时按配置顺序取**第一条 `when` 成立**的（`when` 不成立 = 该条不存在，
-/// 落到下一条；规则与快捷键 / 改键一致）。
-pub fn find_gesture_for<'a>(
-    cfg: &'a Config,
-    pattern: &str,
-    trigger: Option<Key>,
-    ctx: &TriggerContext,
-) -> Option<&'a Gesture> {
+pub fn find_gesture<'a>(cfg: &'a Config, pattern: &str, ctx: &TriggerContext) -> Option<&'a Gesture> {
     let pattern = normalize_pattern(pattern);
     if pattern.is_empty() {
         return None;
     }
-    cfg.gestures.iter().find(|g| {
+    cfg.gestures
+        .iter()
+        .find(|g| g.enabled && normalize_pattern(&g.pattern) == pattern && g.when_matches(ctx))
+}
+
+/// 按方向串找**触摸板**手势（**精确匹配**，不做前缀匹配：`D` 不该吃掉 `DR`）。
+///
+/// `D,R`（先下再右）与 `DR`（右下斜向）是两条不同的方向串，各自只命中自己。
+/// 同方向串多条时按配置顺序取**第一条 `when` 成立**的（`when` 不成立 = 该条不存在，
+/// 落到下一条；规则与快捷键 / 改键一致）。
+pub fn find_touchpad<'a>(
+    cfg: &'a Config,
+    trigger: Key,
+    pattern: &str,
+    ctx: &TriggerContext,
+) -> Option<&'a TouchpadGesture> {
+    let pattern = normalize_pattern(pattern);
+    if pattern.is_empty() {
+        return None;
+    }
+    cfg.touchpad_gestures.iter().find(|g| {
         g.enabled
-            && g.trigger == trigger
+            && g.trigger == Some(trigger)
             && normalize_pattern(&g.pattern) == pattern
             && g.when_matches(ctx)
     })
@@ -840,17 +912,17 @@ pub fn find_gesture_for<'a>(
 
 /// 方向串没命中时的**模板兜底**：取形状最近、且在 [`TEMPLATE_MAX_DISTANCE`] 以内的一条。
 ///
-/// 只加召回、不改判：已经由方向串命中的结果不会被模板推翻（见 [`Gesture::template`]）。
-pub fn find_gesture_by_template<'a>(
+/// 只加召回、不改判：已经由方向串命中的结果不会被模板推翻（见 [`TouchpadGesture::template`]）。
+pub fn find_touchpad_by_template<'a>(
     cfg: &'a Config,
     points: &[(i32, i32)],
-    trigger: Option<Key>,
+    trigger: Key,
     ctx: &TriggerContext,
-) -> Option<&'a Gesture> {
+) -> Option<&'a TouchpadGesture> {
     let probe = template_from_points(points)?;
-    cfg.gestures
+    cfg.touchpad_gestures
         .iter()
-        .filter(|g| g.enabled && g.trigger == trigger && g.when_matches(ctx))
+        .filter(|g| g.enabled && g.trigger == Some(trigger) && g.when_matches(ctx))
         .filter_map(|g| {
             let t = g.template.as_deref()?;
             template_distance(t, &probe).map(|d| (d, g))
@@ -1234,68 +1306,90 @@ mod tests {
     }
 
     #[test]
-    fn touchpad_and_right_drag_gestures_do_not_cross_match() {
+    fn touchpad_and_right_drag_gestures_are_separate_arrays() {
         let mut cfg = Config::default();
         let mut right = gesture("D");
         right.name = Some("右键".into());
-        let mut pad = gesture("D");
-        pad.name = Some("触摸板".into());
-        pad.trigger = Some(Key::CapsLock);
-        cfg.gestures = vec![right, pad];
+        let pad = TouchpadGesture {
+            name: Some("触摸板".into()),
+            trigger: Some(Key::CapsLock),
+            pattern: "D".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        cfg.gestures = vec![right];
+        cfg.touchpad_gestures = vec![pad];
 
         let ctx = TriggerContext::empty();
-        let hit = find_gesture_for(&cfg, "D", None, &ctx).expect("右键那条");
+        let hit = find_gesture(&cfg, "D", &ctx).expect("右键那条");
         assert_eq!(hit.name.as_deref(), Some("右键"));
-        let hit = find_gesture_for(&cfg, "D", Some(Key::CapsLock), &ctx).expect("触摸板那条");
+        let hit = find_touchpad(&cfg, Key::CapsLock, "D", &ctx).expect("触摸板那条");
         assert_eq!(hit.name.as_deref(), Some("触摸板"));
-        assert!(find_gesture_for(&cfg, "D", Some(Key::F9), &ctx).is_none());
-        // 右键那条路径（`find_gesture`）不会命中触摸板条目。
-        assert_eq!(
-            find_gesture(&cfg, "D", &ctx).map(|g| g.is_touchpad()),
-            Some(false)
-        );
+        // 换成别的触发键 / 走右键那条路都不串味。
+        assert!(find_touchpad(&cfg, Key::F9, "D", &ctx).is_none());
+        assert_eq!(find_gesture(&cfg, "D", &ctx).map(|g| g.pattern.clone()), Some("D".into()));
     }
 
     #[test]
     fn template_fallback_only_when_pattern_misses() {
         let stroke = line((0.0, 0.0), (90.0, 60.0), 18);
         let mut cfg = Config::default();
-        let mut g = gesture("R");
-        g.trigger = Some(Key::F9);
-        g.template = template_from_points(&stroke);
-        cfg.gestures = vec![g];
+        cfg.touchpad_gestures = vec![TouchpadGesture {
+            trigger: Some(Key::F9),
+            pattern: "R".into(),
+            template: template_from_points(&stroke),
+            enabled: true,
+            ..Default::default()
+        }];
         let ctx = TriggerContext::empty();
         // 方向串没命中（R）→ 模板兜底命中同一条。
-        let hit = find_gesture_by_template(&cfg, &stroke, Some(Key::F9), &ctx).expect("模板兜底");
+        let hit = find_touchpad_by_template(&cfg, &stroke, Key::F9, &ctx).expect("模板兜底");
         assert_eq!(hit.pattern, "R");
-        // 来源不同不串味。
-        assert!(find_gesture_by_template(&cfg, &stroke, None, &ctx).is_none());
+        // 触发键不同不串味。
+        assert!(find_touchpad_by_template(&cfg, &stroke, Key::CapsLock, &ctx).is_none());
     }
 
     #[test]
-    fn gesture_trigger_and_template_roundtrip_in_json() {
-        // 老配置（没有 trigger / template）原样读：仍是右键手势。
-        let old: Gesture = serde_json::from_str(r#"{"pattern":"D","enabled":true,"actions":[]}"#)
-            .expect("老配置要能读");
-        assert_eq!(old.trigger, None);
-        assert_eq!(old.template, None);
-
-        // 新配置：触发键落成键名（与快捷键 / 改键的 from 同一套写法），模板落成点数组。
-        let json = r#"{"pattern":"D","trigger":"CapsLock","enabled":true,"actions":[]}"#;
-        let g: Gesture = serde_json::from_str(json).expect("触发键要能读");
-        assert_eq!(g.trigger, Some(Key::CapsLock));
+    fn touchpad_gesture_roundtrips_in_json() {
+        let g = TouchpadGesture {
+            name: Some("复制".into()),
+            trigger: Some(Key::CapsLock),
+            pattern: "D".into(),
+            template: template_from_points(&line((0.0, 0.0), (60.0, 20.0), 12)),
+            enabled: true,
+            ..Default::default()
+        };
         let back = serde_json::to_string(&g).expect("要能写回");
         assert!(back.contains("\"trigger\":\"CapsLock\""), "{back}");
-
-        // 键名拼错 = 解析失败（不静默降级成右键手势，否则会把右键抢走）。
-        assert!(serde_json::from_str::<Gesture>(r#"{"pattern":"D","trigger":"NotAKey"}"#).is_err());
-
-        let mut g = gesture("D");
-        g.template = template_from_points(&line((0.0, 0.0), (60.0, 20.0), 12));
-        let back = serde_json::to_string(&g).expect("模板要能写回");
-        let again: Gesture = serde_json::from_str(&back).expect("模板要能读回");
-        assert_eq!(again.template, g.template);
+        let again: TouchpadGesture = serde_json::from_str(&back).expect("要能读回");
+        assert_eq!(again, g);
         assert_eq!(again.template.as_ref().map(|t| t.len()), Some(TEMPLATE_POINTS));
+
+        // 键名拼错 = 解析失败（不静默降级成「没有触发键」）。
+        assert!(serde_json::from_str::<TouchpadGesture>(r#"{"pattern":"D","trigger":"NotAKey"}"#).is_err());
+    }
+
+    #[test]
+    fn legacy_touchpad_entries_move_out_of_mouse_gestures() {
+        let mut legacy = gesture("D");
+        legacy.trigger = Some(Key::CapsLock);
+        legacy.template = template_from_points(&line((0.0, 0.0), (60.0, 0.0), 12));
+        let mut cfg = Config {
+            gestures: vec![gesture("R"), legacy],
+            ..Default::default()
+        };
+        cfg.migrate();
+        assert_eq!(cfg.gestures.len(), 1, "带触发键的老条目要从右键手势里搬走");
+        assert_eq!(cfg.gestures[0].pattern, "R");
+        assert!(cfg.gestures[0].trigger.is_none() && cfg.gestures[0].template.is_none());
+        assert_eq!(cfg.touchpad_gestures.len(), 1);
+        assert_eq!(cfg.touchpad_gestures[0].trigger, Some(Key::CapsLock));
+        assert_eq!(cfg.touchpad_gestures[0].pattern, "D");
+        assert!(cfg.touchpad_gestures[0].template.is_some(), "模板要跟着搬过去");
+        // 幂等：再迁一次不会重复搬。
+        cfg.migrate();
+        assert_eq!(cfg.gestures.len(), 1);
+        assert_eq!(cfg.touchpad_gestures.len(), 1);
     }
 
     #[test]
@@ -1303,16 +1397,18 @@ mod tests {
         let mut cfg = Config::default();
         // 圈选截图自带手势采集，先关掉它，只看「配了触摸板手势」这一项。
         cfg.settings.gesture_screenshot = false;
-        cfg.gestures = vec![Gesture {
+        cfg.touchpad_gestures = vec![TouchpadGesture {
             pattern: "D".into(),
             trigger: Some(Key::CapsLock),
             enabled: true,
             ..Default::default()
         }];
         assert!(touchpad_gesture_enabled(&cfg));
+        assert!(is_touchpad_trigger(&cfg, Key::CapsLock));
+        assert!(!is_touchpad_trigger(&cfg, Key::F9));
         assert!(!gesture_enabled(&cfg), "只有触摸板手势时不该抢右键");
         assert!(!gesture_capture_enabled(&cfg));
-        cfg.gestures[0].enabled = false;
+        cfg.touchpad_gestures[0].enabled = false;
         assert!(!touchpad_gesture_enabled(&cfg));
     }
 }
