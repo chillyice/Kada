@@ -538,6 +538,25 @@ case "run_entry":
         case "stop_mouse_record":
           // 演示鼠标录制结果：移动 + 点击 / 滚轮。
           return structuredClone(DEMO_RECORDED_MOUSE_ACTIONS);
+        case "start_trackpad_record":
+          // 演示「录一笔」：浏览器里没有输入钩子，1.2 秒后推一笔假轨迹，
+          // 好把「录制 → 回填方向串 / 模板」这条界面路径走通（模板是 24 点归一化坐标）。
+          window.setTimeout(
+            () =>
+              emit("trackpad-recorded", {
+                pattern: "DR",
+                template: Array.from({ length: 24 }, (_, i) => [
+                  Math.round((i * 1000) / 23),
+                  500,
+                ]),
+                points: 48,
+                elapsed_ms: 900,
+              }),
+            1200,
+          );
+          return null;
+        case "stop_trackpad_record":
+          return null;
         case "get_toast_payload":
           return null;
         // 输入状态指示：演示模式给一份「层 + 三种修饰键」的样例，让 `index.html#hud`

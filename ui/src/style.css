@@ -540,6 +540,18 @@ body.is-mac .titlebar {
   white-space: nowrap;
 }
 
+/* 触摸板手势的触发键（`CapsLock · R` 里的 `CapsLock`）：比方向串弱一档，别喧宾夺主。 */
+.row-key-badge {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+}
+
 .row-trigger-empty {
   color: var(--muted);
   font-family: inherit;
@@ -1039,6 +1051,12 @@ body.is-mac .titlebar {
 
 .key-view input[type="text"]:focus {
   border: none;
+}
+
+/* 触发方式下拉（鼠标操作 / 触摸板手势）：右键或某个键盘键，宽度按常见键名收窄。 */
+.key-view select.gesture-trigger {
+  flex-shrink: 0;
+  max-width: 150px;
 }
 
 /* 录键时的实时提示（「正在录：F9 J」），空时整条隐藏。 */

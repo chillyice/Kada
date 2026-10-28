@@ -946,5 +946,22 @@
   "确定": "OK",
   "请输入内容": "Enter a value",
   "默认值": "Default",
-  "默认值（可空，支持 {变量名} 占位符）": "Default value (optional; supports {变量名} placeholders)"
+  "默认值（可空，支持 {变量名} 占位符）": "Default value (optional; supports {变量名} placeholders)",
+  "按住右键": "Hold right button",
+  "按住右键 = 鼠标手势；选一个键盘键 = 触摸板手势": "Hold the right button = mouse gesture; pick a keyboard key = touchpad gesture",
+  "按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板": "Hold the trigger key and draw on the touchpad; the direction string and shape template are filled in when you release",
+  "只保留方向串，删掉这一笔的形状模板": "Keep only the direction string and drop this stroke's shape template",
+  "录一笔": "Record a stroke",
+  "清除模板": "Clear template",
+  "从触摸板录一笔": "Record a stroke on the touchpad",
+  "按住 {0} 在触摸板上画一笔（触摸板手势）": "Hold {0} and draw on the touchpad (touchpad gesture)",
+  "按住右键画轨迹（鼠标手势）": "Hold the right button and draw (mouse gesture)",
+  "按住 {0}，在触摸板上画一笔，松手后自动填入方向串与形状模板。Esc 作废这一笔。": "Hold {0} and draw on the touchpad; release to fill in the direction string and shape template. Esc discards this stroke.",
+  "等待按键…": "Waiting for the key…",
+  "完成": "Done",
+  "这一笔没识别出来（太短 / 涂鸦 / 已作废），再画一笔": "This stroke was not recognized (too short / scribble / discarded); draw another one",
+  "已录入 {0}（{1} 个点）": "Recorded {0} ({1} points)",
+  "没能开始录制：{0}": "Could not start recording: {0}",
+  "先选一个键盘键作触发键，再用触摸板录一笔": "Pick a keyboard key as the trigger first, then record a stroke from the touchpad",
+  "已清除形状模板，只保留方向串": "Shape template cleared; the direction string is kept"
 }

@@ -356,6 +356,10 @@ type Gesture = {
   description?: string | null;
   /** 方向串：`U`/`D`/`L`/`R` 与斜向 `UR`/`DR`/`DL`/`UL`（如 `DRUL`）。 */
   pattern: string;
+  /** 触发方式：缺省 / null = 按住右键画；键名 = 按住该键在触摸板上画（触摸板手势）。 */
+  trigger?: string | null;
+  /** 形状模板（24 点归一化，触摸板手势「录一笔」时带上；只在方向串没命中时兜底）。 */
+  template?: [number, number][] | null;
   enabled: boolean;
   actions: Action[];
   /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在，回放右键。 */
@@ -2385,6 +2389,8 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
   listRow(li, g, "gesture", idx);
   attachDragStart(li, { kind: "gesture", idx });
   const trig = el("span", "row-trigger");
+  // 触摸板手势：把触发键摆在方向串前面（`.row-key-badge`），一眼分开两类来源。
+  if (g.trigger) trig.append(el("span", "row-key-badge", g.trigger));
   trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
   li.append(
     kindIcon("gesture"),
@@ -2401,7 +2407,7 @@ function gestureVisible(g: Gesture): boolean {
   if (!mouseFeaturesEnabled()) return false; // 总闸关着 = 这一类不出现
   const q = search.trim().toLowerCase();
   if (q) {
-    const hay = `${g.pattern} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
+    const hay = `${g.pattern} ${g.trigger ?? ""} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
   if (listFilter.enabled && !g.enabled) return false;
@@ -4601,12 +4607,127 @@ function openGesturePad(onDone: (pattern: string) => void) {
   document.body.append(mask);
 }
 
+// ---- 触摸板手势：触发方式 + 「从触摸板录一笔」 ----
+// 触发方式存在 `Gesture.trigger`（缺省 = 按住右键）。录制由壳层临时开采集：
+// 按触发键 → 在触摸板上画一笔 → 松键后壳层把方向串 + 形状模板推回来，**不执行动作**。
+type TrackpadRecordPayload = {
+  pattern: string;
+  template: [number, number][] | null;
+  points: number;
+  elapsed_ms: number;
+};
+
+/** 正在「录一笔」时接收壳层回传的回调（`null` = 没在录）。 */
+let trackpadRecordSink: ((p: TrackpadRecordPayload) => void) | null = null;
+
+/** 触发方式下拉：第一项「按住右键」，其余是键盘键（鼠标键只走右键手势那条路）。 */
+function fillGestureTriggerSelect() {
+  const sel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
+  if (!sel || sel.options.length > 0) return;
+  const right = document.createElement("option");
+  right.value = "";
+  right.textContent = tr("按住右键");
+  sel.append(right);
+  for (const k of KEY_OPTIONS) {
+    if (k.startsWith("Mouse") || k.startsWith("Wheel")) continue;
+    const o = document.createElement("option");
+    o.value = k;
+    o.textContent = k;
+    sel.append(o);
+  }
+}
+
+/** 触发方式变了之后，把只对触摸板手势有意义的按钮 / 提示对齐。 */
+function syncGestureTriggerUi() {
+  const key = gestureDraft?.trigger ?? "";
+  document.getElementById("edit-gesture-capture")?.classList.toggle("hidden", !key);
+  document
+    .getElementById("edit-gesture-drop-template")
+    ?.classList.toggle("hidden", !gestureDraft?.template);
+  const sel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
+  if (sel) {
+    sel.title = key
+      ? trt`按住 ${key} 在触摸板上画一笔（触摸板手势）`
+      : tr("按住右键画轨迹（鼠标手势）");
+  }
+}
+
+/** 「录一笔」：开一个只回填编辑器的采集会话（开闸 / 识别 / 收尾都在壳层）。 */
+function openTrackpadRecord(key: string) {
+  const mask = el("div", "modal-mask gesture-pad-mask");
+  const modal = el("div", "gesture-pad");
+  const title = el("h3", "", tr("从触摸板录一笔"));
+  const hint = el(
+    "div",
+    "unit-hint",
+    trt`按住 ${key}，在触摸板上画一笔，松手后自动填入方向串与形状模板。Esc 作废这一笔。`,
+  );
+  const status = el("div", "gesture-pad-result", tr("等待按键…"));
+  const actions = el("div", "gesture-pad-actions");
+  const done = el("button", "ghost", tr("完成")) as HTMLButtonElement;
+  done.type = "button";
+  actions.append(done);
+  modal.append(title, hint, status, actions);
+  mask.append(modal);
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key !== "Escape") return;
+    // 采集中的 Esc 是「作废这一笔」，已被钩子吞掉、界面收不到；这里只负责关窗。
+    e.preventDefault();
+    stop();
+  };
+  function stop() {
+    if (activeCaptureCleanup === stop) activeCaptureCleanup = null;
+    trackpadRecordSink = null;
+    window.removeEventListener("keydown", onKey, true);
+    mask.remove();
+    void invoke("stop_trackpad_record").catch(() => {});
+  }
+  // 窗口失焦 / 收进托盘 = 这次录入作废：不清会话的话触发键会一直被钩子吞掉，
+  // 而面板已经看不见了（与录入暂停同一口径，见 `stopCapture`）。
+  activeCaptureCleanup = stop;
+  trackpadRecordSink = (p) => {
+    if (!gestureDraft) return;
+    if (!p.pattern) {
+      status.textContent = tr("这一笔没识别出来（太短 / 涂鸦 / 已作废），再画一笔");
+      return;
+    }
+    gestureDraft.pattern = p.pattern;
+    gestureDraft.template = p.template ?? null;
+    gestureDraft.trigger = key;
+    (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value = p.pattern;
+    renderActions(gestureDraft, p.pattern);
+    syncGestureTriggerUi();
+    refreshDirty();
+    status.textContent = trt`已录入 ${p.pattern}（${p.points} 个点）`;
+    toast(trt`已录入方向串 ${p.pattern}，记得保存`);
+  };
+  done.addEventListener("click", stop);
+  mask.addEventListener("click", (e) => {
+    if (e.target === mask) stop();
+  });
+  window.addEventListener("keydown", onKey, true);
+  document.body.append(mask);
+  void invoke("start_trackpad_record", { key })
+    .catch((e) => {
+      // 平台不支持 / 输入层没起来：把后端的说法原样告诉用户，别留一个「等按键」的空壳。
+      stop();
+      toast(trt`没能开始录制：${String(e)}`);
+    });
+}
+
 function fillGestureEditor() {
   if (!gestureDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
     gestureDraft.description ?? "";
   (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
     gestureDraft.pattern;
+  const triggerSel = document.getElementById("edit-gesture-trigger") as HTMLSelectElement | null;
+  if (triggerSel) {
+    // 手改配置里塞了鼠标键 / 未知键名时，下拉里没有这一项 → 浏览器回落到空值（显示成
+    // 「按住右键」），但**不动草稿**：保存时后端清洗会照原样报错，别在界面上悄悄改配置。
+    triggerSel.value = gestureDraft.trigger ?? "";
+  }
+  syncGestureTriggerUi();
   renderWhenEditor(
     document.getElementById("edit-when")!,
     () => gestureDraft?.when,
@@ -4994,6 +5115,8 @@ function openDetail(
           name: null,
           description: null,
           pattern: "D",
+          trigger: null,
+          template: null,
           actions: [newAction("text")],
           enabled: true,
         }
@@ -5209,6 +5332,8 @@ async function saveGestureDetail(): Promise<boolean> {
     return false;
   }
   gestureDraft.pattern = pattern;
+  gestureDraft.trigger = gestureDraft.trigger || null;
+  gestureDraft.template = gestureDraft.template?.length ? gestureDraft.template : null;
   gestureDraft.description = domValue("edit-desc") || null;
   const item = deepClone(gestureDraft);
   const list = cfg.gestures ?? (cfg.gestures = []);
@@ -9147,6 +9272,33 @@ function bind() {
     renderActions(host);
   });
 
+  fillGestureTriggerSelect();
+  const gestureTrigger = document.getElementById("edit-gesture-trigger") as HTMLSelectElement;
+  gestureTrigger.addEventListener("change", () => {
+    if (section !== "gestures" || !gestureDraft) return;
+    gestureDraft.trigger = gestureTrigger.value || null;
+    // 换触发方式 = 这一笔的来源变了：形状模板跟着作废（右键手势根本不看模板）。
+    gestureDraft.template = null;
+    syncGestureTriggerUi();
+    refreshDirty();
+  });
+  document.getElementById("edit-gesture-capture")!.addEventListener("click", () => {
+    if (section !== "gestures" || !gestureDraft) return;
+    const key = gestureDraft.trigger;
+    if (!key) {
+      toast(tr("先选一个键盘键作触发键，再用触摸板录一笔"));
+      return;
+    }
+    openTrackpadRecord(key);
+  });
+  document.getElementById("edit-gesture-drop-template")!.addEventListener("click", () => {
+    if (!gestureDraft?.template) return;
+    gestureDraft.template = null;
+    syncGestureTriggerUi();
+    refreshDirty();
+    toast(tr("已清除形状模板，只保留方向串"));
+  });
+
   document.getElementById("edit-gesture-record")!.addEventListener("click", () => {
     if (section !== "gestures" || !gestureDraft) return;
     openGesturePad((pattern) => {
@@ -9155,7 +9307,10 @@ function bind() {
       input.dispatchEvent(new Event("input", { bubbles: true }));
       if (gestureDraft) {
         gestureDraft.pattern = pattern;
+        // 画板画的是另一笔形状：旧模板不再对应，顺手清掉（要留就重录一笔）。
+        gestureDraft.template = null;
         renderActions(gestureDraft, pattern);
+        syncGestureTriggerUi();
       }
       toast(trt`已录入方向串 ${pattern}，记得保存`);
     });
@@ -10011,6 +10166,10 @@ async function initEvents() {
   // 主窗口刚被唤起时事件可能已落空：补取后端暂存的那一条（取走即清，不会反复弹）。
   const pendingDialog = await invoke<UpdateDialogPayload | null>("take_update_dialog").catch(() => null);
   if (pendingDialog) openUpdateDialog(pendingDialog);
+  // 触摸板「录一笔」的轨迹回传（壳层在松键后推一次）：交给当前打开的录制面板。
+  await listen<TrackpadRecordPayload>("trackpad-recorded", (e) =>
+    trackpadRecordSink?.(e.payload),
+  );
   // 配置文件被外部改动后由后端广播（见 applyExternalConfig）。
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);

@@ -135,10 +135,13 @@
               <div class="key-view hidden" id="key-expansion">
                 <input id="edit-exp-trigger" type="text" autocomplete="off" spellcheck="false" placeholder="触发词（如 :addr、;sig，不含空格/回车/Tab）" />
               </div>
-              <!-- 鼠标操作（手势）：方向串（按住右键画轨迹的方向序列） -->
+              <!-- 鼠标操作 / 触摸板手势：先选触发方式（右键拖动 / 按住一个键盘键），再给方向串 -->
               <div class="key-view hidden" id="key-gesture">
+                <select id="edit-gesture-trigger" class="gesture-trigger" title="按住右键 = 鼠标手势；选一个键盘键 = 触摸板手势"></select>
                 <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
+                <button id="edit-gesture-capture" class="ghost" type="button" title="按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板">录一笔</button>
+                <button id="edit-gesture-drop-template" class="ghost hidden" type="button" title="只保留方向串，删掉这一笔的形状模板">清除模板</button>
               </div>
               <!-- 角动作：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
               <div class="key-view hidden" id="key-hotcorner"></div>

@@ -1022,9 +1022,11 @@ fn spawn_engine_ticker(
                     guard.settings.experimental && gesture_capture_enabled(&guard),
                     // 触摸板手势的闸门：同样受总开关管；没有触摸板手势 / 本平台没接
                     // 鼠标移动采集时不 arm（触发键照常输出，不是静默吞掉）。
-                    guard.settings.experimental
+                    // **「录一笔」期间强制开闸**：新建第一条时配置里还没有启用的条目。
+                    (guard.settings.experimental
                         && touchpad_gesture_enabled(&guard)
-                        && kada_hook::trackpad::supported(),
+                        && kada_hook::trackpad::supported())
+                        || trackpad_recording_key().is_some(),
                     guard.settings.trigger_toast,
                 )
             };
@@ -1652,6 +1654,30 @@ static GESTURE_VISUAL_SERIAL: AtomicU64 = AtomicU64::new(0);
 /// 手势浮层前端是否已注册好 `gesture-preview` / `gesture-result` 监听器。
 static GESTURE_OVERLAY_READY: AtomicBool = AtomicBool::new(false);
 
+/// 触摸板手势的「录一笔」会话（设置页 → 鼠标操作编辑器）：`Some(触发键)` = 正在等一笔轨迹。
+///
+/// 它同时是一个**闸门覆盖**：新建第一条触摸板手势时，配置里还没有任何启用的条目，
+/// `touchpad_gesture_enabled` 为假、采集根本开不了，所以录制期间必须强制开闸
+/// （见 `spawn_engine_ticker` 里的 `trackpad_on` 与钩子入口的 `arm` 判定）。
+static TRACKPAD_RECORD: Mutex<Option<Key>> = Mutex::new(None);
+
+/// 正在录制的触发键（`None` = 没在录）。
+fn trackpad_recording_key() -> Option<Key> {
+    *TRACKPAD_RECORD.lock().unwrap()
+}
+
+/// 「录一笔」的结果：只回填编辑器，**不执行动作、不进执行记录**。
+#[derive(Clone, Serialize)]
+struct TrackpadRecordPayload {
+    /// 识别出的方向串；空 = 这一笔太短 / 涂鸦 / 已作废（Esc / 双指 / 停手太久）。
+    pattern: String,
+    /// 归一化形状模板（[`kada_core::template_from_points`]）；点太少时为 `None`。
+    template: Option<Vec<[i16; 2]>>,
+    /// 这一笔记了多少个点（界面据此提示采样密度）。
+    points: usize,
+    elapsed_ms: u64,
+}
+
 /// 手势浮层窗口名（`index.html#gesture`）。
 const GESTURE_WINDOW: &str = "gesture";
 
@@ -1759,6 +1785,30 @@ fn hide_gesture_overlay(app: &tauri::AppHandle) {
     }
 }
 
+/// 「录一笔」收尾：识别这一笔 → 收起浮层 → 推给设置页。**不执行动作、不弹未匹配提示**。
+///
+/// 走的是与正式手势同一套识别（`pattern_from_stroke` / `template_from_points`），
+/// 所以「录的时候是什么、跑的时候就是什么」——这也是录入界面唯一需要的保证。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn emit_trackpad_record(
+    app: &tauri::AppHandle,
+    cfg: &Arc<RwLock<Config>>,
+    stroke: &kada_hook::gesture::Stroke,
+) {
+    let min_len = {
+        let g = cfg.read().unwrap();
+        g.settings.gesture_start_distance as f64
+    };
+    let payload = TrackpadRecordPayload {
+        pattern: kada_core::pattern_from_stroke(&stroke.points, min_len),
+        template: kada_core::template_from_points(&stroke.points),
+        points: stroke.points.len(),
+        elapsed_ms: stroke.elapsed_ms,
+    };
+    hide_gesture_overlay(app);
+    let _ = app.emit("trackpad-recorded", payload);
+}
+
 /// 展示一次手势结果（命中 = 动作名；未命中 = 失败色）。窗口隐藏交给延时线程。
 fn show_gesture_result(
     app: &tauri::AppHandle,
@@ -1854,10 +1904,11 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !preloaded {
                     let on = {
                         let g = cfg.read().unwrap();
-                        g.settings.experimental
+                        (g.settings.experimental
                             && (gesture_capture_enabled(&g)
                                 || (touchpad_gesture_enabled(&g)
-                                    && kada_hook::trackpad::supported()))
+                                    && kada_hook::trackpad::supported())))
+                            || trackpad_recording_key().is_some()
                     };
                     if on {
                         preloaded = ensure_gesture_overlay(&app).is_some();
@@ -1877,15 +1928,17 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
             if points.len() < 2 {
                 continue;
             }
+            let recording = trackpad_recording_key().is_some();
             let (visual, start_distance, on, exclude, exclude_apps) = {
                 let g = cfg.read().unwrap();
                 (
                     gesture_visual_of(&g.settings),
                     g.settings.gesture_start_distance,
-                    g.settings.experimental
+                    (g.settings.experimental
                         && (gesture_capture_enabled(&g)
                             || (touchpad_gesture_enabled(&g)
-                                && kada_hook::trackpad::supported())),
+                                && kada_hook::trackpad::supported())))
+                        || recording,
                     g.settings.gesture_exclude.clone(),
                     g.settings.exclude_apps.clone(),
                 )
@@ -1905,11 +1958,13 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                     continue;
                 }
                 // 与 `handle_gesture` 同一口径：全屏 / 排除程序里不接管，也不画浮层。
-                if input::foreground_fullscreen() {
+                // 「录一笔」例外：那是设置页里的录入工具，前台就是 Kada 自己，
+                // 命中排除列表也不该把预览藏掉。
+                if !recording && input::foreground_fullscreen() {
                     suppressed = true;
                     continue;
                 }
-                if !exclude.is_empty() || !exclude_apps.is_empty() {
+                if !recording && (!exclude.is_empty() || !exclude_apps.is_empty()) {
                     let fetch = || input::frontmost_context();
                     let ctx = TriggerContext::lazy(&fetch, None);
                     if ctx.app_excluded(&exclude) || ctx.app_excluded(&exclude_apps) {
@@ -1993,6 +2048,11 @@ fn spawn_trackpad_listener(
     kada_hook::trackpad::set_sink(Some(Arc::new(move |key, stroke| {
         let app = app.clone();
         let cfg = cfg.clone();
+        // 设置页的「录一笔」：只把识别结果推回界面，不执行任何动作（录制优先于正式匹配）。
+        if trackpad_recording_key().is_some() {
+            std::thread::spawn(move || emit_trackpad_record(&app, &cfg, &stroke));
+            return;
+        }
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
@@ -6598,6 +6658,34 @@ fn stop_mouse_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, 
     Ok(rec.into_actions())
 }
 
+/// 设置页「从触摸板录一笔」：开一个**只回填配置、不执行动作**的采集会话。
+///
+/// 与宏录制不同，这里**不能**暂停快捷键：采集本身就是靠钩子接住触发键的。
+/// 录制期间 `TRACKPAD_RECORD` 同时充当闸门覆盖（见定时器线程里的 `trackpad_on`）。
+#[tauri::command]
+fn start_trackpad_record(key: String) -> Result<(), String> {
+    let k: Key = key
+        .parse()
+        .map_err(|_| format!("无法识别的键名：{key}"))?;
+    if k.is_mouse() {
+        return Err("触发键只能是键盘键：鼠标键已经是右键手势那条路了".into());
+    }
+    if !kada_hook::trackpad::supported() {
+        return Err("当前平台还不支持采集触摸板手势（目前只接了 Windows）".into());
+    }
+    *TRACKPAD_RECORD.lock().unwrap() = Some(k);
+    // 立刻开闸，不等定时器那一拍；下一拍也会按「录制中」把闸门维持住。
+    kada_hook::trackpad::set_enabled(true);
+    Ok(())
+}
+
+/// 结束「从触摸板录一笔」会话：清掉会话并复位采集状态（闸门由定时器按配置收回）。
+#[tauri::command]
+fn stop_trackpad_record() {
+    *TRACKPAD_RECORD.lock().unwrap() = None;
+    kada_hook::trackpad::reset();
+}
+
 /// 读取消息中心全部命令结果（最新在前）。
 #[tauri::command]
 fn get_command_results(state: tauri::State<'_, KadaState>) -> Vec<CommandResult> {
@@ -6685,6 +6773,8 @@ pub fn run() {
             stop_record,
             start_mouse_record,
             stop_mouse_record,
+            start_trackpad_record,
+            stop_trackpad_record,
             get_command_results,
             get_run_records,
             get_unread,
@@ -6850,7 +6940,8 @@ pub fn run() {
                                 return input::HookAction::Block;
                             }
                         } else if kada_hook::trackpad::supported()
-                            && is_touchpad_trigger(&guard, *key)
+                            && (is_touchpad_trigger(&guard, *key)
+                                || trackpad_recording_key() == Some(*key))
                             && kada_hook::trackpad::arm(*key)
                         {
                             return input::HookAction::Block;

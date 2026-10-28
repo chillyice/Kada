@@ -1,7 +1,7 @@
 # AGENTS.md — Kada 项目规则
 
 > **本文件 = AI 会话必读入口**：只放规则 / 去哪查 / 怎么验证。机制细节外移到 `docs/`。
-> **上限 20KB（按 CRLF 计）**——超了注入上下文被截断、**尾部先丢**，所以「命令」「归档」放最后。改完跑 `node scripts/check-docs.mjs`。
+> **上限 20KB（按 CRLF）**——超了注入被截断、**尾部先丢**，故「命令 / 归档」放最后。改完跑 `node scripts/check-docs.mjs`。
 
 ## 0. 动手前 30 秒
 
@@ -16,7 +16,7 @@
 
 **顺序：先读规则 → 改代码 → 验证 → 归档。** 铁律是底线，细节去上表查。
 
-> **⚠ 编码/路径警示**：含中文的源码 / 配置 / 文档一律走 Read/Write/Edit 读写，**禁止用 PowerShell `Get-Content` / `Set-Content` 读写**（PS 5.1 默认 GBK 会破坏 UTF-8 中文；PS 只用于 cargo / npm / demo）。Git Bash 调 Windows 原生命令时 POSIX 路径会自动转换，注意参数。
+> **⚠ 编码**：含中文的源码 / 配置 / 文档只用 Read/Write/Edit；**禁用 PS `Get-Content` / `Set-Content`**（PS 5.1 的 GBK 毁 UTF-8）；PS 只跑 cargo / npm / demo。
 
 ## 1. 铁律
 
@@ -68,7 +68,7 @@
 
 - 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`
 - **超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`）——**配置读锁必须先于 `Engine` 锁**，同序否则死锁
-- **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时也主动解除
+- **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时主动解除
 - **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`（盖满显示器且非最大化、排除本进程窗口与**桌面外壳 `Progman`/`WorkerW`**），与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势全屏让路无开关、恒生效**，两者别合并
 - **输入状态复位**（`Engine::reset`）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**、**缓冲里的丢弃不回放**、**锁定层保留**
 - **自愈看门狗**：Windows **只投递 `WM_APP_REINSTALL`**、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**，但 **Raw Input 键盘旁路**（`LAST_RAW_KEY_TICK`）是独立观察者
@@ -76,16 +76,16 @@
 
 ### 1.7 浮窗与界面外链（架构设计 §3.21 / §3.6）
 
-- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu`）必须 `focusable(false)`（能被激活就抢前台 → `ResetWatch` 误判复位）；**可交互浮窗只有 `hints` / `clipboard-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单的触发（双击 Ctrl+C）只旁听、**不吞键**
+- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu`）必须 `focusable(false)`（否则抢前台 → `ResetWatch` 误判复位）；**可交互浮窗只有 `hints` / `clipboard-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单的触发（双击 Ctrl+C）只旁听、**不吞键**
 - **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态广播 `hints-peek`
 - **界面外链必须由壳层接住**（主窗口 `.on_new_window`）：一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**（真机验收见人工验证清单 §21）
 
 ### 1.8 动作执行与执行记录（`crates/kada-actions/`｜说明书 §5.4 / §5.7、架构设计 §3.17）
 
-- 命令 / 脚本**不许用 `Command::output()` 无限等**——走 `run_with_limits` 边读边等；超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；**中止 = 代数计数器** `abort::request()`
+- 命令 / 脚本**不许 `Command::output()` 无限等**——走 `run_with_limits` 边读边等；超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；**中止 = 代数计数器** `abort::request()`
 - **并行动作** `Parallel`：成员各起一线程、全部结束才进下一步；**链内注入锁**保注入串行；`vars` 成员私有、按下标合并提交
 - **禁用的动作**（`Action::Disabled`，删除键左侧）：内容保留，执行时**整条跳过、不占执行记录**，校验落到里面（说明书 §5.7）
-- **每个动作都要上报一步 `ActionStep`**（文本 / 按键 / 延迟这类不产命令结果的动作也必须有）。一次触发 = 一条 `RunRecord`（`fire` 先落 `running`，收尾定 `ok` / `error` / `abort`）；**「停止执行」只在 `running` 记录的「执行中」徽标右侧**
+- **每个动作都要上报一步 `ActionStep`**（文本 / 按键 / 延迟也必须有）。一次触发 = 一条 `RunRecord`（`fire` 先落 `running`，收尾定 `ok` / `error` / `abort`）；**「停止执行」只在 `running` 记录的「执行中」徽标右侧**
 - **普通消息**（`run_id === null` 才进列表；内存态、重启清空）：命令结果 / 中止 / 失败 / 配置事件都记入；`show_output` 开则弹结果弹窗，否则托盘红点。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）
 
 ### 1.9 卡带 / 分享（`crates/kada-core/src/snippet.rs`｜说明书 §6.7）
@@ -101,7 +101,7 @@
 
 ### 1.11 前端键表须与 core 同源
 
-`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（壳测试 `frontend_key_table_matches_core` 守着，Rust 增键而前端漏改即红）。
+`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（`frontend_key_table_matches_core` 守着）。
 
 ### 1.12 软冲突（说明书 §3 / §4.6 / §4.8）
 
@@ -115,12 +115,13 @@
 - **右键画圈 ≠ 截图**：画圈后**右键不松再点左键**才确认（`on_left_down`，左右键都吞）→ 撤浮层后模拟 Snipaste `F1` 叫出它的截图界面（不抓屏、不写剪贴板；没装只提示）；只画圈回放右键；截图动作已删（旧配置只报错，§5.15）
 - 识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**；**轨迹出口只借用不取走**
 - **让路**（都算「不接管、右键原样回放」）：排除程序 `gesture_exclude` 命中、**前台全屏**（占满显示器且非最大化）、`when` 不成立（落到下一条）
+- **触摸板手势**（`Gesture.trigger`，缺 = 右键）：按住**键盘键**采集，**按下即吞、没命中不回放**（纯开关）；`Esc` / 停手 >3s / 双指 = 作废但抬起仍吞；「录一笔」**复用同一 sink + 强制开闸**、识别同运行时、**只回填不执行**；松键后光标回起笔点
 - 总闸 `Settings.experimental`（**默认关**）：关掉 → 鼠标类入口全隐藏、行为不生效、**配置保留**。
 
 ### 1.14 软件更新（说明书 §5.5）
 
 - **私钥绝不入库**（公钥内嵌，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；**`latest.json` 由 `tauri-action` 生成，不手写、不入库**；端点只认**已发布** Release；**前端碰不到更新**（capabilities 不开 `updater:*`）
-- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版下次启动时装。下载落盘 `updates/pending.json`（**形态不符即丢弃**），重启恢复 `ready`；安装前重查清单版本
+- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`kada_hook::idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版重启时装。下载落盘 `updates/pending.json`（形态不符即丢），重启恢复 `ready`；安装前重查清单版本
 - **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；检查走 `build_updater`，**别用 `app.updater()`**
 - **安装会退出应用**；其它平台装完 `app.restart()`
 
@@ -167,9 +168,9 @@ powershell scripts\clean-build.ps1 # 清 debug / 交叉产物（-Bundle 含安�
 
 - **改完 Linux 分支必跑**：`cargo check -p kada-hook -p kada-actions --target x86_64-unknown-linux-gnu --all-targets`——壳分支只有 CI / 容器（`scripts/linux-package/`）拦得住
 - **macOS 本地验证边界**：darwin 交叉 check 只能真编 `kada-hook`（`-p kada` 必失败，`ring` 要真 clang）——壳层分支只能靠 CI / 真机验
-- **打包**：产物在**仓库根** `target/release/bundle/`；**打包前先退出 Kada**。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串（PS 传不了空串）。**Linux 包只能靠容器出**、**macOS 包只能靠 CI**
+- **打包**：产物在**仓库根** `target/release/bundle/`（打包前先退出 Kada）。须签名（缺则拒装）：`npm run tauri -- build --bundles nsis` + env `TAURI_SIGNING_PRIVATE_KEY`=密钥**文件全文**、密码空串。**Linux 包只能靠容器**、**macOS 只能靠 CI**
 - **发布链路版本红线**：`requireSignedVersion = true` 要求签名里带版本号，**tauri-cli < 2.12.1 不写**（客户端全拒装 `MissingSignedVersion`，流水线还不报错），根 `@tauri-apps/cli` 锁 `^2.12.1`；**动 CLI 版本 / 版本号 / targets 后必跑** `node scripts/verify-release.mjs`
-- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + `cargo check -p kada` 两版 + 文档检查）；`release.yml`（打 `v*` tag 或手动触发；矩阵出 Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，`max-parallel: 1` 串行、**根目录 `npm ci` 不能省**）
+- **CI**：`ci.yml`（三平台：前端构建 + `cargo test --workspace` + 两版 `cargo check -p kada` + 文档检查）；`release.yml`（`v*` tag 或手动触发；Windows NSIS + 便携 zip + Linux deb/AppImage + macOS dmg，串行、**根目录 `npm ci` 不能省**）
 
 ## 4. 归档流程
 
