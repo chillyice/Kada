@@ -236,8 +236,25 @@ type Settings = {
   /**
    * **鼠标操作总开关**（规划 7.2-MG）：关掉后鼠标类功能一律不可用（入口隐藏 +
    * 行为不生效），**配置保留**（重新打开即恢复）。缺字段按后端默认「**关**」。
+   * 触摸板手势**不受它管**（见下面的 `touchpad`）。
    */
   experimental?: boolean;
+  /**
+   * **触摸板手势总开关**：与 `experimental`（鼠标操作）互相独立，缺字段按后端默认「**关**」。
+   * 关掉后触摸板手势入口隐藏 + 不采集（触发键照常输出），**配置保留**。
+   */
+  touchpad?: boolean;
+  /**
+   * 触摸板手势的起手距离（像素）：这一笔至少移动这么远才算数（也是轨迹浮层亮出的阈值）。
+   * 缺字段按后端默认 22。
+   */
+  touchpad_start_distance?: number;
+  /**
+   * 触摸板手势的排除程序（每行一个进程名）：命中的程序里不执行触摸板手势
+   * （触发键已被吞、没有右键回放）。语义同 `gesture_exclude`：不区分大小写、
+   * `*`/`?` 通配、否则子串。缺字段 = 不排除。
+   */
+  touchpad_exclude?: string[];
   /**
    * 鼠标手势的起手距离（像素）：光标累计移动超过它才算「开始画手势」。
    * 缺字段按后端默认 22。
@@ -2424,10 +2441,16 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
   return li;
 }
 
-// 鼠标操作（手势）这类新功能是否已由用户显式打开（设置页「鼠标操作」总开关，默认关）。
-// 关着 = 列表里不出现这一类、新增菜单里没有它、钩子也不拦右键。
+// 鼠标操作（手势 / 角动作 / 边缘滚动）这类新功能是否已由用户显式打开（设置页「鼠标操作」
+// 总开关，默认关）。关着 = 列表里不出现这几类、新增菜单里没有它们、钩子也不拦右键。
 function mouseFeaturesEnabled(): boolean {
   return cfg.settings.experimental === true;
+}
+
+// 触摸板手势是否已打开（它**有自己的开关**，与鼠标操作互不影响；默认关）。
+// 关着 = 列表 / 模式菜单里不出现，也不采集（触发键照常输出）。
+function touchpadFeaturesEnabled(): boolean {
+  return cfg.settings.touchpad === true;
 }
 
 /** 角动作 / 边缘滚动：位置 + 动作（详情 / 层 / 条件与其它条目同口径）。 */
@@ -2497,7 +2520,7 @@ function gestureVisible(g: Gesture): boolean {
 
 // 触摸板手势的可见性：额外认触发键（用户常按「CapsLock」搜）。
 function touchpadVisible(g: TouchpadGesture): boolean {
-  if (!mouseFeaturesEnabled()) return false;
+  if (!touchpadFeaturesEnabled()) return false;
   const q = search.trim().toLowerCase();
   if (q) {
     const hay = `${g.pattern} ${g.trigger ?? ""} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
@@ -5096,14 +5119,11 @@ function syncEntry() {
     const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
     if (item) {
       item.classList.toggle("active", k === kind);
-      // 鼠标 / 触摸板类新功能：总闸关着时这些项不出现（入口隐藏，配置留着）。
-      if (
-        k === "gesture" ||
-        k === "touchpad" ||
-        k === "hotcorner" ||
-        k === "wheeledge"
-      )
+      // 鼠标类 / 触摸板各有自己的开关：关着时这些项不出现（入口隐藏，配置留着）。
+      if (k === "gesture" || k === "hotcorner" || k === "wheeledge")
         item.classList.toggle("hidden", !mouseFeaturesEnabled());
+      else if (k === "touchpad")
+        item.classList.toggle("hidden", !touchpadFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
       item.classList.toggle("disabled", k !== kind && !draftNew);
@@ -7850,22 +7870,39 @@ async function pickDir(input: HTMLInputElement) {
 function renderConflictBubble() {
   const box = document.getElementById("conflict-list")!;
   box.replaceChildren();
-  // 「鼠标 / 触摸板类配了但总闸关着」也用气泡说一声：总闸关着时这些类**整类不显示**，
-  // 用户在列表里看不到自己的条目，只会觉得「配了没反应」——这里把原因摆出来。
-  const offCount = (cfg.gestures ?? []).length + (cfg.touchpad_gestures ?? []).length;
-  const gestureOff = isListSection(section) && offCount > 0 && !mouseFeaturesEnabled();
-  const hasConflict = isListSection(section) && conflicts.length > 0 && !conflictBubbleDismissed;
-  const show = hasConflict || gestureOff;
+  // 「配了但总开关关着」也各说一声：鼠标操作与触摸板手势是**两枚独立开关**，
+  // 关着时这些类**整类不显示**，用户在列表里看不到自己的条目，只会觉得「配了没反应」
+  // ——这里把原因分开摆出来（点哪条就开哪枚，别用一枚开关去猜另一类）。
+  const mouseOffCount = (cfg.gestures ?? []).length;
+  const touchpadOffCount = (cfg.touchpad_gestures ?? []).length;
+  const inList = isListSection(section);
+  const mouseOff = inList && mouseOffCount > 0 && !mouseFeaturesEnabled();
+  const touchpadOff = inList && touchpadOffCount > 0 && !touchpadFeaturesEnabled();
+  const hasConflict = inList && conflicts.length > 0 && !conflictBubbleDismissed;
+  const show = hasConflict || mouseOff || touchpadOff;
   box.classList.toggle("hidden", !show);
   if (!show) return;
-  if (gestureOff) {
+  if (mouseOff) {
     const b = el("div", "conflict-bubble");
     b.addEventListener("click", () => void enableExperimentalFeatures());
     b.append(
       el(
         "span",
         "conflict-bubble-text",
-        trt`⚠ 已配置 ${offCount} 条鼠标 / 触摸板条目，但总开关未开启 → 不会触发`,
+        trt`⚠ 已配置 ${mouseOffCount} 条鼠标操作条目，但「鼠标操作」总开关未开启 → 不会触发`,
+      ),
+      el("span", "conflict-bubble-hint", tr("点击开启")),
+    );
+    box.append(b);
+  }
+  if (touchpadOff) {
+    const b = el("div", "conflict-bubble");
+    b.addEventListener("click", () => void enableTouchpadFeatures());
+    b.append(
+      el(
+        "span",
+        "conflict-bubble-text",
+        trt`⚠ 已配置 ${touchpadOffCount} 条触摸板手势，但「触摸板手势」总开关未开启 → 不会触发`,
       ),
       el("span", "conflict-bubble-hint", tr("点击开启")),
     );
@@ -7902,6 +7939,15 @@ async function enableExperimentalFeatures() {
   const box = document.getElementById("set-experimental") as HTMLInputElement | null;
   if (box) box.checked = true;
   syncMouseOpts();
+  await save();
+}
+
+// 打开「触摸板手势」开关并立刻落盘（与上面那枚分开：两类各有自己的闸门）。
+async function enableTouchpadFeatures() {
+  cfg.settings.touchpad = true;
+  const box = document.getElementById("set-touchpad") as HTMLInputElement | null;
+  if (box) box.checked = true;
+  syncTouchpadOpts();
   await save();
 }
 
@@ -8198,6 +8244,15 @@ function syncSettings() {
   // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
   (document.getElementById("set-experimental") as HTMLInputElement).checked =
     cfg.settings.experimental === true;
+  // 触摸板手势是**独立分类**：自己的开关与参数，跟上面那枚无关（缺字段 = 关 / 默认值）。
+  (document.getElementById("set-touchpad") as HTMLInputElement).checked =
+    cfg.settings.touchpad === true;
+  (document.getElementById("set-touchpad-start-distance") as HTMLInputElement).value = String(
+    cfg.settings.touchpad_start_distance ?? 22,
+  );
+  (document.getElementById("set-touchpad-exclude") as HTMLTextAreaElement).value = (
+    cfg.settings.touchpad_exclude ?? []
+  ).join("\n");
   (document.getElementById("set-gesture-screenshot") as HTMLInputElement).checked =
     cfg.settings.gesture_screenshot !== false;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
@@ -8242,6 +8297,7 @@ function syncSettings() {
   // 旧配置里残留的条目仍能只读渲染（没有宿主节点时函数直接返回），不再提供编辑入口。
   renderClipboardMenuEditor();
   syncMouseOpts();
+  syncTouchpadOpts();
 }
 
 /** 鼠标操作的参数设置块只在总开关打开时显示（关闭时配置仍保留）。 */
@@ -8249,6 +8305,25 @@ function syncMouseOpts() {
   document
     .getElementById("mouse-opts")
     ?.classList.toggle("hidden", cfg.settings.experimental !== true);
+  syncGestureVisual();
+}
+
+/** 触摸板手势的参数块只在自己的开关打开时显示（与「鼠标操作」那枚互不影响）。 */
+function syncTouchpadOpts() {
+  document
+    .getElementById("touchpad-opts")
+    ?.classList.toggle("hidden", cfg.settings.touchpad !== true);
+  syncGestureVisual();
+}
+
+/** 轨迹浮层是两边共用的一块窗：任一边开着就显示，两边都关着才整张卡片收起。 */
+function syncGestureVisual() {
+  document
+    .getElementById("gesture-visual-card")
+    ?.classList.toggle(
+      "hidden",
+      cfg.settings.experimental !== true && cfg.settings.touchpad !== true,
+    );
 }
 
 /**
@@ -8569,6 +8644,35 @@ function bindSettings() {
     syncMouseOpts();
     // 改完重画列表：快捷键页里鼠标类条目的显隐由它决定。
     void save().then(() => render());
+  });
+  // 触摸板手势总开关：与「鼠标操作」完全分开——只影响触摸板条目与采集，
+  // 关掉时配置保留（入口隐藏 + 不采集，触发键照常输出）。
+  const touchpad = document.getElementById("set-touchpad") as HTMLInputElement;
+  touchpad.addEventListener("change", () => {
+    cfg.settings.touchpad = touchpad.checked;
+    syncTouchpadOpts();
+    void save().then(() => render());
+  });
+  // 触摸板手势的起手距离（像素）：这一笔至少移动这么远才算数，钳在 1~50。
+  const touchpadStart = document.getElementById(
+    "set-touchpad-start-distance",
+  ) as HTMLInputElement;
+  touchpadStart.addEventListener("change", () => {
+    const v = Math.min(50, Math.max(1, Math.floor(Number(touchpadStart.value) || 22)));
+    touchpadStart.value = String(v);
+    cfg.settings.touchpad_start_distance = v;
+    void save();
+  });
+  // 触摸板手势的排除程序：每行一个，与鼠标手势的 `gesture_exclude` 各自一份名单。
+  const touchpadExclude = document.getElementById(
+    "set-touchpad-exclude",
+  ) as HTMLTextAreaElement;
+  touchpadExclude.addEventListener("change", () => {
+    cfg.settings.touchpad_exclude = touchpadExclude.value
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    void save();
   });
   const gestureScreenshot = document.getElementById(
     "set-gesture-screenshot",

@@ -128,6 +128,10 @@ const DEMO_CONFIG = {
     hints: { visible: false, x: null, y: null, scale: 100, opacity: 92 },
     // 新功能总闸（规划 7.2-MG）：默认**关**（演示里也保持关，手势区不显示）。
     experimental: false,
+    // 触摸板手势是**独立分类**：自己的开关 / 起手距离 / 排除名单，跟着 `experimental` 走的只有鼠标类。
+    touchpad: false,
+    touchpad_start_distance: 22,
+    touchpad_exclude: [],
     hot_corners: {
       enabled: false,
       top_left: { enabled: false, name: "", actions: [] },

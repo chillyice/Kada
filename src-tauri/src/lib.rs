@@ -1020,10 +1020,10 @@ fn spawn_engine_ticker(
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
                     // → 右键完全放行（回到系统行为，一个字节都不多吞）。
                     guard.settings.experimental && gesture_capture_enabled(&guard),
-                    // 触摸板手势的闸门：同样受总开关管；没有触摸板手势 / 本平台没接
-                    // 鼠标移动采集时不 arm（触发键照常输出，不是静默吞掉）。
+                    // 触摸板手势的闸门：**它自己的总开关**（与鼠标操作的 `experimental` 分开）；
+                    // 没有触摸板手势 / 本平台没接鼠标移动采集时不 arm（触发键照常输出，不是静默吞掉）。
                     // **「录一笔」期间强制开闸**：新建第一条时配置里还没有启用的条目。
-                    (guard.settings.experimental
+                    (guard.settings.touchpad
                         && touchpad_gesture_enabled(&guard)
                         && kada_hook::trackpad::supported())
                         || trackpad_recording_key().is_some(),
@@ -1887,12 +1887,12 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 120
             };
             std::thread::sleep(Duration::from_millis(interval));
-            let (drawing, points) = if kada_hook::gesture::drawing() {
-                (true, kada_hook::gesture::points())
+            let (drawing, points, from_touchpad) = if kada_hook::gesture::drawing() {
+                (true, kada_hook::gesture::points(), false)
             } else if kada_hook::trackpad::drawing() {
-                (true, kada_hook::trackpad::points())
+                (true, kada_hook::trackpad::points(), true)
             } else {
-                (false, Vec::new())
+                (false, Vec::new(), false)
             };
             if !drawing {
                 was_drawing = false;
@@ -1904,10 +1904,10 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !preloaded {
                     let on = {
                         let g = cfg.read().unwrap();
-                        (g.settings.experimental
-                            && (gesture_capture_enabled(&g)
-                                || (touchpad_gesture_enabled(&g)
-                                    && kada_hook::trackpad::supported())))
+                        (g.settings.experimental && gesture_capture_enabled(&g))
+                            || (g.settings.touchpad
+                                && touchpad_gesture_enabled(&g)
+                                && kada_hook::trackpad::supported())
                             || trackpad_recording_key().is_some()
                     };
                     if on {
@@ -1933,13 +1933,26 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 let g = cfg.read().unwrap();
                 (
                     gesture_visual_of(&g.settings),
-                    g.settings.gesture_start_distance,
-                    (g.settings.experimental
-                        && (gesture_capture_enabled(&g)
-                            || (touchpad_gesture_enabled(&g)
-                                && kada_hook::trackpad::supported())))
-                        || recording,
-                    g.settings.gesture_exclude.clone(),
+                    // 两条路的「够长才亮」各用自己那个值：右键手势是「起点之后开始画」，
+                    // 触摸板是「这一笔至少多长」。
+                    if from_touchpad {
+                        g.settings.touchpad_start_distance
+                    } else {
+                        g.settings.gesture_start_distance
+                    },
+                    (if from_touchpad {
+                        g.settings.touchpad
+                            && touchpad_gesture_enabled(&g)
+                            && kada_hook::trackpad::supported()
+                    } else {
+                        g.settings.experimental && gesture_capture_enabled(&g)
+                    }) || recording,
+                    // 排除列表也按来源取：两条路各有自己的名单，别混用。
+                    if from_touchpad {
+                        g.settings.touchpad_exclude.clone()
+                    } else {
+                        g.settings.gesture_exclude.clone()
+                    },
                     g.settings.exclude_apps.clone(),
                 )
             };
@@ -2080,11 +2093,11 @@ fn handle_trackpad_stroke(
     let (on, min_len, action_timeout, text_mode, exclude, exclude_apps) = {
         let g = cfg.read().unwrap();
         (
-            g.settings.experimental && touchpad_gesture_enabled(&g),
-            g.settings.gesture_start_distance as f64,
+            g.settings.touchpad && touchpad_gesture_enabled(&g),
+            g.settings.touchpad_start_distance as f64,
             g.settings.action_timeout_ms,
             g.settings.text_inject_mode,
-            g.settings.gesture_exclude.clone(),
+            g.settings.touchpad_exclude.clone(),
             g.settings.exclude_apps.clone(),
         )
     };

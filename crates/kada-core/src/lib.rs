@@ -2870,6 +2870,20 @@ pub struct Settings {
     /// 手势未命中时的失败色（`#RRGGBB`）。
     #[serde(default = "default_gesture_fail_color")]
     pub gesture_fail_color: String,
+    /// **触摸板手势总开关**：与 `experimental`（鼠标操作）**各自独立**，同样缺字段 = 关。
+    /// 关掉 = 触摸板手势入口隐藏 + 不采集（触发键照常输出，不静默吞），**配置保留**。
+    #[serde(default)]
+    pub touchpad: bool,
+    /// 触摸板手势的**起手距离**（像素）：这一笔至少移动这么远才算数（同时也是轨迹浮层
+    /// 亮出的阈值）。与鼠标手势的 `gesture_start_distance` 分开：一个是「开始画」，
+    /// 一个是「画够长」，两种手感本来就不该共用一个值。
+    #[serde(default = "default_gesture_start_distance")]
+    pub touchpad_start_distance: i32,
+    /// 触摸板手势的**排除程序**（每行一个进程名）：命中的程序里不执行触摸板手势——触发键
+    /// 已经被吞掉（它是纯开关），所以这里只是「不执行」、没有右键要回放。语义同
+    /// `gesture_exclude`：不区分大小写、含 `*`/`?` 走通配、否则子串。空 = 不排除。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub touchpad_exclude: Vec<String>,
     /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
     #[serde(default)]
     pub clipboard_menu: ClipboardMenu,
@@ -2980,6 +2994,9 @@ impl Default for Settings {
             gesture_label_font_size: default_gesture_label_font_size(),
             gesture_label_offset: default_gesture_label_offset(),
             gesture_fail_color: default_gesture_fail_color(),
+            touchpad: false,
+            touchpad_start_distance: default_gesture_start_distance(),
+            touchpad_exclude: Vec::new(),
             clipboard_menu: ClipboardMenu::default(),
             hot_corners: HotCorners::default(),
             wheel_edges: WheelEdges::default(),
@@ -4040,9 +4057,10 @@ fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
 pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
     config_uses_mouse(cfg)
         || (cfg.settings.experimental
-            && (gesture_capture_enabled(cfg) || touchpad_gesture_enabled(cfg)))
-        || (cfg.settings.experimental && cfg.hot_corners.iter().any(|r| r.enabled))
-        || (cfg.settings.experimental && cfg.wheel_edges.iter().any(|r| r.enabled))
+            && (gesture_capture_enabled(cfg)
+                || cfg.hot_corners.iter().any(|r| r.enabled)
+                || cfg.wheel_edges.iter().any(|r| r.enabled)))
+        || (cfg.settings.touchpad && touchpad_gesture_enabled(cfg))
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突
@@ -5128,6 +5146,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             .collect::<Vec<_>>()
     };
     out.settings.gesture_exclude = clean_list(&out.settings.gesture_exclude);
+    out.settings.touchpad_exclude = clean_list(&out.settings.touchpad_exclude);
     out.settings.exclude_apps = clean_list(&out.settings.exclude_apps);
 
     // 手势视觉（EXT-02）：颜色只收 `#RGB` / `#RRGGBB`（非法回落默认，避免把任意字符串
@@ -9106,6 +9125,43 @@ mod hot_corner_tests {
         // 总闸关掉 → 不装。
         cfg.settings.experimental = false;
         assert!(!config_needs_mouse_hook(&cfg));
+    }
+
+    /// 触摸板手势是**独立开关**：`experimental` 关着也照装鼠标钩子；自己的开关关掉就不装。
+    #[test]
+    fn touchpad_gesture_uses_its_own_switch() {
+        let mut cfg = Config::default();
+        cfg.touchpad_gestures.push(TouchpadGesture {
+            trigger: Some(Key::CapsLock),
+            pattern: "D".into(),
+            enabled: true,
+            ..Default::default()
+        });
+        cfg.settings.touchpad = true;
+        assert!(touchpad_gesture_enabled(&cfg));
+        assert!(config_needs_mouse_hook(&cfg));
+        // 鼠标操作总闸关着不影响触摸板。
+        cfg.settings.experimental = false;
+        assert!(config_needs_mouse_hook(&cfg));
+        // 触摸板开关关掉 → 不装（鼠标那枚开着也一样，这里没有鼠标类条目）。
+        cfg.settings.touchpad = false;
+        assert!(!config_needs_mouse_hook(&cfg));
+    }
+
+    /// 触摸板自己的两个参数：开关 / 起手距离原样往返，排除名单按 `clean_list` 清洗。
+    #[test]
+    fn touchpad_settings_roundtrip_and_clean_exclude() {
+        let mut cfg = Config::default();
+        cfg.settings.touchpad = true;
+        cfg.settings.touchpad_start_distance = 30;
+        cfg.settings.touchpad_exclude = vec![" a.exe ".into(), "  ".into()];
+        let (out, _) = sanitize_config(&cfg);
+        assert!(out.settings.touchpad);
+        assert_eq!(out.settings.touchpad_start_distance, 30);
+        assert_eq!(out.settings.touchpad_exclude, vec!["a.exe".to_string()]);
+        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert!(back.settings.touchpad);
+        assert_eq!(back.settings.touchpad_start_distance, 30);
     }
 
     /// 非 Windows 平台给一条平台 Warn，不拦保存。
