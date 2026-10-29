@@ -1013,7 +1013,9 @@ fn spawn_engine_ticker(
                 (
                     build_status(&status, &guard),
                     guard.settings.show_status_hud,
-                    config_needs_mouse_hook(&guard),
+                    // 鼠标钩子：「录入触摸板手势」期间也必须挂着——新建第一条时配置里还没有
+                    // 启用的触摸板手势，光开 trackpad 闸门不够，普通鼠标移动进不来，一笔都记不到。
+                    config_needs_mouse_hook(&guard) || trackpad_recording_key().is_some(),
                     kada_core::config_uses_wheel(&guard),
                     guard.settings.paused,
                     guard.settings.elevated_inject,
@@ -6697,6 +6699,9 @@ fn start_trackpad_record(key: String) -> Result<(), String> {
     *TRACKPAD_RECORD.lock().unwrap() = Some(k);
     // 立刻开闸，不等定时器那一拍；下一拍也会按「录制中」把闸门维持住。
     kada_hook::trackpad::set_enabled(true);
+    // 鼠标钩子同样要立刻挂上：新建第一条时配置里还没有启用的触摸板手势，
+    // 不临时挂钩子就收不到触摸板合成的鼠标移动（见定时器里的 `use_mouse`）。
+    input::set_mouse_enabled(true);
     Ok(())
 }
 

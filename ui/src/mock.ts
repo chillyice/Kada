@@ -543,7 +543,7 @@ case "run_entry":
           // 演示鼠标录制结果：移动 + 点击 / 滚轮。
           return structuredClone(DEMO_RECORDED_MOUSE_ACTIONS);
         case "start_trackpad_record":
-          // 演示「录一笔」：浏览器里没有输入钩子，1.2 秒后推一笔假轨迹，
+          // 演示「录入」：浏览器里没有输入钩子，1.2 秒后推一笔假轨迹，
           // 好把「录制 → 回填方向串 / 模板」这条界面路径走通（模板是 24 点归一化坐标）。
           window.setTimeout(
             () =>

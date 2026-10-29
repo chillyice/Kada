@@ -391,7 +391,7 @@ type TouchpadGesture = {
   trigger?: string | null;
   /** 方向串（同鼠标手势的写法）。 */
   pattern: string;
-  /** 形状模板（24 点归一化；「录一笔」带上，只在方向串没命中时兜底）。 */
+  /** 形状模板（24 点归一化；「录入」带上，只在方向串没命中时兜底）。 */
   template?: [number, number][] | null;
   enabled: boolean;
   actions: Action[];
@@ -4829,7 +4829,7 @@ function openGesturePad(onDone: (pattern: string) => void) {
   document.body.append(mask);
 }
 
-// ---- 触摸板手势：触发键 + 「从触摸板录一笔」 ----
+// ---- 触摸板手势：触发键 + 「从触摸板录入」 ----
 // 触发键是独立的 `TouchpadGesture.trigger`（必填、只能键盘键）。录制由壳层临时开采集：
 // 按触发键 → 在触摸板上画一笔 → 松键后壳层把方向串 + 形状模板推回来，**不执行动作**。
 type TrackpadRecordPayload = {
@@ -4839,7 +4839,7 @@ type TrackpadRecordPayload = {
   elapsed_ms: number;
 };
 
-/** 正在「录一笔」时接收壳层回传的回调（`null` = 没在录）。 */
+/** 正在「录入」时接收壳层回传的回调（`null` = 没在录）。 */
 let trackpadRecordSink: ((p: TrackpadRecordPayload) => void) | null = null;
 
 /** 触发键下拉：只有键盘键（鼠标键只走右键手势那条路）。 */
@@ -4859,7 +4859,7 @@ function fillTouchpadTriggerSelect() {
   }
 }
 
-/** 触发键 / 模板变了之后，把「录一笔」「清除模板」与提示对齐。 */
+/** 触发键 / 模板变了之后，把「录入」「清除模板」与提示对齐。 */
 function syncTouchpadUi() {
   const key = touchpadDraft?.trigger ?? "";
   document.getElementById("edit-touchpad-capture")?.classList.toggle("hidden", !key);
@@ -4870,15 +4870,15 @@ function syncTouchpadUi() {
   if (sel) {
     sel.title = key
       ? trt`按住 ${key} 在触摸板上画一笔（触摸板手势）`
-      : tr("先选一个触发键，再在触摸板上录一笔");
+      : tr("先选一个触发键，再在触摸板上录入");
   }
 }
 
-/** 「录一笔」：开一个只回填编辑器的采集会话（开闸 / 识别 / 收尾都在壳层）。 */
+/** 「录入」：开一个只回填编辑器的采集会话（开闸 / 识别 / 收尾都在壳层）。 */
 function openTrackpadRecord(key: string) {
   const mask = el("div", "modal-mask gesture-pad-mask");
   const modal = el("div", "gesture-pad");
-  const title = el("h3", "", tr("从触摸板录一笔"));
+  const title = el("h3", "", tr("从触摸板录入"));
   const hint = el(
     "div",
     "unit-hint",
@@ -5643,7 +5643,7 @@ async function saveTouchpadDetail(): Promise<boolean> {
     const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
     showFieldError(input, tr("请填写方向串"));
     input.focus();
-    toast(tr("请先填写方向串（如 D、DL、DRUL），或用「录一笔」画出来"));
+    toast(tr("请先填写方向串（如 D、DL、DRUL），或用「录入」画出来"));
     return false;
   }
   touchpadDraft.trigger = trigger;
@@ -9693,7 +9693,7 @@ function bind() {
   touchpadTrigger.addEventListener("change", () => {
     if (section !== "touchpads" || !touchpadDraft) return;
     touchpadDraft.trigger = touchpadTrigger.value || null;
-    // 换触发键 = 换了「哪只手 / 哪个键」录的那一笔：形状模板跟着作废（要留就重录一笔）。
+    // 换触发键 = 换了「哪只手 / 哪个键」录的那一笔：形状模板跟着作废（要留就重新录入）。
     touchpadDraft.template = null;
     syncTouchpadUi();
     refreshDirty();
@@ -9702,7 +9702,7 @@ function bind() {
     if (section !== "touchpads" || !touchpadDraft) return;
     const key = touchpadDraft.trigger;
     if (!key) {
-      toast(tr("先选一个键盘键作触发键，再用触摸板录一笔"));
+      toast(tr("先选一个键盘键作触发键，再用触摸板录入"));
       return;
     }
     openTrackpadRecord(key);
@@ -9724,23 +9724,6 @@ function bind() {
       if (gestureDraft) {
         gestureDraft.pattern = pattern;
         renderActions(gestureDraft, pattern);
-      }
-      toast(trt`已录入方向串 ${pattern}，记得保存`);
-    });
-  });
-
-  document.getElementById("edit-touchpad-record")!.addEventListener("click", () => {
-    if (section !== "touchpads" || !touchpadDraft) return;
-    openGesturePad((pattern) => {
-      const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
-      input.value = pattern;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      if (touchpadDraft) {
-        touchpadDraft.pattern = pattern;
-        // 画板画的是另一笔形状：旧模板不再对应，顺手清掉（要留就重录一笔）。
-        touchpadDraft.template = null;
-        renderActions(touchpadDraft, pattern);
-        syncTouchpadUi();
       }
       toast(trt`已录入方向串 ${pattern}，记得保存`);
     });
@@ -10597,7 +10580,7 @@ async function initEvents() {
   // 主窗口刚被唤起时事件可能已落空：补取后端暂存的那一条（取走即清，不会反复弹）。
   const pendingDialog = await invoke<UpdateDialogPayload | null>("take_update_dialog").catch(() => null);
   if (pendingDialog) openUpdateDialog(pendingDialog);
-  // 触摸板「录一笔」的轨迹回传（壳层在松键后推一次）：交给当前打开的录制面板。
+  // 触摸板「录入」的轨迹回传（壳层在松键后推一次）：交给当前打开的录制面板。
   await listen<TrackpadRecordPayload>("trackpad-recorded", (e) =>
     trackpadRecordSink?.(e.payload),
   );

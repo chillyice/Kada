@@ -141,12 +141,11 @@
                 <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
               </div>
-              <!-- 触摸板手势：先选触发键（只能键盘键），再给方向串；「录一笔」按住触发键在触摸板上画 -->
+              <!-- 触摸板手势：先选触发键（只能键盘键），再给方向串；「录入」按住触发键在触摸板上画 -->
               <div class="key-view hidden" id="key-touchpad">
-                <select id="edit-touchpad-trigger" class="gesture-trigger" title="先选一个触发键，再在触摸板上录一笔"></select>
+                <select id="edit-touchpad-trigger" class="gesture-trigger" title="先选一个触发键，再在触摸板上录入"></select>
                 <input id="edit-touchpad-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
-                <button id="edit-touchpad-record" class="ghost" type="button">录入</button>
-                <button id="edit-touchpad-capture" class="ghost" type="button" title="按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板">录一笔</button>
+                <button id="edit-touchpad-capture" class="ghost" type="button" title="按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板">录入</button>
                 <button id="edit-touchpad-drop-template" class="ghost hidden" type="button" title="只保留方向串，删掉这一笔的形状模板">清除模板</button>
               </div>
               <!-- 角动作：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
@@ -568,7 +567,7 @@
                     </label>
                   </div>
                 </div>
-                <p class="hint">在快捷键页新增条目选「触摸板手势」→ 选触发键 → 点「录一笔」；它与鼠标操作各自一份列表、各自一套展示顺序。目前只接了 Windows 采集。</p>
+                <p class="hint">在快捷键页新增条目选「触摸板手势」→ 选触发键 → 点「录入」；它与鼠标操作各自一份列表、各自一套展示顺序。目前只接了 Windows 采集。</p>
               </section>
 
               <!-- 轨迹浮层：右键手势与触摸板手势共用**同一块窗**（壳层只建一个），所以外观
