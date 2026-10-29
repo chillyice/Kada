@@ -142,7 +142,9 @@ if ($token) {
   Step "publish draft release"
   $rel = $null
   for ($i = 0; $i -lt 20; $i++) {
-    $rel = Get-Json "https://api.github.com/repos/$Repo/releases/tags/v$Version"
+    # releases/tags/{tag} 对草稿返回 404（只返回已发布），必须走列表接口按 tag_name 找草稿
+    $rels = @(Get-Json "https://api.github.com/repos/$Repo/releases?per_page=50")
+    $rel = $rels | Where-Object { $_.tag_name -eq "v$Version" } | Select-Object -First 1
     if ($rel) { break }
     Start-Sleep -Seconds 15
   }
