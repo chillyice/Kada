@@ -4,14 +4,17 @@
 
 ## 在 Kada 里挂快捷键
 
+**两步动作**（脚本动作**没有参数输入框**，只有「路径 + 解释器」，版本号传不进去；且 `.ps1` 不能当可执行文件直接启动——必须用「命令」动作经 PowerShell 拼出参数）：
+
 | 字段 | 值 |
 |---|---|
-| 动作类型 | 运行脚本（Script） |
-| 脚本路径 | `<仓库>\scripts\release\Release-Kada.ps1` |
-| 解释器 | `powershell.exe` |
-| 隐藏控制台窗口 | 不勾（输入框与进度在控制台里） |
-| 弹窗显示结果 | 勾上 |
+| 动作 1 | 输入变量（`ask`）：变量 `release_version`，提示「输入新的版本号」 |
+| 动作 2 | 命令（`command`，shell = PowerShell）：`& '<仓库>\scripts\release\Release-Kada.ps1' -Version '{release_version}'` |
+| 隐藏控制台窗口 | 不勾（进度与脚本自己的 Read-Host 都在新控制台里） |
+| 弹窗显示结果 | 不勾（脚本用 `Write-Host` 直接写控制台，捕获到的 stdout 基本是空的；失败看消息中心红点 / 控制台） |
 | 设置 → 动作超时 | `0`（不限时；默认 30 秒会把发版杀掉） |
+
+> 第二动作别写成「运行脚本（Script）」：那样只会执行 `powershell.exe <脚本路径>`，既没有 `-Version`，`.ps1` 直启还会失败。`{release_version}` 由命令动作的变量替换填进去。
 
 建议触发键用 `Ctrl+Alt+Shift+R` 这类不易误触的组合：弹框输入版本号是第二道确认。
 
@@ -19,7 +22,7 @@
 
 | 参数 | 作用 |
 |---|---|
-| `-Version 1.2.2` | 指定版本号；不给就弹输入框 |
+| `-Version 1.2.2` | 指定版本号；不给就弹输入框（从 Kada 触发时由动作 1 的 `{release_version}` 填） |
 | `-DryRun` | 只做前置检查并打印计划，不改文件、不提交 |
 | `-NoChecks` | 跳过 `check-docs` / `check-i18n`（CI 仍会跑测试） |
 | `-NoPause` | 结束时不等回车（给自动化调用） |
