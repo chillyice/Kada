@@ -1940,7 +1940,7 @@ dependencies = [
 
 [[package]]
 name = "kada"
-version = "1.2.1"
+version = "1.2.3"
 dependencies = [
  "chrono",
  "kada-actions",
