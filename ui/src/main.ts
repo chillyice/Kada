@@ -2837,10 +2837,6 @@ const marketInstalled = new Set<string>();
 // 预览框点「安装」时要用：null = 没待装的卡带。`level` = 机审危险等级（高危要额外确认）。
 let snippetPending: { text: string; name: string; level: number } | null = null;
 
-function marketSourceLabel(): string {
-  return cfg.settings.snippet_index_url?.trim() || tr("内置地址");
-}
-
 // 进页面 / 点「重新拉取」时调用；`force` = 忽略已拿到的索引重新下载。
 async function loadMarket(force = false) {
   if (marketLoading) return;
@@ -2888,7 +2884,7 @@ function renderMarketPage() {
     : marketError
       ? trt`拉取失败：${marketError}（可在「设置 → 配置与数据」里换索引地址）`
       : marketLoaded
-        ? trt`共 ${marketEntries.length} 条 · 索引：${marketSourceLabel()}`
+        ? trt`共 ${marketEntries.length} 条`
         : tr("还没拉取索引");
   // 发布只对官方市场开放：自定义索引是别人的市场，把卡带发到 ihomy 既不在用户眼前，
   // 也没有取得同意（服务端也不认自定义索引里的规则）。
@@ -8229,9 +8225,11 @@ function syncSettings() {
   // 缺字段的老配置按默认「剪贴板粘贴」显示，与后端 serde default 一致。
   (document.getElementById("set-text-inject") as HTMLSelectElement).value =
     cfg.settings.text_inject_mode ?? "clipboard";
-  // 索引地址：老配置没有这个字段，显示空 = 用内置默认（后端也是这个口径）。
+  // 索引地址：只显示自定义值；内置默认 / 空串都显示为空（后端把空串当默认）。
+  // 老配置没有这个字段时同样显示空 = 用内置默认，别把内置 URL 摆给用户看。
+  const snippetIndexValue = cfg.settings.snippet_index_url ?? "";
   (document.getElementById("set-snippet-index") as HTMLInputElement).value =
-    cfg.settings.snippet_index_url ?? "";
+    snippetIndexValue === DEFAULT_SNIPPET_INDEX_URL ? "" : snippetIndexValue;
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
     cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个文件夹（如 OneDrive）即可自动存一份");

@@ -6278,6 +6278,28 @@ fn export_fragment(
 const SNIPPET_FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 const SNIPPET_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+/// 把文本里的 http(s) URL 抹掉，避免把内置地址（更新清单、卡带索引、发布端点）暴露给界面。
+///
+/// reqwest 的 `Display` 会带上完整 URL（如 `error sending request for url (https://…)`），
+/// 原样抛给用户等于把内部下载地址摊在界面上。这里只处理 http(s)；本地路径、`file://` 等
+/// 一律不动——那是用户自己的输入，不是内部地址。
+pub(crate) fn strip_urls(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find("http://").or_else(|| rest.find("https://")) {
+        out.push_str(&rest[..pos]);
+        out.push('…');
+        // 从 URL 起点吞到下一个空白 / 收尾符（括号、引号、尖括号、反斜杠、逗号、方括号）。
+        let tail = &rest[pos..];
+        let end = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '>' | '\\' | ',' | ']'))
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// 下载一段文本（索引 / 卡带本体）。
 ///
 /// 只收 http(s)：设置里的这个字符串不该变成读本地文件的口子（`file://` 之类一律拒）。
@@ -6291,11 +6313,11 @@ async fn http_get_text(url: &str) -> Result<String, String> {
         .get(url)
         .send()
         .await
-        .map_err(|e| format!("下载失败：{e}"))?;
+        .map_err(|e| strip_urls(&format!("下载失败：{e}")))?;
     if !resp.status().is_success() {
         return Err(format!("下载失败：HTTP {}", resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| format!("下载中断：{e}"))?;
+    let body = resp.bytes().await.map_err(|e| strip_urls(&format!("下载中断：{e}")))?;
     if body.len() > SNIPPET_MAX_BYTES {
         return Err(format!("内容太大（{} MB），不像是索引或卡带", body.len() / 1024 / 1024));
     }
@@ -6313,7 +6335,7 @@ async fn http_post_json(url: &str, body: &str) -> Result<String, String> {
         .body(body.to_string())
         .send()
         .await
-        .map_err(|e| format!("发布失败：{e}"))?;
+        .map_err(|e| strip_urls(&format!("发布失败：{e}")))?;
     let status = resp.status();
     let bytes = resp.bytes().await.map_err(|e| format!("发布响应中断：{e}"))?;
     if bytes.len() > 1024 * 1024 {
@@ -6374,7 +6396,7 @@ async fn fetch_snippet_index(
         }
     }
     if entries.is_empty() {
-        return Err(format!("索引里一条卡带也没有（{url}）"));
+        return Err("索引里一条卡带也没有".into());
     }
     Ok(entries)
 }

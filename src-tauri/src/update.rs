@@ -453,6 +453,7 @@ pub fn take_update_dialog(state: tauri::State<'_, UpdateState>) -> Option<Update
 
 /// 记失败：写状态；手动模式弹窗，自动模式记进消息中心（不打扰使用，但留得下痕迹）。
 fn fail(app: &tauri::AppHandle, mode: Mode, message: String) {
+    let message = crate::strip_urls(&message);
     set_phase(app, UpdatePhase::Error { message: message.clone() });
     match mode {
         Mode::Manual => show_dialog(app, "error", "更新失败", message, None),
@@ -590,11 +591,7 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
                 &app,
                 "info",
                 "检查更新",
-                format!(
-                    "当前版本 v{current}，已是最新版本。\n\n更新源：{}（{}）",
-                    source_label(source),
-                    source.endpoint()
-                ),
+                format!("当前版本 v{current}，已是最新版本。\n\n更新源：{}", source_label(source)),
                 None,
             );
         }
