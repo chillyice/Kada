@@ -1,8 +1,13 @@
 //! 触摸板手势的**采集**（规划 7.2-MG 触摸板手势）：按住一个键，在触摸板上画，松键收尾。
 //!
-//! 数据来源是**普通鼠标移动**：单指在触摸板上滑动，三个平台都会合成成相对鼠标移动，
-//! 所以这里不碰 HID、不用新权限、非精确触摸板也能用（代价：画的时候光标会跟着走，
-//! 轨迹还带指针加速——加速是标量增益，方向不变，只有弧长分布会变）。
+//! 数据来源按平台不同，但喂给 [`on_move`] 的口径一致（识别在壳层、尺度无关）：
+//! - **Windows / macOS**：系统合成的鼠标移动（Windows `WM_MOUSEMOVE` / macOS
+//!   `MouseMoved`），点 = 真实光标的屏幕坐标；画的时候光标跟着走，松键可以 warp 回起笔点。
+//! - **Linux**：**被动读**触摸板 / 触屏的 evdev 节点（**不 `EVIOCGRAB`**——抓了等于废掉
+//!   整个触摸板；内核允许同一节点被多方读，合成器照常工作），把 `ABS_X/ABS_Y` 与
+//!   MT 协议 B 的 `ABS_MT_POSITION_*` 按轴分辨率折算成近似像素喂进来。点不是屏幕坐标，
+//!   光标由合成器移动、Kada 无法安全归位（Wayland 禁止客户端 warp），所以 Linux 上
+//!   「松键回起笔点」不做（见 [`restores_cursor`]）。
 //!
 //! 与右键手势（[`crate::gesture`]）的分工：
 //! - 那边**吞右键**、没命中要回放；这边吞的是**用户指定的触发键**，它本来就只是
@@ -36,9 +41,9 @@ struct Tracker {
     key: Option<Key>,
     /// 开始时刻（超时 / 展示用）。
     start: Option<Instant>,
-    /// 轨迹点（屏幕坐标累计；Windows / macOS 是真实光标位置）。
+    /// 轨迹点（Windows / macOS 是屏幕像素；Linux 是按轴分辨率折算的近似像素）。
     points: Vec<(i32, i32)>,
-    /// 起笔位置（松键后把光标放回去）。
+    /// 起笔位置（松键后把光标放回去；只有 [`restores_cursor`] 为真的平台才有意义）。
     anchor: Option<(i32, i32)>,
     /// 上一次记下轨迹的时刻（空闲超时判定：停手太久 = 这一笔不连贯，作废）。
     last_move: Option<Instant>,
@@ -68,13 +73,21 @@ const MIN_STEP: i32 = 1;
 /// 停 3 秒以上多半是走神 / 改主意了——按作废处理，别拿半截轨迹去执行动作。
 const IDLE_LIMIT: Duration = Duration::from_millis(3000);
 
-/// 本平台能不能采：目前只有 Windows 接了鼠标钩子的移动事件。
-///
-/// macOS 的 `CGEventTap` 也拿得到绝对坐标，Linux 的 evdev 只有相对位移——两者接进来
-/// 是同一套接口（`on_move` 吃累计坐标），但**没真机验过手感之前不假装能用**：
-/// 不支持时壳层直接不 arm（触发键照常输出，不是静默吞掉）。
+/// 本平台能不能采：三平台都接了（Windows 鼠标钩子 / macOS CGEventTap / Linux 被动读
+/// evdev）。不支持的平台（理论上是其它无输入层的裸目标）壳层直接不 arm——触发键照常
+/// 输出，不是静默吞掉。
 pub fn supported() -> bool {
-    cfg!(windows)
+    cfg!(any(windows, target_os = "macos", target_os = "linux"))
+}
+
+/// 这个平台能不能「松键后把光标放回起笔点」（壳层据此决定要不要做复位）。
+///
+/// Windows / macOS 可以（`SetCursorPos` / `CGWarpMouseCursorPosition`）；**Linux 不行**：
+/// 光标由合成器移动，Wayland 禁止客户端 warp（X11 能 warp 但同一个代码路径不好区分，
+/// 而且轨迹点是设备单位的折算值，跳回的落点也对不上用户预期的屏幕位置）——干脆不复位，
+/// 这一笔让光标留在终点。
+pub fn restores_cursor() -> bool {
+    cfg!(any(windows, target_os = "macos"))
 }
 
 /// 开/关采集。关掉时清空状态（触发键立刻回到普通按键）。

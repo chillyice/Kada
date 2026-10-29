@@ -82,14 +82,19 @@ pub fn secure_input_enabled() -> bool {
 /// 把光标挪到指定屏幕坐标（触摸板手势松键后复位：画的这一笔只在屏幕上「借道」，
 /// 不该把用户的鼠标留在别处）。
 ///
-/// 只有 Windows 真做；其余平台是空实现（Wayland 没有绝对定位接口，macOS 的
-/// `CGWarpMouseCursorPosition` 还没接——**这两处没接线之前不要假装支持**）。
+/// Windows / macOS 真做（`SetCursorPos` / `CGWarpMouseCursorPosition`）；Linux 是空实现
+/// （Wayland 禁止客户端 warp，且轨迹点是设备单位的折算值，跳回的落点对不上）——壳层
+/// 会先问 [`crate::trackpad::restores_cursor`] 再调这里，Linux 上根本不来。
 pub fn set_cursor_pos(pt: (i32, i32)) {
     #[cfg(windows)]
     {
         win::set_cursor_pos(pt);
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        macos::simulate::warp_cursor(pt);
+    }
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = pt;
     }

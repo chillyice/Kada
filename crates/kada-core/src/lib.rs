@@ -8273,6 +8273,7 @@ mod platform_caps_tests {
 
     /// Linux 口径的 caps：前台条件不可用（Wayland / X11 都未接前台查询）。
     /// 不门控：`SendTo`（后台发送）在基础版也存在，它的平台冲突测试要用。
+    /// 触摸板手势已接（被动旁听 evdev），不再标 false。
     fn linux_caps() -> PlatformCaps {
         PlatformCaps {
             frontmost_conditions: false,
@@ -8282,7 +8283,6 @@ mod platform_caps_tests {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            touchpad_gestures: false,
             ..Default::default()
         }
     }
@@ -8306,8 +8306,8 @@ mod platform_caps_tests {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            touchpad_gestures: false,
             brightness: false,
+            ..Default::default()
         }
     }
 

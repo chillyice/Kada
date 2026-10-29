@@ -5682,7 +5682,6 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            touchpad_gestures: false,
             brightness: false,
             ..Default::default()
         }
@@ -5704,8 +5703,8 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            touchpad_gestures: false,
             brightness: false,
+            ..Default::default()
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
@@ -7023,16 +7022,19 @@ pub fn run() {
                         }
                     }
                     if let Ev::Up { key } = &ev {
-                        if kada_hook::trackpad::armed_with(*key) {
-                            let anchor = kada_hook::trackpad::anchor();
-                            kada_hook::trackpad::finish(*key);
-                            // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
-                            // 用户可以关掉（`touchpad_restore_cursor`）：有人松手后还要接着用指针。
-                            if guard.settings.touchpad_restore_cursor {
-                                if let Some(pt) = anchor {
-                                    kada_hook::set_cursor_pos(pt);
+                            if kada_hook::trackpad::armed_with(*key) {
+                                let anchor = kada_hook::trackpad::anchor();
+                                kada_hook::trackpad::finish(*key);
+                                // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
+                                // 用户可以关掉（`touchpad_restore_cursor`）；平台做不到（Linux 没有
+                                // 客户端 warp）也直接跳过（`restores_cursor`），不假装复位。
+                                if guard.settings.touchpad_restore_cursor
+                                    && kada_hook::trackpad::restores_cursor()
+                                {
+                                    if let Some(pt) = anchor {
+                                        kada_hook::set_cursor_pos(pt);
+                                    }
                                 }
-                            }
                             return input::HookAction::Block;
                         }
                     }
