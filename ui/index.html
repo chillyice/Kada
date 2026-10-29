@@ -144,7 +144,7 @@
               <!-- 触摸板手势：先选触发键（只能键盘键），再给方向串；「录入」按住触发键在触摸板上画 -->
               <div class="key-view hidden" id="key-touchpad">
                 <select id="edit-touchpad-trigger" class="gesture-trigger" title="先选一个触发键，再在触摸板上录入"></select>
-                <input id="edit-touchpad-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
+                <input id="edit-touchpad-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号；留空 = 只认形状）" />
                 <button id="edit-touchpad-capture" class="ghost" type="button" title="按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板">录入</button>
                 <button id="edit-touchpad-drop-template" class="ghost hidden" type="button" title="只保留方向串，删掉这一笔的形状模板">清除模板</button>
               </div>
@@ -557,6 +557,20 @@
                         <span class="set-sub">这一笔至少移动这么远才算数（像素，1~50）；也是轨迹浮层的亮出阈值，调大防手抖</span>
                       </span>
                       <input type="number" id="set-touchpad-start-distance" min="1" max="50" step="1" />
+                    </label>
+                    <label class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">松手后光标回到起笔点</span>
+                        <span class="set-sub">画一笔时光标会跟着在屏幕上走；关掉就不还原（松手后还要接着用指针时更方便）</span>
+                      </span>
+                      <input type="checkbox" id="set-touchpad-restore-cursor" class="toggle" />
+                    </label>
+                    <label class="set-row">
+                      <span class="set-main">
+                        <span class="set-name">采集时显示轨迹浮层</span>
+                        <span class="set-sub">只影响触摸板这一条来源（右键手势不受它管）；关掉后未匹配仍会弹气泡报方向串</span>
+                      </span>
+                      <input type="checkbox" id="set-touchpad-overlay" class="toggle" />
                     </label>
                     <label class="set-row">
                       <span class="set-main">

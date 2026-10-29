@@ -128,11 +128,12 @@ pub struct TouchpadGesture {
     /// 没有输出），没命中时什么都不用回放。
     #[serde(default, with = "key_serde", skip_serializing_if = "Option::is_none")]
     pub trigger: Option<Key>,
-    /// 方向串（同 [`Gesture::pattern`]）。
+    /// 方向串（同 [`Gesture::pattern`]）。**可以为空**——那就成了「只认形状」的条目，
+    /// 唯一判据是下面的 `template`（两者都空 = 永远匹配不上，`sanitize_config` 会整条丢掉）。
     #[serde(default)]
     pub pattern: String,
     /// 个人形状模板（兜底）：[`template_from_points`] 归一化后的 24 个点，每轴 `0..=1000`。
-    /// **只在方向串匹配不上时才用**——匹配上了就不再拿它改判。
+    /// **只在方向串匹配不上时才用**——匹配上了就不再拿它改判；方向串为空时它就是唯一判据。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub template: Option<Vec<[i16; 2]>>,
     /// 归属文件夹（`None` = 根级）：与快捷键共用一套目录树，只影响列表组织。
@@ -152,12 +153,18 @@ pub struct TouchpadGesture {
 }
 
 impl TouchpadGesture {
-    /// 展示名：有标题用标题，否则退回方向串。
+    /// 展示名：有标题用标题，否则退回方向串（纯形状条目没有方向串，退回「仅形状」）。
     pub fn label(&self) -> String {
         self.name
             .clone()
             .filter(|n| !n.trim().is_empty())
-            .unwrap_or_else(|| self.pattern.clone())
+            .unwrap_or_else(|| {
+                if self.pattern.trim().is_empty() {
+                    "仅形状".to_string()
+                } else {
+                    self.pattern.clone()
+                }
+            })
     }
 
     /// 触发侧 `when` 是否满足（无 `when` / 基础版恒真）。
@@ -860,10 +867,18 @@ pub fn gesture_enabled(cfg: &Config) -> bool {
 }
 
 /// 配置里有没有启用的**触摸板**手势（按住触发键采集那一种）。
+///
+/// **纯形状条目**（方向串为空、只有 `template`）也算——它靠模板兜底匹配，
+/// 少了这一条会让「只配了形状」的配置根本开不了采集。
 pub fn touchpad_gesture_enabled(cfg: &Config) -> bool {
-    cfg.touchpad_gestures
-        .iter()
-        .any(|g| g.enabled && g.trigger.is_some() && !normalize_pattern(&g.pattern).is_empty())
+    cfg.touchpad_gestures.iter().any(|g| {
+        g.enabled && g.trigger.is_some() && touchpad_gesture_has_matcher(g)
+    })
+}
+
+/// 这条触摸板手势有没有可用的判据（方向串或形状模板，至少一个）。
+pub fn touchpad_gesture_has_matcher(g: &TouchpadGesture) -> bool {
+    !normalize_pattern(&g.pattern).is_empty() || g.template.is_some()
 }
 
 /// 这个键是不是某条启用中的触摸板手势的**触发键**（壳层在按键回调里用它判「要不要进采集」）。
@@ -872,7 +887,7 @@ pub fn is_touchpad_trigger(cfg: &Config, key: Key) -> bool {
         g.enabled
             && g.trigger == Some(key)
             && !g.trigger.is_some_and(|k| k.is_mouse())
-            && !normalize_pattern(&g.pattern).is_empty()
+            && touchpad_gesture_has_matcher(g)
     })
 }
 
@@ -1347,6 +1362,28 @@ mod tests {
         assert_eq!(hit.pattern, "R");
         // 触发键不同不串味。
         assert!(find_touchpad_by_template(&cfg, &stroke, Key::CapsLock, &ctx).is_none());
+    }
+
+    /// 纯形状条目（方向串为空、只有模板）：方向串永远不命中，模板兜底必须命中；
+    /// 它也照样算「启用中」与「是触发键」（否则采集根本开不了）。
+    #[test]
+    fn shape_only_touchpad_gesture_matches_by_template() {
+        let stroke = line((0.0, 0.0), (90.0, 60.0), 18);
+        let mut cfg = Config::default();
+        cfg.touchpad_gestures = vec![TouchpadGesture {
+            trigger: Some(Key::F9),
+            pattern: String::new(),
+            template: template_from_points(&stroke),
+            enabled: true,
+            ..Default::default()
+        }];
+        let ctx = TriggerContext::empty();
+        assert!(find_touchpad(&cfg, Key::F9, "R", &ctx).is_none(), "空方向串不该被方向串匹配命中");
+        assert!(find_touchpad_by_template(&cfg, &stroke, Key::F9, &ctx).is_some());
+        assert!(touchpad_gesture_enabled(&cfg));
+        assert!(is_touchpad_trigger(&cfg, Key::F9));
+        // 展示名退回「仅形状」，别显示成空串。
+        assert_eq!(cfg.touchpad_gestures[0].label(), "仅形状");
     }
 
     #[test]

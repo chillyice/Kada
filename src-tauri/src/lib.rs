@@ -1799,7 +1799,9 @@ fn emit_trackpad_record(
 ) {
     let min_len = {
         let g = cfg.read().unwrap();
-        g.settings.gesture_start_distance as f64
+        // 与运行时（`handle_trackpad_stroke`）同一把尺子：触摸板用 `touchpad_start_distance`，
+        // 不是右键手势的 `gesture_start_distance`——否则「录出来的」和「跑出来的」会不一样。
+        g.settings.touchpad_start_distance as f64
     };
     let payload = TrackpadRecordPayload {
         pattern: kada_core::pattern_from_stroke(&stroke.points, min_len),
@@ -1908,6 +1910,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                         let g = cfg.read().unwrap();
                         (g.settings.experimental && gesture_capture_enabled(&g))
                             || (g.settings.touchpad
+                                && g.settings.touchpad_overlay
                                 && touchpad_gesture_enabled(&g)
                                 && kada_hook::trackpad::supported())
                             || trackpad_recording_key().is_some()
@@ -1931,7 +1934,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 continue;
             }
             let recording = trackpad_recording_key().is_some();
-            let (visual, start_distance, on, exclude, exclude_apps) = {
+            let (visual, start_distance, on, overlay, exclude, exclude_apps) = {
                 let g = cfg.read().unwrap();
                 (
                     gesture_visual_of(&g.settings),
@@ -1949,6 +1952,8 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                     } else {
                         g.settings.experimental && gesture_capture_enabled(&g)
                     }) || recording,
+                    // 浮层开关只影响触摸板这条来源（右键手势没有单独开关）。
+                    !from_touchpad || g.settings.touchpad_overlay,
                     // 排除列表也按来源取：两条路各有自己的名单，别混用。
                     if from_touchpad {
                         g.settings.touchpad_exclude.clone()
@@ -1959,6 +1964,12 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 )
             };
             if !on {
+                suppressed = true;
+                continue;
+            }
+            // 关掉「显示轨迹浮层」就只做识别、不画预览；「录一笔」是设置页的录入工具，
+            // 要看见自己画的线，不受这枚开关管。
+            if !overlay && !recording {
                 suppressed = true;
                 continue;
             }
@@ -2092,7 +2103,7 @@ fn handle_trackpad_stroke(
     trigger: Key,
     stroke: kada_hook::gesture::Stroke,
 ) {
-    let (on, min_len, action_timeout, text_mode, exclude, exclude_apps) = {
+    let (on, min_len, action_timeout, text_mode, exclude, exclude_apps, overlay) = {
         let g = cfg.read().unwrap();
         (
             g.settings.touchpad && touchpad_gesture_enabled(&g),
@@ -2101,6 +2112,7 @@ fn handle_trackpad_stroke(
             g.settings.text_inject_mode,
             g.settings.touchpad_exclude.clone(),
             g.settings.exclude_apps.clone(),
+            g.settings.touchpad_overlay,
         )
     };
     if !on {
@@ -2137,8 +2149,12 @@ fn handle_trackpad_stroke(
     };
     let Some((name, actions)) = hit else {
         // 轨迹 + 失败色 + 方向串留在浮层上（约 900ms 自动收），另弹气泡说明怎么用。
-        // 第一阶段就是靠它录方向串（录入界面还没做，照抄进配置里那条手势的 `pattern`）。
-        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+        // 关掉「显示轨迹浮层」时只剩气泡（方向串照样报出来）。
+        if overlay {
+            show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+        } else {
+            hide_gesture_overlay(&app);
+        }
         show_toast_note(
             &app,
             &format!("触摸板手势未匹配：{pattern}"),
@@ -2147,7 +2163,11 @@ fn handle_trackpad_stroke(
         return;
     };
     if actions.is_empty() {
-        show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
+        if overlay {
+            show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
+        } else {
+            hide_gesture_overlay(&app);
+        }
         show_toast_note(
             &app,
             &format!("触摸板手势 {pattern} 没有动作"),
@@ -2155,7 +2175,11 @@ fn handle_trackpad_stroke(
         );
         return;
     }
-    show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
+    if overlay {
+        show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
+    } else {
+        hide_gesture_overlay(&app);
+    }
     fire(
         app,
         results,
@@ -5658,6 +5682,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
+            touchpad_gestures: false,
             brightness: false,
             ..Default::default()
         }
@@ -5679,6 +5704,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
+            touchpad_gestures: false,
             brightness: false,
         }
     }
@@ -5698,6 +5724,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
+            touchpad_gestures: false,
             brightness: false,
             ..Default::default()
         }
@@ -7000,8 +7027,11 @@ pub fn run() {
                             let anchor = kada_hook::trackpad::anchor();
                             kada_hook::trackpad::finish(*key);
                             // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
-                            if let Some(pt) = anchor {
-                                kada_hook::set_cursor_pos(pt);
+                            // 用户可以关掉（`touchpad_restore_cursor`）：有人松手后还要接着用指针。
+                            if guard.settings.touchpad_restore_cursor {
+                                if let Some(pt) = anchor {
+                                    kada_hook::set_cursor_pos(pt);
+                                }
                             }
                             return input::HookAction::Block;
                         }

@@ -982,5 +982,14 @@
   "这些程序里不执行触摸板手势（触发键已被吞，不会回放右键）；每行一个进程名，支持 * / ? 通配，不区分大小写": "Touchpad gestures do not fire in these apps (the trigger key is already swallowed, so no right-click is replayed); one process name per line, * / ? wildcards, case-insensitive",
   "在快捷键页新增条目选「触摸板手势」→ 选触发键 → 点「录入」；它与鼠标操作各自一份列表、各自一套展示顺序。目前只接了 Windows 采集。": "Shortcut page → “+ Add” → pick the “Touchpad gestures” mode → choose a trigger key → click “Record”. It keeps its own list and its own display order, separate from mouse gestures. Capture is currently Windows-only.",
   "轨迹浮层": "Trail overlay",
-  "鼠标操作与触摸板手势共用同一块浮层，这里的外观两边都生效；两边的开关都关着时不显示这张卡片。": "Mouse gestures and touchpad gestures share one overlay, so these appearance settings apply to both; this card is hidden when both switches are off."
+  "鼠标操作与触摸板手势共用同一块浮层，这里的外观两边都生效；两边的开关都关着时不显示这张卡片。": "Mouse gestures and touchpad gestures share one overlay, so these appearance settings apply to both; this card is hidden when both switches are off.",
+  "仅形状": "Shape only",
+  "方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号；留空 = 只认形状）": "Direction pattern: DR = down-right diagonal, D,R = down then right (comma-separated; empty = shape only)",
+  "请填写方向串，或用「录入」画一笔形状": "Enter a direction pattern, or record one stroke as its shape",
+  "方向串可以留空（只认形状），但要先「录入」一笔留下形状模板": "The pattern can be left empty (shape only), but record one stroke first to keep a shape template",
+  "方向串为空时不能清除形状模板（先填方向串）": "Cannot clear the shape template while the pattern is empty (fill the pattern first)",
+  "松手后光标回到起笔点": "Restore the cursor to the stroke start on release",
+  "画一笔时光标会跟着在屏幕上走；关掉就不还原（松手后还要接着用指针时更方便）": "The cursor follows the stroke across the screen; turn off to leave it where the stroke ended (handier if you keep using the pointer)",
+  "采集时显示轨迹浮层": "Show the trail overlay while capturing",
+  "只影响触摸板这一条来源（右键手势不受它管）；关掉后未匹配仍会弹气泡报方向串": "Affects only the touchpad source (right-button gestures are unaffected); unmatched strokes still report the pattern in a bubble"
 }

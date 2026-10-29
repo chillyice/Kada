@@ -132,6 +132,8 @@ const DEMO_CONFIG = {
     touchpad: false,
     touchpad_start_distance: 22,
     touchpad_exclude: [],
+    touchpad_restore_cursor: true,
+    touchpad_overlay: true,
     hot_corners: {
       enabled: false,
       top_left: { enabled: false, name: "", actions: [] },

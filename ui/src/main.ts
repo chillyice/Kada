@@ -256,6 +256,16 @@ type Settings = {
    */
   touchpad_exclude?: string[];
   /**
+   * 触摸板手势：松键后把光标放回起笔点。缺字段 = 开（后端 serde default 就是 true）——
+   * 画一笔是「借道」屏幕，不还原会打乱用户正在用的指针位置。
+   */
+  touchpad_restore_cursor?: boolean;
+  /**
+   * 触摸板手势：采集时显示轨迹浮层（预览 + 结果）。缺字段 = 开。
+   * 关掉只影响触摸板这条来源（右键手势没有单独开关），识别与气泡照旧。
+   */
+  touchpad_overlay?: boolean;
+  /**
    * 鼠标手势的起手距离（像素）：光标累计移动超过它才算「开始画手势」。
    * 缺字段按后端默认 22。
    */
@@ -1671,9 +1681,12 @@ async function save(): Promise<boolean> {
   );
   cfg.expansions = cfg.expansions.filter((e) => e.trigger.trim().length > 0);
   // 鼠标操作 / 触摸板手势：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
+  // 触摸板手势例外：方向串可以留空（纯形状条目，靠 `template` 兜底），两者都空才剔。
   if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => g.pattern.trim().length > 0);
   if (cfg.touchpad_gestures)
-    cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => g.pattern.trim().length > 0);
+    cfg.touchpad_gestures = cfg.touchpad_gestures.filter(
+      (g) => g.pattern.trim().length > 0 || (g.template?.length ?? 0) > 0,
+    );
   let ignored: string[] = [];
   try {
     ignored = await invoke<string[]>("set_config", { config: cfg });
@@ -2495,7 +2508,9 @@ function touchpadRow(g: TouchpadGesture, idx: number, depth: number): HTMLElemen
   attachDragStart(li, { kind: "touchpad", idx });
   const trig = el("span", "row-trigger");
   if (g.trigger) trig.append(el("span", "row-key-badge", g.trigger));
-  trig.append(el("span", "row-trigger-text", g.pattern || tr("未设方向串")));
+  trig.append(
+    el("span", "row-trigger-text", g.pattern || (g.template ? tr("仅形状") : tr("未设方向串"))),
+  );
   li.append(
     kindIcon("touchpad"),
     trig,
@@ -4972,7 +4987,10 @@ function fillTouchpadEditor() {
     },
     refreshDirty,
   );
-  renderActions(touchpadDraft, touchpadDraft.pattern || tr("未设方向串"));
+  renderActions(
+    touchpadDraft,
+    touchpadDraft.pattern || (touchpadDraft.template ? tr("仅形状") : tr("未设方向串")),
+  );
   setEntryTitle();
 }
 
@@ -5622,8 +5640,8 @@ async function saveGestureDetail(): Promise<boolean> {
   return ok;
 }
 
-// 触摸板手势保存：**触发键与方向串都必填**（后端清洗会把缺触发键 / 空方向串整条丢掉），
-// 形状模板可空（没录过一笔就没有）；动作可空（空 = 只留条目不做事）。
+// 触摸板手势保存：**触发键必填**；方向串与形状模板至少有一个（后端清洗会把两者都空的整条丢掉），
+// 只有模板 = 「纯形状」条目（方向串留空，靠模板兜底匹配）；动作可空（空 = 只留条目不做事）。
 async function saveTouchpadDetail(): Promise<boolean> {
   if (section !== "touchpads" || !touchpadDraft) return false;
   const trigger = domValue("edit-touchpad-trigger");
@@ -5635,11 +5653,11 @@ async function saveTouchpadDetail(): Promise<boolean> {
     return false;
   }
   const pattern = domValue("edit-touchpad-pattern").trim().toUpperCase();
-  if (!pattern) {
+  if (!pattern && !(touchpadDraft.template?.length ?? 0)) {
     const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
-    showFieldError(input, tr("请填写方向串"));
+    showFieldError(input, tr("请填写方向串，或用「录入」画一笔形状"));
     input.focus();
-    toast(tr("请先填写方向串（如 D、DL、DRUL），或用「录入」画出来"));
+    toast(tr("方向串可以留空（只认形状），但要先「录入」一笔留下形状模板"));
     return false;
   }
   touchpadDraft.trigger = trigger;
@@ -8251,6 +8269,11 @@ function syncSettings() {
   (document.getElementById("set-touchpad-exclude") as HTMLTextAreaElement).value = (
     cfg.settings.touchpad_exclude ?? []
   ).join("\n");
+  // 缺字段按「开」显示（后端 serde default 就是 true）。
+  (document.getElementById("set-touchpad-restore-cursor") as HTMLInputElement).checked =
+    cfg.settings.touchpad_restore_cursor !== false;
+  (document.getElementById("set-touchpad-overlay") as HTMLInputElement).checked =
+    cfg.settings.touchpad_overlay !== false;
   (document.getElementById("set-gesture-screenshot") as HTMLInputElement).checked =
     cfg.settings.gesture_screenshot !== false;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
@@ -8670,6 +8693,20 @@ function bindSettings() {
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
+    void save();
+  });
+  // 松手后光标回起笔点：关掉 = 光标留在这一笔走到的位置（有人还要接着用指针）。
+  const touchpadRestore = document.getElementById(
+    "set-touchpad-restore-cursor",
+  ) as HTMLInputElement;
+  touchpadRestore.addEventListener("change", () => {
+    cfg.settings.touchpad_restore_cursor = touchpadRestore.checked;
+    void save();
+  });
+  // 采集时显示轨迹浮层：只影响触摸板这条来源（右键手势没有单独开关）。
+  const touchpadOverlay = document.getElementById("set-touchpad-overlay") as HTMLInputElement;
+  touchpadOverlay.addEventListener("change", () => {
+    cfg.settings.touchpad_overlay = touchpadOverlay.checked;
     void save();
   });
   const gestureScreenshot = document.getElementById(
@@ -9707,6 +9744,11 @@ function bind() {
   });
   document.getElementById("edit-touchpad-drop-template")!.addEventListener("click", () => {
     if (!touchpadDraft?.template) return;
+    // 纯形状条目（方向串留空）只有模板这一个判据，清掉它这条就永远匹配不上了。
+    if (!touchpadDraft.pattern.trim()) {
+      toast(tr("方向串为空时不能清除形状模板（先填方向串）"));
+      return;
+    }
     touchpadDraft.template = null;
     syncTouchpadUi();
     refreshDirty();

@@ -143,22 +143,38 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
     }
 
     // 触摸板手势：同一个触发键 + 同一个方向串 + 同一个 `when` 才算重复（换个触发键是另一条）。
+    // **方向串可以为空**（纯形状条目，靠模板兜底）——那时按触发键 + `when` + 模板比。
     for g in &incoming.touchpad_gestures {
         let pattern = crate::normalize_pattern(&g.pattern);
-        if pattern.is_empty() {
+        if pattern.is_empty() && g.template.is_none() {
             report.skipped.push(format!(
-                "触摸板手势「{}」未导入：方向串无法解析",
+                "触摸板手势「{}」未导入：方向串为空且没有形状模板",
                 g.label()
             ));
             continue;
         }
-        if out.touchpad_gestures.iter().any(|x| {
-            x.trigger == g.trigger
-                && crate::normalize_pattern(&x.pattern) == pattern
-                && x.when_key() == g.when_key()
-        }) {
+        let duplicated = if pattern.is_empty() {
+            out.touchpad_gestures.iter().any(|x| {
+                x.trigger == g.trigger
+                    && crate::normalize_pattern(&x.pattern).is_empty()
+                    && x.when_key() == g.when_key()
+                    && x.template == g.template
+            })
+        } else {
+            out.touchpad_gestures.iter().any(|x| {
+                x.trigger == g.trigger
+                    && crate::normalize_pattern(&x.pattern) == pattern
+                    && x.when_key() == g.when_key()
+            })
+        };
+        if duplicated {
+            let what = if pattern.is_empty() {
+                "形状模板".to_string()
+            } else {
+                format!("方向串「{pattern}」")
+            };
             report.skipped.push(format!(
-                "触摸板手势「{}」未导入：{}方向串「{pattern}」已存在",
+                "触摸板手势「{}」未导入：{}{what}已存在",
                 g.label(),
                 g.trigger
                     .map(|k| format!("触发键「{}」的", crate::key_name(k)))
@@ -395,5 +411,52 @@ mod tests {
         assert_eq!(out.folders.len(), 1);
         // 即便是空配置，设置也保持「本机」（默认）值——不跟着导入文件走。
         assert_eq!(out.settings, Settings::default());
+    }
+
+    /// 纯形状条目（方向串为空、只有模板）也能导入；去重看模板。
+    #[test]
+    fn merge_keeps_shape_only_touchpad_gesture() {
+        let tpl = |shift: i16| -> Vec<[i16; 2]> {
+            (0..crate::gesture::TEMPLATE_POINTS as i16)
+                .map(|i| [((i * 40) % 1000) + shift, (i * 20) % 1000])
+                .collect()
+        };
+        let pad = |shift: i16| crate::TouchpadGesture {
+            trigger: Some(crate::Key::CapsLock),
+            pattern: String::new(),
+            template: Some(tpl(shift)),
+            actions: vec![text("shape")],
+            enabled: true,
+            ..Default::default()
+        };
+        let incoming = Config {
+            touchpad_gestures: vec![pad(0), pad(1), pad(0)],
+            ..Default::default()
+        };
+        let (out, report) = merge_configs(&Config::default(), &incoming);
+        // 两条形状不同 → 都进来；第三条形状完全相同 → 跳过。
+        assert_eq!(out.touchpad_gestures.len(), 2);
+        assert_eq!(report.touchpad_gestures, 2);
+        assert!(report
+            .skipped
+            .iter()
+            .any(|m| m.contains("形状模板") && m.contains("已存在")));
+        // 方向串与模板都空的一条不导入。
+        let empty = Config {
+            touchpad_gestures: vec![crate::TouchpadGesture {
+                trigger: Some(crate::Key::CapsLock),
+                pattern: "  ".into(),
+                template: None,
+                enabled: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let (_, report) = merge_configs(&Config::default(), &empty);
+        assert_eq!(report.touchpad_gestures, 0);
+        assert!(report
+            .skipped
+            .iter()
+            .any(|m| m.contains("方向串为空且没有形状模板")));
     }
 }
