@@ -286,6 +286,16 @@ export function installBrowserMock() {
         case "get_conflicts":
           // 演示冲突见 DEMO_CONFLICTS（与演示配置一致），不再恒返回空。
           return structuredClone(DEMO_CONFLICTS);
+        case "input_devices":
+          // 演示数据：浏览器里没有设备枚举。给「笔记本内置 + 外置罗技」两台，
+          // 「设备是」下拉在选择式下的两种取值（ACPI / VID&PID）都能在纯浏览器里看到。
+          return {
+            supported: true,
+            devices: [
+              { id: "ACPI#MSI0007", label: "ACPI#MSI0007", detail: "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}" },
+              { id: "VID_046D&PID_C52B", label: "VID_046D&PID_C52B", detail: "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}" },
+            ],
+          };
         case "input_env_report":
           // 演示数据（与 DEMO_CONFLICTS 同一个理由）：浏览器里根本没有进程表可查，但设置页
           // 那张卡片的「检测到接管者」渲染路径得能在纯浏览器里验收，所以给一条假的命中项。

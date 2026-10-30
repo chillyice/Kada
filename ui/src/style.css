@@ -1994,6 +1994,12 @@ select.action-type-name:focus-visible {
   white-space: nowrap;
 }
 
+/* 整句说明（不是跟在输入框后面的短标签）：要能换行，否则被面板裁掉半句。 */
+.unit-hint-wrap {
+  white-space: normal;
+  line-height: 1.5;
+}
+
 .help {
   display: inline-flex;
   align-items: center;

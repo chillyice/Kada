@@ -483,6 +483,18 @@ type HidppUnlockView = {
 };
 
 /**
+ * 「设备是」条件可选的键盘（后端 `input_devices`，规划 7.1-㊷ 的收尾）。
+ *
+ * `id` 是**稳定的匹配模式**（Windows 的 `VID_046D&PID_C52B` / `ACPI#MSI0007`、Linux 的
+ * evdev 设备名）——设备路径里的枚举实例号换 USB 口就变，所以后端只给片段；`detail` 是
+ * 完整路径，手写通配时可以直接抄。`supported: false`（macOS）= 本平台取不到设备。
+ */
+type InputDeviceList = {
+  supported: boolean;
+  devices: { id: string; label: string; detail: string }[];
+};
+
+/**
  * 提权窗口注入的现状（后端 `ElevatedStatus`，规划 7.2-㉑a）：
  * `supported` = 本平台有没有这套能力（Windows 专属，其余平台恒 false）；
  * `enabled` = 配置里的开关；`connected` = 提权进程是不是已经在跑并且连上了。
@@ -1553,6 +1565,8 @@ let mouseRecording = false;
 let conflicts: Conflict[] = [];
 /** 本机正在运行的外部工具（后端探测进程名；动作类型里据此出现对应能力）。 */
 let runningTools: ExternalTool[] = [];
+/** 本机键盘列表（「设备是」下拉的缓存，`null` = 还没拉过）。 */
+let inputDeviceList: InputDeviceList | null = null;
 let search = "";
 let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
 let runs: RunRecord[] = []; // 执行记录（最新在前）：一次触发一条
@@ -1658,6 +1672,21 @@ async function refreshRunningTools(): Promise<void> {
   } catch {
     runningTools = [];
   }
+}
+
+/**
+ * 本机键盘列表（「设备是」下拉）。**按需拉、带缓存**：枚举设备要一个个开句柄（Linux 还要
+ * 读 /dev/input），不该每次重绘都来一遍；「重新检测」传 `force` 才真的重扫。
+ * 拉失败当作「没有可选项」（`supported` 仍按平台能力报）——手写标识的路一直开着。
+ */
+async function refreshInputDevices(force = false): Promise<InputDeviceList> {
+  if (!force && inputDeviceList) return inputDeviceList;
+  try {
+    inputDeviceList = await invoke<InputDeviceList>("input_devices");
+  } catch {
+    inputDeviceList = { supported: false, devices: [] };
+  }
+  return inputDeviceList;
 }
 
 async function load() {
@@ -6778,6 +6807,18 @@ function conditionFields(cond: Condition): HTMLElement {
     line.append(el("span", "unit-hint", tr("包含文本")), text);
     body.append(line);
   } else if (cond.kind === "device_is") {
+    // 选择式 + 手写兜底：下拉列出本机键盘（后端枚举，值取稳定片段），选中就填进下面的
+    // 设备标识；想写通配（`VID_046D*`）仍在输入框里改——输入框才是配置的真身。
+    const pickLine = el("div", "action-line");
+    const pick = el("select", "action-input") as HTMLSelectElement;
+    // 先挂上「自定义」占位：列表是异步拉的，别让下拉在这一瞬间是空白的。
+    pick.append(new Option(tr("自定义 / 手动输入"), ""));
+    const recheck = el("button", "ghost", tr("重新检测")) as HTMLButtonElement;
+    recheck.type = "button";
+    const pickHint = el("div", "unit-hint unit-hint-wrap", "");
+    pickLine.append(el("span", "unit-hint", tr("检测到的键盘")), pick, recheck);
+    body.append(pickLine, pickHint);
+
     const line = el("div", "action-line");
     const id = el("input", "action-input") as HTMLInputElement;
     id.type = "text";
@@ -6785,13 +6826,50 @@ function conditionFields(cond: Condition): HTMLElement {
     id.placeholder = tr("设备标识，如 AT Translated Set 2 keyboard 或 VID_046D&PID_C31C（含 * / ? 走通配，否则子串匹配）");
     id.addEventListener("input", () => {
       cond.id = id.value;
+      // 手改过（或改成通配）就不再算「选中的某台」：下拉退回「自定义」。
+      if (pick.selectedIndex > 0 && id.value.trim().toLowerCase() !== pick.value.toLowerCase()) {
+        pick.selectedIndex = 0;
+      }
     });
-    line.append(el("span", "unit-hint", tr("设备名")), id);
+    line.append(el("span", "unit-hint", tr("设备标识")), id);
     body.append(line);
+
+    const fillPicker = (list: InputDeviceList) => {
+      pick.replaceChildren();
+      const custom = new Option(tr("自定义 / 手动输入"), "");
+      pick.append(custom);
+      for (const d of list.devices) {
+        const o = new Option(d.label, d.id);
+        o.title = d.detail;
+        pick.append(o);
+      }
+      // 当前值正好是某个可选设备 → 选中它；否则「自定义」（配置可能是手写的通配 / 别处同步来的）。
+      const hit = list.devices.find((d) => d.id.toLowerCase() === cond.id.trim().toLowerCase());
+      pick.value = hit ? hit.id : "";
+      pick.disabled = list.devices.length === 0;
+      pickHint.textContent = list.devices.length
+        ? tr("选一台键盘会填进下面的设备标识；也可以直接手写（支持 * / ? 通配）。")
+        : list.supported
+          ? tr("没有检测到键盘设备（输入层没起来 / 权限不足时读不到），可直接手写设备标识。")
+          : tr("本平台取不到设备标识（macOS），这个条件恒不成立。");
+    };
+    pick.addEventListener("change", () => {
+      if (!pick.value) return; // 「自定义」只是让用户接着手写，不动输入框
+      cond.id = pick.value;
+      id.value = pick.value;
+    });
+    recheck.addEventListener("click", async () => {
+      recheck.disabled = true;
+      fillPicker(await refreshInputDevices(true));
+      recheck.disabled = false;
+    });
+    // 首次渲染先用缓存 / 拉一次；元素可能已被下一个渲染丢掉，回填只碰自己这几个节点。
+    void refreshInputDevices().then(fillPicker);
+
     body.append(
       el(
         "div",
-        "unit-hint",
+        "unit-hint unit-hint-wrap",
         tr("按触发键来自哪台键盘区分（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
       ),
     );

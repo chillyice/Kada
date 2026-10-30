@@ -1361,6 +1361,31 @@ fn device_name(dev: HANDLE) -> Option<String> {
     Some(name)
 }
 
+/// 本机所有键盘设备的接口路径（给设置页「设备是」下拉用）。
+///
+/// 与 [`current_device`] 同一份口径（Raw Input 里 `RIM_TYPEKEYBOARD` 的那些），但**只读
+/// 枚举、与钩子无关**：`GetRawInputDeviceList` 不要求注册，建窗失败时也照样能列出来。
+/// 设备已拔出 / 句柄失效的条目取不到名字，直接跳过。
+pub fn keyboard_devices() -> Vec<String> {
+    use windows::Win32::UI::Input::{GetRawInputDeviceList, RAWINPUTDEVICELIST};
+
+    let header = size_of::<RAWINPUTDEVICELIST>() as u32;
+    let mut count = 0u32;
+    if unsafe { GetRawInputDeviceList(None, &mut count, header) } == u32::MAX || count == 0 {
+        return Vec::new();
+    }
+    let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
+    let got = unsafe { GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, header) };
+    if got == u32::MAX {
+        return Vec::new();
+    }
+    list.iter()
+        .take(got as usize)
+        .filter(|d| d.dwType == RIM_TYPEKEYBOARD)
+        .filter_map(|d| device_name(d.hDevice))
+        .collect()
+}
+
 /// 由进程 id 取可执行文件名（如 `chrome.exe`）；失败返回 None。
 fn process_name_of(pid: u32) -> Option<String> {
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
@@ -1906,7 +1931,6 @@ mod tests {
     use super::*;
     use kada_core::key_name;
     use std::sync::Arc;
-    use windows::Win32::UI::Input::{GetRawInputDeviceList, RAWINPUTDEVICELIST};
 
     /// 动全局状态的用例必须串行——cargo test 默认多线程并行，两个用例同时改
     /// [`HANDLER`] / [`SWALLOWED`] / [`HELD_KEYS`] / [`REPLACED_DOWN`] 会互相打断
@@ -1964,26 +1988,16 @@ mod tests {
     }
 
     /// `device_name` 的两段式 `GetRawInputDeviceInfoW`（先问长度、再取名字）在真设备上
-    /// 应能取到非空的设备接口路径。环境里没有键盘设备就跳过，不硬失败（免 CI 无 HID 时误红）。
+    /// 应能取到非空的设备接口路径。顺带把 `keyboard_devices`（设置页下拉的数据源）走一遍。
+    /// 环境里没有键盘设备就跳过，不硬失败（免 CI 无 HID 时误红）。
     #[test]
     fn raw_input_device_name_resolvable() {
-        let header = size_of::<RAWINPUTDEVICELIST>() as u32;
-        let mut count = 0u32;
-        unsafe { GetRawInputDeviceList(None, &mut count, header) };
-        if count == 0 {
+        let names = keyboard_devices();
+        if names.is_empty() {
             return;
         }
-        let mut list = vec![RAWINPUTDEVICELIST::default(); count as usize];
-        let got = unsafe { GetRawInputDeviceList(Some(list.as_mut_ptr()), &mut count, header) };
-        if got == u32::MAX {
-            return;
-        }
-        for d in list.iter().take(got as usize) {
-            if d.dwType == RIM_TYPEKEYBOARD {
-                let name = device_name(d.hDevice).expect("键盘设备应能取到设备路径");
-                assert!(!name.is_empty(), "设备路径不该为空");
-                return;
-            }
+        for n in &names {
+            assert!(!n.is_empty(), "设备路径不该为空");
         }
     }
 

@@ -1209,6 +1209,12 @@ pub fn current_device() -> Option<String> {
     None
 }
 
+/// 本机键盘设备：**恒空表**。`current_device` 拿不到设备，列出来也没法用于匹配——
+/// 空表让设置页如实显示「本平台取不到设备」，而不是给一串选了也不生效的选项。
+pub fn keyboard_devices() -> Vec<String> {
+    Vec::new()
+}
+
 /// 本机输入环境探测（规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）。
 ///
 /// macOS 上同样有会 divert 的罗技系代理（Logi Options+ / G HUB 的 macOS 版），按

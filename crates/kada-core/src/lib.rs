@@ -1144,6 +1144,45 @@ impl Condition {
     }
 }
 
+/// 把设备标识压成**稳定的匹配模式**（「设备是」下拉选中后存进配置的值）。
+///
+/// Windows 的设备接口路径形如
+/// `\\?\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-…}`：前半段由硬件决定、
+/// 稳定，后半段是枚举实例号——换个 USB 口、重新配一次接收器槽位就会变。所以只留
+/// `VID_046D&PID_C52B` 当模式，别把一整条会过期的长串存进配置。ACPI 内置键盘
+/// （`\\?\ACPI#MSI0007#4&…`）同理取 `ACPI#MSI0007`；Linux 的 evdev 名字（如
+/// `AT Translated Set 2 keyboard`）本来就是稳定标识，原样返回；其余形态去掉尾部的
+/// `#{接口类 GUID}` 兜底。
+///
+/// 返回值不含通配符，直接就是 [`match_name`] 认的子串模式。
+pub fn device_pattern(device: &str) -> String {
+    let trimmed = device.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    // 设备路径都是 ASCII；出现非 ASCII（多字节）就走兜底，别按字节切片切坏字符。
+    if trimmed.is_ascii() {
+        let lower = trimmed.to_ascii_lowercase();
+        if let (Some(v), Some(p)) = (lower.find("vid_"), lower.find("pid_")) {
+            if p > v {
+                let seg = |i: usize| trimmed[i..].split(['&', '#']).next().unwrap_or("");
+                let (vid, pid) = (seg(v), seg(p));
+                if !vid.is_empty() && !pid.is_empty() {
+                    return format!("{vid}&{pid}");
+                }
+            }
+        }
+        if let Some(a) = lower.find("acpi#") {
+            if let Some(hid) = trimmed[a..].split('#').nth(1) {
+                if !hid.is_empty() {
+                    return format!("ACPI#{hid}");
+                }
+            }
+        }
+    }
+    trimmed.split("#{").next().unwrap_or(trimmed).to_string()
+}
+
 /// 前台进程名匹配：不区分大小写；模式含 `*`/`?` 时按通配匹配，否则按子串匹配。
 ///
 /// **整条路径也认**：用户常从任务管理器 / 快捷方式里把 `C:\...\chrome.exe` 整条粘进
@@ -6132,6 +6171,32 @@ mod os_and_sanitize_tests {
         // 空设备标识 → 校验拒绝
         assert!(Condition::DeviceIs { id: "  ".into() }.validate().is_err());
         assert!(Condition::DeviceIs { id: "keyboard".into() }.validate().is_ok());
+    }
+
+    /// 「设备是」下拉存的值：Windows 设备路径压成稳定片段（实例号换口就变，别存进去）；
+    /// Linux 的 evdev 名字原样留。压出来的片段必须还能命中原路径。
+    #[test]
+    fn device_pattern_keeps_stable_part() {
+        let hid = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        assert_eq!(device_pattern(hid), "VID_046D&PID_C52B");
+        assert!(match_name(&device_pattern(hid), hid), "压出来的片段要能命中原路径");
+
+        let acpi = "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        assert_eq!(device_pattern(acpi), "ACPI#MSI0007");
+        assert!(match_name(&device_pattern(acpi), acpi));
+
+        // Linux evdev 名字：本来就是稳定标识，原样返回（不含 # 与 vid_）。
+        assert_eq!(
+            device_pattern("AT Translated Set 2 keyboard"),
+            "AT Translated Set 2 keyboard"
+        );
+
+        // 其余形态：只去掉接口类 GUID 尾巴。
+        assert_eq!(
+            device_pattern("\\\\?\\SOMEBUS#dev#{00000000-0000-0000-0000-000000000000}"),
+            "\\\\?\\SOMEBUS#dev"
+        );
+        assert_eq!(device_pattern("  "), "");
     }
 
     #[cfg(feature = "automation")]

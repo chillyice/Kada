@@ -74,8 +74,9 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, focus_window, foreground_fullscreen, foreground_window, frontmost_context,
-        hotkey_occupied, process_running, reinstall_count, set_mouse_enabled, set_mouse_recorder,
-        set_wheel_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        hotkey_occupied, keyboard_devices, process_running, reinstall_count, set_mouse_enabled,
+        set_mouse_recorder, set_wheel_enabled, simulate, start, Action as HookAction, HookHandle,
+        KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -104,8 +105,8 @@ mod input {
     // 名单里再 import 一次就是 E0255 重定义——Windows 分支不走这里，本机编译不会报，
     // 只有 Linux/macOS 的 CI（或容器构建）才拦得住（2026-10-04 起这条就是红的，见 变更归档）。
     pub use kada_hook::linux::{
-        current_device, frontmost_context, set_mouse_recorder, simulate, start, Action as HookAction,
-        HookHandle, KeyEvent,
+        current_device, frontmost_context, keyboard_devices, set_mouse_recorder, simulate, start,
+        Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：这套东西是 Windows 专属（UIPI 的补丁），Linux 上
@@ -163,8 +164,8 @@ mod input {
 mod input {
     //! macOS：CGEventTap 全局钩子（kada-hook），需要「辅助功能」权限。
     pub use kada_hook::macos::{
-        current_device, foreground_window, frontmost_context, reinstall_count, set_mouse_recorder,
-        simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        current_device, foreground_window, frontmost_context, keyboard_devices, reinstall_count,
+        set_mouse_recorder, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：macOS 没有 UIPI 这一层（它的问题是「辅助功能」授权与
@@ -234,6 +235,11 @@ mod input {
     /// 无输入层实现：没有设备上下文。
     pub fn current_device() -> Option<String> {
         None
+    }
+
+    /// 无输入层实现：没有可选的键盘设备。
+    pub fn keyboard_devices() -> Vec<String> {
+        Vec::new()
     }
 
     /// 无输入层实现：没有前台窗口，全屏判定恒 false。
@@ -4238,6 +4244,31 @@ mod tests {
         }
     }
 
+    /// 「设备是」下拉（7.1-㊷ 的收尾）：本机键盘 → 选项。值必须是**稳定片段**（实例号换
+    /// USB 口就变，存进去下次就不命中）；同型号两台压出同一个片段时退回完整路径，否则选哪台
+    /// 都命中两台。
+    #[test]
+    fn device_choices_prefers_stable_fragment_and_dedupes() {
+        let hid = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let acpi = "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let list = device_choices(vec![hid.into(), acpi.into()]);
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "ACPI#MSI0007");
+        assert_eq!(list[1].id, "VID_046D&PID_C52B");
+        assert_eq!(list[1].detail, hid, "完整路径留在 detail 里供手写通配时抄");
+        // 存的片段要真能命中原路径（否则选了也不生效）。`Condition` 随 automation 门控。
+        #[cfg(feature = "automation")]
+        assert!(kada_core::Condition::DeviceIs { id: list[1].id.clone() }
+            .matches(&kada_core::Vars::new(), None, Some(hid)));
+
+        // 同型号两台：片段相同 → 都退回完整路径（去掉接口类 GUID），仍互不相同。
+        let twin = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&22cd7391&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let list = device_choices(vec![hid.into(), twin.into()]);
+        assert_eq!(list.len(), 2);
+        assert_ne!(list[0].id, list[1].id);
+        assert!(list.iter().all(|d| !d.id.contains("884b96c3")), "接口类 GUID 不该写进配置");
+    }
+
     /// 卡带市场（7.2-㉕）端到端：真起一个本地 HTTP 服务，把仓库里的 `snippets/` 当托管端，
     /// 走一遍「下载 → 解析索引 → 下载卡带 → 清洗 → 预览」——顺带钉住「仓库里那几份卡带
     /// 文件本身就是合法的 `Config`」（字段名写错的话 serde 会静默忽略，装出来是空壳）。
@@ -5830,6 +5861,66 @@ struct InputEnvHit {
     ignored: bool,
 }
 
+/// 「设备是」条件可选的键盘（设置页下拉）。
+///
+/// 之前只能手写标识：Windows 的标识是一整条 `\\?\HID#VID_…&PID_…&MI_00#7&b3c8a2e&0&0000
+/// #{…}`，抄不出来也记不住。这里把本机键盘列出来，选一台就填进配置——**存的仍是模式**
+/// （[`kada_core::device_pattern`] 压出的稳定片段），手写通配照样可用。
+#[derive(Serialize)]
+struct InputDeviceList {
+    /// 本平台能不能认设备（macOS 恒 false：`CGEventTap` 不带设备信息，见 7.2-㊷）。
+    supported: bool,
+    devices: Vec<InputDevice>,
+}
+
+/// 下拉里的一台键盘。
+#[derive(Serialize)]
+struct InputDevice {
+    /// 存进配置的值（稳定片段：`VID_046D&PID_C52B` / `ACPI#MSI0007` / evdev 名字）。
+    id: String,
+    /// 下拉里显示的文字。
+    label: String,
+    /// 完整设备路径（悬停提示，手写通配时可以直接抄）。
+    detail: String,
+}
+
+/// 本机键盘设备（设置页「设备是」下拉的数据源）。
+#[tauri::command]
+fn input_devices() -> InputDeviceList {
+    InputDeviceList {
+        supported: platform_caps().device_conditions,
+        devices: device_choices(input::keyboard_devices()),
+    }
+}
+
+/// 设备路径 / evdev 名字 → 下拉项。
+///
+/// 值取 [`kada_core::device_pattern`] 压出的稳定片段（实例号换口就变，不能存）。**同型号
+/// 两台**的片段相同，此时退回完整路径——否则选项选哪台都命中两台，等于没得选。
+fn device_choices(raw: Vec<String>) -> Vec<InputDevice> {
+    let mut items: Vec<InputDevice> = raw
+        .into_iter()
+        .map(|d| {
+            let stable = kada_core::device_pattern(&d);
+            let id = if stable.is_empty() { d.clone() } else { stable };
+            InputDevice { id: id.clone(), label: id, detail: d }
+        })
+        .collect();
+    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for it in &items {
+        *counts.entry(it.id.as_str()).or_default() += 1;
+    }
+    let dup: Vec<String> =
+        counts.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.to_string()).collect();
+    for it in items.iter_mut().filter(|it| dup.contains(&it.id)) {
+        let full = it.detail.split("#{").next().unwrap_or(&it.detail).to_string();
+        it.id = full.clone();
+        it.label = full;
+    }
+    items.sort_by(|a, b| a.id.cmp(&b.id));
+    items
+}
+
 #[tauri::command]
 fn input_env_report(config: Config) -> InputEnvReport {
     let supported = input::input_env_supported();
@@ -6822,6 +6913,7 @@ pub fn run() {
             set_config,
             get_conflicts,
             input_env_report,
+            input_devices,
             running_tools,
             hidpp_status,
             hidpp_unlock,

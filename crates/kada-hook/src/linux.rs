@@ -107,6 +107,28 @@ pub fn current_device() -> Option<String> {
     LAST_DEVICE.lock().unwrap().clone()
 }
 
+/// 本机所有键盘设备的 evdev 名字（给设置页「设备是」下拉用），与 [`current_device`]
+/// 同一份口径（就是各自的 `dev.name()`）。
+///
+/// 只读枚举、不抓取：已被本进程 grab 的设备照样能打开并读名字（grab 只挡别人的事件流）。
+/// 读不到 `/dev/input`（没进 input 组 / udev 没放行）时返回空表——界面据此提示「输入层
+/// 没起来」，别编造设备名。名字重复（同型号两台）时按名字去重。
+pub fn keyboard_devices() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_path, dev) in evdev::enumerate() {
+        // 自己的 uinput 虚拟设备不算「用户的键盘」。
+        if !is_keyboard(&dev) || dev.name() == Some(VDEV_NAME) {
+            continue;
+        }
+        if let Some(name) = dev.name() {
+            if !out.iter().any(|x| x == name) {
+                out.push(name.to_string());
+            }
+        }
+    }
+    out
+}
+
 /// 鼠标操作录制回调（仅录制期间设置）：每次鼠标触发（点击 / 滚轮）回调它，附自上次触发
 /// 以来的位移。回调里只做转录（无 IO）。
 type MouseRecorder = Box<dyn FnMut(MouseRecord) + Send>;
