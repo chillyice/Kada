@@ -1529,6 +1529,7 @@ fn fire(
     name: String,
     timeout_ms: u64,
     text_mode: TextInjectMode,
+    device: Option<String>,
     origin: Option<(i32, i32)>,
 ) {
     // 气泡窗口首次懒创建较慢（WebView 冷启动），放后台线程，避免阻塞钩子回调——
@@ -1557,10 +1558,10 @@ fn fire(
             steps: Vec::new(),
         },
     );
-    // 触发设备在**回调线程上**取（同步）：`current_device` 是「最近一次事件的设备」，
-    // 放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。Linux evdev / Windows
-    // Raw Input 有真值，macOS 恒 None（见 7.2-㊷）。
-    let device = input::current_device();
+    // 触发设备由**调用方在回调线程上**取好带下来：`current_device` / `current_pointer_device`
+    // 都是「最近一次事件」，放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。
+    // 键盘类触发带键盘设备、指针类（鼠标键 / 滚轮 / 手势 / 触摸板）带指针设备——混着用会把
+    // 「中键在鼠标 B 上按」判成「键盘 A 按的」（见 7.2-㊷ / 说明书 §3.4）。
     // 触发那一刻的前台窗口（EXT-14「当前窗口」动作的目标）：必须在**调用线程**上抓，
     // 放进下面 spawn 的线程就晚了一拍（动作链还没跑，但前台可能已经变了）。
     // 只在 Windows 抓：macOS / Linux 没实现这个动作族，白付一次前台查询没必要。
@@ -2224,6 +2225,7 @@ fn handle_trackpad_stroke(
         name,
         action_timeout,
         text_mode,
+        device,
         stroke.points.first().copied(),
     );
 }
@@ -2344,6 +2346,7 @@ fn handle_gesture(
             name,
             action_timeout,
             text_mode,
+            device,
             // 手势起点 = 右键按下点（EXT-16「移动到手势起点」）；快捷键路径没有起点。
             stroke.points.first().copied(),
         );
@@ -2529,6 +2532,7 @@ fn handle_hot_corner(
         name,
         action_timeout,
         text_mode,
+        device,
         None,
     );
 }
@@ -2634,6 +2638,7 @@ fn handle_wheel_edge(
         name,
         action_timeout,
         text_mode,
+        device,
         None,
     );
 }
@@ -2793,6 +2798,7 @@ fn fire(
     _name: String,
     _timeout_ms: u64,
     _text_mode: TextInjectMode,
+    _device: Option<String>,
     _origin: Option<(i32, i32)>,
 ) {
     // 无钩子即无触发入口，本分支不会运行（macOS 占位）。
@@ -3490,6 +3496,7 @@ fn clipboard_menu_exec(
         label,
         timeout_ms,
         text_mode,
+        None,
         None,
     );
 }
@@ -6856,6 +6863,7 @@ fn run_entry(
         timeout_ms,
         text_mode,
         None,
+        None,
     );
 }
 
@@ -7275,6 +7283,7 @@ pub fn run() {
                             name,
                             action_timeout,
                             text_mode,
+                            device.clone(),
                             None,
                         );
                     };
@@ -7304,6 +7313,7 @@ pub fn run() {
                                 name,
                                 action_timeout,
                                 text_mode,
+                                device.clone(),
                                 None,
                             );
                             input::HookAction::Block
