@@ -46,13 +46,13 @@
 
 ### 1.4 钩子线程（`crates/kada-hook/`｜说明书 §4.1 / §4.2 / §4.3、架构设计 §3.6）
 
-- **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：唤窗、动作执行、注入一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
+- **回调里绝不做耗时操作、不建窗口、不碰 IO 网络**：这些一律 `std::thread::spawn`；判定用**不持有 `AppHandle` 的纯函数**
 - **注入事件一律放行**（Windows `LLKHF_INJECTED`）防回环；**`Block` / `Replace` 登记 `SWALLOWED`** 连 keyup 一起吞，但**所有 keyup 仍要回调 handler**
-- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）、启用的手势 / 角动作 / 边缘滚动、或录入触摸板手势才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`
+- **鼠标钩子按需安装**（`set_mouse_enabled` + `config_needs_mouse_hook`）：用到鼠标键（含滚轮）、启用的手势 / 角动作 / 边缘滚动、或录入触摸板手势才挂；**手势不算鼠标键**，别混进 `config_uses_mouse`；**设备识别另走 Raw Input，鼠标一路不喂键盘心跳**
 - **滚轮只在绑了触发键时接管**（`config_uses_wheel` → `set_wheel_enabled`）：120 累积一格、换向清零；没绑就原样放行。**边缘滚动只在贴边时旁听、不吞滚轮**（`wheel_edge`）
 - **macOS 辅助功能是运行时授权**（`AXIsProcessTrusted()`），未授权 `start` 报指引 + 弹授权框；**媒体键走独立 `NX_SYSDEFINED` tap**
-- **Linux 不抓触摸板 / 指点杆**（抓了等于废掉整个触摸板）
-- **输入层起不来的处置**：Windows 失败退出；macOS / Linux **照常启动**，把 `start` 的错误串经消息中心推给用户
+- **Linux 不抓触摸板 / 指点杆**（抓了等于废掉触摸板）
+- **输入层起不来**：Windows 退出；macOS / Linux **照常启动**，`start` 错误串推消息中心
 
 ### 1.5 注入（说明书 §4.4 / §4.7｜架构设计 §3.23）
 

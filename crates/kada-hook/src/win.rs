@@ -57,13 +57,14 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::{
     GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT, RAWINPUT,
-    RAWINPUTDEVICE, RAWINPUTHEADER, RIDI_DEVICENAME, RIDEV_INPUTSINK, RID_INPUT, RIM_TYPEKEYBOARD,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RIDI_DEVICEINFO, RIDI_DEVICENAME, RIDEV_INPUTSINK, RID_INPUT,
+    RID_DEVICE_INFO, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use kada_core::{FrontmostContext, Key, Modifier, MouseButton, Shortcut};
 
-use crate::{MouseRecord, MouseRecordKind, WindowAction, WindowOp};
+use crate::{DeviceKind, InputDevice, MouseRecord, MouseRecordKind, WindowAction, WindowOp};
 
 pub mod agent;
 pub mod hidpp;
@@ -1227,8 +1228,12 @@ fn is_desktop_shell_class(class: &str) -> bool {
 /// Raw Input 消息窗口句柄（0 = 没建起来 / 已销毁）。WM_INPUT 发到它、由钩子线程的消息
 /// 循环就地取走（见 [`install_raw_input`] / [`note_raw_input`]）。
 static RAW_WINDOW: AtomicIsize = AtomicIsize::new(0);
-/// 最近一次按键来自哪台设备（Raw Input 设备路径）。仅由 [`note_raw_input`] 写。
+/// 最近一次**键盘**事件来自哪台设备（Raw Input 设备路径）。仅由 [`note_raw_input`] 写。
 static RAW_LAST_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+/// 最近一次**指针**（鼠标 / 触摸板 / 数位板）事件来自哪台设备。与键盘那条分开存：
+/// 「设备是」在鼠标键触发时要看鼠标，在键盘触发时要看键盘，混着用会把两边都判错。
+static RAW_LAST_POINTER_DEVICE: LazyLock<Mutex<Option<String>>> =
+    LazyLock::new(|| Mutex::new(None));
 /// 设备句柄 → 设备路径的缓存（`GetRawInputDeviceInfoW` 每次分配 + 转换太浪费，一次查询
 /// 后记住）。句柄只在设备在场时有效，拔出后残留条目无害（只被句柄引用）。
 static RAW_DEVICE_NAMES: LazyLock<Mutex<HashMap<isize, String>>> =
@@ -1237,8 +1242,8 @@ static RAW_DEVICE_NAMES: LazyLock<Mutex<HashMap<isize, String>>> =
 /// 最近一次按键来自哪台设备（Raw Input 设备接口路径，如
 /// `\\?\HID#VID_046D&PID_C31C&MI_00#...#{...}`）。
 ///
-/// `WH_KEYBOARD_LL` 的结构里没有设备信息，故另建一个消息窗口、注册键盘 Raw Input
-/// （`RIDEV_INPUTSINK`）旁路追踪最近一次按键的设备（见 [`install_raw_input`]）。壳层在触发
+/// `WH_KEYBOARD_LL` 的结构里没有设备信息，故另建一个消息窗口、注册键盘 / 鼠标 Raw Input
+/// （`RIDEV_INPUTSINK`）旁路追踪最近一次事件的设备（见 [`install_raw_input`]）。壳层在触发
 /// 事件的回调线程上同步读本值。返回**设备接口路径**（稳定、含 VID/PID）；「设备是」按
 /// 不区分大小写的子串 / 通配匹配，用户不必抄全名。
 ///
@@ -1249,12 +1254,28 @@ pub fn current_device() -> Option<String> {
     RAW_LAST_DEVICE.lock().unwrap().clone()
 }
 
-/// 建消息窗口并注册键盘 Raw Input（在钩子线程的消息循环起来之前调用一次）。
+/// 最近一次**指针输入**来自哪台设备（鼠标 / 触摸板 / 数位板，Raw Input 设备接口路径）。
+///
+/// `WH_MOUSE_LL` 的 `MSLLHOOKSTRUCT` 同样不带设备信息，故 Raw Input 旁路一并注册了鼠标
+/// （`Generic Desktop / Mouse`）：鼠标键、滚轮、触摸板滑动、数位板笔迹都从这里取设备。
+/// 壳层只在触发键属于指针类（[`Key::is_mouse`]）时读它，手势 / 触摸板手势 / 热角 / 边缘
+/// 滚动由壳层在出口回调里取一次带下去。
+///
+/// 注入事件（无设备句柄）不刷新——与键盘那条同一口径，防回环也防误判。
+pub fn current_pointer_device() -> Option<String> {
+    RAW_LAST_POINTER_DEVICE.lock().unwrap().clone()
+}
+
+/// 建消息窗口并注册键盘 / 鼠标 Raw Input（在钩子线程的消息循环起来之前调用一次）。
 ///
 /// 用系统预定义的 `STATIC` 类（`hInstance` 传 NULL 即可），窗口是消息专用
 /// （父窗口 `HWND_MESSAGE`）、从不显示；`WM_INPUT` 在消息循环里被就地取走、不派发给
 /// wndproc。**尽力而为**：建窗 / 注册失败只留痕，不影响键盘钩子——此时 [`current_device`]
 /// 恒 `None`，设备条件退化回「恒不成立」。
+///
+/// 鼠标那一路不是可选项：指针设备（鼠标 / 触摸板 / 数位板）的标识只有 Raw Input 给得出，
+/// 低层鼠标钩子的结构里没有设备字段。多收一路 `WM_INPUT` 的代价只是每条鼠标报文多一次
+/// `GetRawInputData`（设备名按句柄缓存，见 [`device_name`]）。
 fn install_raw_input() {
     let hwnd = match unsafe {
         CreateWindowExW(
@@ -1278,16 +1299,24 @@ fn install_raw_input() {
             return;
         }
     };
-    let device = RAWINPUTDEVICE {
-        usUsagePage: 0x01, // Generic Desktop
-        usUsage: 0x06,     // Keyboard
-        dwFlags: RIDEV_INPUTSINK,
-        hwndTarget: hwnd,
-    };
-    match unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) } {
+    let devices = [
+        RAWINPUTDEVICE {
+            usUsagePage: 0x01, // Generic Desktop
+            usUsage: 0x06,     // Keyboard
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: hwnd,
+        },
+        RAWINPUTDEVICE {
+            usUsagePage: 0x01, // Generic Desktop
+            usUsage: 0x02,     // Mouse（含触摸板 / 数位板的鼠标口）
+            dwFlags: RIDEV_INPUTSINK,
+            hwndTarget: hwnd,
+        },
+    ];
+    match unsafe { RegisterRawInputDevices(&devices, size_of::<RAWINPUTDEVICE>() as u32) } {
         Ok(()) => RAW_WINDOW.store(hwnd.0 as isize, Ordering::Relaxed),
         Err(e) => {
-            eprintln!("kada-hook: 注册键盘 Raw Input 失败（设备条件将不可用）：{e}");
+            eprintln!("kada-hook: 注册 Raw Input 失败（设备条件将不可用）：{e}");
             unsafe { _ = DestroyWindow(hwnd) };
         }
     }
@@ -1300,9 +1329,14 @@ fn destroy_raw_input() {
         unsafe { _ = DestroyWindow(HWND(hwnd as *mut c_void)) };
     }
     *RAW_LAST_DEVICE.lock().unwrap() = None;
+    *RAW_LAST_POINTER_DEVICE.lock().unwrap() = None;
 }
 
 /// 从一条 `WM_INPUT` 里取出设备并刷新「最近设备」。`lparam` 就是 `HRAWINPUT`。
+///
+/// 键盘与鼠标分开记：键盘那条顺带刷 [`LAST_RAW_KEY_TICK`]（看门狗的第二只眼睛，
+/// **只认物理键盘事件**），鼠标那条只更新指针设备——鼠标移动不能喂键盘心跳，否则钩子
+/// 失效时「用户只是动了鼠标」会把键盘失效判据糊住。
 fn note_raw_input(lparam: LPARAM) {
     let mut raw = RAWINPUT::default();
     let mut size = size_of::<RAWINPUT>() as u32;
@@ -1315,8 +1349,11 @@ fn note_raw_input(lparam: LPARAM) {
             size_of::<RAWINPUTHEADER>() as u32,
         )
     };
-    // 非键盘事件、或读取失败：忽略。
-    if got == u32::MAX || raw.header.dwType != RIM_TYPEKEYBOARD.0 {
+    if got == u32::MAX {
+        return;
+    }
+    let kind = raw.header.dwType;
+    if kind != RIM_TYPEKEYBOARD.0 && kind != RIM_TYPEMOUSE.0 {
         return;
     }
     // 注入事件（SendInput）没有设备句柄：不刷新，免得把「最近设备」指向不存在的设备，
@@ -1325,10 +1362,13 @@ fn note_raw_input(lparam: LPARAM) {
     if dev.0.is_null() {
         return;
     }
-    // 心跳：到了这里就是一次**物理**键盘事件，旁路确实还通着。
-    LAST_RAW_KEY_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
-    if let Some(name) = device_name(dev) {
+    let Some(name) = device_name(dev) else { return };
+    if kind == RIM_TYPEKEYBOARD.0 {
+        // 心跳：到了这里就是一次**物理**键盘事件，旁路确实还通着。
+        LAST_RAW_KEY_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
         *RAW_LAST_DEVICE.lock().unwrap() = Some(name);
+    } else {
+        *RAW_LAST_POINTER_DEVICE.lock().unwrap() = Some(name);
     }
 }
 
@@ -1356,17 +1396,31 @@ fn device_name(dev: HANDLE) -> Option<String> {
     if n == u32::MAX || n == 0 {
         return None;
     }
-    let name = String::from_utf16_lossy(&buf[..n as usize]);
+    // `GetRawInputDeviceInfoW` 报的长度**含结尾 NUL**：不去掉会让每个设备名尾巴上多一个
+    // `\0`（界面 detail 里看得见、手抄进配置也带得进去）。
+    let mut name = String::from_utf16_lossy(&buf[..n as usize]);
+    while name.ends_with('\0') {
+        name.pop();
+    }
     RAW_DEVICE_NAMES.lock().unwrap().insert(key, name.clone());
     Some(name)
 }
 
-/// 本机所有键盘设备的接口路径（给设置页「设备是」下拉用）。
+/// 本机输入设备（键盘 / 鼠标 / 触摸板 / 数位板），给设置页「设备是」下拉用。
 ///
-/// 与 [`current_device`] 同一份口径（Raw Input 里 `RIM_TYPEKEYBOARD` 的那些），但**只读
-/// 枚举、与钩子无关**：`GetRawInputDeviceList` 不要求注册，建窗失败时也照样能列出来。
+/// 与 [`current_device`] / [`current_pointer_device`] 同一份口径（Raw Input 的设备），但
+/// **只读枚举、与钩子无关**：`GetRawInputDeviceList` 不要求注册，建窗失败时也照样能列出来。
 /// 设备已拔出 / 句柄失效的条目取不到名字，直接跳过。
-pub fn keyboard_devices() -> Vec<String> {
+///
+/// 分类靠三类来源：
+/// - `RIM_TYPEKEYBOARD` / `RIM_TYPEMOUSE`：Raw Input 自己就分好了；
+/// - `RIM_TYPEHID`：摸 HID 顶层集合的用途（`RIDI_DEVICEINFO`）——数位板笔 = Digitizer/Pen，
+///   触摸板 = Digitizer/Touch Pad，触屏 = Digitizer/Touch Screen；
+/// - **同一块硬件的鼠标口升级**：数位板 / 触摸板往往同时暴露一个鼠标口（笔和手指的移动
+///   走它），那条在 Raw Input 里只是 `RIM_TYPEMOUSE`。按硬件前缀（去掉 `&ColNN`、实例号、
+///   接口类 GUID）找到它对应的 HID 条目，取更具体的大类——否则用户看到的是一串「鼠标」，
+///   根本认不出哪台是数位板。
+pub fn input_devices() -> Vec<InputDevice> {
     use windows::Win32::UI::Input::{GetRawInputDeviceList, RAWINPUTDEVICELIST};
 
     let header = size_of::<RAWINPUTDEVICELIST>() as u32;
@@ -1379,11 +1433,99 @@ pub fn keyboard_devices() -> Vec<String> {
     if got == u32::MAX {
         return Vec::new();
     }
-    list.iter()
-        .take(got as usize)
-        .filter(|d| d.dwType == RIM_TYPEKEYBOARD)
-        .filter_map(|d| device_name(d.hDevice))
-        .collect()
+    let mut raw: Vec<(String, DeviceKind)> = Vec::new();
+    // 硬件前缀 → 最具体的 HID 大类（只由 HID 条目填）。
+    let mut hw_kinds: HashMap<String, DeviceKind> = HashMap::new();
+    for d in list.iter().take(got as usize) {
+        let Some(name) = device_name(d.hDevice) else { continue };
+        let kind = if d.dwType == RIM_TYPEKEYBOARD {
+            DeviceKind::Keyboard
+        } else if d.dwType == RIM_TYPEMOUSE {
+            DeviceKind::Mouse
+        } else if d.dwType == RIM_TYPEHID {
+            let Some(info) = device_info(d.hDevice) else { continue };
+            let hid = unsafe { info.Anonymous.hid };
+            let kind = hid_kind(hid.usUsagePage, hid.usUsage);
+            if kind != DeviceKind::Other {
+                hw_kinds
+                    .entry(hardware_key(&name))
+                    .and_modify(|k| {
+                        if kind.rank() > k.rank() {
+                            *k = kind;
+                        }
+                    })
+                    .or_insert(kind);
+            }
+            kind
+        } else {
+            continue;
+        };
+        if kind != DeviceKind::Other {
+            raw.push((name, kind));
+        }
+    }
+    // 鼠标口升级：同一块硬件有数位板 / 触摸板用途时，那条鼠标口也按它标。
+    for (name, kind) in raw.iter_mut() {
+        if *kind != DeviceKind::Mouse {
+            continue;
+        }
+        if let Some(better) = hw_kinds.get(&hardware_key(name)) {
+            if matches!(better, DeviceKind::Tablet | DeviceKind::Touchpad) {
+                *kind = *better;
+            }
+        }
+    }
+    // 同一路径可能同时出现在鼠标表与 HID 表里：按路径去重，留更具体的类别。
+    let mut out: Vec<InputDevice> = Vec::new();
+    for (name, kind) in raw {
+        match out.iter_mut().find(|d| d.name == name) {
+            Some(prev) if kind.rank() > prev.kind.rank() => prev.kind = kind,
+            Some(_) => {}
+            None => out.push(InputDevice { name, kind }),
+        }
+    }
+    out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
+    out
+}
+
+/// 设备句柄 → `RID_DEVICE_INFO`（HID 条目据此取用途页 / 用途）。取不到返回 None。
+fn device_info(dev: HANDLE) -> Option<RID_DEVICE_INFO> {
+    let mut info = RID_DEVICE_INFO {
+        cbSize: size_of::<RID_DEVICE_INFO>() as u32,
+        ..Default::default()
+    };
+    let mut len = size_of::<RID_DEVICE_INFO>() as u32;
+    let got = unsafe {
+        GetRawInputDeviceInfoW(
+            Some(dev),
+            RIDI_DEVICEINFO,
+            Some(&mut info as *mut RID_DEVICE_INFO as *mut c_void),
+            &mut len,
+        )
+    };
+    (got != u32::MAX && got != 0).then_some(info)
+}
+
+/// HID 用途（usage page, usage）→ 设备大类。纯函数，单测覆盖。
+///
+/// 只认「桌面外设」这一层：Generic Desktop 的键鼠（含多数外置键盘 / 鼠标）、Digitizer 的
+/// 笔（数位板）、触摸板、触屏。手柄 / 耳机 / 扩展键这些不列——它们不会触发快捷键，混进
+/// 下拉只会让用户挑花眼。
+fn hid_kind(usage_page: u16, usage: u16) -> DeviceKind {
+    match (usage_page, usage) {
+        (0x01, 0x06) => DeviceKind::Keyboard, // Generic Desktop / Keyboard
+        (0x01, 0x02) => DeviceKind::Mouse,    // Generic Desktop / Mouse
+        (0x0D, 0x02) => DeviceKind::Tablet,   // Digitizer / Pen
+        (0x0D, 0x04) | (0x0D, 0x05) => DeviceKind::Touchpad, // Touch Screen / Touch Pad
+        _ => DeviceKind::Other,
+    }
+}
+
+/// 设备接口路径 → 硬件前缀（同一块硬件的多个集合落到同一个前缀，见
+/// [`kada_core::device_hardware_key`]）。数位板 / 触摸板的笔口与鼠标口是同一块硬件的两个
+/// 集合，前缀相同；两条路径各自只差 `&ColNN` 与实例号。
+fn hardware_key(path: &str) -> String {
+    kada_core::device_hardware_key(path)
 }
 
 /// 由进程 id 取可执行文件名（如 `chrome.exe`）；失败返回 None。
@@ -1988,17 +2130,47 @@ mod tests {
     }
 
     /// `device_name` 的两段式 `GetRawInputDeviceInfoW`（先问长度、再取名字）在真设备上
-    /// 应能取到非空的设备接口路径。顺带把 `keyboard_devices`（设置页下拉的数据源）走一遍。
-    /// 环境里没有键盘设备就跳过，不硬失败（免 CI 无 HID 时误红）。
+    /// 应能取到非空的设备接口路径。顺带把 `input_devices`（设置页下拉的数据源）走一遍。
+    /// 环境里没有输入设备就跳过，不硬失败（免 CI 无 HID 时误红）。
     #[test]
     fn raw_input_device_name_resolvable() {
-        let names = keyboard_devices();
-        if names.is_empty() {
+        let devices = input_devices();
+        if devices.is_empty() {
             return;
         }
-        for n in &names {
-            assert!(!n.is_empty(), "设备路径不该为空");
+        for d in &devices {
+            assert!(!d.name.is_empty(), "设备路径不该为空");
+            assert_ne!(d.kind, DeviceKind::Other, "不认识的设备不进下拉");
         }
+        // 有键盘就一定列得出键盘：这是「设备是」在 Windows 上的立身之本。
+        assert!(devices.iter().any(|d| d.kind == DeviceKind::Keyboard));
+    }
+
+    /// HID 用途 → 大类：数位板笔、触摸板、触屏要各归各位；手柄 / 耳机这类不列。
+    #[test]
+    fn hid_usage_maps_to_device_kind() {
+        assert_eq!(hid_kind(0x01, 0x06), DeviceKind::Keyboard);
+        assert_eq!(hid_kind(0x01, 0x02), DeviceKind::Mouse);
+        assert_eq!(hid_kind(0x0D, 0x02), DeviceKind::Tablet);
+        assert_eq!(hid_kind(0x0D, 0x05), DeviceKind::Touchpad);
+        assert_eq!(hid_kind(0x0D, 0x04), DeviceKind::Touchpad);
+        assert_eq!(hid_kind(0x01, 0x05), DeviceKind::Other); // Game Pad
+        assert_eq!(hid_kind(0x0C, 0x01), DeviceKind::Other); // Consumer Control
+    }
+    /// 硬件身份：同一块数位板的笔口（Col01）与鼠标口（Col02）共用实例号 → 同一个身份；
+    /// 接口类 GUID 与 `&ColNN` 不进身份。两台同型号设备实例号不同 → 身份也不同（不能合并）。
+    #[test]
+    fn hardware_key_matches_pen_and_mouse_collections() {
+        let pen = r"\\?\\HID#VID_056A&PID_0374&MI_02&Col01#7&1a2b&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+        let mouse = r"\\?\\HID#VID_056A&PID_0374&MI_02&Col02#7&1a2b&0&0000#{378a4e42-3a1e-4c5c-bd8b-1b1d0f0d9c39}";
+        assert_eq!(hardware_key(pen), hardware_key(mouse));
+        assert!(!hardware_key(pen).contains("Col"));
+        assert!(!hardware_key(pen).contains("#{"));
+        // 同型号的另一台：实例号不同（`8&99aa`）→ 不是同一块硬件。
+        let other = r"\\?\\HID#VID_056A&PID_0374&MI_02&Col01#8&99aa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+        assert_ne!(hardware_key(pen), hardware_key(other));
+        // 没有 Col 的老式路径：原样保留（含实例段）。
+        assert_eq!(hardware_key(r"\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3}"), r"\\?\\ACPI#MSI0007#4&1cc9388&0");
     }
 
     #[test]

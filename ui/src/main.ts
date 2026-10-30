@@ -483,15 +483,16 @@ type HidppUnlockView = {
 };
 
 /**
- * 「设备是」条件可选的键盘（后端 `input_devices`，规划 7.1-㊷ 的收尾）。
+ * 「设备是」条件可选的输入设备（后端 `input_devices`，规划 7.1-㊷ 的收尾 + 余项）。
  *
  * `id` 是**稳定的匹配模式**（Windows 的 `VID_046D&PID_C52B` / `ACPI#MSI0007`、Linux 的
  * evdev 设备名）——设备路径里的枚举实例号换 USB 口就变，所以后端只给片段；`detail` 是
- * 完整路径，手写通配时可以直接抄。`supported: false`（macOS）= 本平台取不到设备。
+ * 完整路径，手写通配时可以直接抄。`kind` 是设备大类（`keyboard` / `mouse` / `touchpad` /
+ * `tablet` / `other`），下拉按它分组。`supported: false`（macOS）= 本平台取不到设备。
  */
 type InputDeviceList = {
   supported: boolean;
-  devices: { id: string; label: string; detail: string }[];
+  devices: { id: string; label: string; detail: string; kind: string }[];
 };
 
 /**
@@ -6807,8 +6808,9 @@ function conditionFields(cond: Condition): HTMLElement {
     line.append(el("span", "unit-hint", tr("包含文本")), text);
     body.append(line);
   } else if (cond.kind === "device_is") {
-    // 选择式 + 手写兜底：下拉列出本机键盘（后端枚举，值取稳定片段），选中就填进下面的
-    // 设备标识；想写通配（`VID_046D*`）仍在输入框里改——输入框才是配置的真身。
+    // 选择式 + 手写兜底：下拉列出本机输入设备（键盘 / 鼠标 / 触摸板 / 数位板，后端枚举、
+    // 值取稳定片段，按大类分组），选中就填进下面的设备标识；想写通配（`VID_046D*`）仍在
+    // 输入框里改——输入框才是配置的真身。
     const pickLine = el("div", "action-line");
     const pick = el("select", "action-input") as HTMLSelectElement;
     // 先挂上「自定义」占位：列表是异步拉的，别让下拉在这一瞬间是空白的。
@@ -6816,7 +6818,7 @@ function conditionFields(cond: Condition): HTMLElement {
     const recheck = el("button", "ghost", tr("重新检测")) as HTMLButtonElement;
     recheck.type = "button";
     const pickHint = el("div", "unit-hint unit-hint-wrap", "");
-    pickLine.append(el("span", "unit-hint", tr("检测到的键盘")), pick, recheck);
+    pickLine.append(el("span", "unit-hint", tr("检测到的设备")), pick, recheck);
     body.append(pickLine, pickHint);
 
     const line = el("div", "action-line");
@@ -6834,23 +6836,43 @@ function conditionFields(cond: Condition): HTMLElement {
     line.append(el("span", "unit-hint", tr("设备标识")), id);
     body.append(line);
 
+    // 设备大类 → 下拉分组名。后端给的是稳定 id（不是文案），翻译留在前端。
+    const kindLabel = (kind: string) =>
+      kind === "keyboard"
+        ? tr("键盘")
+        : kind === "mouse"
+          ? tr("鼠标")
+          : kind === "touchpad"
+            ? tr("触摸板")
+            : kind === "tablet"
+              ? tr("数位板")
+              : tr("其它");
     const fillPicker = (list: InputDeviceList) => {
       pick.replaceChildren();
-      const custom = new Option(tr("自定义 / 手动输入"), "");
-      pick.append(custom);
+      pick.append(new Option(tr("自定义 / 手动输入"), ""));
+      // 按大类分组（`<optgroup>`）：同一台电脑上键盘鼠标触摸板混在一起，不分组长得都一样。
+      // 后端已按「键盘 → 鼠标 → 触摸板 → 数位板」排好，这里遇到新类别才新开一组。
+      let group: HTMLOptGroupElement | null = null;
+      let groupKind = "";
       for (const d of list.devices) {
+        if (d.kind !== groupKind || !group) {
+          groupKind = d.kind;
+          group = document.createElement("optgroup");
+          group.label = kindLabel(d.kind);
+          pick.append(group);
+        }
         const o = new Option(d.label, d.id);
         o.title = d.detail;
-        pick.append(o);
+        group.append(o);
       }
       // 当前值正好是某个可选设备 → 选中它；否则「自定义」（配置可能是手写的通配 / 别处同步来的）。
       const hit = list.devices.find((d) => d.id.toLowerCase() === cond.id.trim().toLowerCase());
       pick.value = hit ? hit.id : "";
       pick.disabled = list.devices.length === 0;
       pickHint.textContent = list.devices.length
-        ? tr("选一台键盘会填进下面的设备标识；也可以直接手写（支持 * / ? 通配）。")
+        ? tr("选一台设备会填进下面的设备标识；也可以直接手写（支持 * / ? 通配）。")
         : list.supported
-          ? tr("没有检测到键盘设备（输入层没起来 / 权限不足时读不到），可直接手写设备标识。")
+          ? tr("没有检测到输入设备（输入层没起来 / 权限不足时读不到），可直接手写设备标识。")
           : tr("本平台取不到设备标识（macOS），这个条件恒不成立。");
     };
     pick.addEventListener("change", () => {
@@ -6870,7 +6892,7 @@ function conditionFields(cond: Condition): HTMLElement {
       el(
         "div",
         "unit-hint unit-hint-wrap",
-        tr("按触发键来自哪台键盘区分（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
+        tr("按触发来自哪台设备区分：键盘按快捷键、鼠标键 / 手势 / 触摸板笔迹看指针设备（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
       ),
     );
   } else {

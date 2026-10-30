@@ -34,7 +34,8 @@ pub mod hotcorner;
 pub mod wheel_edge;
 
 pub use kada_core::{
-    format_shortcut, key_name, matches, Key, Modifier, MouseButton, RawEvent, Shortcut,
+    format_shortcut, key_name, matches, DeviceKind, InputDevice, Key, Modifier, MouseButton,
+    RawEvent, Shortcut,
 };
 
 /// 本机输入环境探测（三平台同一入口，规划 7.2-㊽ / `docs/底层输入能力规划.md` 档位 A）：
@@ -60,6 +61,55 @@ pub fn platform_input_env() -> kada_core::InputEnv {
     #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     {
         kada_core::InputEnv::default()
+    }
+}
+
+/// 本机输入设备（键盘 / 鼠标 / 触摸板 / 数位板）：设置页「设备是」下拉的数据源
+/// （规划 7.1-㊷ 的余项之一，见 `docs/需求设计说明书.md` §3.4 / §5.1）。
+///
+/// **只读枚举，不要求钩子起来、也不抓设备**：Windows 走 `GetRawInputDeviceList`，
+/// Linux 走 evdev 枚举取名字（读不到 `/dev/input` 时返回空表），macOS 恒空表——
+/// `CGEventTap` 的事件不带设备信息，列出来也没法用于匹配（见 7.2-㊷ 余项）。
+pub fn input_devices() -> Vec<kada_core::InputDevice> {
+    #[cfg(windows)]
+    {
+        win::input_devices()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::input_devices()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::input_devices()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        Vec::new()
+    }
+}
+
+/// 最近一次**指针**（鼠标 / 触摸板 / 数位板）输入的设备标识；`None` = 本平台取不到。
+///
+/// 与键盘那条（各平台模块的 `current_device`）分开记：同一个触发配置里，快捷键是键盘按的
+/// 就用键盘设备、是鼠标键 / 手势 / 触摸板笔迹就取这一条——混着用会让「在鼠标上划一笔」
+/// 被判定成「键盘 A 按的」。壳层按触发键类别选（见 `Key::is_mouse`）。
+pub fn current_pointer_device() -> Option<String> {
+    #[cfg(windows)]
+    {
+        win::current_pointer_device()
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::current_pointer_device()
+    }
+    #[cfg(target_os = "macos")]
+    {
+        macos::current_pointer_device()
+    }
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
+    {
+        None
     }
 }
 

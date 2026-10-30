@@ -73,10 +73,10 @@ impl Inject for SimulatedInject {
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
-        current_device, focus_window, foreground_fullscreen, foreground_window, frontmost_context,
-        hotkey_occupied, keyboard_devices, process_running, reinstall_count, set_mouse_enabled,
-        set_mouse_recorder, set_wheel_enabled, simulate, start, Action as HookAction, HookHandle,
-        KeyEvent,
+        current_device, current_pointer_device, focus_window, foreground_fullscreen,
+        foreground_window, frontmost_context, hotkey_occupied, input_devices, process_running,
+        reinstall_count, set_mouse_enabled, set_mouse_recorder, set_wheel_enabled, simulate,
+        start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -105,8 +105,8 @@ mod input {
     // 名单里再 import 一次就是 E0255 重定义——Windows 分支不走这里，本机编译不会报，
     // 只有 Linux/macOS 的 CI（或容器构建）才拦得住（2026-10-04 起这条就是红的，见 变更归档）。
     pub use kada_hook::linux::{
-        current_device, frontmost_context, keyboard_devices, set_mouse_recorder, simulate, start,
-        Action as HookAction, HookHandle, KeyEvent,
+        current_device, current_pointer_device, frontmost_context, input_devices,
+        set_mouse_recorder, simulate, start, Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：这套东西是 Windows 专属（UIPI 的补丁），Linux 上
@@ -164,8 +164,9 @@ mod input {
 mod input {
     //! macOS：CGEventTap 全局钩子（kada-hook），需要「辅助功能」权限。
     pub use kada_hook::macos::{
-        current_device, foreground_window, frontmost_context, keyboard_devices, reinstall_count,
-        set_mouse_recorder, simulate, start, Action as HookAction, HookHandle, KeyEvent,
+        current_device, current_pointer_device, foreground_window, frontmost_context,
+        input_devices, reinstall_count, set_mouse_recorder, simulate, start, Action as HookAction,
+        HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：macOS 没有 UIPI 这一层（它的问题是「辅助功能」授权与
@@ -237,8 +238,13 @@ mod input {
         None
     }
 
-    /// 无输入层实现：没有可选的键盘设备。
-    pub fn keyboard_devices() -> Vec<String> {
+    /// 无输入层实现：没有指针（鼠标 / 触摸板 / 数位板）设备上下文。
+    pub fn current_pointer_device() -> Option<String> {
+        None
+    }
+
+    /// 无输入层实现：没有可选的输入设备。
+    pub fn input_devices() -> Vec<kada_core::InputDevice> {
         Vec::new()
     }
 
@@ -277,6 +283,21 @@ enum Ev {
     Up {
         key: Key,
     },
+}
+
+impl Ev {
+    /// 事件来自哪个键（按下 / 抬起都算）。
+    fn key(&self) -> Key {
+        match self {
+            Ev::Down { key, .. } | Ev::Up { key } => *key,
+        }
+    }
+
+    /// 是不是**指针**（鼠标 / 触摸板 / 数位板）输入：中键 / 侧键 / 滚轮。
+    /// 「设备是」据此在键盘设备与指针设备之间选一条（两条分开记，见 `input` 模块）。
+    fn is_pointer_input(&self) -> bool {
+        self.key().is_mouse()
+    }
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
@@ -2062,7 +2083,10 @@ fn spawn_gesture_listener(
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
-        std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke));
+        // 指针设备在**回调线程**上取（和 `fire` 取前台同一口径）：这一笔是哪台鼠标 / 触摸板 /
+        // 数位板画的，`when` 里的「设备是」要用它。放到新线程里读会晚一拍、可能已被别的设备覆盖。
+        let device = input::current_pointer_device();
+        std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke, device));
     })));
     spawn_gesture_overlay(overlay_app, overlay_cfg);
 }
@@ -2080,6 +2104,9 @@ fn spawn_trackpad_listener(
     kada_hook::trackpad::set_sink(Some(Arc::new(move |key, stroke| {
         let app = app.clone();
         let cfg = cfg.clone();
+        // 这一笔是哪块触摸板 / 数位板画的（手势的 `when` 里「设备是」要用它）：与鼠标手势
+        // 同一口径，在回调线程上取一次带下去。
+        let device = input::current_pointer_device();
         // 设置页的「录一笔」：只把识别结果推回界面，不执行任何动作（录制优先于正式匹配）。
         if trackpad_recording_key().is_some() {
             std::thread::spawn(move || emit_trackpad_record(&app, &cfg, &stroke));
@@ -2089,7 +2116,7 @@ fn spawn_trackpad_listener(
         let unread = unread.clone();
         let runs = runs.clone();
         std::thread::spawn(move || {
-            handle_trackpad_stroke(app, cfg, results, unread, runs, key, stroke)
+            handle_trackpad_stroke(app, cfg, results, unread, runs, key, stroke, device)
         });
     })));
 }
@@ -2108,6 +2135,7 @@ fn handle_trackpad_stroke(
     runs: Arc<Mutex<Vec<RunRecord>>>,
     trigger: Key,
     stroke: kada_hook::gesture::Stroke,
+    device: Option<String>,
 ) {
     let (on, min_len, action_timeout, text_mode, exclude, exclude_apps, overlay) = {
         let g = cfg.read().unwrap();
@@ -2132,7 +2160,7 @@ fn handle_trackpad_stroke(
         return;
     }
     let fetch = || input::frontmost_context();
-    let ctx = TriggerContext::lazy(&fetch, None);
+    let ctx = TriggerContext::lazy(&fetch, device.as_deref());
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
         hide_gesture_overlay(&app);
         return;
@@ -2212,6 +2240,7 @@ fn handle_gesture(
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
     stroke: kada_hook::gesture::Stroke,
+    device: Option<String>,
 ) {
     let (
         on,
@@ -2252,7 +2281,7 @@ fn handle_gesture(
     // 排除程序：全局列表（EXT-04）与手势专用列表命中都整条不接管，右键原样回放。
     // 同一份上下文供后面的 `when` 复用，一次手势最多查一次前台。
     let fetch = || input::frontmost_context();
-    let ctx = TriggerContext::lazy(&fetch, None);
+    let ctx = TriggerContext::lazy(&fetch, device.as_deref());
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
         hide_gesture_overlay(&app);
         replay_stroke(&stroke);
@@ -2398,8 +2427,10 @@ fn spawn_hot_corner_listener(
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
+        // 触发角是光标移进去的：设备 = 最近一次指针设备（`when` 里的「设备是」用它）。
+        let device = input::current_pointer_device();
         std::thread::spawn(move || {
-            handle_hot_corner(app, cfg, engine, results, unread, runs, corner)
+            handle_hot_corner(app, cfg, engine, results, unread, runs, corner, device)
         });
     })));
 }
@@ -2421,6 +2452,7 @@ fn handle_hot_corner(
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
     corner: kada_hook::hotcorner::Corner,
+    device: Option<String>,
 ) {
     let spot = match corner {
         kada_hook::hotcorner::Corner::TopLeft => kada_core::HotCornerSpot::TopLeft,
@@ -2450,7 +2482,7 @@ fn handle_hot_corner(
         return;
     }
     let fetch = || input::frontmost_context();
-    let ctx = TriggerContext::lazy(&fetch, None);
+    let ctx = TriggerContext::lazy(&fetch, device.as_deref());
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
         return;
     }
@@ -2518,8 +2550,10 @@ fn spawn_wheel_edge_listener(
         let results = results.clone();
         let unread = unread.clone();
         let runs = runs.clone();
+        // 边缘滚动是滚轮触发的：设备 = 最近一次指针设备（`when` 里的「设备是」用它）。
+        let device = input::current_pointer_device();
         std::thread::spawn(move || {
-            handle_wheel_edge(app, cfg, engine, results, unread, runs, edge)
+            handle_wheel_edge(app, cfg, engine, results, unread, runs, edge, device)
         });
     })));
 }
@@ -2536,6 +2570,7 @@ fn handle_wheel_edge(
     unread: Arc<AtomicBool>,
     runs: Arc<Mutex<Vec<RunRecord>>>,
     edge: kada_hook::wheel_edge::Edge,
+    device: Option<String>,
 ) {
     let spot = match edge {
         kada_hook::wheel_edge::Edge::Top => kada_core::WheelEdgeSpot::Top,
@@ -2565,7 +2600,7 @@ fn handle_wheel_edge(
         return;
     }
     let fetch = || input::frontmost_context();
-    let ctx = TriggerContext::lazy(&fetch, None);
+    let ctx = TriggerContext::lazy(&fetch, device.as_deref());
     if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
         return;
     }
@@ -4244,29 +4279,72 @@ mod tests {
         }
     }
 
-    /// 「设备是」下拉（7.1-㊷ 的收尾）：本机键盘 → 选项。值必须是**稳定片段**（实例号换
-    /// USB 口就变，存进去下次就不命中）；同型号两台压出同一个片段时退回完整路径，否则选哪台
-    /// 都命中两台。
+    /// 「设备是」下拉（7.1-㊷ 的收尾）：本机输入设备 → 选项，值必须是**稳定片段**（实例号
+    /// 换 USB 口就变，存进去下次就不命中）；同型号两台压出同一个片段时退回完整路径，否则选
+    /// 哪台都命中两台。键盘 / 鼠标 / 触摸板 / 数位板都走这一套（7.1-㊷ 余项）。
     #[test]
     fn device_choices_prefers_stable_fragment_and_dedupes() {
-        let hid = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
-        let acpi = "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
-        let list = device_choices(vec![hid.into(), acpi.into()]);
+        use kada_core::{DeviceKind, InputDevice};
+        let hid = r"\\?\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let acpi = r"\\?\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let mk = |name: &str, kind| InputDevice { name: name.to_string(), kind };
+        let list = device_choices(vec![
+            mk(hid, DeviceKind::Keyboard),
+            mk(acpi, DeviceKind::Keyboard),
+        ]);
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].id, "ACPI#MSI0007");
         assert_eq!(list[1].id, "VID_046D&PID_C52B");
         assert_eq!(list[1].detail, hid, "完整路径留在 detail 里供手写通配时抄");
+        assert_eq!(list[1].kind, "keyboard");
         // 存的片段要真能命中原路径（否则选了也不生效）。`Condition` 随 automation 门控。
         #[cfg(feature = "automation")]
         assert!(kada_core::Condition::DeviceIs { id: list[1].id.clone() }
             .matches(&kada_core::Vars::new(), None, Some(hid)));
 
         // 同型号两台：片段相同 → 都退回完整路径（去掉接口类 GUID），仍互不相同。
-        let twin = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&22cd7391&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
-        let list = device_choices(vec![hid.into(), twin.into()]);
+        let twin = r"\\?\HID#VID_046D&PID_C52B&MI_00#7&22cd7391&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let list = device_choices(vec![
+            mk(hid, DeviceKind::Keyboard),
+            mk(twin, DeviceKind::Keyboard),
+        ]);
         assert_eq!(list.len(), 2);
         assert_ne!(list[0].id, list[1].id);
         assert!(list.iter().all(|d| !d.id.contains("884b96c3")), "接口类 GUID 不该写进配置");
+
+        // 同一块触摸板的两个口（触摸口 + 鼠标口）：片段相同但类别不同——只留更具体的
+        // 「触摸板」，别在下拉里多出一条同名同值的「鼠标」。
+        let pad_touch = r"\\?\HID#VID_04F3&PID_31B9&MI_00&Col01#7&aa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+        let pad_mouse = r"\\?\HID#VID_04F3&PID_31B9&MI_00&Col02#7&aa&0&0000#{378a4e42-3a1e-4c5c-bd8b-1b1d0f0d9c39}";
+        let list = device_choices(vec![
+            mk(pad_touch, DeviceKind::Touchpad),
+            mk(pad_mouse, DeviceKind::Mouse),
+        ]);
+        assert_eq!(list.len(), 1, "同一块硬件的两个口只留一条");
+        assert_eq!(list[0].kind, "touchpad");
+        assert_eq!(list[0].id, "VID_04F3&PID_31B9");
+
+        // 罗技接收器：键盘与鼠标共用同一个 VID/PID，但**不是同一块硬件**（接口号不同）。
+        // 这时不能靠片段相等去合并，否则键盘会从下拉里消失；两台都退回完整路径。
+        let rcvr_kbd = r"\\?\HID#VID_046D&PID_C52B&MI_01&Col01#7&aa&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let rcvr_mouse = r"\\?\HID#VID_046D&PID_C52B&MI_02&Col01#7&aa&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
+        let list = device_choices(vec![
+            mk(rcvr_kbd, DeviceKind::Keyboard),
+            mk(rcvr_mouse, DeviceKind::Mouse),
+        ]);
+        assert_eq!(list.len(), 2, "键盘与鼠标是两台设备，都要在");
+        let kinds: Vec<&str> = list.iter().map(|d| d.kind).collect();
+        assert_eq!(kinds, vec!["keyboard", "mouse"]);
+        assert!(list.iter().all(|d| d.id.contains("MI_0")), "同片段不同硬件 → 退回完整路径");
+
+        // 分组顺序：键盘 → 鼠标 → 数位板。
+        let list = device_choices(vec![
+            mk(r"\\?\HID#VID_056A&PID_0374&MI_02&Col01#7&cc&0&0000#{4d1e55b2}", DeviceKind::Tablet),
+            mk("VID_046D&PID_C52B mouse", DeviceKind::Mouse),
+            mk(acpi, DeviceKind::Keyboard),
+        ]);
+        let kinds: Vec<&str> = list.iter().map(|d| d.kind).collect();
+        assert_eq!(kinds, vec!["keyboard", "mouse", "tablet"]);
     }
 
     /// 卡带市场（7.2-㉕）端到端：真起一个本地 HTTP 服务，把仓库里的 `snippets/` 当托管端，
@@ -5861,64 +5939,112 @@ struct InputEnvHit {
     ignored: bool,
 }
 
-/// 「设备是」条件可选的键盘（设置页下拉）。
+/// 「设备是」条件可选的输入设备（设置页下拉）。
 ///
 /// 之前只能手写标识：Windows 的标识是一整条 `\\?\HID#VID_…&PID_…&MI_00#7&b3c8a2e&0&0000
-/// #{…}`，抄不出来也记不住。这里把本机键盘列出来，选一台就填进配置——**存的仍是模式**
-/// （[`kada_core::device_pattern`] 压出的稳定片段），手写通配照样可用。
+/// #{…}`，抄不出来也记不住。这里把本机输入设备（**键盘 / 鼠标 / 触摸板 / 数位板**）列出来，
+/// 选一台就填进配置——**存的仍是模式**（[`kada_core::device_pattern`] 压出的稳定片段），
+/// 手写通配照样可用。
 #[derive(Serialize)]
 struct InputDeviceList {
     /// 本平台能不能认设备（macOS 恒 false：`CGEventTap` 不带设备信息，见 7.2-㊷）。
     supported: bool,
-    devices: Vec<InputDevice>,
+    devices: Vec<DeviceChoice>,
 }
 
-/// 下拉里的一台键盘。
+/// 下拉里的一台设备。
 #[derive(Serialize)]
-struct InputDevice {
+struct DeviceChoice {
     /// 存进配置的值（稳定片段：`VID_046D&PID_C52B` / `ACPI#MSI0007` / evdev 名字）。
     id: String,
     /// 下拉里显示的文字。
     label: String,
     /// 完整设备路径（悬停提示，手写通配时可以直接抄）。
     detail: String,
+    /// 大类（`keyboard` / `mouse` / `touchpad` / `tablet` / `other`）：界面据此分组。
+    kind: &'static str,
 }
 
-/// 本机键盘设备（设置页「设备是」下拉的数据源）。
+/// 本机输入设备（设置页「设备是」下拉的数据源）。
 #[tauri::command]
 fn input_devices() -> InputDeviceList {
     InputDeviceList {
         supported: platform_caps().device_conditions,
-        devices: device_choices(input::keyboard_devices()),
+        devices: device_choices(input::input_devices()),
     }
 }
 
 /// 设备路径 / evdev 名字 → 下拉项。
 ///
-/// 值取 [`kada_core::device_pattern`] 压出的稳定片段（实例号换口就变，不能存）。**同型号
-/// 两台**的片段相同，此时退回完整路径——否则选项选哪台都命中两台，等于没得选。
-fn device_choices(raw: Vec<String>) -> Vec<InputDevice> {
-    let mut items: Vec<InputDevice> = raw
+/// 值取 [`kada_core::device_pattern`] 压出的稳定片段（实例号换口就变，不能存）。两种「撞值」
+/// 分开处理：
+/// - **同一块硬件的多个口**（触摸板 / 数位板同时暴露「触摸口」与「鼠标口」，片段相同）：
+///   鼠标口并进更具体的那条（[`kada_core::DeviceKind::rank`]）。**只认同一块硬件**
+///   （[`kada_core::device_hardware_key`]）——同一颗罗技接收器下的键盘与鼠标也常共用
+///   VID/PID，靠片段相等就合并会把键盘从下拉里删掉；
+/// - **同型号两台**（真·两台设备）：片段相同、硬件也不同，只能退回完整路径——否则选哪台
+///   都命中两台，等于没得选。
+fn device_choices(raw: Vec<kada_core::InputDevice>) -> Vec<DeviceChoice> {
+    // 中间形态：类别留着数值排序，最后才转成给前端的稳定 id。
+    struct Pending {
+        id: String,
+        detail: String,
+        hardware: String,
+        kind: kada_core::DeviceKind,
+    }
+    let mut items: Vec<Pending> = raw
         .into_iter()
         .map(|d| {
-            let stable = kada_core::device_pattern(&d);
-            let id = if stable.is_empty() { d.clone() } else { stable };
-            InputDevice { id: id.clone(), label: id, detail: d }
+            let stable = kada_core::device_pattern(&d.name);
+            let id = if stable.is_empty() { d.name.clone() } else { stable };
+            let hardware = kada_core::device_hardware_key(&d.name);
+            Pending { id, detail: d.name, hardware, kind: d.kind }
         })
         .collect();
-    let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    // 同一块硬件里，触摸板 / 数位板的鼠标口让位给更具体的那条（否则下拉多一条同名同值的
+    // 「鼠标」，选它反而匹配不到笔迹 / 触摸事件）。
+    let surface: std::collections::HashSet<(String, String)> = items
+        .iter()
+        .filter(|it| matches!(it.kind, kada_core::DeviceKind::Touchpad | kada_core::DeviceKind::Tablet))
+        .map(|it| (it.hardware.clone(), it.id.clone()))
+        .collect();
+    items.retain(|it| {
+        !(it.kind == kada_core::DeviceKind::Mouse
+            && surface.contains(&(it.hardware.clone(), it.id.clone())))
+    });
+    // 同一块硬件上压出同一个值、同一类别的多条（触摸板的 Col01 / Col02 两个集合）只留一条：
+    // 存的模式本来就会同时命中它们，列两条只是让用户挑花眼。
+    let mut seen: std::collections::HashSet<(String, String, &'static str)> =
+        std::collections::HashSet::new();
+    items.retain(|it| seen.insert((it.hardware.clone(), it.id.clone(), it.kind.id())));
+    // 剩下的同值项就是真·同型号两台：退回完整路径。
+    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for it in &items {
-        *counts.entry(it.id.as_str()).or_default() += 1;
+        *counts.entry(it.id.clone()).or_default() += 1;
     }
-    let dup: Vec<String> =
-        counts.iter().filter(|(_, n)| **n > 1).map(|(k, _)| k.to_string()).collect();
-    for it in items.iter_mut().filter(|it| dup.contains(&it.id)) {
-        let full = it.detail.split("#{").next().unwrap_or(&it.detail).to_string();
-        it.id = full.clone();
-        it.label = full;
-    }
-    items.sort_by(|a, b| a.id.cmp(&b.id));
-    items
+    let mut out: Vec<DeviceChoice> = items
+        .into_iter()
+        .map(|it| {
+            let id = if counts.get(&it.id).copied().unwrap_or(0) > 1 {
+                it.detail.split("#{").next().unwrap_or(&it.detail).to_string()
+            } else {
+                it.id
+            };
+            DeviceChoice { label: id.clone(), id, detail: it.detail, kind: it.kind.id() }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        // 分组顺序：键盘 → 鼠标 → 触摸板 → 数位板 → 其它（与界面 optgroup 的出现顺序一致）。
+        let order = |k: &str| match k {
+            "keyboard" => 0,
+            "mouse" => 1,
+            "touchpad" => 2,
+            "tablet" => 3,
+            _ => 4,
+        };
+        order(a.kind).cmp(&order(b.kind)).then_with(|| a.id.cmp(&b.id))
+    });
+    out
 }
 
 #[tauri::command]
@@ -7063,7 +7189,14 @@ pub fn run() {
                     // 命中带 `when` 的条目时才查（macOS 的前台查询走 AX 调用，不该让每次
                     // 按键都买单）；设备在该事件上同步取（Linux evdev / Windows Raw Input
                     // 有真值，macOS 恒 None，见 7.2-㊷）。
-                    let device = input::current_device();
+                    // 触发设备：**指针类触发取指针设备**（鼠标 / 触摸板 / 数位板），其余取键盘
+                    // 设备——两条分开记，混着用会把「中键在鼠标 B 上按」判成「键盘 A 按的」。
+                    // 同一跳延迟的口径不变（`WM_INPUT` 可能晚于钩子回调一条，见 kada-hook）。
+                    let device = if ev.is_pointer_input() {
+                        input::current_pointer_device()
+                    } else {
+                        input::current_device()
+                    };
                     let fetch_frontmost = || input::frontmost_context();
                     let when_ctx = TriggerContext::lazy(&fetch_frontmost, device.as_deref());
                     // 全局排除列表（EXT-04）：命中的程序里所有触发一律不生效——不吞键、

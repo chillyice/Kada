@@ -80,7 +80,7 @@ use core_graphics::event::{
 use core_graphics::event_source::CGEventSourceStateID;
 use core_graphics::geometry::CGPoint;
 
-use kada_core::{FrontmostContext, Key, Modifier, MouseButton};
+use kada_core::{FrontmostContext, InputDevice, Key, Modifier, MouseButton};
 
 use crate::{MouseRecord, MouseRecordKind};
 
@@ -1203,15 +1203,21 @@ pub fn foreground_window() -> Option<isize> {
 }
 
 /// 最近一次事件的设备标识。**macOS 恒 `None`**：`CGEventTap` 事件不带设备信息
-/// （真实区分多键盘要接 IOHIDManager，见规划 7.3-㉓ 的后续）。壳层据此把「设备是」
-/// 条件在本平台标注为不可用。
+/// （真实区分多键盘要接 IOHIDManager，见规划 7.3-㉓ / 7.2-㊷ 的后续）。壳层据此把
+/// 「设备是」条件在本平台标注为不可用。
 pub fn current_device() -> Option<String> {
     None
 }
 
-/// 本机键盘设备：**恒空表**。`current_device` 拿不到设备，列出来也没法用于匹配——
-/// 空表让设置页如实显示「本平台取不到设备」，而不是给一串选了也不生效的选项。
-pub fn keyboard_devices() -> Vec<String> {
+/// 最近一次指针输入的设备标识：**恒 `None`**，理由同 [`current_device`]——`CGEventTap`
+/// 不告诉我们是哪台鼠标 / 触摸板 / 数位板。
+pub fn current_pointer_device() -> Option<String> {
+    None
+}
+
+/// 本机输入设备：**恒空表**。设备上下文拿不到，列出来也没法用于匹配——空表让设置页
+/// 如实显示「本平台取不到设备」，而不是给一串选了也不生效的选项。
+pub fn input_devices() -> Vec<InputDevice> {
     Vec::new()
 }
 

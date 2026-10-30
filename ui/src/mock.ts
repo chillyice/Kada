@@ -287,13 +287,15 @@ export function installBrowserMock() {
           // 演示冲突见 DEMO_CONFLICTS（与演示配置一致），不再恒返回空。
           return structuredClone(DEMO_CONFLICTS);
         case "input_devices":
-          // 演示数据：浏览器里没有设备枚举。给「笔记本内置 + 外置罗技」两台，
-          // 「设备是」下拉在选择式下的两种取值（ACPI / VID&PID）都能在纯浏览器里看到。
+          // 演示数据：浏览器里没有设备枚举。四类各给一台（笔记本内置键盘 / 罗技鼠标 /
+          // 触摸板 / 数位板），「设备是」下拉的分组、可选值、占位文案都能在纯浏览器里看到。
           return {
             supported: true,
             devices: [
-              { id: "ACPI#MSI0007", label: "ACPI#MSI0007", detail: "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}" },
-              { id: "VID_046D&PID_C52B", label: "VID_046D&PID_C52B", detail: "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}" },
+              { id: "ACPI#MSI0007", label: "ACPI#MSI0007", detail: "\\?\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}", kind: "keyboard" },
+              { id: "VID_046D&PID_C52B", label: "VID_046D&PID_C52B", detail: "\\?\HID#VID_046D&PID_C52B&MI_01&Col01#7&b3c8a2e&0&0000#{378a4e42-3a1e-4c5c-bd8b-1b1d0f0d9c39}", kind: "mouse" },
+              { id: "VID_04F3&PID_31B9", label: "VID_04F3&PID_31B9", detail: "\\?\HID#VID_04F3&PID_31B9&MI_00&Col01#7&aa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}", kind: "touchpad" },
+              { id: "VID_056A&PID_0374", label: "VID_056A&PID_0374", detail: "\\?\HID#VID_056A&PID_0374&MI_02&Col01#7&cc&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}", kind: "tablet" },
             ],
           };
         case "input_env_report":

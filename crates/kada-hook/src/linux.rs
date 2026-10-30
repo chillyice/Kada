@@ -42,7 +42,7 @@ use evdev::{
     AbsoluteAxisCode, uinput::VirtualDevice,
 };
 
-use kada_core::{FrontmostContext, Key, Modifier, MouseButton};
+use kada_core::{DeviceKind, FrontmostContext, InputDevice, Key, Modifier, MouseButton};
 
 use crate::{MouseRecord, MouseRecordKind};
 
@@ -82,6 +82,9 @@ type Handler = Box<dyn FnMut(KeyEvent) -> Action + Send>;
 struct Grabbed {
     path: PathBuf,
     dev: Device,
+    /// 是键盘（true）还是指针设备（false）。两条设备标识分开记：
+    /// 鼠标键触发时「设备是」要看鼠标，键盘触发时看键盘，混着用会把两边都判错。
+    keyboard: bool,
 }
 
 static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
@@ -97,9 +100,12 @@ static VDEV: LazyLock<Mutex<Option<VirtualDevice>>> = LazyLock::new(|| Mutex::ne
 static STARTED: AtomicBool = AtomicBool::new(false);
 /// 「设备线断过」累计次数（诊断 / 壳层输入状态复位用）。
 static REINSTALLS: AtomicU64 = AtomicU64::new(0);
-/// 最近一次事件来自哪台设备（[`current_device`]）：poll_loop 每个事件前更新，供壳层在
-/// 触发动作时读出「这次触发是哪台键盘按的」（多键盘按设备区分，见规划 7.3-㉓）。
+/// 最近一次**键盘**事件来自哪台设备（[`current_device`]）：poll_loop 每个键盘事件前更新，
+/// 供壳层在触发动作时读出「这次触发是哪台键盘按的」（多键盘按设备区分，见规划 7.3-㉓）。
 static LAST_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
+/// 最近一次**指针**（鼠标 / 触摸板 / 数位板）输入的设备名：抓到的鼠标键与旁听到的触摸板
+/// 报文都刷这一条，供「设备是」在鼠标类触发上取值（见 [`current_pointer_device`]）。
+static LAST_POINTER_DEVICE: LazyLock<Mutex<Option<String>>> = LazyLock::new(|| Mutex::new(None));
 
 /// 最近一次键盘/鼠标事件的设备标识（evdev 设备名；取不到名字时退回 unique name）。
 /// 无事件时为 `None`。事件的设备名在 poll_loop 里随每个事件更新。
@@ -107,25 +113,35 @@ pub fn current_device() -> Option<String> {
     LAST_DEVICE.lock().unwrap().clone()
 }
 
-/// 本机所有键盘设备的 evdev 名字（给设置页「设备是」下拉用），与 [`current_device`]
-/// 同一份口径（就是各自的 `dev.name()`）。
+/// 最近一次**指针**输入（鼠标键 / 触摸板 / 数位板笔迹）的设备名；`None` = 还没收到过。
+///
+/// 触摸板 / 数位板是**被动旁听**的（不 grab，抓了等于废掉整个触摸板），它们的报文不进
+/// 键模型，但同样是「这一笔是哪块设备上画的」——壳层给手势 / 触摸板手势 / 热角 / 边缘
+/// 滚动做 `when` 门控时读这一条。
+pub fn current_pointer_device() -> Option<String> {
+    LAST_POINTER_DEVICE.lock().unwrap().clone()
+}
+
+/// 本机输入设备（键盘 / 鼠标 / 触摸板 / 数位板）的 evdev 名字（给设置页「设备是」下拉用），
+/// 与 [`current_device`] / [`current_pointer_device`] 同一份口径（就是各自的 `dev.name()`）。
 ///
 /// 只读枚举、不抓取：已被本进程 grab 的设备照样能打开并读名字（grab 只挡别人的事件流）。
 /// 读不到 `/dev/input`（没进 input 组 / udev 没放行）时返回空表——界面据此提示「输入层
-/// 没起来」，别编造设备名。名字重复（同型号两台）时按名字去重。
-pub fn keyboard_devices() -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+/// 没起来」，别编造设备名。名字与类别都相同的（同型号两台）按名字去重。
+pub fn input_devices() -> Vec<InputDevice> {
+    let mut out: Vec<InputDevice> = Vec::new();
     for (_path, dev) in evdev::enumerate() {
-        // 自己的 uinput 虚拟设备不算「用户的键盘」。
-        if !is_keyboard(&dev) || dev.name() == Some(VDEV_NAME) {
+        // 自己的 uinput 虚拟设备不算「用户的设备」。
+        if dev.name() == Some(VDEV_NAME) {
             continue;
         }
-        if let Some(name) = dev.name() {
-            if !out.iter().any(|x| x == name) {
-                out.push(name.to_string());
-            }
+        let Some(kind) = device_kind(&dev) else { continue };
+        let Some(name) = dev.name() else { continue };
+        if !out.iter().any(|d| d.name == name && d.kind == kind) {
+            out.push(InputDevice { name: name.to_string(), kind });
         }
     }
+    out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
     out
 }
 
@@ -180,11 +196,13 @@ fn report_mouse_button(code: u16, value: i32) {
 
 // ---- 触摸板手势采集（Linux 数据源，见 `trackpad` 模块头）----
 
-/// 被动旁听的触摸板 / 触屏：**不 `EVIOCGRAB`**（抓了等于废掉整个触摸板），内核允许
-/// 同一节点被多方读，合成器照常工作。Kada 只旁听它的绝对坐标报文喂手势采集。
+/// 被动旁听的触摸板 / 触屏 / 数位板：**不 `EVIOCGRAB`**（抓了等于废掉整个触摸板），
+/// 内核允许同一节点被多方读，合成器照常工作。Kada 只旁听它的绝对坐标报文喂手势采集。
 struct Pad {
     path: PathBuf,
     dev: Device,
+    /// 设备名（旁听到报文时刷「最近指针设备」，用于「设备是」）。
+    name: Option<String>,
     /// 设备单位 → 近似像素的折算系数：轴分辨率（单位/mm）× 96dpi 假设。拿不到分辨率
     /// 时 1.0（阈值口径略偏，识别本身尺度无关，不受影响）。
     scale: f64,
@@ -430,23 +448,24 @@ where
         if is_keyboard(&dev) {
             saw_keyboard = true;
             match dev.grab() {
-                Ok(()) => devices.push(Grabbed { path, dev }),
+                Ok(()) => devices.push(Grabbed { path, dev, keyboard: true }),
                 Err(e) if e.raw_os_error() == Some(EBUSY) => keyboard_busy = true,
                 Err(e) => eprintln!("kada-hook: 键盘抓取失败，跳过：{e}"),
             }
         } else if is_pointer(&dev) {
             // 鼠标抓不到不致命：中键/侧键改键不可用，键盘照常工作。
             match dev.grab() {
-                Ok(()) => devices.push(Grabbed { path, dev }),
+                Ok(()) => devices.push(Grabbed { path, dev, keyboard: false }),
                 Err(e) => eprintln!("kada-hook: 鼠标抓取失败，跳过：{e}"),
             }
         } else if is_touchpad_node(&dev) {
             let scale = pad_scale(&dev);
+            let name = dev.name().map(str::to_string);
             let mt = dev
                 .supported_absolute_axes()
                 .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X));
             match dev.set_nonblocking(true) {
-                Ok(()) => pads.push(Pad { path, dev, scale, mt }),
+                Ok(()) => pads.push(Pad { path, dev, name, scale, mt }),
                 Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }
         }
@@ -576,6 +595,29 @@ fn is_pointer(dev: &Device) -> bool {
     true
 }
 
+/// 设备大类（设置页「设备是」下拉的分组依据）。`None` = 不是用户外设（手柄 / 传感器 /
+/// 只有电源键的设备等），不列。
+///
+/// 数位板与触摸板的区分靠笔类按键：数位板报 `BTN_TOOL_PEN` / `BTN_STYLUS`，触摸板报
+/// `BTN_TOOL_FINGER`（`is_touchpad_node` 两者都认，所以这里要再分一次）。
+fn device_kind(dev: &Device) -> Option<DeviceKind> {
+    if is_keyboard(dev) {
+        return Some(DeviceKind::Keyboard);
+    }
+    if is_pointer(dev) {
+        return Some(DeviceKind::Mouse);
+    }
+    if is_touchpad_node(dev) {
+        let pen = dev.supported_keys().is_some_and(|k| {
+            k.contains(KeyCode::BTN_TOOL_PEN)
+                || k.contains(KeyCode::BTN_STYLUS)
+                || k.contains(KeyCode::BTN_STYLUS2)
+        });
+        return Some(if pen { DeviceKind::Tablet } else { DeviceKind::Touchpad });
+    }
+    None
+}
+
 fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool) -> io::Result<()> {
     let mut nodes = event_nodes(Path::new("/dev/input"));
     let mut last_scan = Instant::now();
@@ -597,13 +639,20 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                 devices[i].dev.fetch_events().map(|it| it.collect());
             match fetched {
                 Ok(events) => {
-                    // 设备名只取一次（每次轮询每个设备）；KEY 事件前更新 LAST_DEVICE，
-                    // 供壳层判断「这次触发是哪台键盘」（移动 / 滚轮不刷新，它们不触发动作）。
+                    // 设备名只取一次（每次轮询每个设备）；KEY 事件前更新「最近设备」，
+                    // 供壳层判断「这次触发是哪台设备」。键盘与指针分两条记——混着记会让
+                    // 鼠标键触发读到键盘（反之亦然）。纯移动不刷新（它不触发动作）；滚轮
+                    // **要刷新**：`WheelUp` / `WheelDown` 本身就是可绑定的触发键。
                     let dev_name = devices[i].dev.name().map(str::to_string);
+                    let keyboard = devices[i].keyboard;
                     for ev in events {
                         match ev.event_type() {
                             EventType::KEY => {
-                                *LAST_DEVICE.lock().unwrap() = dev_name.clone();
+                                if keyboard {
+                                    *LAST_DEVICE.lock().unwrap() = dev_name.clone();
+                                } else {
+                                    *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
+                                }
                                 // 触摸板采集期间左右键吞掉（防误点，与 Windows 鼠标钩子
                                 // 同口径）；中键 / 侧键照常进键模型。
                                 if crate::trackpad::armed()
@@ -626,6 +675,9 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                                         ACC_Y.fetch_add(ev.value(), Ordering::Relaxed);
                                     }
                                     c if c == RelativeAxisCode::REL_WHEEL.0 => {
+                                        // 滚轮也能绑成触发键：设备标识要与按键同口径刷新，
+                                        // 否则滚轮触发的「设备是」会读到上一次按键的设备。
+                                        *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
                                         // 采集期间滚轮 = 双指 = 放弃这次采集（吞掉不转发）。
                                         if crate::trackpad::armed() {
                                             crate::trackpad::cancel();
@@ -637,6 +689,7 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                                         });
                                     }
                                     c if c == RelativeAxisCode::REL_HWHEEL.0 => {
+                                        *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
                                         if crate::trackpad::armed() {
                                             crate::trackpad::cancel();
                                             continue;
@@ -664,15 +717,19 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                 }
             }
         }
-        // 触摸板 / 触屏的被动旁听：报文喂触摸板手势采集（`touch_feed` 在 SYN 时产出
-        // 一个点；没在采集时 `on_move` / `cancel` 自己会空转）。拔出只摘旁听，不动
-        // 键盘状态（那不影按键，无需 `on_device_lost` 那套复位）。
+        // 触摸板 / 触屏 / 数位板的被动旁听：报文喂触摸板手势采集（`touch_feed` 在 SYN 时
+        // 产出一个点；没在采集时 `on_move` / `cancel` 自己会空转）。同时刷新「最近指针设备」
+        // ——这一笔是哪块板子 / 数位板上画的，「设备是」在触摸板手势上就靠它。拔出只摘旁听，
+        // 不动键盘状态（那不影按键，无需 `on_device_lost` 那套复位）。
         let mut j = 0;
         while j < pads.len() {
             match pads[j].dev.fetch_events().map(|it| it.collect::<Vec<_>>()) {
                 Ok(events) => {
                     let scale = pads[j].scale;
                     let mt = pads[j].mt;
+                    if !events.is_empty() {
+                        *LAST_POINTER_DEVICE.lock().unwrap() = pads[j].name.clone();
+                    }
                     let mut st = TOUCH.lock().unwrap();
                     for ev in events {
                         if let Some(pt) = touch_feed(&mut st, &ev, mt, scale) {
@@ -721,6 +778,7 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
             continue;
         }
         if is_keyboard(&dev) || is_pointer(&dev) {
+            let keyboard = is_keyboard(&dev);
             match dev.grab() {
                 Ok(()) => match dev.set_nonblocking(true) {
                     Ok(()) => {
@@ -729,7 +787,7 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
                             dev.name().unwrap_or("?"),
                             path.display()
                         );
-                        devices.push(Grabbed { path, dev });
+                        devices.push(Grabbed { path, dev, keyboard });
                     }
                     Err(e) => eprintln!("kada-hook: 新设备设置非阻塞失败，跳过：{e}"),
                 },
@@ -738,6 +796,7 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
             }
         } else if is_touchpad_node(&dev) {
             let scale = pad_scale(&dev);
+            let name = dev.name().map(str::to_string);
             let mt = dev
                 .supported_absolute_axes()
                 .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X));
@@ -748,7 +807,7 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
                         dev.name().unwrap_or("?"),
                         path.display()
                     );
-                    pads.push(Pad { path, dev, scale, mt });
+                    pads.push(Pad { path, dev, name, scale, mt });
                 }
                 Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }

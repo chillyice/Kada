@@ -1144,6 +1144,56 @@ impl Condition {
     }
 }
 
+/// 输入设备的大类（设置页「设备是」下拉按它分组）。
+///
+/// 「设备是」原本只认键盘，现在覆盖**指针设备**：鼠标、触摸板、数位板。类别的用处只有两个
+/// ——下拉里分组、以及同一块硬件被枚举成多条时（触摸板的鼠标口 + 触摸口）挑最具体的那条。
+/// 它**不参与匹配**：配置里存的仍是 [`device_pattern`] 压出的字符串，任何类别的设备都用
+/// 同一套子串 / 通配规则命中。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DeviceKind {
+    Keyboard,
+    Mouse,
+    Touchpad,
+    Tablet,
+    Other,
+}
+
+impl DeviceKind {
+    /// 序列化给界面的稳定 id（前端据此分组；不是界面文案）。
+    pub fn id(self) -> &'static str {
+        match self {
+            DeviceKind::Keyboard => "keyboard",
+            DeviceKind::Mouse => "mouse",
+            DeviceKind::Touchpad => "touchpad",
+            DeviceKind::Tablet => "tablet",
+            DeviceKind::Other => "other",
+        }
+    }
+
+    /// 同一块硬件的多条枚举里留哪一条：数位板 > 触摸板 > 鼠标 > 键盘 > 其它。
+    ///
+    /// 数位板会同时暴露「笔」（数位板）与鼠标口，触摸板也有触摸口与鼠标口——取最具体的那
+    /// 个，用户看到的才是「这是块数位板」，而不是一堆同名的鼠标。
+    pub fn rank(self) -> u8 {
+        match self {
+            DeviceKind::Tablet => 4,
+            DeviceKind::Touchpad => 3,
+            DeviceKind::Mouse => 2,
+            DeviceKind::Keyboard => 1,
+            DeviceKind::Other => 0,
+        }
+    }
+}
+
+/// 本机的一台输入设备（设置页「设备是」下拉的数据源）。
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InputDevice {
+    /// 平台给的设备标识（Windows 设备接口路径 / Linux evdev 名字）。
+    pub name: String,
+    pub kind: DeviceKind,
+}
+
 /// 把设备标识压成**稳定的匹配模式**（「设备是」下拉选中后存进配置的值）。
 ///
 /// Windows 的设备接口路径形如
@@ -1180,7 +1230,76 @@ pub fn device_pattern(device: &str) -> String {
             }
         }
     }
-    trimmed.split("#{").next().unwrap_or(trimmed).to_string()
+    // 没有 VID/PID / ACPI 可压（一些 OEM 触摸板只有硬件 ID，如 `\?\HID#CUST0001&Col01#…`）：
+    // 退到**稳定前缀** `\?\HID#CUST0001`——实例号换口 / 重新枚举都会变，`&ColNN` 也只影响
+    // 同一块硬件的集合，都不该进配置。
+    device_stable_prefix(trimmed)
+}
+
+/// 去掉第二段末尾的 `&ColNN`（HID 顶层集合编号，同一块硬件的不同集合各占一个）。
+fn strip_col(segment: &str) -> &str {
+    match segment.rfind("&Col") {
+        Some(i) if segment.len() > i + 4 && segment[i + 4..].bytes().all(|b| b.is_ascii_digit()) => {
+            &segment[..i]
+        }
+        _ => segment,
+    }
+}
+
+/// 设备标识的**稳定前缀**：`\\?\HID#VID_04F3&PID_31B9&MI_00`（`\?\HID#CUST0001` 这类只有
+/// 硬件 ID 的路径也一样）。去掉 `#{接口类 GUID}`、`#实例号` 与 `&ColNN`。
+fn device_stable_prefix(device: &str) -> String {
+    let base = device.split("#{").next().unwrap_or(device);
+    let mut parts = base.split('#');
+    let first = parts.next().unwrap_or("");
+    let second = parts.next().unwrap_or("");
+    let second = strip_col(second);
+    if second.is_empty() {
+        base.to_string()
+    } else {
+        format!("{first}#{second}")
+    }
+}
+
+/// 设备标识 → **硬件身份**：同一块硬件暴露的多个集合（触摸板的触摸口 + 鼠标口、数位板的
+/// 笔口 + 鼠标口）落到同一个身份，别的设备不会。
+///
+/// 与 [`device_stable_prefix`] 不同的是它去掉了「集合」这一层但**保留父设备实例**
+/// （`#5&135c4e80&0&0000` / `#5&135c4e80&0&0001` → `#5&135c4e80`）：实例是这次枚举里
+/// 这台父设备的身份——同一块硬件的多个集合共用，两台同型号设备不共用（`7&b3c8a2e` vs
+/// `7&22cd7391`）。设置页靠它判「这两条枚举是不是同一块硬件」，判错了会出两种事故：把
+/// 接收器下的键盘当成鼠标的另一个口删掉，或把两台同型号设备并成一台。
+///
+/// Linux 的 evdev 名字没有 `#`，原样返回（同名就当同一台——本来也分辨不出来）。
+pub fn device_hardware_key(device: &str) -> String {
+    let base = device.split("#{").next().unwrap_or(device);
+    let mut parts = base.splitn(3, '#');
+    let first = parts.next().unwrap_or("");
+    let second = parts.next().unwrap_or("");
+    let rest = parts.next().unwrap_or("");
+    let second = strip_col(second);
+    let rest = strip_collection_index(rest);
+    if second.is_empty() {
+        base.to_string()
+    } else if rest.is_empty() {
+        format!("{first}#{second}")
+    } else {
+        format!("{first}#{second}#{rest}")
+    }
+}
+
+/// 实例段去掉末尾的 `&0&NNNN`（HID 集合在父设备实例下的序号）：`5&135c4e80&0&0000`
+/// → `5&135c4e80`。父设备实例（`5&135c4e80`）保留——那才是「哪一台设备」。
+fn strip_collection_index(instance: &str) -> &str {
+    let mut it = instance.rsplitn(3, '&');
+    let last = it.next().unwrap_or("");
+    let second = it.next().unwrap_or("");
+    let rest = it.next();
+    if second == "0" && !last.is_empty() && last.bytes().all(|b| b.is_ascii_digit()) {
+        rest.unwrap_or("")
+    } else {
+        instance
+    }
 }
 
 /// 前台进程名匹配：不区分大小写；模式含 `*`/`?` 时按通配匹配，否则按子串匹配。
@@ -6197,6 +6316,42 @@ mod os_and_sanitize_tests {
             "\\\\?\\SOMEBUS#dev"
         );
         assert_eq!(device_pattern("  "), "");
+    }
+
+    /// 设备大类的排序口径：同一块硬件被枚举成多条（数位板 = 笔 + 鼠标口）时留最具体的，
+    /// 界面分组用的 id 则是给前端的稳定串，不是文案。
+    #[test]
+    fn device_kind_rank_prefers_the_specific_one() {
+        assert!(DeviceKind::Tablet.rank() > DeviceKind::Touchpad.rank());
+        assert!(DeviceKind::Touchpad.rank() > DeviceKind::Mouse.rank());
+        assert!(DeviceKind::Mouse.rank() > DeviceKind::Keyboard.rank());
+        assert!(DeviceKind::Keyboard.rank() > DeviceKind::Other.rank());
+        assert_eq!(DeviceKind::Touchpad.id(), "touchpad");
+        // 类别不参与匹配：同一份配置值能同时命中数位板与鼠标口（它们压出的片段相同）。
+        let pen = "\\\\?\\HID#VID_056A&PID_0374&MI_02&Col01#7&1a2b&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+        let mouse = "\\\\?\\HID#VID_056A&PID_0374&MI_02&Col02#7&1a2b&0&0000#{378a4e42-3a1e-4c5c-bd8b-1b1d0f0d9c39}";
+        assert_eq!(device_pattern(pen), device_pattern(mouse));
+        // 但「同一块硬件」必须分得开：数位板的两个集合共享前缀，别的设备（别的接口号）不共享
+        // ——接收器下共用 VID/PID 的键盘与鼠标就靠这一点不被误合并。
+        assert_eq!(device_hardware_key(pen), device_hardware_key(mouse));
+        let rcvr_kbd = "\\\\?\\HID#VID_046D&PID_C52B&MI_01&Col01#7&aa&0&0000#{884b96c3}";
+        let rcvr_mouse = "\\\\?\\HID#VID_046D&PID_C52B&MI_02&Col01#7&aa&0&0000#{884b96c3}";
+        assert_eq!(device_pattern(rcvr_kbd), device_pattern(rcvr_mouse), "同一颗接收器片段相同");
+        assert_ne!(
+            device_hardware_key(rcvr_kbd),
+            device_hardware_key(rcvr_mouse),
+            "接口号不同 = 两台设备，别合并"
+        );
+        // 触摸板的两个集合：父设备实例相同、集合序号不同 → 同一个硬件身份。
+        let pad_mouse = r"\\?\HID#CUST0001&Col01#5&135c4e80&0&0000#{378de44c}";
+        let pad_touch = r"\\?\HID#CUST0001&Col02#5&135c4e80&0&0001#{4d1e55b2}";
+        assert_eq!(device_hardware_key(pad_mouse), device_hardware_key(pad_touch));
+        assert_eq!(device_hardware_key(pad_mouse), r"\\?\HID#CUST0001#5&135c4e80");
+        // 稳定片段把实例号也丢掉（换 USB 口不失效），并且只认到硬件 ID 一段。
+        assert_eq!(device_pattern(pad_mouse), r"\\?\HID#CUST0001");
+        assert_eq!(device_pattern(pad_touch), r"\\?\HID#CUST0001");
+        // evdev 名字没有 # 结构：原样返回（同名就当同一台）。
+        assert_eq!(device_hardware_key("AT Translated Set 2 keyboard"), "AT Translated Set 2 keyboard");
     }
 
     #[cfg(feature = "automation")]
