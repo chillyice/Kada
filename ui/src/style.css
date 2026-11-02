@@ -482,11 +482,10 @@ body.is-mac .titlebar {
   color: #4cc3d9;
 }
 
-/* 停用态：整行压暗，hover 出 title（右键可启用）。 */
-.row.off .row-kind {
-  color: var(--muted);
-}
-
+/* 停用态：整行压暗，hover 出 title（右键可启用）。
+   图标与名称同一口径：走 opacity 而不是改 color——CRT 主题里
+   `[data-theme="crt"] .row-kind.kind-*` 权重更高，改 color 会被它顶回去。 */
+.row.off .row-kind,
 .row.off .row-name,
 .row.off .row-trigger {
   opacity: 0.55;
