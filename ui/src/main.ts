@@ -11368,14 +11368,16 @@ async function bootstrapTrayMenu(preview = false) {
   const PANEL_MARGIN = 10;
 
   // 内容变了就回报尺寸：壳层据此定位并钳进工作区（面板尺寸随条目文案变）。
-  const measure = () =>
-    requestAnimationFrame(() => {
-      const rect = panel.getBoundingClientRect();
-      void invoke("tray_menu_ready", {
-        width: Math.ceil(rect.width) + PANEL_MARGIN * 2,
-        height: Math.ceil(rect.height) + PANEL_MARGIN * 2,
-      }).catch(() => {});
-    });
+  // **同步量、不要 `requestAnimationFrame`**：窗口建出来是 `visible(false)`，隐藏窗口的
+  // rAF 会被 Chromium 冻住 → 尺寸永远回报不了 → `tray_menu_ready` 永不触发 → 菜单永远不显示
+  // （hud / hints 也都是同步量的）。`getBoundingClientRect` 自己就会强制布局，不需要等一帧。
+  const measure = () => {
+    const rect = panel.getBoundingClientRect();
+    void invoke("tray_menu_ready", {
+      width: Math.ceil(rect.width) + PANEL_MARGIN * 2,
+      height: Math.ceil(rect.height) + PANEL_MARGIN * 2,
+    }).catch(() => {});
+  };
 
   const renderItem = (n: TrayMenuItem): HTMLElement => {
     if (n.kind === "separator") return el("div", "tray-menu-sep");
