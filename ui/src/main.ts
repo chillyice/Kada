@@ -10349,9 +10349,14 @@ function stepLabel(step: ActionStep): string {
   return title.startsWith(label) ? title : `${label} · ${title}`;
 }
 
-// 时间线上一个动作块的详情（时间线模式下点块看这里）。
+// 动作块的详情（时间线点块看下方、流水线点块就地展开都用它）。
+// **只列块上没有的信息**：动作名已经写在块标题里（时间线的块标题 / 详情面板标题、
+// 流水线的块头），再列一行一模一样的「动作」纯属重复；条件判断的摘要在标题里已有一份
+// （`stepTitle` 对 if 就是 `condSummary`），只在确实装不下时才补一行；
+// 退出码为空（非命令类动作、或失败时没拿到）不占一行——以前这里恒有一行「退出码 —」。
 function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
   const box = el("div", "msg-step-fields");
+  const title = stepLabel(step);
   // 开始 / 结束 / 状态 挤在同一行（耗时不再单列：两个时刻相减即可看出）。
   const meta = el("div", "msg-step-meta");
   meta.append(
@@ -10361,15 +10366,13 @@ function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
   );
   box.append(meta);
   if (step.kind === "if" && step.detail) {
-    const c = step.detail as Condition;
-    box.append(msgField(tr("条件"), condSummary(c)));
+    const summary = condSummary(step.detail as Condition);
+    if (!title.includes(summary)) box.append(msgField(tr("条件"), summary));
     box.append(msgField(tr("走向"), step.branch ? tr("条件成立（then）") : tr("条件不成立（otherwise）")));
-  } else {
-    box.append(msgField(tr("动作"), stepLabel(step), true));
   }
   if (step.stdout) box.append(msgField("stdout", step.stdout, true));
   if (step.stderr) box.append(msgField("stderr", step.stderr, true));
-  box.append(msgField(tr("退出码"), step.exit_code === null ? "—" : String(step.exit_code)));
+  if (step.exit_code !== null) box.append(msgField(tr("退出码"), String(step.exit_code)));
   return box;
 }
 
