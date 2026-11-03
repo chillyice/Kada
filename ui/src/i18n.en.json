@@ -561,7 +561,7 @@
   "显示输入状态悬浮指示": "Show input status overlay",
   "暂停所有快捷键": "Pause all shortcuts",
   "暂无冲突": "No conflicts",
-  "暂无执行记录：触发一个带动作的快捷键后，这里会出现这一次执行的时间线": "No runs yet: trigger a shortcut with actions and its timeline appears here",
+  "暂无执行记录：触发一个带动作的快捷键后，这里会出现这一次执行的流水线": "No runs yet: trigger a shortcut with actions and its pipeline appears here",
   "更多": "More",
   "更新失败：{0}": "Update failed: {0}",
   "更新源": "Update source",
