@@ -1002,5 +1002,10 @@
   "松手后光标回到起笔点": "Restore the cursor to the stroke start on release",
   "画一笔时光标会跟着在屏幕上走；关掉就不还原（松手后还要接着用指针时更方便）": "The cursor follows the stroke across the screen; turn off to leave it where the stroke ended (handier if you keep using the pointer)",
   "采集时显示轨迹浮层": "Show the trail overlay while capturing",
-  "只影响触摸板这一条来源（右键手势不受它管）；关掉后未匹配仍会弹气泡报方向串": "Affects only the touchpad source (right-button gestures are unaffected); unmatched strokes still report the pattern in a bubble"
+  "只影响触摸板这一条来源（右键手势不受它管）；关掉后未匹配仍会弹气泡报方向串": "Affects only the touchpad source (right-button gestures are unaffected); unmatched strokes still report the pattern in a bubble",
+  "打开咔哒": "Open Kada",
+  "暂停快捷键触发": "Pause hotkey triggers",
+  "快捷键提示": "Shortcut hints",
+  "重载配置": "Reload config",
+  "退出": "Quit"
 }

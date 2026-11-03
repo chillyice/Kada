@@ -4780,7 +4780,8 @@ html[data-theme="crt"]:has(.layout)::after {
    同样只叠在面板里的字上，面板底色几乎不动。 */
 [data-theme="crt"] .toast-bubble::after,
 [data-theme="crt"] .hud-row::after,
-[data-theme="crt"] .hints-panel::after {
+[data-theme="crt"] .hints-panel::after,
+[data-theme="crt"] .tray-menu-panel::after {
   content: "";
   position: absolute;
   inset: 0;
@@ -4818,7 +4819,8 @@ html[data-theme="crt"]:has(.layout)::after {
    所以只给硬影、不加模糊光晕。 */
 [data-theme="crt"] .toast-bubble,
 [data-theme="crt"] .hud-row,
-[data-theme="crt"] .hints-panel {
+[data-theme="crt"] .hints-panel,
+[data-theme="crt"] .tray-menu-panel {
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.66);
 }
 
@@ -5325,7 +5327,8 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 
 [data-theme="crt"][data-crt="light"] .toast-bubble::after,
 [data-theme="crt"][data-crt="light"] .hud-row::after,
-[data-theme="crt"][data-crt="light"] .hints-panel::after {
+[data-theme="crt"][data-crt="light"] .hints-panel::after,
+[data-theme="crt"][data-crt="light"] .tray-menu-panel::after {
   background: repeating-linear-gradient(
     to bottom,
     rgba(115, 115, 115, 0.36) 0 1px,
@@ -5352,7 +5355,8 @@ html[data-theme="crt"][data-crt="light"]:has(.layout)::after {
 
 [data-theme="crt"][data-crt="light"] .toast-bubble,
 [data-theme="crt"][data-crt="light"] .hud-row,
-[data-theme="crt"][data-crt="light"] .hints-panel {
+[data-theme="crt"][data-crt="light"] .hints-panel,
+[data-theme="crt"][data-crt="light"] .tray-menu-panel {
   box-shadow: 4px 4px 0 rgba(0, 0, 0, 0.18);
 }
 
@@ -5599,6 +5603,84 @@ body:has(.clipboard-menu-panel) {
 }
 
 .clipboard-menu-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--line);
+}
+
+/* 托盘菜单浮窗（tray-menu 窗口）：
+   Windows / macOS 的托盘右键不再用系统菜单（Win32 那套灰白配色 + 系统字体，跟四套主题
+   尤其 CRT 像素风完全割裂），改成这个透明窗口里的自绘面板。配色 / 字体 / 圆角一律走
+   主题变量，所以深色 / 浅色 / CRT 两档自动跟着变；交互状态与 `.row-menu`（主界面里的
+   三点菜单）保持同一套观感——那才是「同一个应用的菜单」。 */
+body:has(.tray-menu-panel) {
+  background: transparent;
+}
+
+/* 面板定位的 10px 偏移就是那圈透明边（`bootstrapTrayMenu` 的 PANEL_MARGIN，壳层
+   `TRAY_MENU_MARGIN` 同值）：transparent 窗口会把投影一起裁掉，窗口必须比面板大一圈。 */
+.tray-menu-panel {
+  position: fixed;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 168px;
+  max-width: 320px;
+  padding: 4px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  font-size: var(--fs-md);
+  user-select: none;
+  /* CRT 的扫描线叠在 `::after` 上，得裁在面板圆角内（与 `.hints-panel` 同口径）。 */
+  overflow: hidden;
+}
+
+.tray-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: var(--ctl-h);
+  padding: 0 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tray-menu-item:hover {
+  background: var(--bg);
+  color: var(--accent);
+}
+
+/* 勾选位：勾与不勾都占一格，标题才对得齐（与 `.menu-item.on` 的 ✓ 前缀同一个意思）。 */
+.tray-menu-check {
+  flex: none;
+  width: 1em;
+  color: var(--accent);
+  text-align: center;
+}
+
+.tray-menu-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 不可逆条目（退出）：平时就用强调色，别让人跟「打开 / 重载」看成一类。 */
+.tray-menu-item.danger {
+  color: var(--accent);
+}
+
+.tray-menu-sep {
   height: 1px;
   margin: 4px 6px;
   background: var(--line);

@@ -11306,6 +11306,118 @@ async function bootstrapClipboardMenu(preview = false) {
   }
 }
 
+// ---- 托盘菜单（独立窗口，加载 index.html#tray-menu）----
+// 原生托盘菜单由系统画（Windows 是 Win32 灰白菜单），配色 / 圆角 / 字体跟四套主题完全不搭；
+// 这里自己画一份。壳层每次右键都推一整份载荷（勾选态现读配置），点击回 `id` 由壳层分发。
+// 窗口不可激活、收不到失焦：收回全由壳层的光标巡检线程负责（见 `spawn_tray_menu_watch`）。
+type TrayMenuItem =
+  | {
+      kind: "action";
+      id: string;
+      label: string;
+      checkable: boolean;
+      checked: boolean;
+      danger: boolean;
+    }
+  | { kind: "separator" };
+type TrayMenuPayload = { items: TrayMenuItem[] };
+
+// 壳层给的 `label` 是中文原文（壳层文案还没有 i18n，见说明书 §6.9）；界面侧按 id 再翻一次，
+// 英文界面才跟着变。认不出的 id 原样用壳层文案——新增条目忘补翻译时不至于整条空白。
+function trayMenuLabel(id: string, fallback: string): string {
+  switch (id) {
+    case "show":
+      return tr("打开咔哒");
+    case "pause":
+      return tr("暂停快捷键触发");
+    case "hints":
+      return tr("快捷键提示");
+    case "reload":
+      return tr("重载配置");
+    case "update":
+      return tr("检查更新");
+    case "quit":
+      return tr("退出");
+    default:
+      return fallback;
+  }
+}
+
+async function bootstrapTrayMenu(preview = false) {
+  for (const sel of [
+    ".layout",
+    "#result-modal",
+    "#save-status",
+    "#row-menu",
+    "#unsaved-modal",
+    "#import-modal",
+    "#import-result-modal",
+    "#snippet-modal",
+  ]) {
+    document.querySelector(sel)?.remove();
+  }
+  const panel = el("div", "tray-menu-panel");
+  panel.addEventListener("contextmenu", (e) => e.preventDefault());
+  document.body.append(panel);
+
+  // 面板外留一圈透明边给投影（transparent 窗口会把投影一起裁掉），与壳层
+  // `TRAY_MENU_MARGIN` / CSS 的 `padding` 是同一个口径。
+  const PANEL_MARGIN = 10;
+
+  // 内容变了就回报尺寸：壳层据此定位并钳进工作区（面板尺寸随条目文案变）。
+  const measure = () =>
+    requestAnimationFrame(() => {
+      const rect = panel.getBoundingClientRect();
+      void invoke("tray_menu_ready", {
+        width: Math.ceil(rect.width) + PANEL_MARGIN * 2,
+        height: Math.ceil(rect.height) + PANEL_MARGIN * 2,
+      }).catch(() => {});
+    });
+
+  const renderItem = (n: TrayMenuItem): HTMLElement => {
+    if (n.kind === "separator") return el("div", "tray-menu-sep");
+    const b = el("button", "tray-menu-item" + (n.danger ? " danger" : "")) as HTMLButtonElement;
+    b.type = "button";
+    // 勾选位无论有没有勾都占一格，标题才能上下对齐。
+    if (n.checkable) {
+      b.classList.add("checkable");
+      b.append(el("span", "tray-menu-check", n.checked ? "✓" : ""));
+    }
+    b.append(el("span", "tray-menu-label", trayMenuLabel(n.id, n.label)));
+    b.addEventListener("click", () => {
+      void invoke("tray_menu_exec", { id: n.id }).catch(() => {});
+    });
+    return b;
+  };
+
+  const render = (p: TrayMenuPayload) => {
+    panel.replaceChildren(...p.items.map(renderItem));
+    measure();
+  };
+
+  await listen<TrayMenuPayload>("tray-menu", (e) => render(e.payload));
+  // 首次建窗时 emit 可能早于监听器注册（与 hud / toast 同一个套路）：拉一次兜底。
+  const pending = await invoke<TrayMenuPayload | null>("get_tray_menu_payload").catch(() => null);
+  if (pending) {
+    render(pending);
+  } else if (preview) {
+    // 纯浏览器直开时给一份样例菜单，方便调样式（标签只在壳层缺 id 时才会被用到）。
+    render({
+      items: [
+        { kind: "action", id: "show", label: tr("打开咔哒"), checkable: false, checked: false, danger: false },
+        { kind: "separator" },
+        { kind: "action", id: "pause", label: tr("暂停快捷键触发"), checkable: true, checked: true, danger: false },
+        { kind: "action", id: "hints", label: tr("快捷键提示"), checkable: true, checked: false, danger: false },
+        { kind: "separator" },
+        { kind: "action", id: "reload", label: tr("重载配置"), checkable: false, checked: false, danger: false },
+        { kind: "action", id: "update", label: tr("检查更新"), checkable: false, checked: false, danger: false },
+        { kind: "separator" },
+        { kind: "action", id: "quit", label: tr("退出"), checkable: false, checked: false, danger: true },
+      ],
+    });
+  }
+}
+
 // ---- 自绘标题栏（主窗口）----
 // 壳层把主窗口设成 `decorations(false)`（macOS 走 Overlay，红绿灯由系统画），标题区由这里补。
 // 拖动 / 双击最大化不在这里做：Tauri 内建的 `data-tauri-drag-region` 脚本接管，且会自动跳过
@@ -11471,6 +11583,11 @@ if (location.hash === "#toast") {
   const preview = !("__TAURI_INTERNALS__" in window);
   installBrowserMock();
   void bootstrapClipboardMenu(preview);
+} else if (location.hash === "#tray-menu") {
+  // 同 `#clipboard-menu`：纯浏览器直开时给一份样例菜单，方便调样式。
+  const preview = !("__TAURI_INTERNALS__" in window);
+  installBrowserMock();
+  void bootstrapTrayMenu(preview);
 } else if (location.hash === "#prompt") {
   // 同 `#hud`：纯浏览器直开时给一份样例载荷，方便调样式。
   installBrowserMock();
