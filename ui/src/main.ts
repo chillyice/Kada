@@ -11396,6 +11396,10 @@ async function bootstrapTrayMenu(preview = false) {
   };
 
   const render = (p: TrayMenuPayload) => {
+    // 每次弹出都重读一次主题：这个窗口是懒创建后长期复用的，主界面在设置页切主题只改了
+    // 自己那份 document + localStorage，不会通知到这里；不重读就会一直用**建窗那一刻**的主题
+    // （字体 / 圆角 / 投影全跟着变，面板尺寸也得重量）。
+    applyTheme(loadTheme());
     panel.replaceChildren(...p.items.map(renderItem));
     measure();
   };
@@ -11569,6 +11573,13 @@ document.addEventListener("contextmenu", (e) => {
 
 // 先于一切渲染：主题切在首帧之前，避免深色闪一下再变白。五个窗口共用这段。
 applyTheme(loadTheme());
+
+// 别的窗口切了主题（设置页那个下拉）：主题只记本机 localStorage，同一份存储被另一个
+// 窗口改写时浏览器会给本窗口派 `storage` 事件——就地重刷 `data-theme`，常显浮窗（提示框 /
+// HUD / 托盘菜单）才不用等重启。改的是别的 key 就忽略。
+window.addEventListener("storage", (e) => {
+  if (e.key === null || e.key === THEME_KEY) applyTheme(loadTheme());
+});
 
 if (location.hash === "#toast") {
   void bootstrapToast();
