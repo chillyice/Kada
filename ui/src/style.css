@@ -2053,6 +2053,15 @@ select.action-type-name:focus-visible {
   resize: vertical;
 }
 
+/* 内置脚本文本框：等宽字体 + 高一点的编辑区，缩进才看得清。 */
+.action-code {
+  min-height: 140px;
+  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  line-height: 1.5;
+  tab-size: 4;
+  white-space: pre;
+}
+
 /* 「隐藏内容」开关打开时顶掉文本编辑框的那块 *** 占位：形状照抄编辑框（开关来开关去
    卡片高度不跳），但不渲染真文本——连长度都不露。 */
 .action-masked {

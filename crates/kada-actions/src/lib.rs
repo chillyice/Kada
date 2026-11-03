@@ -28,6 +28,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod abort;
 pub mod prompt;
+/// 内置脚本（7.2-㉟）：Rhai 沙箱执行器。
+#[cfg(feature = "automation")]
+pub mod script;
 
 use kada_core::{
     substitute_vars, Action, ClipboardOperation, FrontmostContext, Key, KeysMode, SendPayload,
@@ -348,6 +351,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::OpenUrl { .. } => "open_url",
         #[cfg(feature = "automation")]
         Action::Script { .. } => "script",
+        #[cfg(feature = "automation")]
+        Action::InlineScript { .. } => "inline_script",
         #[cfg(feature = "automation")]
         Action::Ask { .. } => "ask",
         #[cfg(feature = "automation")]
@@ -878,6 +883,8 @@ fn action_label(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Script { .. } => "脚本失败",
         #[cfg(feature = "automation")]
+        Action::InlineScript { .. } => "内置脚本失败",
+        #[cfg(feature = "automation")]
         Action::OpenUrl { .. } => "打开网址失败",
         #[cfg(feature = "automation")]
         Action::Os { .. } => "文件操作失败",
@@ -933,6 +940,8 @@ fn action_show_output(action: &Action) -> bool {
         | Action::Cmd { show_output, .. }
         | Action::Powershell { show_output, .. }
         | Action::Script { show_output, .. } => *show_output,
+        #[cfg(feature = "automation")]
+        Action::InlineScript { show_output, .. } => *show_output,
         _ => false,
     }
 }
@@ -1020,6 +1029,20 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             Some(i) => format!("运行 {} {}", sub(i), sub(path)),
             None => format!("运行脚本 {}", sub(path)),
         },
+        #[cfg(feature = "automation")]
+        Action::InlineScript { source, var, .. } => {
+            let first = source
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
+            let sink = if var.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" → {}", var.trim())
+            };
+            format!("内置脚本 {}{sink}", preview(first))
+        }
         #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断".into(),
         #[cfg(feature = "automation")]
@@ -1368,6 +1391,7 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::App { description, .. }
         | Action::OpenUrl { description, .. }
         | Action::Script { description, .. }
+        | Action::InlineScript { description, .. }
         | Action::If { description, .. }
         | Action::Parallel { description, .. }
         | Action::Window { description, .. }
@@ -1757,6 +1781,46 @@ fn run_action(
                 ctx,
                 *show_output,
             )));
+        }
+        #[cfg(feature = "automation")]
+        Action::InlineScript {
+            source,
+            var,
+            show_output,
+            ..
+        } => {
+            // 源码里的 `{...}` 不代入变量：脚本自己用 `get_var("名")` 读，
+            // 否则用户文本里的花括号会被当成占位符改掉（脚本是代码，不是模板）。
+            let out = script::run(source, ctx.t.trigger, ctx.t.name, vars, ctx.timeout, ctx.gen)?;
+            if !out.failed {
+                for (k, v) in &out.vars {
+                    vars.insert(k.clone(), Value::Text(TextValue { text: v.clone(), exit_code: None }));
+                }
+                if !var.trim().is_empty() {
+                    vars.insert(
+                        var.trim().to_string(),
+                        Value::Text(TextValue { text: out.value(), exit_code: None }),
+                    );
+                }
+            }
+            let first = source
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
+            return Ok(Some(CommandResult {
+                kind: "inline_script".into(),
+                label: "内置脚本".into(),
+                command: format!("内置脚本 {}", preview(first)),
+                trigger: ctx.t.trigger.into(),
+                name: ctx.t.name.into(),
+                stdout: out.stdout,
+                stderr: out.stderr,
+                exit_code: Some(if out.failed { 1 } else { 0 }),
+                show_output: *show_output,
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: ctx.run_id,
+            }));
         }
     }
     Ok(None)
@@ -3566,6 +3630,59 @@ mod tests {
             results[0].show_output,
             "动作开了「显示输出」，连启动失败也该弹出来"
         );
+    }
+
+    #[test]
+    fn inline_script_writes_vars_for_later_actions() {
+        let _g = abort::test_lock();
+        let actions = vec![
+            Action::InlineScript {
+                source: r#"set_var("x", 42)"#.into(),
+                var: String::new(),
+                show_output: false,
+                description: None,
+            },
+            Action::InlineScript {
+                source: r#"get_var("x") + "!""#.into(),
+                var: String::new(),
+                show_output: false,
+                description: None,
+            },
+        ];
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&actions, &mut vars);
+        assert_eq!(results.len(), 2, "两条脚本各产出一条结果：{results:?}");
+        assert_eq!(results[1].kind, "inline_script");
+        assert_eq!(results[1].stdout, "42!", "上一步写的变量要能被下一步读到");
+        assert_eq!(results[1].exit_code, Some(0));
+    }
+
+    #[test]
+    fn failed_inline_script_marks_step_error_and_continues() {
+        let _g = abort::test_lock();
+        let actions = vec![
+            Action::InlineScript {
+                source: "nope()".into(),
+                var: String::new(),
+                show_output: false,
+                description: None,
+            },
+            Action::InlineScript {
+                source: r#""still here""#.into(),
+                var: String::new(),
+                show_output: false,
+                description: None,
+            },
+        ];
+        let (results, steps, status) = run_all(&actions, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].label, "内置脚本");
+        assert!(results[0].exit_code.is_some_and(|c| c != 0));
+        assert!(results[0].stderr.contains("〔咔哒〕"), "{}", results[0].stderr);
+        assert_eq!(steps[0].kind, "inline_script");
+        assert_eq!(steps[0].status, "error", "失败要落在这一步的记录上");
+        assert_eq!(steps[1].status, "ok", "一步失败不该吞掉后面的动作");
     }
 
     #[test]

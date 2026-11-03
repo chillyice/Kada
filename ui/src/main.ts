@@ -117,6 +117,7 @@ type ActionBase =
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
   | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }
   | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
 /** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
 type DisabledAction = { type: "disabled"; action: Action };
@@ -636,6 +637,16 @@ type RunRecord = {
   steps: ActionStep[];
 };
 
+// 内置脚本的示例：读变量 → 拼接 → 存回变量。保持英文（脚本内容不是界面文案，
+// 走翻译反而会让人复制到一段被翻过的代码）。
+const INLINE_SCRIPT_SAMPLE = `// read a chain variable, build a string, write it back (the return value is the step result)
+let who = get_var("name");
+if who == "" {
+    who = "Kada";
+}
+set_var("greeting", "Hello, " + who);
+"Hello, " + who`;
+
 // ---- 动作类型预设 ----
 // 「设置变量」不是独立类型：它是文本操作的子操作（见 `actionSubtypeSelect`），
 // 数据里仍是 `ask` 形态（后端 `Action::Ask`），老配置与卡带照旧能读。
@@ -643,6 +654,7 @@ const ACTION_TYPES: { value: ActionBase["type"]; label: string }[] = [
   { value: "text", label: tr("文本操作") },
   { value: "command", label: tr("执行命令") },
   { value: "script", label: tr("执行脚本") },
+  { value: "inline_script", label: tr("内置脚本") },
   { value: "app", label: tr("应用操作") },
   { value: "open_url", label: tr("打开网址") },
   { value: "os", label: tr("文件/文件夹") },
@@ -676,6 +688,7 @@ const ACTION_ICONS: Record<ActionBase["type"], string> = {
   ask: "✏️",
   command: "💻",
   script: "📜",
+  inline_script: "🧠",
   keys: "⌨️",
   send_to: "📨",
   mouse: "🖱️",
@@ -734,6 +747,11 @@ function actionVarWrites(a: Action): string[] {
     case "script":
     case "ask":
       return a.var.trim() ? [a.var.trim()] : [];
+    case "inline_script": {
+      // 除了动作自己的「存为变量」，脚本里 set_var("名", …) 写的变量也要算进数据流。
+      const names = [...a.source.matchAll(/set_var\s*\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+      return [...new Set([...(a.var.trim() ? [a.var.trim()] : []), ...names])];
+    }
     case "os":
       return a.operation.op === "get_file_props" && a.operation.var.trim()
         ? [a.operation.var.trim()]
@@ -774,6 +792,13 @@ function actionVarReads(a: Action): string[] {
       break;
     case "script":
       texts.push(a.path, a.interpreter ?? "");
+      break;
+    case "inline_script":
+      // 脚本源码不做 `{变量}` 占位符替换（脚本是代码，花括号是 Rhai 语法）；
+      // 变量经 get_var("名") 读，按这个形状反解出数据流标签。
+      for (const m of a.source.matchAll(/get_var\s*\(\s*["']([^"']+)["']\s*\)/g)) {
+        texts.push(`{${m[1]}}`);
+      }
       break;
     case "ask":
       texts.push(a.prompt, a.default ?? "");
@@ -1083,6 +1108,8 @@ function newAction(type: ActionBase["type"]): ActionBase {
       return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
     case "script":
       return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
+    case "inline_script":
+      return { type: "inline_script", source: "", var: "", show_output: false };
     case "keys":
       return { type: "keys", keys: [], mode: "tap" };
     case "send_to":
@@ -1194,6 +1221,8 @@ function actionHasContent(a: Action): boolean {
       return a.command.trim().length > 0;
     case "script":
       return a.path.trim().length > 0;
+    case "inline_script":
+      return a.source.trim().length > 0;
     case "keys":
       return a.keys.length > 0;
     case "send_to":
@@ -1453,6 +1482,15 @@ function actionSummary(a: Action): string {
       const v = a.var ? ` → ${a.var}` : "";
       const target = a.interpreter ? `${a.interpreter} ${a.path}` : a.path;
       return trt`脚本：${target}${v}`;
+    }
+    case "inline_script": {
+      const v = a.var ? ` → ${a.var}` : "";
+      const first =
+        a.source
+          .split("\n")
+          .map((l) => l.trim())
+          .find(Boolean) ?? "";
+      return trt`内置脚本：${first}${v}`;
     }
     case "keys":
       if (a.mode === "press") return trt`按住：${a.keys.join("+")}`;
@@ -7315,6 +7353,53 @@ function actionFields(
       vname,
       helpIcon(
         tr("脚本执行时通过环境变量注入触发上下文：KADA_TRIGGER（触发组合，如 Ctrl+Alt+K）、KADA_NAME（快捷键名）、KADA_VARS（变量表 JSON）。填写变量名后把标准输出存进该变量（{out} 得输出全文、{out.exit_code} 得退出码）。"),
+      ),
+    );
+    body.append(vline);
+  } else if (a.type === "inline_script") {
+    const ta = el("textarea", "action-textarea action-code") as HTMLTextAreaElement;
+    ta.value = a.source;
+    ta.spellcheck = false;
+    ta.placeholder = tr("Rhai 脚本，例如：\nlet who = get_var(\"name\");\n\"Hello, \" + who");
+    ta.addEventListener("input", () => {
+      a.source = ta.value;
+    });
+    body.append(ta);
+
+    const tools = el("div", "action-line");
+    const sample = el("button", undefined, tr("插入示例"));
+    sample.addEventListener("click", () => {
+      a.source = INLINE_SCRIPT_SAMPLE;
+      rerender();
+    });
+    tools.append(sample, el("span", "unit-hint", tr("沙箱内运行：不读写文件、不联网、不启动进程")));
+    body.append(tools);
+
+    const flags = el("div", "action-checks");
+    const popup = el("label", "action-check") as HTMLLabelElement;
+    const cb = el("input", "toggle") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = !!a.show_output;
+    cb.addEventListener("change", () => {
+      a.show_output = cb.checked;
+    });
+    popup.append(cb, el("span", undefined, tr("弹窗显示结果")));
+    flags.append(popup);
+    body.append(flags);
+
+    const vline = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = tr("变量名（可选），留空则只进消息中心");
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    vline.append(
+      el("span", "unit-hint", tr("存为变量")),
+      vname,
+      helpIcon(
+        tr("脚本的返回值（没有返回值时用 print 的输出）作为本步结果；填写变量名后存进该变量，后续动作用 {变量名} 引用。可用函数：get_var(\"名\") 读变量、has_var(\"名\") 判存在、vars() 取整张变量表、set_var(\"名\", 值) 写变量、trigger() 触发组合、shortcut_name() 快捷键名、print(值) 追加输出。最多执行 20 万条指令，并受动作超时与「停止执行」约束；语法与运行错误会标在脚本行号上。"),
       ),
     );
     body.append(vline);

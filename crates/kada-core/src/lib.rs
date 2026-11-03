@@ -1580,6 +1580,12 @@ fn is_tap_mode(m: &KeysMode) -> bool {
     matches!(m, KeysMode::Tap)
 }
 
+/// 内置脚本的源码上限（UTF-8 字节）：超长多半是误粘贴，执行前直接拒绝。
+pub const INLINE_SCRIPT_MAX_BYTES: usize = 64 * 1024;
+
+/// 内置脚本的操作数上限（Rhai 指令数）：死循环只能跑到这里，不会永久占住执行线程。
+pub const INLINE_SCRIPT_MAX_OPS: u64 = 200_000;
+
 /// 触发后执行的单个动作。一个快捷键可挂多个动作，按顺序执行。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -1693,6 +1699,27 @@ pub enum Action {
         hide_window: bool,
         #[serde(default)]
         var: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 内置脚本（规划 7.2-㉟）：用内嵌的 Rhai 引擎执行一小段脚本，**沙箱内运行**——
+    /// 不落盘、不联网、不启动进程，只能读写动作链变量并产出文本。
+    ///
+    /// 脚本可用函数（见 `kada-actions` 的 `script` 模块）：
+    /// `get_var(名)` / `has_var(名)` / `set_var(名, 值)` / `trigger()` / `shortcut_name()` /
+    /// `print(值)`。脚本的返回值（非空时）与 `print` 的输出进入本步结果；
+    /// 填了 `var` 则把结果存进该变量供后续动作用 `{变量名}` 引用。
+    ///
+    /// 执行有界：最多 [`INLINE_SCRIPT_MAX_OPS`] 次操作、源码不超过 [`INLINE_SCRIPT_MAX_BYTES`]
+    /// 字节，并沿用动作链超时（`settings.action_timeout_ms`）与「停止执行」。
+    #[cfg(feature = "automation")]
+    InlineScript {
+        #[serde(default)]
+        source: String,
+        #[serde(default)]
+        var: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        show_output: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1927,6 +1954,17 @@ impl Action {
             }
             #[cfg(feature = "automation")]
             Action::Script { path, .. } => non_empty("脚本路径", path),
+            #[cfg(feature = "automation")]
+            Action::InlineScript { source, .. } => {
+                non_empty("脚本内容", source)?;
+                if source.len() > INLINE_SCRIPT_MAX_BYTES {
+                    return Err(format!(
+                        "脚本内容超过上限（{} KB）",
+                        INLINE_SCRIPT_MAX_BYTES / 1024
+                    ));
+                }
+                Ok(())
+            }
             #[cfg(feature = "automation")]
             Action::Parallel { actions, .. } => {
                 for a in actions {
@@ -6766,6 +6804,37 @@ mod os_and_sanitize_tests {
         let (clean, ignored) = sanitize_config(&cfg);
         assert_eq!(clean.settings.clipboard_menu.items.len(), 3, "只该留下 3 条合法条目");
         assert_eq!(ignored.len(), 3, "三处坏条目都要有提示：{ignored:?}");
+    }
+
+    #[cfg(feature = "automation")]
+    #[test]
+    fn inline_script_roundtrips_and_validates() {
+        let a = Action::InlineScript {
+            source: r#"set_var("x", 1)"#.into(),
+            var: "out".into(),
+            show_output: false,
+            description: None,
+        };
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(json.contains("\"inline_script\""), "serde 标签要稳定：{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+        assert!(a.validate().is_ok());
+
+        let empty = Action::InlineScript {
+            source: "  ".into(),
+            var: String::new(),
+            show_output: false,
+            description: None,
+        };
+        assert!(empty.validate().unwrap_err().contains("脚本内容"));
+
+        let huge = Action::InlineScript {
+            source: "x".repeat(INLINE_SCRIPT_MAX_BYTES + 1),
+            var: String::new(),
+            show_output: false,
+            description: None,
+        };
+        assert!(huge.validate().unwrap_err().contains("上限"));
     }
 }
 

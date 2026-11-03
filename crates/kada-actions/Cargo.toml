@@ -12,6 +12,9 @@ chrono = "0.4"
 # 算法动作（EXT-18）：两者都已在依赖树里（Tauri / reqwest 传递依赖），纯 Rust，不拉新 crate。
 base64 = "0.22"
 sha2 = "0.10"
+# 内置脚本（7.2-㉟）：纯 Rust 的 Rhai 沙箱，不引入 C 编译器 / 动态库，
+# 三平台交叉检查（含 aarch64-apple-darwin）照旧只做 cargo check 即可。
+rhai = { version = "1.27.0", optional = true, features = ["no_module"] }
 
 # 只有 `kill_tree` 的 unix 分支用得到（`kill(-pgid)` 杀整棵进程树）：
 # 按 `cfg(unix)` 声明，免得 Windows 白编一个用不上的绑定。
@@ -29,4 +32,4 @@ windows = { version = "0.61", features = [
 [features]
 # 与 kada-core 的 `automation` 对齐：命令 / 文件 / 应用 / 条件 / 脚本 等执行逻辑。
 default = ["automation"]
-automation = ["kada-core/automation"]
+automation = ["kada-core/automation", "dep:rhai"]

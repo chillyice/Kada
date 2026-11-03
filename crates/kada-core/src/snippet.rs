@@ -244,6 +244,9 @@ fn action_risk(kind: &str) -> Option<(u8, &'static str)> {
         "command" | "cmd" | "powershell" | "script" => {
             Some((3, "执行命令 / 脚本（可运行任意代码）"))
         }
+        // 内置脚本跑在沙箱里（不落盘、不联网、不起进程），只改变量 / 产出文本，
+        // 与「执行脚本文件」不是一回事，别按 3 级吓人。
+        "inline_script" => Some((1, "内置脚本（沙箱内计算，可改变量 / 输出）")),
         "launch" | "open_folder" | "close_program" | "os" | "system" | "app" | "open_url"
         | "window" | "capture" | "tool" | "brightness" => {
             Some((2, "启动程序 / 打开文件或网址 / 改系统状态"))
@@ -652,6 +655,15 @@ mod tests {
         let scan = scan_snippet(&command).unwrap();
         assert_eq!(scan.level, 3);
         assert!(scan.findings.iter().any(|f| f.contains("命令")));
+
+        // 内置脚本跑在沙箱里：不是「任意代码」，按 1 级提示即可。
+        let inline = serde_json::json!({
+            "shortcuts": [{ "triggers": ["F1"], "actions": [{ "type": "inline_script", "source": "1 + 1" }] }]
+        })
+        .to_string();
+        let scan = scan_snippet(&inline).unwrap();
+        assert_eq!(scan.level, 1);
+        assert!(scan.findings.iter().any(|f| f.contains("沙箱")));
     }
 
     #[test]

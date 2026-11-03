@@ -42,7 +42,7 @@
 
 ### 1.3 吞键（不可逆｜架构设计 §3.1）
 
-被吞掉的键补不回来。**「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内**；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 两条无输出路径（短按没设 `tap`、长按没设 `hold`，含切层键与 momentary 单按）。
+被吞掉的键补不回来。**「吞掉」只允许发生在「还在等下一个键来凑齐」的窗口内**；**没组成快捷键的按键必须按用户输入顺序原样回放**——和弦成员全抬起仍未凑齐、序列断链或超时、tap-hold 无输出路径（短按没 `tap`、长按没 `hold`，含切层键与 momentary 单按）。
 
 ### 1.4 钩子线程（`crates/kada-hook/`｜说明书 §4.1 / §4.2 / §4.3、架构设计 §3.6）
 
@@ -69,14 +69,14 @@
 - 决策顺序固定：`taphold_step` → `chord_step` → `sequence_step` → `decide` → `hotstring`
 - **超时类等待态必须由定时器线程落地**（`spawn_engine_ticker` 每 60ms 调 `Engine::tick`）——**配置读锁必须先于 `Engine` 锁**，同序否则死锁
 - **录入暂停是限时租约**：`set_paused(true)` 只暂停 60 秒（`PAUSE_LEASE_MS`）后自动失效；前端失焦 / 隐藏 / 关详情时主动解除
-- **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`（盖满显示器且非最大化、排除本进程窗口与**桌面外壳 `Progman`/`WorkerW`**），与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势全屏让路无开关、恒生效**，两者别合并
+- **全局全屏暂停**（`Settings.ignore_fullscreen`，默认关）：判定复用 `foreground_fullscreen`，与 `exclude_apps` 同层放在状态机之前，命中直接 `Allow`（不吞键）；**手势全屏让路无开关、恒生效**，两者别合并
 - **输入状态复位**（`Engine::reset`）：钩子重装 / 设备拔出 / 前台切换 / **配置整份换掉** = 「与物理键盘断过一次线」。口径：**注入的收回来**、**缓冲里的丢弃不回放**、**锁定层保留**
 - **自愈看门狗**：Windows **只投递 `WM_APP_REINSTALL`**、**必须先卸旧再装新**并复位运行时状态表（不卸旧 = 按键被处理两遍）；**判据缺观察者就不判**，但 **Raw Input 键盘旁路**（`LAST_RAW_KEY_TICK`）是独立观察者
 - **前台 / 设备上下文**：**Linux 恒 `None`**（Wayland）、macOS 设备恒 `None`；带 `when` 的条目用 `TriggerContext`，前台**惰性查询**
 
 ### 1.7 浮窗与界面外链（架构设计 §3.21 / §3.6）
 
-- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu` / `tray-menu`）必须 `focusable(false)`（否则抢前台 → 误判复位）；**可交互的 `hints` / `clipboard-menu` / `tray-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单的触发（双击 Ctrl+C）只旁听、**不吞键**
+- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu` / `tray-menu`）必须 `focusable(false)`（否则抢前台 → 误判复位）；**可交互的 `hints` / `clipboard-menu` / `tray-menu`**：不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单**不吞键**
 - **提示框悬停让位**（`spawn_hints_hover_watch`）：光标进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后只能轮询全局光标位置**；**隐藏时必须真撤掉穿透标记**；穿透状态广播 `hints-peek`
 - **界面外链必须由壳层接住**（主窗口 `.on_new_window`）：一律 `Deny`，只把 http(s) 交 `kada_actions::open_url` 用系统浏览器打开。**新增界面外链 / 改建窗代码时别把这段弄丢**（真机验收见人工验证清单 §21）
 
@@ -85,6 +85,7 @@
 - 命令 / 脚本**不许 `Command::output()` 无限等**——走 `run_with_limits` 边读边等；超时（`settings.action_timeout_ms`，默认 30 秒、0=不限）/ 中止即**杀整棵进程树**；**中止 = 代数计数器** `abort::request()`
 - **并行动作** `Parallel`：成员各起一线程、全部结束才进下一步；**链内注入锁**保注入串行；`vars` 成员私有、按下标合并提交
 - **禁用的动作**（`Action::Disabled`，删除键左侧）：内容保留，执行时**整条跳过、不占执行记录**，校验落到里面（说明书 §5.7）
+- **内置脚本是沙箱**（`Action::InlineScript`，`script.rs`）：Rhai 开 `no_module`（无 `import`）、**不注册文件 / 网络 / 进程函数**；`set_var` 只在正常结束后合并；源码不做 `{变量}` 替换（读变量用 `get_var`）；**新增 API 先过沙箱口径**
 - **每个动作都要上报一步 `ActionStep`**（文本 / 按键 / 延迟也必须有）。一次触发 = 一条 `RunRecord`（`fire` 先落 `running`，收尾定 `ok` / `error` / `abort`）；**「停止执行」只在 `running` 记录的「执行中」徽标右侧**
 - **普通消息**（`run_id === null` 才进列表；内存态、重启清空）：命令结果 / 中止 / 失败 / 配置事件都记入；`show_output` 开则弹结果弹窗，否则托盘红点。**定长上限**：200 条、单条 stdout/stderr 各 16KB（`MAX_RESULTS` / `truncate_text`）
 
@@ -112,16 +113,16 @@
 ### 1.13 鼠标操作（总开关｜说明书 §5.9）
 
 - 按住右键画轨迹 → 方向串。**右键按下先吞、抬起才判定**：命中执行动作；**未命中 / 没画出轨迹一律回放一次右键**（注入不回环）
-- **右键画圈 ≠ 截图**：画圈后**右键不松再点左键**才确认（`on_left_down`，左右键都吞）→ 撤浮层后模拟 Snipaste `F1` 叫出它的截图界面（不抓屏、不写剪贴板；没装只提示）；只画圈回放右键
+- **右键画圈 ≠ 截图**：画圈后**右键不松再点左键**才确认（`on_left_down`）→ 调 Snipaste `F1`（不抓屏 / 不写剪贴板，没装只提示）；只画圈回放右键
 - 识别在壳层做（钩子回调只记点），手势**不进 `Key` 模型、不进 `Engine::step`**；**轨迹出口只借用不取走**
 - **让路**（都算「不接管、回放右键」）：排除程序 `gesture_exclude` 命中、**前台全屏**（占满显示器且非最大化）、`when` 不成立（落到下一条）
-- **触摸板手势是独立分类**（`touchpad_gestures`，**不许塞回 `gestures`**；老 `trigger` 由 `migrate` 搬）：按住**键盘键**采集，**按下即吞、没命中不回放**（纯开关）；`Esc` / 停手 >3s / 双指 = 作废但抬起仍吞；「录入」**复用同一 sink + 强制开闸**、**只回填不执行**；松键后光标回起笔点
+- **触摸板手势是独立分类**（`touchpad_gestures`，不许塞回 `gestures`）：按住**键盘键**采集，**按下即吞、没命中不回放**；`Esc` / 停手 >3s / 双指 = 作废但抬起仍吞；「录入」**复用同一 sink + 强制开闸**、**只回填不执行**；松键后光标回起笔点
 - 总闸 `Settings.experimental`（默认关）：只管鼠标类，关掉 = 入口隐藏、不生效、**配置保留**；触摸板：`Settings.touchpad`。
 
 ### 1.14 软件更新（说明书 §5.5）
 
 - **私钥绝不入库**（公钥内嵌，私钥只在 `~/.tauri/kada.key` 与 CI Secret）；**`latest.json` 由 `tauri-action` 生成，不手写、不入库**；端点只认**已发布** Release；**前端碰不到更新**（capabilities 不开 `updater:*`）
-- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版重启时装。落盘 `updates/pending.json`（形态不符即丢），重启恢复 `ready`；安装前重查清单版本
+- **三步分开**：检查永远自动（启动 8 秒 + 每 24h）；下载 / 安装由 `Settings.auto_update`（**默认关**）决定——勾了即自动下载、空闲 ≥10 分钟（`idle_seconds()`；Linux 恒 `None`，**绝不据此安装**）或便携版重启时装。落盘 `pending.json`（形态不符即丢）、重启恢复 `ready`，安装前重查版本
 - **不改安装形态**：exe 目录 == 注册表 `HKCU/HKLM\Software\kada\Kada` 才是安装版；否则便携版原位替换（改名→落新→重启，失败回滚）。**绝不交叉**；检查走 `build_updater`，**别用 `app.updater()`**
 - **安装会退出应用**；其它平台装完 `app.restart()`
 
@@ -175,7 +176,7 @@ powershell scripts\clean-build.ps1 # 清 debug / 交叉产物（-Bundle 含安�
 ## 4. 归档流程
 
 - **每次改完就归档**（验证通过后），别攒批——会话可能超长失败，**没归档的改动会随会话一起丢**；多会话并行时未提交的改动会被回退
-- **分流**：`AGENTS.md`（新规则 / 踩坑 / 约定）｜ `docs/需求设计说明书.md`（功能现状，**只改模块小节、不写版本叙事**，正文引模块小节号而非版本号）｜ `docs/变更归档.md`（**索引表加一行**）+ `docs/归档/`（当前卷正文追加 `#####` 条目，标题带版本号）｜ `docs/架构设计.md`（结构变了才动）｜ `docs/人工验证清单.md`（只能真机验的项，跑完回填顶部状态表）
+- **分流**：`AGENTS.md`（新规则 / 踩坑 / 约定）｜ `docs/需求设计说明书.md`（功能现状，**只改模块小节、不写版本叙事**，正文引小节号）｜ `docs/变更归档.md`（**索引表加一行**）+ `docs/归档/`（当前卷正文追加 `#####` 条目，标题带版本号）｜ `docs/架构设计.md`（结构变了才动）｜ `docs/人工验证清单.md`（只能真机验的项，跑完回填顶部状态表）
 - 落点细则见 `.agents/skills/archive/SKILL.md`（`/archive` 技能）
 - **⚠ Git 规定**：非人工指令**不得主动提交代码**（`git commit` / `git push` 一律禁止）；`git add` 只能指定具体文件路径（**禁 `git add -A` / `git add .`**）。**例外（用户已授权）：归档自动提交**——归档流程写完全部文档即自动 `git commit` + `git push`；`git add` 仍只给具体路径
 - **交付范围 = 代码 + 本次文档更新**，别只提交代码
