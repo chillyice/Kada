@@ -11305,7 +11305,12 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
     detail.classList.add("pipe-detail");
     detail.classList.add("hidden");
     block.append(detail);
-    block.addEventListener("click", () => detail.classList.toggle("hidden"));
+    // 只在块头（标题行）点开 / 收起：块体里有筛选框、「展开」、复制、打开日志、定位到动作等控件，
+    // 整块绑 click 会让「点一下筛选框 / 展开」连带把刚展开的详情收回去。
+    block.addEventListener("click", (e) => {
+      if (!(e.target as Element | null)?.closest(".pipe-head")) return;
+      detail.classList.toggle("hidden");
+    });
 
     const node = el("div", "pipe-node");
     node.append(block);

@@ -3839,7 +3839,8 @@ pre.msg-output-pre.collapsed {
   border-radius: 6px;
   background: var(--panel);
   padding: 6px 8px;
-  cursor: pointer;
+  /* 只有块头可点开 / 收起：整块 pointer 会让块体里的筛选框、按钮看起来也像折叠开关。 */
+  cursor: default;
 }
 
 .pipe-block:hover {
@@ -3867,6 +3868,7 @@ pre.msg-output-pre.collapsed {
   align-items: center;
   gap: 6px;
   font-size: var(--fs-sm);
+  cursor: pointer;
   /* 定死行高：肘形连接线（.pipe-lane::before）按块头垂直中心（1+6+8=15px）对齐，不随主题行距漂。 */
   line-height: 16px;
   min-width: 0;
