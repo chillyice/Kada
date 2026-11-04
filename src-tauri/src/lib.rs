@@ -753,6 +753,8 @@ fn spawn_hotstring(
                     exit_code: None,
                     detached: false,
                     log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1249,6 +1251,8 @@ fn report_secure_input(app: &tauri::AppHandle, on: bool) {
             exit_code: None,
             detached: false,
             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
             // 不弹窗：这条随时可能在用户输密码的当下出现，弹窗既抢焦点又不合时宜。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -1337,6 +1341,8 @@ fn report_elevated_notice(app: &tauri::AppHandle, notice: input::elevated::Notic
             exit_code: None,
             detached: false,
             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
             // 不弹窗：这条随时可能因为用户正好在提权窗口里按快捷键而出现，弹窗会抢焦点。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -1397,6 +1403,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                     exit_code: None,
                     detached: false,
                     log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1435,6 +1443,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                 exit_code: None,
                 detached: false,
                 log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                 show_output: false,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 run_id: None,
@@ -1511,6 +1521,8 @@ fn reload_config_now(app: &tauri::AppHandle) {
                     exit_code: None,
                     detached: false,
                     log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                     show_output: false,
                     time: now.clone(),
                     run_id: None,
@@ -1534,6 +1546,8 @@ fn reload_config_now(app: &tauri::AppHandle) {
             exit_code: None,
             detached: false,
             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
             show_output: false,
             time: now,
             run_id: None,
@@ -1621,6 +1635,8 @@ fn fire(
                     exit_code: None,
                     detached: false,
                     log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: Some(id),
@@ -4445,7 +4461,7 @@ fn write_command_log_inner(
     app: &tauri::AppHandle,
     result: &CommandResult,
 ) -> Result<PathBuf, String> {
-    use std::fmt::Write as _;
+    use std::io::Write as _;
 
     let dir = command_logs_dir(app).ok_or_else(|| "拿不到应用数据目录".to_string())?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
@@ -4454,14 +4470,16 @@ fn write_command_log_inner(
         "{}-{serial:04}.log",
         chrono::Local::now().format("%Y%m%d-%H%M%S")
     ));
-    let mut body = String::new();
-    let _ = writeln!(body, "时间：{}", result.time);
-    let _ = writeln!(body, "触发键：{}", result.trigger);
-    let _ = writeln!(body, "名称：{}", result.name);
-    let _ = writeln!(body, "动作：{}（{}）", result.kind, result.label);
-    let _ = writeln!(body, "命令：{}", result.command);
+    let mut file = std::fs::File::create(&path).map_err(|e| format!("写日志文件失败: {e}"))?;
+    let mut head = String::new();
+    use std::fmt::Write as _;
+    let _ = writeln!(head, "时间：{}", result.time);
+    let _ = writeln!(head, "触发键：{}", result.trigger);
+    let _ = writeln!(head, "名称：{}", result.name);
+    let _ = writeln!(head, "动作：{}（{}）", result.kind, result.label);
+    let _ = writeln!(head, "命令：{}", result.command);
     let _ = writeln!(
-        body,
+        head,
         "退出码：{}",
         result
             .exit_code
@@ -4469,14 +4487,46 @@ fn write_command_log_inner(
             .unwrap_or_else(|| "无（未等待完成 / 进程未启动）".into())
     );
     if result.detached {
-        let _ = writeln!(body, "等待：否（启动后不管，未捕获输出）");
+        let _ = writeln!(head, "等待：否（启动后不管，未捕获输出）");
     }
-    let _ = writeln!(body, "\n===== stdout =====\n{}", result.stdout);
-    let _ = writeln!(body, "\n===== stderr =====\n{}", result.stderr);
+    file.write_all(head.as_bytes())
+        .map_err(|e| format!("写日志文件失败: {e}"))?;
+    // 输出超过内存上限时完整内容在 spool 临时文件里（CS-16）：直接流式拷进日志，
+    // 不把整份输出重新读进内存（一个刷屏命令可能有几百 MB）。
+    file.write_all(b"\n===== stdout =====\n")
+        .and_then(|_| write_log_stream(&mut file, result.stdout_file.as_deref(), &result.stdout))
+        .and_then(|_| file.write_all(b"\n===== stderr =====\n"))
+        .and_then(|_| write_log_stream(&mut file, result.stderr_file.as_deref(), &result.stderr))
+        .and_then(|_| file.write_all(b"\n"))
+        .map_err(|e| format!("写日志文件失败: {e}"))?;
+    drop(file);
+    // spool 文件使命结束：完整内容已经进日志，临时文件不再保留。
+    if let Some(p) = &result.stdout_file {
+        let _ = std::fs::remove_file(p);
+    }
+    if let Some(p) = &result.stderr_file {
+        let _ = std::fs::remove_file(p);
+    }
     // 明确不写 `KADA_VARS`：变量表可能含密码 / 私密文本（见计划 §8 设计口径）。
-    std::fs::write(&path, body.as_bytes()).map_err(|e| format!("写日志文件失败: {e}"))?;
     Ok(path)
 }
+
+/// 日志里的一段输出：有 spool 文件就流式拷贝（失败退回内存尾巴），否则写内存里的文本。
+fn write_log_stream(
+    file: &mut std::fs::File,
+    spool: Option<&str>,
+    fallback: &str,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    if let Some(p) = spool {
+        if let Ok(mut src) = std::fs::File::open(p) {
+            std::io::copy(&mut src, file)?;
+            return Ok(());
+        }
+    }
+    file.write_all(fallback.as_bytes())
+}
+
 
 /// 只保留最近 [`MAX_COMMAND_LOGS`] 份日志：按修改时间排序，删最旧的。
 fn prune_command_logs(app: &tauri::AppHandle) {
@@ -4523,6 +4573,13 @@ fn commit_result(
         "cmd" | "powershell" | "script" | "inline_script"
     ) {
         result.log_path = write_command_log(app, &result);
+    }
+    // 无论日志写没写成，spool 临时文件都要清掉（写成功时上面已删，这里兜底）。
+    if let Some(p) = &result.stdout_file {
+        let _ = std::fs::remove_file(p);
+    }
+    if let Some(p) = &result.stderr_file {
+        let _ = std::fs::remove_file(p);
     }
     let log_path = result.log_path.clone();
     truncate_text(&mut result.stdout, MAX_RESULT_TEXT);
@@ -6322,6 +6379,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
         kada_core::PlatformCaps {
             frontmost_conditions: false,
             window_actions: false,
+            window_wait: false,
             mouse_absolute: false,
             background_input: false,
             shell_actions: false,
@@ -6343,6 +6401,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
             frontmost_conditions: true,
             device_conditions: false,
             window_actions: false,
+            window_wait: false,
             mouse_absolute: true,
             background_input: false,
             shell_actions: false,
@@ -6364,6 +6423,7 @@ fn platform_caps() -> kada_core::PlatformCaps {
         kada_core::PlatformCaps {
             device_conditions: false,
             window_actions: false,
+            window_wait: false,
             background_input: false,
             shell_actions: false,
             hot_corners: false,
@@ -6771,6 +6831,8 @@ fn hidpp_unlock(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> Hi
             exit_code: None,
             detached: false,
             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
             // 不弹窗：用户就在设置页看着结果，弹窗只会多一步要关。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -7608,6 +7670,28 @@ fn open_result_log(app: tauri::AppHandle, path: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 清理完整命令日志（CS-21）：删除 `app_data_dir()/logs/commands/` 下的文件，返回删除数量。
+/// 只动这一个目录里的常规文件——目录本身、配置与别的日志都不碰。
+#[tauri::command]
+fn clear_command_logs(app: tauri::AppHandle) -> Result<usize, String> {
+    let dir = match command_logs_dir(&app) {
+        Some(d) => d,
+        None => return Err("拿不到应用数据目录".into()),
+    };
+    if !dir.exists() {
+        return Ok(0);
+    }
+    let mut removed = 0usize;
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取日志目录失败：{e}"))? {
+        let entry = entry.map_err(|e| format!("读取日志目录失败：{e}"))?;
+        let path = entry.path();
+        if path.is_file() && std::fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 /// 清空消息中心（命令结果与执行记录一起清，同时熄灭红点）。
 #[tauri::command]
 fn clear_command_results(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
@@ -7689,6 +7773,7 @@ pub fn run() {
             hints_set_visible,
             mark_results_read,
             clear_command_results,
+            clear_command_logs,
             take_pending_result_modal,
             copy_result_text,
             open_result_log,
@@ -8191,6 +8276,8 @@ pub fn run() {
                             exit_code: None,
                             detached: false,
                             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
                             show_output: false,
                             time: time.clone(),
                             run_id: None,

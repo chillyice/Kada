@@ -97,9 +97,16 @@ type SendPayload =
   | { kind: "keys"; keys: string[] }
   | { kind: "text"; text: string };
 type ShowOutput = boolean | "always" | "on_error" | "never";
+/** 同一动作上一次还没跑完时怎么办（CS-17）。 */
+type IfRunning = "run" | "skip" | "queue";
+/** 等待动作的目标（CS-18）。`window` 目前只有 Windows 能等。 */
+type WaitTarget =
+  | { kind: "file"; path: string }
+  | { kind: "process"; program: string }
+  | { kind: "window"; title: string };
 type ActionBase =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
-  | { type: "command"; shell: Shell; command: string; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; description?: string }
+  | { type: "command"; shell: Shell; command: string; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; if_running?: IfRunning; description?: string }
   | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
   | { type: "send_to"; target: string; payload: SendPayload; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
@@ -117,8 +124,9 @@ type ActionBase =
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
-  | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; description?: string }
+  | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; if_running?: IfRunning; description?: string }
   | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }
+  | { type: "wait_for"; target: WaitTarget; timeout_ms?: number | null; interval_ms?: number; var: string; description?: string }
   | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
 /** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
 type DisabledAction = { type: "disabled"; action: Action };
@@ -660,6 +668,7 @@ const ACTION_TYPES: { value: ActionBase["type"]; label: string }[] = [
   { value: "command", label: tr("执行命令") },
   { value: "script", label: tr("执行脚本") },
   { value: "inline_script", label: tr("内置脚本") },
+  { value: "wait_for", label: tr("等待条件") },
   { value: "app", label: tr("应用操作") },
   { value: "open_url", label: tr("打开网址") },
   { value: "os", label: tr("文件/文件夹") },
@@ -694,6 +703,7 @@ const ACTION_ICONS: Record<ActionBase["type"], string> = {
   command: "💻",
   script: "📜",
   inline_script: "🧠",
+  wait_for: "⏳",
   keys: "⌨️",
   send_to: "📨",
   mouse: "🖱️",
@@ -751,6 +761,8 @@ function actionVarWrites(a: Action): string[] {
     case "command":
     case "script":
     case "ask":
+      return a.var.trim() ? [a.var.trim()] : [];
+    case "wait_for":
       return a.var.trim() ? [a.var.trim()] : [];
     case "inline_script": {
       // 除了动作自己的「存为变量」，脚本里 set_var("名", …) 写的变量也要算进数据流。
@@ -810,6 +822,15 @@ function actionVarReads(a: Action): string[] {
       for (const m of a.source.matchAll(/get_var\s*\(\s*["']([^"']+)["']\s*\)/g)) {
         texts.push(`{${m[1]}}`);
       }
+      break;
+    case "wait_for":
+      texts.push(
+        a.target.kind === "file"
+          ? a.target.path
+          : a.target.kind === "process"
+            ? a.target.program
+            : a.target.title,
+      );
       break;
     case "ask":
       texts.push(a.prompt, a.default ?? "");
@@ -1127,6 +1148,7 @@ function newAction(type: ActionBase["type"]): ActionBase {
         var: "",
         wait: true,
         on_error: "continue",
+        if_running: "run",
       };
     case "script":
       return {
@@ -1142,9 +1164,18 @@ function newAction(type: ActionBase["type"]): ActionBase {
         var: "",
         wait: true,
         on_error: "continue",
+        if_running: "run",
       };
     case "inline_script":
       return { type: "inline_script", source: "", var: "", show_output: false };
+    case "wait_for":
+      return {
+        type: "wait_for",
+        target: { kind: "file", path: "" },
+        timeout_ms: null,
+        interval_ms: 200,
+        var: "",
+      };
     case "keys":
       return { type: "keys", keys: [], mode: "tap" };
     case "send_to":
@@ -1258,6 +1289,8 @@ function actionHasContent(a: Action): boolean {
       return a.path.trim().length > 0;
     case "inline_script":
       return a.source.trim().length > 0;
+    case "wait_for":
+      return waitTargetHasContent(a.target);
     case "keys":
       return a.keys.length > 0;
     case "send_to":
@@ -1498,6 +1531,45 @@ function mouseSummary(op: MouseOp): string {
   }
 }
 
+const WAIT_TARGET_TYPES: { value: WaitTarget["kind"]; label: string }[] = [
+  { value: "file", label: tr("文件 / 文件夹出现") },
+  { value: "process", label: tr("进程启动") },
+  { value: "window", label: tr("窗口出现（仅 Windows）") },
+];
+
+function newWaitTarget(kind: WaitTarget["kind"]): WaitTarget {
+  switch (kind) {
+    case "file":
+      return { kind, path: "" };
+    case "process":
+      return { kind, program: "" };
+    case "window":
+      return { kind, title: "" };
+  }
+}
+
+function waitTargetHasContent(t: WaitTarget): boolean {
+  switch (t.kind) {
+    case "file":
+      return t.path.trim().length > 0;
+    case "process":
+      return t.program.trim().length > 0;
+    case "window":
+      return t.title.trim().length > 0;
+  }
+}
+
+function waitTargetSummary(t: WaitTarget): string {
+  switch (t.kind) {
+    case "file":
+      return trt`等路径出现：${t.path || "?"}`;
+    case "process":
+      return trt`等进程启动：${t.program || "?"}`;
+    case "window":
+      return trt`等窗口出现：${t.title || "?"}`;
+  }
+}
+
 function actionSummary(a: Action): string {
   switch (a.type) {
     case "disabled":
@@ -1530,6 +1602,10 @@ function actionSummary(a: Action): string {
           .map((l) => l.trim())
           .find(Boolean) ?? "";
       return trt`内置脚本：${first}${v}`;
+    }
+    case "wait_for": {
+      const v = a.var ? ` → ${a.var}` : "";
+      return `${waitTargetSummary(a.target)}${v}`;
     }
     case "keys":
       if (a.mode === "press") return trt`按住：${a.keys.join("+")}`;
@@ -1816,6 +1892,14 @@ function normalizeCommandScriptFields(actions: Action[]): Action[] {
             delete out.interpreter_args;
           if (!Array.isArray(out.args) || out.args.length === 0) delete out.args;
         }
+        // CS-17：默认的「照常再起一份」不落盘，老配置读进来就是它。
+        if (out.if_running === "run" || out.if_running == null) delete out.if_running;
+        return out as unknown as Action;
+      }
+      case "wait_for": {
+        const out: Record<string, unknown> = { ...a };
+        if (out.timeout_ms == null) delete out.timeout_ms;
+        if (out.interval_ms == null || out.interval_ms === 200) delete out.interval_ms;
         return out as unknown as Action;
       }
       default:
@@ -7492,10 +7576,118 @@ function actionFields(
       el("span", "unit-hint", tr("存为变量")),
       vname,
       helpIcon(
-        tr("脚本的返回值（没有返回值时用 print 的输出）作为本步结果；填写变量名后存进该变量，后续动作用 {变量名} 引用。可用函数：get_var(\"名\") 读变量、has_var(\"名\") 判存在、vars() 取整张变量表、set_var(\"名\", 值) 写变量、trigger() 触发组合、shortcut_name() 快捷键名、print(值) 追加输出。最多执行 20 万条指令，并受动作超时与「停止执行」约束；语法与运行错误会标在脚本行号上。"),
+        tr("脚本的返回值（没有返回值时用 print 的输出）作为本步结果；填写变量名后存进该变量，后续动作用 {变量名} 引用。可用函数：get_var(\"名\") 读变量、has_var(\"名\") 判存在、vars() 取整张变量表、set_var(\"名\", 值) 写变量、json_get(文本, \"a.b.0\") 从 JSON 取字段、trigger() 触发组合、shortcut_name() 快捷键名、print(值) 追加输出。最多执行 20 万条指令，并受动作超时与「停止执行」约束；语法与运行错误会标在脚本行号上。"),
       ),
     );
     body.append(vline);
+  } else if (a.type === "wait_for") {
+    const tline = el("div", "action-line");
+    const tsel = el("select", "action-input") as HTMLSelectElement;
+    for (const t of WAIT_TARGET_TYPES) tsel.append(new Option(t.label, t.value));
+    tsel.value = a.target.kind;
+    tsel.addEventListener("change", () => {
+      a.target = newWaitTarget(tsel.value as WaitTarget["kind"]);
+      rerender();
+    });
+    tline.append(el("span", "unit-hint", tr("等什么")), tsel);
+    body.append(tline);
+
+    if (a.target.kind === "file") {
+      body.append(
+        pathField(
+          a.target.path,
+          (v) => {
+            if (a.target.kind === "file") a.target.path = v;
+          },
+          { file: true, dir: true, ph: tr("等这个路径出现（支持 {变量} 与 ~）") },
+        ),
+      );
+    } else if (a.target.kind === "process") {
+      const line = el("div", "action-line");
+      const input = el("input", "action-input") as HTMLInputElement;
+      input.type = "text";
+      input.value = a.target.program;
+      input.placeholder = "notepad.exe";
+      input.addEventListener("input", () => {
+        if (a.target.kind === "process") a.target.program = input.value.trim();
+      });
+      line.append(
+        el("span", "unit-hint", tr("进程名")),
+        input,
+        helpIcon(
+          tr("按可执行文件名匹配，忽略大小写。例：notepad.exe（Windows）/ python3（Linux、macOS）。"),
+        ),
+      );
+      body.append(line);
+    } else {
+      const line = el("div", "action-line");
+      const input = el("input", "action-input") as HTMLInputElement;
+      input.type = "text";
+      input.value = a.target.title;
+      input.placeholder = tr("窗口标题包含的文字");
+      input.addEventListener("input", () => {
+        if (a.target.kind === "window") a.target.title = input.value.trim();
+      });
+      line.append(
+        el("span", "unit-hint", tr("窗口标题")),
+        input,
+        helpIcon(
+          tr("按窗口标题匹配（忽略大小写的子串 / 通配）。目前只有 Windows 能等窗口；其它平台执行时本步会明确报错。"),
+        ),
+      );
+      body.append(line);
+    }
+
+    body.append(timeoutField(a.timeout_ms, (v) => (a.timeout_ms = v)));
+
+    const iline = el("div", "action-line");
+    const ival = el("input", "action-input") as HTMLInputElement;
+    ival.type = "number";
+    ival.min = "50";
+    ival.step = "50";
+    ival.value = String(a.interval_ms ?? 200);
+    ival.addEventListener("input", () => {
+      const n = Number(ival.value);
+      if (!Number.isFinite(n) || n < 50) {
+        showFieldError(ival, tr("请填不小于 50 的毫秒数"));
+        return;
+      }
+      showFieldError(ival, "");
+      a.interval_ms = Math.round(n);
+    });
+    iline.append(
+      el("span", "unit-hint", tr("轮询间隔（毫秒）")),
+      ival,
+      helpIcon(tr("每隔多久检查一次（最小 50 毫秒，默认 200）。间隔太小会白白占 CPU，太大则命中后多等一会儿。")),
+    );
+    body.append(iline);
+
+    const vline = el("div", "action-line");
+    const vname = el("input", "action-input") as HTMLInputElement;
+    vname.type = "text";
+    vname.value = a.var;
+    vname.placeholder = tr("变量名（可选），留空则只记执行记录");
+    vname.addEventListener("input", () => {
+      a.var = vname.value.trim();
+    });
+    vline.append(
+      el("span", "unit-hint", tr("命中后存为变量")),
+      vname,
+      helpIcon(
+        tr("命中时写进该变量：文件 = 实际路径、进程 = 进程名、窗口 = 窗口标题。超时 = 本步失败，不写变量。"),
+      ),
+    );
+    body.append(vline);
+
+    body.append(
+      el(
+        "div",
+        "unit-hint",
+        tr(
+          "超时留空 = 跟随设置页「动作超时」；0 = 一直等（仍可点「停止执行」）。超时算本步失败，按链的默认语义继续后面的动作。",
+        ),
+      ),
+    );
   } else if (a.type === "keys") {
     // 从已保存的快捷键里挑触发组合：只收单个组合（序列 "F9 J K" 不能塞进一次按键注入）。
     const combos: { combo: string; label: string }[] = [];
@@ -8205,7 +8397,7 @@ function okExitCodesField(
   return line;
 }
 
-// 命令 / 脚本共用的运行开关（CS-11~CS-13）：结果弹窗三态、等待、失败即停、隐藏控制台。
+// 命令 / 脚本共用的运行开关（CS-11~CS-13、CS-17）：结果弹窗三态、重复触发、等待、失败即停、隐藏控制台。
 // 返回的是若干行（取消「等待」时多一行醒目警告），调用方直接 `body.append(...)`。
 function commandRunControlFields(
   a: {
@@ -8213,6 +8405,7 @@ function commandRunControlFields(
     wait?: boolean;
     on_error?: "continue" | "stop";
     hide_window?: boolean;
+    if_running?: IfRunning;
   },
   rerender: () => void,
 ): HTMLElement[] {
@@ -8235,6 +8428,28 @@ function commandRunControlFields(
     helpIcon(
       tr(
         "结果消息始终会进消息中心；这里只决定要不要额外弹窗。「只在失败时弹」按本步真实成败判断（退出码表与超时 / 中止都算）。",
+      ),
+    ),
+  );
+
+  const runLine = el("div", "action-line");
+  const runSel = el("select", "action-input") as HTMLSelectElement;
+  runSel.append(
+    new Option(tr("照常再起一份"), "run"),
+    new Option(tr("跳过，不执行"), "skip"),
+    new Option(tr("排队等上一次结束"), "queue"),
+  );
+  runSel.value = a.if_running ?? "run";
+  runSel.disabled = a.wait === false;
+  runSel.addEventListener("change", () => {
+    a.if_running = runSel.value as IfRunning;
+  });
+  runLine.append(
+    el("span", "unit-hint", tr("已在运行时")),
+    runSel,
+    helpIcon(
+      tr(
+        "同一条命令 / 脚本上一次还没跑完，又触发了一次时怎么办：「跳过」只记一条步骤不执行；「排队」等上一次结束后再跑（等待期间可点「停止执行」）。跨快捷键生效，按动作内容 + 触发名识别；「启动后不管」的步骤不参与登记。",
       ),
     ),
   );
@@ -8271,7 +8486,7 @@ function commandRunControlFields(
   hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
 
   flags.append(waitLabel, stopLabel, hidden);
-  const out: HTMLElement[] = [popupLine, flags];
+  const out: HTMLElement[] = [popupLine, runLine, flags];
   if (a.wait === false) {
     out.push(
       el(
@@ -10644,6 +10859,193 @@ function resultActions(r: { stdout: string; stderr: string; log_path?: string | 
   return row;
 }
 
+// stdout / stderr 输出块（CS-21）：默认折叠 + 行内筛选。
+// 一条 npm install 的输出能有好几屏，展开态又有 200px 上限——先收起，需要时再展开 / 搜。
+function msgOutputField(k: string, text: string): HTMLElement {
+  const row = el("div", "msg-field");
+  row.append(el("span", "msg-k", k));
+  const wrap = el("div", "msg-output");
+  const tools = el("div", "msg-output-tools");
+  const search = el("input", "msg-output-search") as HTMLInputElement;
+  search.type = "search";
+  search.placeholder = tr("在输出里筛选…");
+  const toggle = el("button", "ghost msg-action-btn", tr("展开")) as HTMLButtonElement;
+  toggle.type = "button";
+  const pre = el("pre", "msg-v msg-output-pre");
+  const lineCount = text.split("\n").length;
+  const long = lineCount > 8 || text.length > 800;
+  if (long) pre.classList.add("collapsed");
+  else toggle.classList.add("hidden");
+  const apply = (value: string) => {
+    const q = value.trim();
+    if (!q) {
+      pre.textContent = text;
+      toggle.classList.toggle("hidden", !long);
+      return;
+    }
+    const hits = text
+      .split("\n")
+      .filter((line) => line.toLowerCase().includes(q.toLowerCase()));
+    pre.textContent = hits.length ? hits.join("\n") : tr("（没有匹配的行）");
+    toggle.classList.add("hidden");
+    pre.classList.remove("collapsed");
+  };
+  search.addEventListener("input", () => apply(search.value));
+  toggle.addEventListener("click", () => {
+    const collapsed = pre.classList.toggle("collapsed");
+    toggle.textContent = collapsed ? tr("展开") : tr("收起");
+  });
+  apply("");
+  tools.append(search, toggle);
+  wrap.append(tools, pre);
+  row.append(wrap);
+  return row;
+}
+
+// ---- 结果卡深链（CS-20）：从执行记录跳回动作编辑器 ----
+// 先按记录里的「名称 / 触发键」找到动作所在条目（快捷键 / 手势 / 触摸板 / 角动作 / 边缘滚动），
+// 再在条目里按动作标题或摘要定位到具体那一条。动作被删掉 / 改名时如实提示，不假装跳到了。
+function findRunOwner(run: { name?: string | null; trigger: string }): { section: Section; index: number } | null {
+  const name = (run.name ?? "").trim();
+  const trigger = run.trigger.trim();
+  const byName = (n?: string | null) => name.length > 0 && (n ?? "").trim() === name;
+  const i = cfg.shortcuts.findIndex(
+    (s) => byName(s.name) || (!name && s.triggers.some((t) => t.trim() === trigger)),
+  );
+  if (i >= 0) return { section: "shortcuts", index: i };
+  const simple: [
+    Section,
+    { name?: string | null; pattern?: string | null; edge?: string; spot?: string }[],
+  ][] = [
+    ["gestures", cfg.gestures ?? []],
+    ["touchpads", cfg.touchpad_gestures ?? []],
+    ["hotcorners", cfg.hot_corners ?? []],
+    ["wheeledges", cfg.wheel_edges ?? []],
+  ];
+  for (const [section, list] of simple) {
+    const j = list.findIndex((it) => {
+      if (byName(it.name)) return true;
+      if (name) return false;
+      const trig = (it.pattern ?? "").trim();
+      return trig === trigger || it.edge === trigger || it.spot === trigger;
+    });
+    if (j >= 0) return { section, index: j };
+  }
+  return null;
+}
+
+function currentEditorActions(): Action[] | null {
+  switch (section) {
+    case "shortcuts":
+      return draft?.actions ?? null;
+    case "gestures":
+      return gestureDraft?.actions ?? null;
+    case "touchpads":
+      return touchpadDraft?.actions ?? null;
+    case "hotcorners":
+      return hotcornerDraft?.actions ?? null;
+    case "wheeledges":
+      return wheeledgeDraft?.actions ?? null;
+    default:
+      return null;
+  }
+}
+
+function expandAllActions(actions: Action[]) {
+  for (const a of actions) {
+    const act = unwrapAction(a);
+    collapsedActions.delete(act);
+    if (act.type === "if") {
+      expandAllActions(act.then);
+      expandAllActions(act.otherwise);
+    } else if (act.type === "parallel") {
+      expandAllActions(act.actions);
+    } else if (act.type === "group") {
+      expandAllActions(act.actions);
+    }
+  }
+}
+
+// 在已渲染的动作列表里找那一行：优先动作标题（后端摘要 = 「标题（正文）」），
+// 其次摘要互相包含，最后同类型的第一个（正文被改过也至少落到大致位置）。
+function locateActionRow(match: { title: string; kind?: string }): HTMLElement | null {
+  const rows = [
+    ...document.querySelectorAll<HTMLElement>("#action-list .action-row"),
+  ];
+  const info = rows.map((row) => {
+    const list = (row as unknown as { _dropList?: Action[] })._dropList;
+    const idx = (row as unknown as { _dropIndex?: number })._dropIndex;
+    const act = idx === undefined ? undefined : list?.[idx];
+    return { row, act: act ? unwrapAction(act) : null };
+  });
+  const title = match.title.trim();
+  if (title) {
+    for (const { row, act } of info) {
+      if (!act) continue;
+      const desc = "description" in act ? (act.description?.trim() ?? "") : "";
+      const summary = actionSummary(act);
+      if (desc && (title === desc || title.startsWith(`${desc}（`))) return row;
+      if (summary && (title === summary || title.includes(summary) || summary.includes(title))) {
+        return row;
+      }
+    }
+  }
+  if (match.kind) {
+    return info.find(({ act }) => act?.type === match.kind)?.row ?? null;
+  }
+  return null;
+}
+
+// 打开条目 → 展开全部动作 → 滚到目标行并闪一下。
+async function openActionAt(
+  owner: { section: Section; index: number } | null,
+  match: { title: string; kind?: string },
+): Promise<boolean> {
+  if (!owner) {
+    toast(tr("没找到这条记录对应的动作（可能已删除或改名）"));
+    return false;
+  }
+  if (!(await confirmLeaveDraft())) return false;
+  switchSectionNow(owner.section);
+  openDetail(owner.index);
+  const actions = currentEditorActions();
+  if (actions) {
+    expandAllActions(actions);
+    renderDetail();
+  }
+  const row = locateActionRow(match);
+  if (!row) {
+    toast(tr("已打开对应条目，但没找到这条动作（可能已被删除）"));
+    return false;
+  }
+  row.scrollIntoView({ block: "center", behavior: "smooth" });
+  row.classList.remove("action-locate");
+  void row.offsetWidth; // 强制重排以重启动画
+  row.classList.add("action-locate");
+  row.addEventListener("animationend", () => row.classList.remove("action-locate"), { once: true });
+  return true;
+}
+
+function locateStepButton(run: RunRecord, step: ActionStep): HTMLButtonElement {
+  const btn = el("button", "ghost msg-action-btn", tr("定位到动作")) as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = tr("跳到动作编辑器里的这一条");
+  btn.addEventListener("click", () => {
+    void openActionAt(findRunOwner(run), { title: step.title, kind: step.kind });
+  });
+  return btn;
+}
+
+function locateResultButton(r: CommandResult): HTMLButtonElement {
+  const btn = el("button", "ghost msg-action-btn", tr("定位到动作")) as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = tr("跳到动作编辑器里的这一条");
+  btn.addEventListener("click", () => {
+    void openActionAt(findRunOwner({ name: r.name, trigger: r.trigger }), { title: r.command });
+  });
+  return btn;
+}
+
 function resultCard(r: CommandResult): HTMLElement {
   const card = el("div", "msg-card");
   card.append(msgField(tr("快捷键"), r.trigger));
@@ -10655,12 +11057,13 @@ function resultCard(r: CommandResult): HTMLElement {
       msgField(tr("状态"), tr("已启动，不等待完成；未捕获输出（「停止执行」也收不回它）")),
     );
   }
-  card.append(msgField("stdout", r.stdout, true));
-  if (r.stderr) card.append(msgField("stderr", r.stderr, true));
+  card.append(msgOutputField("stdout", r.stdout));
+  if (r.stderr) card.append(msgOutputField("stderr", r.stderr));
   if (!r.detached) {
     card.append(msgField(tr("退出码"), r.exit_code === null ? "—" : String(r.exit_code)));
   }
   const actions = resultActions(r);
+  if (r.run_id !== null) actions.prepend(locateResultButton(r));
   if (actions.childElementCount > 0) card.append(actions);
   return card;
 }
@@ -10798,10 +11201,11 @@ function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
       msgField(tr("状态"), tr("已启动，不等待完成；未捕获输出（「停止执行」也收不回它）")),
     );
   }
-  if (step.stdout) box.append(msgField("stdout", step.stdout, true));
-  if (step.stderr) box.append(msgField("stderr", step.stderr, true));
+  if (step.stdout) box.append(msgOutputField("stdout", step.stdout));
+  if (step.stderr) box.append(msgOutputField("stderr", step.stderr));
   if (step.exit_code !== null) box.append(msgField(tr("退出码"), String(step.exit_code)));
   const actions = resultActions(step);
+  if (run.id !== 0) actions.prepend(locateStepButton(run, step));
   if (actions.childElementCount > 0) box.append(actions);
   return box;
 }
@@ -11103,6 +11507,23 @@ function bindMessages() {
     msgSelId = entries[msgIndex].id;
     msgSelStep = -1;
     renderMessages();
+  });
+  document.getElementById("clear-logs")!.addEventListener("click", async () => {
+    const ok = await askConfirm({
+      title: tr("清理命令日志"),
+      text: tr(
+        "删除所有完整日志文件（执行记录里保留的输出摘录不受影响，仍可复制 / 定位到动作）。清理后「打开完整日志」会失效。",
+      ),
+      okLabel: tr("清理"),
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const n = await invoke<number>("clear_command_logs");
+      toast(n > 0 ? trt`已清理 ${n} 份日志` : tr("没有可清理的日志"));
+    } catch (e) {
+      toast(trt`清理失败: ${e}`);
+    }
   });
   document.getElementById("clear-messages")!.addEventListener("click", () => {
     void invoke("clear_command_results");

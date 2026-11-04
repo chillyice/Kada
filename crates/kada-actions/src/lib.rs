@@ -42,8 +42,8 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, BrightnessOperation, DesktopDirection, FileObject, OnError, OsOperation, Shell,
-    SystemOperation, WindowOperation,
+    AppOperation, BrightnessOperation, DesktopDirection, FileObject, IfRunning, OnError,
+    OsOperation, Shell, SystemOperation, WaitTarget, WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -77,6 +77,13 @@ pub struct CommandResult {
     pub detached: bool,
     /// 完整日志文件路径（CS-10；消息中心只留截断版，全文在这个文件里）。
     pub log_path: Option<String>,
+    /// 完整输出落在临时文件里的路径（CS-16；stdout / stderr 超过内存保留上限时才建）。
+    /// 由壳层写完整日志时读取并删除；**不发给界面**（`serde(skip)`）。
+    #[serde(skip)]
+    pub stdout_file: Option<String>,
+    /// 同 [`CommandResult::stdout_file`]，对应 stderr。
+    #[serde(skip)]
+    pub stderr_file: Option<String>,
     /// 是否弹出结果弹窗（仅影响展示，不影响记录；三态口径在 `kada-actions` 里已折算成布尔）。
     pub show_output: bool,
     /// 执行时间（本地时区，"YYYY-MM-DD HH:MM:SS"）。
@@ -378,6 +385,8 @@ fn action_kind(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "parallel",
         #[cfg(feature = "automation")]
+        Action::WaitFor { .. } => "wait_for",
+        #[cfg(feature = "automation")]
         Action::Window { .. } => "window",
         #[cfg(feature = "automation")]
         Action::Capture { .. } => "capture",
@@ -630,7 +639,42 @@ fn run_chain(
             }
             continue;
         }
-        match run_action(action, ctx, vars, last_copied, scope) {
+        #[cfg(feature = "automation")]
+        let running_slot = match claim_running_slot(action, ctx) {
+            RunningDecision::Proceed(slot) => slot,
+            RunningDecision::Skip => {
+                step.title = format!("{}（已在运行，已跳过）", step.title);
+                step.stdout = "同一动作上一次还没跑完，本次已跳过（if_running = skip）。".into();
+                step.status = "ok".into();
+                step.end_ms = ctx.elapsed_ms();
+                rep.on_step(step);
+                continue;
+            }
+            RunningDecision::Abort => {
+                step.status = "abort".into();
+                step.end_ms = ctx.elapsed_ms();
+                rep.on_step(step);
+                release_scope(scope);
+                rep.commit(abort_result(ctx));
+                rep.on_step(abort_step(ctx));
+                return;
+            }
+        };
+        // 流式输出（CS-16）：命令 / 脚本执行期间把 stdout 尾巴同步到「执行中」的步骤上。
+        // `run_child` 已经按 LIVE_FLUSH_MS 节流，这里只负责换掉快照并 upsert。
+        let result = {
+            let mut live_step = step.clone();
+            let mut live = |chunk: &str| {
+                live_step.stdout = chunk.to_string();
+                live_step.end_ms = ctx.elapsed_ms();
+                rep.on_step(live_step.clone());
+            };
+            run_action(action, ctx, vars, last_copied, scope, Some(&mut live))
+        };
+        // 执行结束立刻释放登记：排队的同键动作不用等消息中心提交完。
+        #[cfg(feature = "automation")]
+        drop(running_slot);
+        match result {
             Ok(Some(result)) => {
                 let failed = step_failed(action, &result);
                 step.stdout = result.stdout.clone();
@@ -824,6 +868,8 @@ fn abort_result(ctx: &Ctx) -> CommandResult {
         exit_code: None,
         detached: false,
         log_path: None,
+        stdout_file: None,
+        stderr_file: None,
         show_output: false,
         time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         run_id: ctx.run_id,
@@ -848,6 +894,8 @@ fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> Command
         exit_code: None,
         detached: false,
         log_path: None,
+        stdout_file: None,
+        stderr_file: None,
         show_output: action_show_output(action),
         time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         run_id: ctx.run_id,
@@ -972,6 +1020,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::If { .. } => "条件判断失败",
         #[cfg(feature = "automation")]
         Action::Parallel { .. } => "并行执行失败",
+        #[cfg(feature = "automation")]
+        Action::WaitFor { .. } => "等待失败",
         #[cfg(feature = "automation")]
         Action::Window { .. } => "窗口操作失败",
         #[cfg(feature = "automation")]
@@ -1124,6 +1174,8 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::If { .. } => "条件判断".into(),
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
+        #[cfg(feature = "automation")]
+        Action::WaitFor { target, timeout_ms, .. } => wait_body(target, *timeout_ms, vars),
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => window_body(operation),
         #[cfg(feature = "automation")]
@@ -1471,6 +1523,7 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::InlineScript { description, .. }
         | Action::If { description, .. }
         | Action::Parallel { description, .. }
+        | Action::WaitFor { description, .. }
         | Action::Window { description, .. }
         | Action::Capture { description, .. }
         | Action::Tool { description, .. }
@@ -1509,6 +1562,7 @@ fn run_action(
     vars: &mut Vars,
     last_copied: &mut Option<String>,
     scope: u64,
+    live: Option<&mut dyn FnMut(&str)>,
 ) -> Result<Option<CommandResult>, String> {
     match action {
         Action::Group { .. } => {
@@ -1658,6 +1712,8 @@ fn run_action(
             let workdir = resolve_working_dir(working_dir, vars)?;
             // 每动作超时（CS-04）：缺省跟全局，`Some(0)` = 不限时（与全局 0 同义）。
             let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(ctx.timeout);
+            // 结构化结果（CS-19）：给子进程一个只属于本次执行的临时文件路径。
+            let result_file = result_file_path();
             let out = run_cmd(
                 label,
                 is_powershell,
@@ -1668,10 +1724,17 @@ fn run_action(
                 Some(vars),
                 timeout,
                 *wait,
+                Some(&result_file),
+                live,
             )?;
             // 不等待（CS-12）没有输出可写变量，也没有退出码可判成败。
             let failed = !out.detached
                 && (!exit_ok(ok_exit_codes, out.exit_code) || out.stderr.starts_with("〔咔哒〕"));
+            if !out.detached && !failed {
+                apply_result_file(&result_file, vars)?;
+            } else {
+                let _ = std::fs::remove_file(&result_file);
+            }
             if !out.detached && !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1693,7 +1756,7 @@ fn run_action(
         } => {
             let command = substitute_vars(command, vars);
             // 旧版动作没有 hide_window / working_dir 字段（加载时会迁移成 Command，见 Config::migrate）。
-            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout, true)?;
+            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout, true, None, None)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1723,7 +1786,7 @@ fn run_action(
             }
             let command = substitute_vars(command, vars);
             // 同上：旧版动作无 hide_window / working_dir。
-            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout, true)?;
+            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout, true, None, None)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1866,6 +1929,8 @@ fn run_action(
             let script_args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
             let workdir = resolve_working_dir(working_dir, vars)?;
             let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(ctx.timeout);
+            // 结构化结果（CS-19）：同 Command，见 `apply_result_file`。
+            let result_file = result_file_path();
             let out = run_script(
                 interpreter.as_deref(),
                 &interp_args,
@@ -1877,9 +1942,16 @@ fn run_action(
                 *hide_window,
                 timeout,
                 *wait,
+                Some(&result_file),
+                live,
             )?;
             let failed = !out.detached
                 && (!exit_ok(ok_exit_codes, out.exit_code) || out.stderr.starts_with("〔咔哒〕"));
+            if !out.detached && !failed {
+                apply_result_file(&result_file, vars)?;
+            } else {
+                let _ = std::fs::remove_file(&result_file);
+            }
             if !out.detached && !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1901,6 +1973,59 @@ fn run_action(
             let command = parts.join(" ");
             let popup = !out.detached && show_output.shows(failed);
             return Ok(Some(out.into_result("script", "脚本", command, ctx, popup)));
+        }
+        #[cfg(feature = "automation")]
+        Action::WaitFor {
+            target,
+            timeout_ms,
+            interval_ms,
+            var,
+            ..
+        } => {
+            // 超时缺省跟全局（与命令 / 脚本同一口径）；0 = 不限时，但仍可被中止。
+            let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(ctx.timeout);
+            let deadline = if timeout.is_zero() {
+                None
+            } else {
+                Some(Instant::now() + timeout)
+            };
+            // 轮询间隔最小 50ms：再短只是空转系统查询（tasklist / pgrep 本身就不便宜）。
+            let interval = Duration::from_millis((*interval_ms).max(50));
+            let hit = loop {
+                if abort::aborted(ctx.gen) {
+                    return Ok(None);
+                }
+                if let Some(value) = wait_target_hit(target, vars)? {
+                    break value;
+                }
+                if let Some(d) = deadline {
+                    if Instant::now() >= d {
+                        return Err(format!(
+                            "{} 超时（{}）",
+                            wait_body(target, None, vars),
+                            fmt_secs(timeout)
+                        ));
+                    }
+                }
+                // 切成 50ms 小片睡：等待几十秒也能在点「停止」后很快退出。
+                let until = Instant::now() + interval;
+                while Instant::now() < until {
+                    if abort::aborted(ctx.gen) {
+                        return Ok(None);
+                    }
+                    let left = until.saturating_duration_since(Instant::now());
+                    std::thread::sleep(left.min(Duration::from_millis(50)));
+                }
+            };
+            if !var.trim().is_empty() {
+                vars.insert(
+                    var.trim().to_string(),
+                    Value::Text(TextValue {
+                        text: hit,
+                        exit_code: None,
+                    }),
+                );
+            }
         }
         #[cfg(feature = "automation")]
         Action::InlineScript {
@@ -1939,6 +2064,8 @@ fn run_action(
                 exit_code: Some(if out.failed { 1 } else { 0 }),
                 detached: false,
                 log_path: None,
+                stdout_file: None,
+                stderr_file: None,
                 show_output: *show_output,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 run_id: ctx.run_id,
@@ -2128,6 +2255,8 @@ fn run_system(
                 exit_code: None,
                 detached: false,
                 log_path: None,
+                stdout_file: None,
+                stderr_file: None,
                 show_output: false,
                 trigger: ctx.t.trigger.into(),
                 name: ctx.t.name.into(),
@@ -2442,7 +2571,7 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
         format!("pkill -f {image}")
     };
     // 内部命令（taskkill / pkill），恒不弹黑窗；不注入 KADA_*（不是用户脚本）。
-    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout, true)?;
+    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout, true, None, None)?;
     Ok(out.into_result("close_program", "关闭程序", cmd, ctx, false))
 }
 
@@ -2729,6 +2858,9 @@ struct CmdOutput {
     killed: Option<String>,
     /// 「启动后不管」（CS-12）：spawn 成功后立刻返回，输出不捕获、退出码未知。
     detached: bool,
+    /// 输出超过内存上限（[`LIVE_TAIL_BYTES`]）时，完整内容落在这里（CS-16）。
+    stdout_file: Option<PathBuf>,
+    stderr_file: Option<PathBuf>,
 }
 
 #[cfg(all(
@@ -2767,6 +2899,12 @@ impl CmdOutput {
             exit_code: self.exit_code,
             detached: self.detached,
             log_path: None,
+            stdout_file: self
+                .stdout_file
+                .map(|p| p.to_string_lossy().into_owned()),
+            stderr_file: self
+                .stderr_file
+                .map(|p| p.to_string_lossy().into_owned()),
             show_output,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             run_id: ctx.run_id,
@@ -2781,6 +2919,106 @@ impl CmdOutput {
     feature = "automation"
 ))]
 const WAIT_POLL_MS: u64 = 20;
+
+/// 内存里保留的输出尾巴（CS-16）：超过它的部分不再进内存，完整流写进临时文件，
+/// 由壳层在写完整日志时读取（见 [`CommandResult::stdout_file`]）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+const LIVE_TAIL_BYTES: usize = 64 * 1024;
+
+/// 「执行中」步骤的实时输出刷新间隔（CS-16）：读线程每来一块就推，主循环按这个节流，
+/// 免得一条狂刷日志的命令把执行记录刷新成每秒上千次。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+const LIVE_FLUSH_MS: u64 = 100;
+
+/// 把一段可能从 UTF-8 字符中间截断的字节转成可显示文本（丢掉开头的不完整字符）。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn tail_text(buf: &[u8]) -> String {
+    let mut start = 0;
+    while start < buf.len() && (buf[start] & 0xC0) == 0x80 {
+        start += 1;
+    }
+    String::from_utf8_lossy(&buf[start..]).into_owned()
+}
+
+/// 完整输出超出内存上限后落盘的临时文件（CS-16）。只建在系统临时目录，壳层读完即删。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn spool_file(tag: &str) -> PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let id = SERIAL.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "kada_stream_{}_{}_{id}.log",
+        std::process::id(),
+        tag
+    ))
+}
+
+/// 读一个输出管道：保留末尾 [`LIVE_TAIL_BYTES`] 字节供内存展示；一旦超限就把**从开头起**
+/// 的完整内容转写进临时文件（先在内存里攒到超限那一刻，再一次性补写——见判定顺序）。
+/// 每读到一块通过 `tx` 交给主循环做「执行中」实时刷新，`bool` 标记是不是 stderr。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn read_stream<R: Read + Send + 'static>(
+    mut r: R,
+    tag: &str,
+    tx: std::sync::mpsc::SyncSender<(bool, Vec<u8>)>,
+    is_err: bool,
+) -> std::thread::JoinHandle<(String, Option<PathBuf>)> {
+    let tag = tag.to_string();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        let mut tail: Vec<u8> = Vec::new();
+        let mut spool: Option<(std::fs::File, PathBuf)> = None;
+        loop {
+            match r.read(&mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    let chunk = &buf[..n];
+                    // 判定在追加之前：此时 `tail` 里还是「至今为止的全部输出」（没超过上限就不会裁），
+                    // 补写它 + 本块即可得到从前到后的完整流。
+                    if spool.is_none() && tail.len() + n > LIVE_TAIL_BYTES {
+                        let path = spool_file(&tag);
+                        if let Ok(mut f) = std::fs::File::create(&path) {
+                            use std::io::Write;
+                            if f.write_all(&tail).is_ok() {
+                                spool = Some((f, path));
+                            } else {
+                                let _ = std::fs::remove_file(&path);
+                            }
+                        }
+                    }
+                    if let Some((f, _)) = spool.as_mut() {
+                        use std::io::Write;
+                        let _ = f.write_all(chunk);
+                    }
+                    tail.extend_from_slice(chunk);
+                    if tail.len() > LIVE_TAIL_BYTES {
+                        let drop = tail.len() - LIVE_TAIL_BYTES;
+                        tail.drain(..drop);
+                    }
+                    // 主循环已经退出（例如 spawn 失败路径）：继续读完、丢弃即可，别阻塞子进程。
+                    let _ = tx.send((is_err, chunk.to_vec()));
+                }
+                Err(_) => break,
+            }
+        }
+        let path = spool.map(|(_, p)| p);
+        (tail_text(&tail), path)
+    })
+}
 
 /// 让子进程**不弹控制台窗口**（Windows 专有）。
 ///
@@ -3027,6 +3265,7 @@ fn apply_child_env(
     ctx: &Ctx<'_>,
     vars: Option<&Vars>,
     working_dir: Option<&Path>,
+    result_file: Option<&Path>,
 ) {
     let Some(vars) = vars else { return };
     // KADA_WORKDIR = 实际工作目录（未设则 Kada cwd 的绝对路径）。
@@ -3039,6 +3278,10 @@ fn apply_child_env(
         .env("KADA_VARS", vars_to_json(vars))
         .env("KADA_OS", std::env::consts::OS)
         .env("KADA_WORKDIR", &workdir);
+    // 结构化结果（CS-19）：脚本把 JSON 对象写到这里，执行成功后 Kada 读取并写变量。
+    if let Some(path) = result_file {
+        cmd.env("KADA_RESULT_FILE", path);
+    }
     // PATH = 当前 PATH + 补充目录（去重、保持顺序）。Windows 没有补充目录，PATH 原样。
     let extra = supplementary_path_dirs();
     if extra.is_empty() {
@@ -3072,6 +3315,257 @@ fn exit_ok(codes: &[i32], code: Option<i32>) -> bool {
     match code {
         Some(c) => (codes.is_empty() && c == 0) || codes.contains(&c),
         None => false,
+    }
+}
+
+/// 为一次命令 / 脚本执行分配结构化结果文件（CS-19）。
+///
+/// 路径放在系统临时目录、带进程号与自增序号；分配时先删掉同名残留文件——否则上一次
+/// 崩溃留下的旧结果会被当成这次脚本写的，变量会莫名其妙地变。脚本通过环境变量
+/// `KADA_RESULT_FILE` 拿到它，成功结束后由 [`apply_result_file`] 解析并删除。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn result_file_path() -> PathBuf {
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let id = SERIAL.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "kada_result_{}_{}.json",
+        std::process::id(),
+        id
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
+/// 读取脚本写进 `KADA_RESULT_FILE` 的 JSON 对象，把每个键写进本次触发的变量表（CS-19）。
+///
+/// 文件不存在 = 脚本没写结果，正常；存在但不是合法 JSON = 本步失败（用户明确想写结果，
+/// 静默忽略会让人以为变量生效了）。顶层不是对象时忽略（变量表只接受键值对），但文件照样
+/// 删掉，不把临时文件留给下一次执行。字符串值原样写入，数字 / 布尔 / null / 数组 / 对象
+/// 写成紧凑 JSON 文本。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn apply_result_file(path: &Path, vars: &mut Vars) -> Result<(), String> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| format!("读取结果文件失败（{}）：{e}", path.display()))?;
+    let _ = std::fs::remove_file(path);
+    if text.trim().is_empty() {
+        return Ok(());
+    }
+    let value: serde_json::Value = serde_json::from_str(&text)
+        .map_err(|e| format!("结果文件不是合法 JSON（{}）：{e}", path.display()))?;
+    let Some(map) = value.as_object() else {
+        return Ok(());
+    };
+    for (k, v) in map {
+        let text = match v {
+            serde_json::Value::String(s) => s.clone(),
+            other => other.to_string(),
+        };
+        vars.insert(
+            k.clone(),
+            Value::Text(TextValue {
+                text,
+                exit_code: None,
+            }),
+        );
+    }
+    Ok(())
+}
+
+/// 一次动作链里「同一动作还在跑」的全局登记（CS-17）。
+///
+/// 键 = 触发名（空则触发键）+ 动作指纹（serde JSON）。跨触发链生效：同一个脚本被
+/// 快捷键起了一次、还没跑完又被同一动作触发时，`skip` / `queue` 才能看到它。
+/// 用 `Vec` 而不是 `HashMap`：条目通常是个位数，`Vec::new()` 还能直接当 `static` 初始值。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+static RUNNING_ACTIONS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+static RUNNING_ACTION_CV: std::sync::Condvar = std::sync::Condvar::new();
+
+/// 在跑登记的作用域守卫：动作结束（含失败 / 中止 / panic）时减计数并唤醒排队者。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+struct RunningSlot {
+    key: String,
+}
+
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+impl Drop for RunningSlot {
+    fn drop(&mut self) {
+        let mut list = RUNNING_ACTIONS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if let Some(i) = list.iter().position(|(k, _)| *k == self.key) {
+            list[i].1 -= 1;
+            if list[i].1 == 0 {
+                list.remove(i);
+            }
+        }
+        drop(list);
+        RUNNING_ACTION_CV.notify_all();
+    }
+}
+
+/// 本次动作要不要登记 / 跳过 / 排队。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+enum RunningDecision {
+    /// 可以执行；命令 / 脚本带一个在跑登记守卫（非命令类动作是 `None`）。
+    Proceed(Option<RunningSlot>),
+    /// `if_running: skip` 且同键动作正在跑。
+    Skip,
+    /// 排队期间用户点了「停止执行」。
+    Abort,
+}
+
+/// 动作指纹键：触发名优先，没有名称时用触发键；同一动作在不同名称的快捷键下互不影响。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn running_key(action: &Action, ctx: &Ctx) -> String {
+    let trigger = if ctx.t.name.trim().is_empty() {
+        ctx.t.trigger
+    } else {
+        ctx.t.name
+    };
+    let fingerprint = serde_json::to_string(action).unwrap_or_default();
+    format!("{trigger}\u{0}{fingerprint}")
+}
+
+/// 按 `if_running` 决定本步执行方式（CS-17）：默认照常跑；`skip` 遇到同键在跑就跳过；
+/// `queue` 等到前一次结束（每 100ms 查一次中止，不会睡死）。只有命令 / 脚本参与登记。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn claim_running_slot(action: &Action, ctx: &Ctx) -> RunningDecision {
+    let mode = match action {
+        Action::Command { if_running, .. } | Action::Script { if_running, .. } => *if_running,
+        _ => return RunningDecision::Proceed(None),
+    };
+    let key = running_key(action, ctx);
+    let mut list = RUNNING_ACTIONS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    loop {
+        if abort::aborted(ctx.gen) {
+            return RunningDecision::Abort;
+        }
+        let busy = list.iter().any(|(k, _)| *k == key);
+        if !busy {
+            list.push((key.clone(), 1));
+            drop(list);
+            return RunningDecision::Proceed(Some(RunningSlot { key }));
+        }
+        match mode {
+            IfRunning::Run => {
+                if let Some(entry) = list.iter_mut().find(|(k, _)| *k == key) {
+                    entry.1 += 1;
+                } else {
+                    list.push((key.clone(), 1));
+                }
+                drop(list);
+                return RunningDecision::Proceed(Some(RunningSlot { key }));
+            }
+            IfRunning::Skip => return RunningDecision::Skip,
+            IfRunning::Queue => {
+                let (guard, _) = RUNNING_ACTION_CV
+                    .wait_timeout(list, Duration::from_millis(100))
+                    .unwrap_or_else(|e| e.into_inner());
+                list = guard;
+            }
+        }
+    }
+}
+
+/// 一次等待动作的目标摘要（`等待文件 D:\x` / `等待进程 foo.exe` / `等待窗口 *记事本*`）。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn wait_body(target: &WaitTarget, timeout_ms: Option<u64>, vars: &Vars) -> String {
+    let what = match target {
+        WaitTarget::File { path } => format!("文件 {}", substitute_vars(path, vars)),
+        WaitTarget::Process { program } => format!("进程 {}", substitute_vars(program, vars)),
+        WaitTarget::Window { title } => format!("窗口 {}", substitute_vars(title, vars)),
+    };
+    match timeout_ms {
+        Some(0) => format!("等待{what}（不限时）"),
+        Some(ms) => format!(
+            "等待{what}（最多 {}）",
+            fmt_secs(Duration::from_millis(ms))
+        ),
+        None => format!("等待{what}"),
+    }
+}
+
+/// 查一次等待目标是否已成立（CS-18）：命中返回要写进变量的文本，未命中返回 `None`。
+///
+/// 文件按「`{变量}` 替换 → `~` 展开 → 相对路径按 Kada cwd」解析；进程按镜像名匹配
+/// （Windows `tasklist`、Unix `pgrep`，忽略大小写 / 路径只取文件名）；窗口只在 Windows
+/// 有实现，其它平台返回明确错误而不是静默永远等下去。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn wait_target_hit(target: &WaitTarget, vars: &Vars) -> Result<Option<String>, String> {
+    match target {
+        WaitTarget::File { path } => {
+            let raw = substitute_vars(path, vars);
+            let raw = raw.trim();
+            if raw.is_empty() {
+                return Err("等待路径不能为空".into());
+            }
+            let p = expand_home(raw);
+            let p = if p.is_absolute() {
+                p
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| format!("解析等待路径失败: {e}"))?
+                    .join(p)
+            };
+            Ok(p.exists().then(|| p.display().to_string()))
+        }
+        WaitTarget::Process { program } => {
+            let raw = substitute_vars(program, vars);
+            let name = image_name(raw.trim());
+            if name.is_empty() {
+                return Err("等待的进程名不能为空".into());
+            }
+            let image = if cfg!(target_os = "windows") && Path::new(&name).extension().is_none() {
+                format!("{name}.exe")
+            } else {
+                name
+            };
+            Ok(app_running(&image).then_some(image))
+        }
+        WaitTarget::Window { title } => {
+            let pattern = substitute_vars(title, vars);
+            kada_hook::window_present(pattern.trim())
+        }
     }
 }
 
@@ -3146,8 +3640,9 @@ fn run_with_deadline(
     label: &str,
     ctx: &Ctx,
     timeout: Duration,
+    live: Option<&mut dyn FnMut(&str)>,
 ) -> Result<CmdOutput, String> {
-    run_child(cmd, label, ctx, timeout, true, None)
+    run_child(cmd, label, ctx, timeout, true, None, live)
 }
 
 /// [`run_with_deadline`] 的实际实现，额外支持「启动后不管」（`wait = false`，CS-12）。
@@ -3158,6 +3653,10 @@ fn run_with_deadline(
 ///
 /// `cleanup` 是跑完要删的临时文件（Windows CMD 的临时批处理）：同步路径在 `wait` 之后删，
 /// 不等待路径在回收线程里删；spawn 失败则当场删，别留垃圾。
+///
+/// `live`（CS-16）：执行中每 ~[`LIVE_FLUSH_MS`] 把 stdout 的末尾一段交给回调（执行记录据此
+/// 实时刷新「执行中」步骤的输出）。内存只留末尾 [`LIVE_TAIL_BYTES`]，超限部分的完整输出
+/// 落在临时文件里、随结果交给壳层写完整日志。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -3170,6 +3669,7 @@ fn run_child(
     timeout: Duration,
     wait: bool,
     cleanup: Option<PathBuf>,
+    mut live: Option<&mut dyn FnMut(&str)>,
 ) -> Result<CmdOutput, String> {
     if !wait {
         cmd.stdout(Stdio::null()).stderr(Stdio::null());
@@ -3195,6 +3695,8 @@ fn run_child(
             exit_code: None,
             killed: None,
             detached: true,
+            stdout_file: None,
+            stderr_file: None,
         });
     }
 
@@ -3207,20 +3709,37 @@ fn run_child(
         format!("执行 {label} 失败: {e}")
     })?;
 
-    let stdout = child.stdout.take().map(|mut s| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = s.read_to_end(&mut buf);
-            buf
-        })
-    });
-    let stderr = child.stderr.take().map(|mut s| {
-        std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            let _ = s.read_to_end(&mut buf);
-            buf
-        })
-    });
+    // 两个读线程各自读管道：保留内存尾巴、超限转写临时文件、按块推给主循环做实时刷新。
+    // 通道有界：主循环每 20ms 排空一次，狂刷日志的命令最多把读线程压在这里，不会撑爆内存。
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(bool, Vec<u8>)>(256);
+    let stdout = child
+        .stdout
+        .take()
+        .map(|s| read_stream(s, "out", tx.clone(), false));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|s| read_stream(s, "err", tx.clone(), true));
+    drop(tx); // 只剩两个读线程持有发送端：它们结束后 rx 才会断开
+
+    // 主循环的本地尾巴（只收 stdout；stderr 只排空不展示）。
+    let mut live_buf: Vec<u8> = Vec::new();
+    let mut live_dirty = false;
+    let mut last_live = Instant::now();
+    let pump = |rx: &std::sync::mpsc::Receiver<(bool, Vec<u8>)>, buf: &mut Vec<u8>| {
+        let mut got = false;
+        while let Ok((is_err, chunk)) = rx.try_recv() {
+            if !is_err {
+                buf.extend_from_slice(&chunk);
+                got = true;
+            }
+        }
+        if buf.len() > LIVE_TAIL_BYTES {
+            let drop = buf.len() - LIVE_TAIL_BYTES;
+            buf.drain(..drop);
+        }
+        got
+    };
 
     let deadline = if timeout.is_zero() {
         None
@@ -3235,6 +3754,20 @@ fn run_child(
             if Instant::now() >= d {
                 break Some(format!("执行超时（超过 {} 秒）", fmt_secs(timeout)));
             }
+        }
+        // 实时尾巴：每 LIVE_FLUSH_MS 最多刷一次，避免一条疯跑日志的命令把事件刷爆。
+        // 用 dirty 而不是「这一刻刚读到新数据」：输出可能早早写完、进程随后长时间不吭声，
+        // 只在 got 时刷会让界面一直停在旧内容。
+        let got = pump(&rx, &mut live_buf);
+        if got {
+            live_dirty = true;
+        }
+        if live_dirty && last_live.elapsed() >= Duration::from_millis(LIVE_FLUSH_MS) {
+            if let Some(cb) = live.as_deref_mut() {
+                cb(&tail_text(&live_buf));
+            }
+            live_dirty = false;
+            last_live = Instant::now();
         }
         match child.try_wait() {
             Ok(Some(_)) => break None,
@@ -3265,12 +3798,23 @@ fn run_child(
     if let Some(path) = &cleanup {
         let _ = std::fs::remove_file(path);
     }
-    // 读线程到这里必然已经结束：进程退出 / 被杀 → 管道写端全部关闭 → read_to_end 返回。
-    let join = |h: Option<std::thread::JoinHandle<Vec<u8>>>| {
-        h.map(|h| h.join().unwrap_or_default()).unwrap_or_default()
+    // 读线程收尾前必须继续排空通道（有界通道塞满时读线程会卡在 send 上，join 会死等）。
+    loop {
+        pump(&rx, &mut live_buf);
+        let out_done = stdout.as_ref().is_none_or(|h| h.is_finished());
+        let err_done = stderr.as_ref().is_none_or(|h| h.is_finished());
+        if out_done && err_done {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    pump(&rx, &mut live_buf);
+    let join = |h: Option<std::thread::JoinHandle<(String, Option<PathBuf>)>>| {
+        h.map(|h| h.join().unwrap_or_default())
+            .unwrap_or_default()
     };
-    let stdout = String::from_utf8_lossy(&join(stdout)).into_owned();
-    let stderr = String::from_utf8_lossy(&join(stderr)).into_owned();
+    let (stdout, stdout_file) = join(stdout);
+    let (stderr, stderr_file) = join(stderr);
     let exit_code = if killed.is_some() {
         None
     } else {
@@ -3282,6 +3826,8 @@ fn run_child(
         exit_code,
         killed,
         detached: false,
+        stdout_file,
+        stderr_file,
     })
 }
 
@@ -3378,6 +3924,8 @@ fn run_cmd(
     vars: Option<&Vars>,
     timeout: Duration,
     wait: bool,
+    result_file: Option<&Path>,
+    live: Option<&mut dyn FnMut(&str)>,
 ) -> Result<CmdOutput, String> {
     // Windows 的 CMD 走临时批处理文件（见下），跑完要删掉——被强杀时也得删。
     let mut temp_bat: Option<PathBuf> = None;
@@ -3407,14 +3955,14 @@ fn run_cmd(
         c.args(["-c", command]);
         c
     };
-    apply_child_env(&mut cmd, ctx, vars, working_dir);
+    apply_child_env(&mut cmd, ctx, vars, working_dir, result_file);
     if let Some(d) = working_dir {
         cmd.current_dir(d);
     }
     if hide_window {
         no_console_window(&mut cmd);
     }
-    let out = run_child(&mut cmd, label, ctx, timeout, wait, temp_bat);
+    let out = run_child(&mut cmd, label, ctx, timeout, wait, temp_bat, live);
     out
 }
 
@@ -3442,6 +3990,8 @@ fn run_script(
     hide_window: bool,
     timeout: Duration,
     wait: bool,
+    result_file: Option<&Path>,
+    live: Option<&mut dyn FnMut(&str)>,
 ) -> Result<CmdOutput, String> {
     let raw = path.trim();
     if raw.is_empty() {
@@ -3469,14 +4019,14 @@ fn run_script(
     };
     let mut cmd = std::process::Command::new(&program);
     cmd.args(&pre_args).arg(&script).args(args);
-    apply_child_env(&mut cmd, ctx, Some(vars), working_dir);
+    apply_child_env(&mut cmd, ctx, Some(vars), working_dir, result_file);
     if let Some(d) = working_dir {
         cmd.current_dir(d);
     }
     if hide_window {
         no_console_window(&mut cmd);
     }
-    run_child(&mut cmd, "脚本", ctx, timeout, wait, None)
+    run_child(&mut cmd, "脚本", ctx, timeout, wait, None, live)
 }
 
 /// 弹一个输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
@@ -3531,7 +4081,7 @@ fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, St
         .arg("-File")
         .arg(&path);
     no_console_window(&mut cmd);
-    let out = run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO);
+    let out = run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO, None);
     let _ = std::fs::remove_file(&path);
     out
 }
@@ -3546,7 +4096,7 @@ fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, St
     );
     let mut cmd = std::process::Command::new("osascript");
     cmd.arg("-e").arg(script);
-    run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO)
+    run_with_deadline(&mut cmd, "输入框", ctx, Duration::ZERO, None)
 }
 
 #[cfg(all(target_os = "linux", feature = "automation"))]
@@ -3557,7 +4107,7 @@ fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, St
         .arg("--title=Kada")
         .arg(format!("--text={prompt}"))
         .arg(format!("--entry-text={default}"));
-    match run_with_deadline(&mut zenity, "输入框", ctx, Duration::ZERO) {
+    match run_with_deadline(&mut zenity, "输入框", ctx, Duration::ZERO, None) {
         Ok(out) => Ok(out),
         Err(e) if e.contains("失败") => {
             let mut kdialog = std::process::Command::new("kdialog");
@@ -3567,7 +4117,7 @@ fn prompt_dialog(prompt: &str, default: &str, ctx: &Ctx) -> Result<CmdOutput, St
                 .arg("--inputbox")
                 .arg(prompt)
                 .arg(default);
-            run_with_deadline(&mut kdialog, "输入框", ctx, Duration::ZERO)
+            run_with_deadline(&mut kdialog, "输入框", ctx, Duration::ZERO, None)
         }
         Err(e) => Err(e),
     }
@@ -3670,6 +4220,8 @@ mod tests {
             None,
             Duration::from_millis(10_000),
             true,
+            None,
+            None,
         )
         .expect("命令应能执行");
         assert_eq!(out.killed, None, "正常结束不算被打断");
@@ -3723,6 +4275,8 @@ mod tests {
                 hide,
                 Duration::from_millis(60_000),
                 true,
+                None,
+                None,
             )
             .expect("探针脚本应能跑完")
         };
@@ -3759,7 +4313,7 @@ mod tests {
     fn timeout_kills_hung_process_and_reports_reason() {
         let _g = abort::test_lock();
         let start = Instant::now();
-        let out = run_with_deadline(&mut sleeper(30), "测试", &ctx(800), Duration::from_millis(800)).expect("进程应能启动");
+        let out = run_with_deadline(&mut sleeper(30), "测试", &ctx(800), Duration::from_millis(800), None).expect("进程应能启动");
         assert!(
             matches!(&out.killed, Some(r) if r.contains("超时")),
             "超时必须标记为被强制终止且说明原因：{:?}",
@@ -3808,7 +4362,7 @@ mod tests {
             ]);
             c
         };
-        let out = run_with_deadline(&mut cmd, "测试", &ctx(1_200), Duration::from_millis(1_200)).expect("进程应能启动");
+        let out = run_with_deadline(&mut cmd, "测试", &ctx(1_200), Duration::from_millis(1_200), None).expect("进程应能启动");
         assert!(out.killed.is_some(), "1.2 秒还没结束就该判超时");
         std::thread::sleep(Duration::from_millis(3_500));
         assert!(
@@ -3829,7 +4383,7 @@ mod tests {
         let start = Instant::now();
         // 不限时（0）：能结束只可能是因为中止生效。
         let mut cmd = sleeper(30);
-        let out = run_with_deadline(&mut cmd, "测试", &ctx(0), Duration::ZERO).expect("进程应能启动");
+        let out = run_with_deadline(&mut cmd, "测试", &ctx(0), Duration::ZERO, None).expect("进程应能启动");
         requester.join().unwrap();
         assert_eq!(out.killed.as_deref(), Some("已中止"));
         assert!(start.elapsed() < Duration::from_secs(8), "中止后应立即返回");
@@ -4022,6 +4576,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         }];
         let (_, steps, status) = run_all(&actions, &RunOptions::default());
@@ -4264,6 +4819,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         }];
         let mut vars: Vars = BTreeMap::new();
@@ -4354,6 +4910,8 @@ mod tests {
             Some(&vars),
             Duration::from_millis(10_000),
             true,
+            None,
+            None,
         )
         .expect("命令应能执行");
         let _ = fs::remove_dir_all(&dir);
@@ -4401,6 +4959,8 @@ mod tests {
             false,
             Duration::from_millis(60_000),
             true,
+            None,
+            None,
         )
         .expect("探针脚本应能跑完");
         let _ = fs::remove_dir_all(&dir);
@@ -4479,6 +5039,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         };
         let results = run_collect(&[action], &mut vars);
@@ -4539,6 +5100,8 @@ mod tests {
             false,
             Duration::from_millis(60_000),
             true,
+            None,
+            None,
         )
         .expect("假解释器应能跑完");
         let _ = fs::remove_dir_all(&dir);
@@ -4564,6 +5127,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         }];
         let opts = RunOptions {
@@ -4600,6 +5164,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         }];
         let opts = RunOptions {
@@ -4636,6 +5201,7 @@ mod tests {
             var: "out".into(),
             wait: false,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         }];
         let start = Instant::now();
@@ -4671,6 +5237,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error,
+            if_running: Default::default(),
             description: None,
         };
         let later = || Action::PauseMs { ms: 1, description: None };
@@ -4707,6 +5274,7 @@ mod tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: Default::default(),
             description: None,
         };
         let exit1 = if cfg!(target_os = "windows") {
@@ -5300,6 +5868,220 @@ mod tests {
             }
         });
         assert_eq!(peak.load(Ordering::SeqCst), 1, "注入锁必须让临界区互斥");
+    }
+
+    /// 测试用临时路径（文件名带进程号 + 纳秒，避免并行测试互相踩）。
+    fn temp_path(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("kada_{tag}_{}_{nanos}", std::process::id()))
+    }
+
+    /// 一条写结构化结果文件的命令（CS-19）：成功时脚本把 JSON 写进 `KADA_RESULT_FILE`。
+    fn result_file_command(payload: &str) -> Action {
+        let command = if cfg!(target_os = "windows") {
+            format!("echo {payload}>\"%KADA_RESULT_FILE%\"")
+        } else {
+            format!("printf '%s' '{payload}' > \"$KADA_RESULT_FILE\"")
+        };
+        Action::Command {
+            shell: Shell::Cmd,
+            command,
+            working_dir: String::new(),
+            timeout_ms: Some(5_000),
+            ok_exit_codes: Vec::new(),
+            show_output: false.into(),
+            hide_window: true,
+            var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
+            if_running: Default::default(),
+            description: None,
+        }
+    }
+
+    /// 一条会跑一会儿的命令（if_running 用例共用；同指纹才可能撞上）。
+    fn slow_command(mode: IfRunning) -> Action {
+        Action::Command {
+            shell: Shell::Cmd,
+            command: if cfg!(target_os = "windows") {
+                "powershell -NoProfile -Command Start-Sleep -Milliseconds 700".into()
+            } else {
+                "sleep 0.7".into()
+            },
+            working_dir: String::new(),
+            timeout_ms: Some(5_000),
+            ok_exit_codes: Vec::new(),
+            show_output: false.into(),
+            hide_window: true,
+            var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
+            if_running: mode,
+            description: None,
+        }
+    }
+
+    fn text_var(vars: &Vars, key: &str) -> String {
+        match vars.get(key) {
+            Some(Value::Text(t)) => t.text.clone(),
+            other => panic!("变量 {key} 不是文本：{other:?}"),
+        }
+    }
+
+    /// 等第一条慢命令登记进全局表（最多 2 秒），避免 if_running 用例靠猜时间。
+    fn wait_until_running() {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while RUNNING_ACTIONS.lock().unwrap().is_empty() {
+            assert!(Instant::now() < deadline, "慢命令没有登记进在跑表");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// 结构化结果（CS-19）：JSON 对象的每个键写进变量；数字按紧凑 JSON 文本保留。
+    #[test]
+    fn result_file_writes_variables() {
+        let _g = abort::test_lock();
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&[result_file_command(r#"{"name":"kada","n":42}"#)], &mut vars);
+        assert_eq!(results.len(), 1, "命令本身应成功提交一条结果");
+        assert_eq!(results[0].exit_code, Some(0));
+        assert_eq!(text_var(&vars, "name"), "kada");
+        assert_eq!(text_var(&vars, "n"), "42");
+    }
+
+    /// 结果文件不是合法 JSON = 本步失败（不能静默忽略，否则用户以为变量生效了）。
+    #[test]
+    fn invalid_result_file_fails_the_step() {
+        let _g = abort::test_lock();
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&[result_file_command("not-json")], &mut vars);
+        assert!(
+            results
+                .iter()
+                .any(|r| r.kind == "error" && r.stderr.contains("不是合法 JSON")),
+            "应记一条结果文件解析失败：{results:?}"
+        );
+        assert!(vars.is_empty(), "解析失败不该写入任何变量");
+    }
+
+    /// 等待文件出现（CS-18）：命中后把实际路径写变量；没出现则按超时报失败。
+    #[test]
+    fn wait_for_file_hits_and_times_out() {
+        let _g = abort::test_lock();
+        let path = temp_path("wait_file.txt");
+        let waiter = path.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            let _ = fs::write(&waiter, b"ok");
+        });
+        let hit = Action::WaitFor {
+            target: WaitTarget::File {
+                path: path.display().to_string(),
+            },
+            timeout_ms: Some(3_000),
+            interval_ms: 50,
+            var: "found".into(),
+            description: None,
+        };
+        let mut vars: Vars = BTreeMap::new();
+        let results = run_collect(&[hit], &mut vars);
+        assert!(results.is_empty(), "等待成功不进消息中心：{results:?}");
+        assert_eq!(text_var(&vars, "found"), path.display().to_string());
+        let _ = fs::remove_file(&path);
+
+        let missing = temp_path("wait_missing.txt");
+        let timeout = Action::WaitFor {
+            target: WaitTarget::File {
+                path: missing.display().to_string(),
+            },
+            timeout_ms: Some(200),
+            interval_ms: 50,
+            var: String::new(),
+            description: None,
+        };
+        let results = run_collect(&[timeout], &mut BTreeMap::new());
+        assert!(
+            results
+                .iter()
+                .any(|r| r.kind == "error" && r.stderr.contains("超时")),
+            "超时应记失败步骤：{results:?}"
+        );
+    }
+
+    /// `if_running: skip`（CS-17）：同键动作还在跑时，本次直接记「已跳过」且不执行。
+    #[test]
+    fn if_running_skip_skips_the_second_instance() {
+        let _g = abort::test_lock();
+        let first = std::thread::spawn(|| {
+            run_all(&[slow_command(IfRunning::Skip)], &RunOptions::default())
+        });
+        wait_until_running();
+        let (results, steps, status) =
+            run_all(&[slow_command(IfRunning::Skip)], &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert!(results.is_empty(), "跳过的动作不该产生命令结果");
+        let steps = dedupe_steps(steps);
+        assert!(
+            steps.iter().any(|s| s.stdout.contains("已跳过")),
+            "应记一条「已在运行，已跳过」：{steps:?}"
+        );
+        let _ = first.join().unwrap();
+    }
+
+    /// `if_running: queue`（CS-17）：同键动作还在跑时，本次等它结束再执行。
+    #[test]
+    fn if_running_queue_waits_for_previous_instance() {
+        let _g = abort::test_lock();
+        let first = std::thread::spawn(|| {
+            run_all(&[slow_command(IfRunning::Queue)], &RunOptions::default())
+        });
+        wait_until_running();
+        let start = Instant::now();
+        let (results, _, status) =
+            run_all(&[slow_command(IfRunning::Queue)], &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert_eq!(results.len(), 1, "排队的动作最终要执行一次");
+        assert!(
+            start.elapsed() >= Duration::from_millis(400),
+            "排队应至少等前一次睡完，实际 {:?}",
+            start.elapsed()
+        );
+        let _ = first.join().unwrap();
+    }
+
+    /// 流式输出（CS-16）：命令先打印、再长时间不吭声，实时回调也要在 100ms 内拿到尾巴。
+    #[test]
+    fn live_callback_receives_output_before_process_ends() {
+        let _g = abort::test_lock();
+        let command = if cfg!(target_os = "windows") {
+            "echo live-tail & powershell -NoProfile -Command Start-Sleep -Milliseconds 400"
+        } else {
+            "printf 'live-tail\\n'; sleep 0.4"
+        };
+        let mut chunks: Vec<String> = Vec::new();
+        let mut live = |s: &str| chunks.push(s.to_string());
+        let out = run_cmd(
+            "CMD",
+            false,
+            command,
+            &ctx(5_000),
+            true,
+            None,
+            None,
+            Duration::from_millis(5_000),
+            true,
+            None,
+            Some(&mut live),
+        )
+        .expect("命令应能执行");
+        assert_eq!(out.exit_code, Some(0));
+        assert!(
+            chunks.iter().any(|c| c.contains("live-tail")),
+            "实时回调应收到执行中的 stdout：{chunks:?}"
+        );
     }
 }
 

@@ -1599,6 +1599,54 @@ fn is_continue(v: &OnError) -> bool {
     matches!(v, OnError::Continue)
 }
 
+/// 同一条命令 / 脚本上一次还没跑完时，这次触发怎么办（CS-17）。
+///
+/// 以「动作指纹 + 触发名」为键在**整个进程**里登记在跑的实例：跨触发链生效——同一个脚本
+/// 被快捷键 A 起了一次、还没跑完又被 A / 同一动作再触发时按这里的选择处理。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IfRunning {
+    /// 照常再起一份（默认，旧行为）。
+    #[default]
+    Run,
+    /// 直接跳过：记一条「已在运行，已跳过」的步骤，不执行本步。
+    Skip,
+    /// 排队等上一次结束再执行；等待期间可被「停止执行」中止。
+    Queue,
+}
+
+/// `serde` 帮手：默认的 `run` 不落盘。
+#[cfg(feature = "automation")]
+fn is_if_running_default(v: &IfRunning) -> bool {
+    matches!(v, IfRunning::Run)
+}
+
+/// 等待动作的缺省轮询间隔（毫秒）。
+#[cfg(feature = "automation")]
+pub fn default_wait_interval_ms() -> u64 {
+    200
+}
+
+/// `serde` 帮手：缺省轮询间隔不落盘。
+#[cfg(feature = "automation")]
+fn is_default_wait_interval(v: &u64) -> bool {
+    *v == default_wait_interval_ms()
+}
+
+/// 等待动作的目标（CS-18）。
+#[cfg(feature = "automation")]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum WaitTarget {
+    /// 等文件 / 目录出现（`path` 支持 `{变量}` 与 `~`）。
+    File { path: String },
+    /// 等进程启动（`program` 按镜像名匹配，忽略大小写；Windows 用 `tasklist`、Unix 用 `pgrep`）。
+    Process { program: String },
+    /// 等窗口出现（`title` 按子串 / 通配匹配，忽略大小写；**目前只有 Windows 实现**）。
+    Window { title: String },
+}
+
 /// `serde` 帮手：默认的「从不弹窗」不落盘（老布尔 false 也按默认处理）。
 #[cfg(feature = "automation")]
 fn is_show_output_default(v: &ShowOutput) -> bool {
@@ -1707,6 +1755,8 @@ pub enum Action {
         wait: bool,
         #[serde(default, skip_serializing_if = "is_continue")]
         on_error: OnError,
+        #[serde(default, skip_serializing_if = "is_if_running_default")]
+        if_running: IfRunning,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1827,6 +1877,8 @@ pub enum Action {
         wait: bool,
         #[serde(default, skip_serializing_if = "is_continue")]
         on_error: OnError,
+        #[serde(default, skip_serializing_if = "is_if_running_default")]
+        if_running: IfRunning,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1858,6 +1910,23 @@ pub enum Action {
     Parallel {
         #[serde(default)]
         actions: Vec<Action>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
+    /// 等待某个条件成立（CS-18）：文件 / 目录出现、进程启动、窗口出现。
+    ///
+    /// 轮询间隔 `interval_ms`（缺省 200，最小 50）；`timeout_ms` 缺省跟全局「动作超时」，
+    /// `0` = 一直等（仍可被「停止执行」中止）。超时 = 本步失败（按链的默认语义继续后续动作）。
+    /// `var` 非空时把命中的内容写进变量（文件 = 实际路径、进程 = 程序名、窗口 = 窗口标题）。
+    #[cfg(feature = "automation")]
+    WaitFor {
+        target: WaitTarget,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        #[serde(default = "default_wait_interval_ms", skip_serializing_if = "is_default_wait_interval")]
+        interval_ms: u64,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        var: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -2098,6 +2167,17 @@ impl Action {
                 for a in actions {
                     a.validate()?;
                 }
+                Ok(())
+            }
+            #[cfg(feature = "automation")]
+            Action::WaitFor { target, var, .. } => {
+                match target {
+                    WaitTarget::File { path } => non_empty("路径", path)?,
+                    WaitTarget::Process { program } => non_empty("进程名", program)?,
+                    WaitTarget::Window { title } => non_empty("窗口标题", title)?,
+                }
+                // 变量名可空（不写变量），只校验目标非空。
+                let _ = var;
                 Ok(())
             }
             // 窗口动作没有必填字段（操作有缺省值），恒可执行；平台支持与否由冲突检测标出。
@@ -3416,6 +3496,9 @@ pub struct PlatformCaps {
     pub device_conditions: bool,
     /// 「当前窗口」动作（[`Action::Window`]）是否可用。目前只有 Windows 有前台窗口句柄。
     pub window_actions: bool,
+    /// 「等待窗口出现」是否可用（[`WaitTarget::Window`]）。目前只有 Windows 实现了
+    /// 顶层窗口枚举；其它平台执行到这一步会明确失败。
+    pub window_wait: bool,
     /// 鼠标绝对移动（[`MouseOp::MoveTo`] / [`MouseOp::MoveToOrigin`]）是否可用。
     /// Linux 拿不到可靠的全局屏幕范围（尤其 Wayland），暂不支持。
     pub mouse_absolute: bool,
@@ -3443,6 +3526,7 @@ impl Default for PlatformCaps {
             frontmost_conditions: true,
             device_conditions: true,
             window_actions: true,
+            window_wait: true,
             mouse_absolute: true,
             background_input: true,
             shell_actions: true,
@@ -3462,6 +3546,7 @@ impl PlatformCaps {
             && self.frontmost_conditions
             && self.device_conditions
             && self.window_actions
+            && self.window_wait
             && self.mouse_absolute
             && self.background_input
             && self.shell_actions
@@ -4048,6 +4133,15 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        #[cfg(feature = "automation")]
+        if !caps.window_wait && uses_window_wait(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「等待窗口出现」在当前平台用不了（只有 Windows 实现了窗口枚举），执行到这一步会失败".into(),
+                name: name_of(s),
+            });
+        }
         if !caps.mouse_absolute && uses_absolute_move(&s.actions) {
             out.push(Conflict {
                 severity: Severity::Warn,
@@ -4094,6 +4188,19 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     severity: Severity::Warn,
                     platform: true,
                     message: "「当前窗口」动作在当前平台用不了（只有 Windows 实现了前台窗口操作），执行到这一步会失败".into(),
+                    name: label,
+                });
+            }
+        }
+    }
+    #[cfg(feature = "automation")]
+    if !caps.window_wait {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_window_wait(actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「等待窗口出现」在当前平台用不了（只有 Windows 实现了窗口枚举），执行到这一步会失败".into(),
                     name: label,
                 });
             }
@@ -4529,6 +4636,24 @@ fn uses_window_action(actions: &[Action]) -> bool {
     })
 }
 
+/// 动作树里有没有「等待窗口出现」（`If` / `Parallel` / 分组递归进去）。
+/// 基础版没有这个动作类型，恒 false。
+#[cfg(feature = "automation")]
+fn uses_window_wait(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::WaitFor {
+            target: WaitTarget::Window { .. },
+            ..
+        } => true,
+        Action::Group { actions, .. } => uses_window_wait(actions),
+        Action::If {
+            then, otherwise, ..
+        } => uses_window_wait(then) || uses_window_wait(otherwise),
+        Action::Parallel { actions, .. } => uses_window_wait(actions),
+        _ => false,
+    })
+}
+
 /// 动作树里有没有绝对鼠标移动（`MoveTo` / `MoveToOrigin`），`If` / `Parallel` / 分组递归。
 fn uses_absolute_move(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
@@ -4790,6 +4915,7 @@ pub fn migrate_action(a: Action) -> Action {
             var,
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description,
         },
         #[cfg(feature = "automation")]
@@ -4804,6 +4930,7 @@ pub fn migrate_action(a: Action) -> Action {
             var,
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description,
         },
         #[cfg(feature = "automation")]
@@ -6987,8 +7114,8 @@ mod new_action_and_folder_tests {
             Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
-            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None },
-            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None },
+            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None },
+            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "应通过校验: {a:?}");
@@ -7000,7 +7127,7 @@ mod new_action_and_folder_tests {
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
         assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
-        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None }
+        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None }
             .validate()
             .is_err());
     }
@@ -7385,6 +7512,7 @@ mod new_action_and_folder_tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description: None,
         };
         let json = serde_json::to_string(&hidden).unwrap();
@@ -7404,6 +7532,7 @@ mod new_action_and_folder_tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description: None,
         };
         assert!(
@@ -7453,6 +7582,7 @@ mod new_action_and_folder_tests {
             var: String::new(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description: None,
         };
         let json = serde_json::to_string(&plain).unwrap();
@@ -7463,6 +7593,7 @@ mod new_action_and_folder_tests {
             "show_output",
             "wait",
             "on_error",
+            "if_running",
         ] {
             assert!(!json.contains(key), "{key} 默认值不该落盘: {json}");
         }
@@ -7481,11 +7612,94 @@ mod new_action_and_folder_tests {
             var: String::new(),
             wait: false,
             on_error: OnError::Stop,
+            if_running: IfRunning::Queue,
             description: None,
         };
         let json = serde_json::to_string(&full).unwrap();
         assert!(json.contains(r#""timeout_ms":0"#), "0 = 不限时该落盘: {json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), full);
+    }
+
+    /// 等待动作（CS-18）：缺省轮询间隔不落盘、目标按 `kind` 判别；三种目标都能往返。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn wait_for_roundtrip_and_defaults() {
+        let file = Action::WaitFor {
+            target: WaitTarget::File { path: "D:\\out.zip".into() },
+            timeout_ms: None,
+            interval_ms: default_wait_interval_ms(),
+            var: String::new(),
+            description: None,
+        };
+        assert!(file.validate().is_ok());
+        let json = serde_json::to_string(&file).unwrap();
+        assert!(!json.contains("interval_ms"), "缺省间隔不落盘: {json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), file);
+
+        let process = Action::WaitFor {
+            target: WaitTarget::Process { program: "notepad.exe".into() },
+            timeout_ms: Some(0),
+            interval_ms: 500,
+            var: "pid".into(),
+            description: Some("等记事本".into()),
+        };
+        assert!(process.validate().is_ok());
+        let json = serde_json::to_string(&process).unwrap();
+        assert!(json.contains(r#""kind":"process""#), "{json}");
+        assert!(json.contains(r#""interval_ms":500"#), "{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), process);
+
+        let window = Action::WaitFor {
+            target: WaitTarget::Window { title: "*记事本*".into() },
+            timeout_ms: Some(5000),
+            interval_ms: default_wait_interval_ms(),
+            var: String::new(),
+            description: None,
+        };
+        assert_eq!(
+            serde_json::from_str::<Action>(&serde_json::to_string(&window).unwrap()).unwrap(),
+            window
+        );
+
+        // 空目标 = 无效（保存在清洗路径会丢，这里先拦住）。
+        assert!(Action::WaitFor {
+            target: WaitTarget::File { path: "  ".into() },
+            timeout_ms: None,
+            interval_ms: 200,
+            var: String::new(),
+            description: None,
+        }
+        .validate()
+        .is_err());
+    }
+
+    /// `if_running` 默认 `run` 不落盘，显式 `skip` / `queue` 能往返。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn if_running_defaults_and_roundtrip() {
+        let skipped = Action::Command {
+            shell: Shell::Cmd,
+            command: "echo hi".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false.into(),
+            hide_window: false,
+            var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
+            if_running: IfRunning::Skip,
+            description: None,
+        };
+        let json = serde_json::to_string(&skipped).unwrap();
+        assert!(json.contains(r#""if_running":"skip""#), "{json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), skipped);
+        let old: Action =
+            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+        assert!(
+            matches!(old, Action::Command { if_running: IfRunning::Run, .. }),
+            "老配置缺 if_running 该是默认 run: {old:?}"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -7580,6 +7794,7 @@ mod new_action_and_folder_tests {
                 var: "".into(),
                 wait: true,
                 on_error: OnError::Continue,
+                if_running: IfRunning::Run,
                 description: None,
             },
             Action::Script {
@@ -7595,6 +7810,7 @@ mod new_action_and_folder_tests {
                 var: "out".into(),
                 wait: true,
                 on_error: OnError::Continue,
+                if_running: IfRunning::Run,
                 description: None,
             },
         ];
@@ -7619,6 +7835,7 @@ mod new_action_and_folder_tests {
             var: "".into(),
             wait: true,
             on_error: OnError::Continue,
+            if_running: IfRunning::Run,
             description: None,
         }
         .validate()

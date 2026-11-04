@@ -371,6 +371,7 @@ pub fn sample_config() -> Config {
             var: String::new(),
             wait: true,
             on_error: Default::default(),
+            if_running: Default::default(),
             description: None,
         }],
     ));
@@ -390,6 +391,7 @@ pub fn sample_config() -> Config {
                 var: "user".into(),
                 wait: true,
                 on_error: Default::default(),
+                if_running: Default::default(),
                 description: None,
             },
             Action::Text {
@@ -444,6 +446,7 @@ pub fn sample_config() -> Config {
                     var: String::new(),
                     wait: true,
                     on_error: Default::default(),
+                    if_running: Default::default(),
                     description: None,
                 },
                 Action::Command {
@@ -457,6 +460,7 @@ pub fn sample_config() -> Config {
                     var: String::new(),
                     wait: true,
                     on_error: Default::default(),
+                    if_running: Default::default(),
                     description: None,
                 },
             ],

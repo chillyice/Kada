@@ -515,6 +515,22 @@ body.is-mac .titlebar {
   }
 }
 
+/* 执行记录「定位到动作」：目标动作卡片闪一下，用户不用在整条链里自己找。 */
+.action-row.action-locate {
+  animation: locate-action 1.6s ease;
+}
+
+@keyframes locate-action {
+  0% {
+    box-shadow: 0 0 0 3px var(--accent);
+    background: var(--accent-dim);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+    background: transparent;
+  }
+}
+
 /* 组合键 chip：列表行最左，紧跟名称 */
 .row-trigger {
   position: relative; /* 层标记贴在 chip 的左下角，absolute 定位的参照物 */
@@ -3554,6 +3570,32 @@ pre.msg-v {
   padding: 8px 10px;
   max-height: 200px;
   overflow-y: auto;
+}
+
+/* 输出块（CS-21）：工具行（筛选 + 展开）在上，折叠态只露前 96px。 */
+.msg-output {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.msg-output-tools {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.msg-output-search {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 8px;
+  font-size: var(--fs-sm);
+}
+
+pre.msg-output-pre.collapsed {
+  max-height: 96px;
+  overflow: hidden;
+  mask-image: linear-gradient(to bottom, #000 70%, transparent);
 }
 
 /* ---------- 执行记录：卡片头 / 时间线 / 流水线 ---------- */

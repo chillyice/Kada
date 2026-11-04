@@ -418,6 +418,8 @@ fn record_auto_failure(app: &tauri::AppHandle, message: &str) {
             exit_code: None,
             detached: false,
             log_path: None,
+            stdout_file: None,
+            stderr_file: None,
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             run_id: None,

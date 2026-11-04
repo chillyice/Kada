@@ -184,8 +184,7 @@ pub enum WindowOp {
 /// 三平台各自实现（`win` / `linux` / `macos`），失败返回能直接展示给用户的中文原因。
 /// 本接口不属于输入注入，**不走提权通道**；目标程序若以管理员身份运行，非提权的 Kada
 /// 可能改不动它的窗口（Windows 上表现为 `ShowWindow` 无效果）。
-pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
-    #[cfg(windows)]
+pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {    #[cfg(windows)]
     {
         win::control_window(program, op)
     }
@@ -204,6 +203,21 @@ pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
     }
 }
 
+/// 是否存在标题匹配 `pattern` 的可见顶层窗口（等待窗口动作，CS-18）。
+///
+/// `pattern` 与前台条件同一套匹配口径（忽略大小写、支持 `*` / `?` 通配，不带通配时按子串）。
+/// 命中返回窗口标题；只有 Windows 实现了顶层窗口枚举，其它平台返回明确错误。
+pub fn window_present(pattern: &str) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    {
+        win::window_present(pattern)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = pattern;
+        Err("等待窗口出现目前仅 Windows 可用".into())
+    }
+}
 
 /// 当前窗口动作的操作（[`window_action`]，EXT-14）。与 [`WindowOp`]（按程序名找主窗口）
 /// 分开：这里的作用对象是**触发那一刻抓到的前台窗口**，且**一律不激活、不抢焦点**。

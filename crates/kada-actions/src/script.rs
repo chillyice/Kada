@@ -182,6 +182,14 @@ fn run_with_limits(
             map
         });
     }
+    // 只读 JSON 取值（CS-19）：`json_get(text, "file.name")`。
+    // 同样不碰文件 / 网络——文本是脚本自己拼出来的（通常是 get_var 读到的命令输出）。
+    engine.register_fn(
+        "json_get",
+        |json: &str, path: &str| -> Result<String, Box<EvalAltResult>> {
+            json_get_text(json, path).map_err(Into::into)
+        },
+    );
     // 写：`set_var("名", 值)`，值可以是字符串 / 整数 / 布尔。
     {
         let st = state.clone();
@@ -335,6 +343,38 @@ fn write_var(st: &Arc<Mutex<State>>, name: &str, value: &str) -> Result<(), Box<
     }
     st.writes.insert(name.to_string(), value.to_string());
     Ok(())
+}
+
+/// 从 JSON 文本里按点分路径取值（CS-19 的 `json_get`）。
+///
+/// 路径用 `.` 分隔，对象按键取、数组按下标取（`items.0.name`）；取不到 = 空串。
+/// **只解析传进来的文本**：不读文件、不联网，沙箱边界没变。
+/// 非法 JSON 返回错误（让脚本作者知道自己的文本不对，而不是悄悄拿到空串）。
+fn json_get_text(json: &str, path: &str) -> Result<String, String> {
+    let root: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("不是合法 JSON：{e}"))?;
+    let mut cur = &root;
+    for seg in path.split('.').filter(|s| !s.trim().is_empty()) {
+        cur = match cur {
+            serde_json::Value::Object(map) => match map.get(seg.trim()) {
+                Some(v) => v,
+                None => return Ok(String::new()),
+            },
+            serde_json::Value::Array(items) => match seg.trim().parse::<usize>() {
+                Ok(i) => match items.get(i) {
+                    Some(v) => v,
+                    None => return Ok(String::new()),
+                },
+                Err(_) => return Ok(String::new()),
+            },
+            _ => return Ok(String::new()),
+        };
+    }
+    Ok(match cur {
+        serde_json::Value::String(s) => s.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    })
 }
 
 /// 变量值的文本形态：文件变量取完整路径，布尔取 true/false。
@@ -516,6 +556,49 @@ mod tests {
         .unwrap();
         assert!(failed.failed);
         assert!(failed.vars.is_empty(), "失败时不许留半成品变量");
+    }
+
+    #[test]
+    fn json_get_reads_nested_values() {
+        let _g = crate::abort::test_lock();
+        let out = run(
+            r#"let j = json_get(get_var("json"), "file.name"); j"#,
+            "",
+            "",
+            &{
+                let mut v = vars();
+                v.insert(
+                    "json".into(),
+                    Value::Text(TextValue {
+                        text: r#"{"file":{"name":"a.txt","tags":["x","y"]},"n":3,"ok":true}"#
+                            .into(),
+                        exit_code: None,
+                    }),
+                );
+                v
+            },
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(!out.failed, "{}", out.stderr);
+        assert_eq!(out.stdout, "a.txt");
+    }
+
+    #[test]
+    fn json_get_rejects_invalid_json() {
+        let _g = crate::abort::test_lock();
+        let out = run(
+            r#"json_get("{nope", "a")"#,
+            "",
+            "",
+            &vars(),
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(out.failed);
+        assert!(out.stderr.contains("不是合法 JSON"), "{}", out.stderr);
     }
 
     #[test]

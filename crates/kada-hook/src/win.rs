@@ -1653,6 +1653,54 @@ pub fn send_to_window(target: &str, input: crate::WindowInput<'_>) -> Result<(),
     }
 }
 
+/// 是否存在标题匹配 `pattern` 的可见顶层窗口；命中返回实际窗口标题。
+///
+/// 过滤口径与 [`find_target_window`] 一致：跳过不可见窗口、工具窗口和本进程自己的窗口。
+/// 只匹配窗口标题（等待窗口动作的语义），不匹配进程名。
+pub fn window_present(pattern: &str) -> Result<Option<String>, String> {
+    struct Search {
+        pattern: String,
+        own_pid: u32,
+        found: Option<String>,
+    }
+
+    unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = &mut *(lparam.0 as *mut Search);
+        if !IsWindowVisible(hwnd).as_bool() {
+            return TRUE;
+        }
+        let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+        if ex & WS_EX_TOOLWINDOW.0 != 0 {
+            return TRUE;
+        }
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+        if pid == 0 || pid == search.own_pid {
+            return TRUE;
+        }
+        let mut title_buf = [0u16; 512];
+        let title_len = GetWindowTextW(hwnd, &mut title_buf);
+        let title = String::from_utf16_lossy(&title_buf[..title_len.max(0) as usize]);
+        if title.is_empty() {
+            return TRUE;
+        }
+        let patterns = std::slice::from_ref(&search.pattern);
+        if kada_core::app_excluded(patterns, &title) {
+            search.found = Some(title);
+            return FALSE;
+        }
+        TRUE
+    }
+
+    let mut search = Search {
+        pattern: pattern.to_string(),
+        own_pid: unsafe { GetCurrentProcessId() },
+        found: None,
+    };
+    let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
+    Ok(search.found)
+}
+
 /// 按进程名 / 窗口标题找顶层窗口；`EnumWindows` 的顺序就是 Z 序，取第一个命中。
 fn find_target_window(pattern: &str) -> Result<HWND, String> {
     struct Search {
