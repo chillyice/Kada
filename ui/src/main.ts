@@ -98,7 +98,7 @@ type SendPayload =
   | { kind: "text"; text: string };
 type ActionBase =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
-  | { type: "command"; shell: Shell; command: string; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "command"; shell: Shell; command: string; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
   | { type: "send_to"; target: string; payload: SendPayload; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
@@ -116,7 +116,7 @@ type ActionBase =
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
-  | { type: "script"; path: string; interpreter?: string | null; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: boolean; hide_window?: boolean; var: string; description?: string }
   | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }
   | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
 /** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
@@ -788,10 +788,16 @@ function actionVarReads(a: Action): string[] {
       texts.push(a.text);
       break;
     case "command":
-      texts.push(a.command);
+      texts.push(a.command, a.working_dir ?? "");
       break;
     case "script":
-      texts.push(a.path, a.interpreter ?? "");
+      texts.push(
+        a.path,
+        a.interpreter ?? "",
+        a.working_dir ?? "",
+        ...(a.interpreter_args ?? []),
+        ...(a.args ?? []),
+      );
       break;
     case "inline_script":
       // 脚本源码不做 `{变量}` 占位符替换（脚本是代码，花括号是 Rhai 语法）；
@@ -1105,9 +1111,29 @@ function newAction(type: ActionBase["type"]): ActionBase {
     case "ask":
       return { type: "ask", var: "", prompt: "", default: "" };
     case "command":
-      return { type: "command", shell: "cmd", command: "", show_output: false, var: "" };
+      return {
+        type: "command",
+        shell: "cmd",
+        command: "",
+        working_dir: "",
+        timeout_ms: null,
+        ok_exit_codes: [],
+        show_output: false,
+        var: "",
+      };
     case "script":
-      return { type: "script", path: "", interpreter: null, show_output: false, var: "" };
+      return {
+        type: "script",
+        path: "",
+        interpreter: null,
+        interpreter_args: [],
+        args: [],
+        working_dir: "",
+        timeout_ms: null,
+        ok_exit_codes: [],
+        show_output: false,
+        var: "",
+      };
     case "inline_script":
       return { type: "inline_script", source: "", var: "", show_output: false };
     case "keys":
@@ -1480,7 +1506,11 @@ function actionSummary(a: Action): string {
     }
     case "script": {
       const v = a.var ? ` → ${a.var}` : "";
-      const target = a.interpreter ? `${a.interpreter} ${a.path}` : a.path;
+      const head = a.interpreter
+        ? [a.interpreter, ...(a.interpreter_args ?? [])].join(" ")
+        : "";
+      const tail = (a.args ?? []).join(" ");
+      const target = [head, a.path, tail].filter(Boolean).join(" ");
       return trt`脚本：${target}${v}`;
     }
     case "inline_script": {
@@ -1743,7 +1773,58 @@ async function load() {
 
 // 落盘整份配置。返回 true = 真的写进去了——未保存守卫靠它决定「保存并离开」要不要放行，
 // 失败还放行等于把用户的改动悄悄丢掉。
+// 保存前把命令 / 脚本新字段的空值归一成缺省（不落一堆空键；后端 serde 缺字段 = 默认值）。
+// 递归处理容器动作（禁用 / 分组 / 并行 / 条件判断）里的成员。
+function normalizeCommandScriptFields(actions: Action[]): Action[] {
+  return actions.map((a): Action => {
+    switch (a.type) {
+      case "disabled":
+        return {
+          type: "disabled",
+          action: normalizeCommandScriptFields([a.action])[0] as ActionBase,
+        };
+      case "group":
+        return { ...a, actions: normalizeCommandScriptFields(a.actions) };
+      case "parallel":
+        return { ...a, actions: normalizeCommandScriptFields(a.actions) };
+      case "if":
+        return {
+          ...a,
+          then: normalizeCommandScriptFields(a.then),
+          otherwise: normalizeCommandScriptFields(a.otherwise),
+        };
+      case "command":
+      case "script": {
+        const out: Record<string, unknown> = { ...a };
+        const wd = typeof out.working_dir === "string" ? out.working_dir.trim() : "";
+        if (wd) out.working_dir = wd;
+        else delete out.working_dir;
+        if (out.timeout_ms == null) delete out.timeout_ms;
+        if (!Array.isArray(out.ok_exit_codes) || out.ok_exit_codes.length === 0)
+          delete out.ok_exit_codes;
+        if (a.type === "script") {
+          if (!Array.isArray(out.interpreter_args) || out.interpreter_args.length === 0)
+            delete out.interpreter_args;
+          if (!Array.isArray(out.args) || out.args.length === 0) delete out.args;
+        }
+        return out as unknown as Action;
+      }
+      default:
+        return a;
+    }
+  });
+}
+
 async function save(): Promise<boolean> {
+  // 命令 / 脚本的空执行字段归一成缺省（空串 / 空数组 / null 不落盘）。
+  for (const key of ["shortcuts", "gestures", "touchpad_gestures", "hot_corners", "wheel_edges"] as const) {
+    const list = cfg[key] as unknown as { actions: Action[] }[] | undefined;
+    if (Array.isArray(list)) {
+      for (const item of list) {
+        if (Array.isArray(item.actions)) item.actions = normalizeCommandScriptFields(item.actions);
+      }
+    }
+  }
   cfg.shortcuts = cfg.shortcuts.filter(
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
@@ -7265,6 +7346,11 @@ function actionFields(
     });
     body.append(ta);
 
+    // 执行语义字段（CS-01~CS-05）：在哪跑 / 等多久 / 什么退出码算成功。
+    body.append(workingDirField(a.working_dir, (v) => (a.working_dir = v)));
+    body.append(timeoutField(a.timeout_ms, (v) => (a.timeout_ms = v)));
+    body.append(okExitCodesField(a.ok_exit_codes, (v) => (a.ok_exit_codes = v)));
+
     const flags = el("div", "action-checks");
     const popup = el("label", "action-check") as HTMLLabelElement;
     const cb = el("input", "toggle") as HTMLInputElement;
@@ -7317,6 +7403,30 @@ function actionFields(
     });
     iline.append(el("span", "unit-hint", tr("解释器")), interp);
     body.append(iline);
+
+    // 参数（CS-03）：解释器参数在脚本路径之前、脚本参数在之后；一行一个，
+    // 逐项做 {变量} 替换，argv 原样传递（不做引号拆分）。
+    body.append(
+      linesField(
+        tr("解释器参数"),
+        a.interpreter_args,
+        (v) => (a.interpreter_args = v),
+        tr("写在脚本路径之前的参数，一行一个。例：python 的 -u（不缓冲输出）；PowerShell 的 -NoProfile 和 -File（-File 必须带上，否则参数里的空格会被 PowerShell 重新拆开）。"),
+      ),
+    );
+    body.append(
+      linesField(
+        tr("脚本参数"),
+        a.args,
+        (v) => (a.args = v),
+        tr("写在脚本路径之后的参数，一行一个，支持 {变量}。例：python -u script.py --file \"{path}\" 就是两行：--file 与 {path}。含空格的参数（如 C:\\My Files）整行原样到达，不需要自己加引号。"),
+      ),
+    );
+
+    // 执行语义字段（CS-01~CS-05）：在哪跑 / 等多久 / 什么退出码算成功。
+    body.append(workingDirField(a.working_dir, (v) => (a.working_dir = v)));
+    body.append(timeoutField(a.timeout_ms, (v) => (a.timeout_ms = v)));
+    body.append(okExitCodesField(a.ok_exit_codes, (v) => (a.ok_exit_codes = v)));
 
     const flags = el("div", "action-checks");
     const popup = el("label", "action-check") as HTMLLabelElement;
@@ -8020,16 +8130,133 @@ function expansionTriggerError(v: string): string {
 }
 
 // 路径输入行：一个文本框 + 可选的「文件…」「目录…」浏览按钮。
+// ---- 命令 / 脚本共用的执行字段（CS-01~CS-05） ----
+
+// 工作目录：空 = 继承 Kada 进程工作目录；支持 {变量} 与 ~；目录不存在执行时才报错
+// （移动硬盘 / 网络盘可能稍后才挂上，保存不拦）。
+function workingDirField(value: string | undefined, onChange: (v: string) => void): HTMLElement {
+  return pathField(value ?? "", onChange, {
+    dir: true,
+    ph: tr("工作目录（可空 = 跟随 Kada；支持 {变量} 与 ~）"),
+  });
+}
+
+// 每动作超时（秒）：空 = 跟随设置页的全局「动作超时」；0 = 不限时；只覆盖本步。
+function timeoutField(
+  timeoutMs: number | null | undefined,
+  onChange: (v: number | null) => void,
+): HTMLElement {
+  const line = el("div", "action-line");
+  const input = el("input", "action-input") as HTMLInputElement;
+  input.type = "number";
+  input.min = "0";
+  input.step = "any";
+  input.value = timeoutMs == null ? "" : String(timeoutMs / 1000);
+  input.addEventListener("input", () => {
+    const raw = input.value.trim();
+    if (!raw) {
+      showFieldError(input, "");
+      onChange(null);
+      return;
+    }
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0) {
+      showFieldError(input, tr("请填不小于 0 的秒数（留空 = 跟随设置）"));
+      return;
+    }
+    showFieldError(input, "");
+    onChange(Math.round(n * 1000));
+  });
+  line.append(
+    el("span", "unit-hint", tr("超时（秒）")),
+    input,
+    helpIcon(
+      tr(
+        "本步最长等多少秒：留空 = 用设置页「动作超时」的全局值；0 = 不限时；只覆盖这一步，不改全局。超时会把命令连同它启动的子进程一起结束。",
+      ),
+    ),
+  );
+  return line;
+}
+
+// 成功退出码：逗号分隔；空 = 只有 0 算成功。robocopy 的 1（有文件复制成功）、
+// 安装器的 3010（需要重启）这类「非零但成功」的退出码靠它放行。
+function okExitCodesField(
+  codes: number[] | undefined,
+  onChange: (v: number[]) => void,
+): HTMLElement {
+  const line = el("div", "action-line");
+  const input = el("input", "action-input") as HTMLInputElement;
+  input.type = "text";
+  input.value = (codes ?? []).join(", ");
+  input.placeholder = "0";
+  input.addEventListener("input", () => {
+    const raw = input.value.trim();
+    if (!raw) {
+      showFieldError(input, "");
+      onChange([]);
+      return;
+    }
+    const parts = raw.split(/[,，;；\s]+/).filter((p) => p.length > 0);
+    const out: number[] = [];
+    for (const p of parts) {
+      const n = Number(p);
+      if (!Number.isInteger(n) || n < -2147483648 || n > 2147483647) {
+        showFieldError(input, tr("退出码要是整数（-2147483648 ~ 2147483647），用逗号分隔"));
+        return;
+      }
+      out.push(n);
+    }
+    showFieldError(input, "");
+    onChange(out);
+  });
+  line.append(
+    el("span", "unit-hint", tr("成功退出码")),
+    input,
+    helpIcon(
+      tr(
+        "哪些退出码算成功（逗号分隔，空 = 只有 0）。例：robocopy 复制了文件时退出 1，填「0, 1」；MSI 安装完要求重启时退出 3010，填「0, 3010」。被超时 / 手动停止强杀的进程没有退出码，仍算失败。",
+      ),
+    ),
+  );
+  return line;
+}
+
+// 一行一个参数的 textarea（脚本参数 / 解释器参数）：脚本参数里带空格太常见
+// （C:\My Files），空格拆分会把它拆坏，所以一行一个、不做引号解析。
+function linesField(
+  label: string,
+  lines: string[] | undefined,
+  onChange: (v: string[]) => void,
+  tip: string,
+): HTMLElement {
+  const line = el("div", "action-line");
+  const ta = el("textarea", "action-textarea grow") as HTMLTextAreaElement;
+  ta.value = (lines ?? []).join("\n");
+  ta.rows = 2;
+  ta.spellcheck = false;
+  ta.addEventListener("input", () => {
+    onChange(
+      ta.value
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0),
+    );
+  });
+  line.append(el("span", "unit-hint", label), ta, helpIcon(tip));
+  return line;
+}
+
 function pathField(
   value: string,
   onInput: (v: string) => void,
-  opts: { file?: boolean; dir?: boolean; label?: string } = { file: true },
+  opts: { file?: boolean; dir?: boolean; label?: string; ph?: string } = { file: true },
 ): HTMLElement {
   const line = el("div", "action-line");
   const input = el("input", "action-input") as HTMLInputElement;
   input.type = "text";
   input.value = value;
-  input.placeholder = opts.label ? trt`${opts.label}（可用 {变量名}）` : tr("路径（可用 {变量名} 占位符）");
+  input.placeholder = opts.ph ?? (opts.label ? trt`${opts.label}（可用 {变量名}）` : tr("路径（可用 {变量名} 占位符）"));
   // 全部路径字段都从这里过——校验放共用口，一处管住所有调用方（条件/复制/脚本…）。
   input.addEventListener("input", () => {
     onInput(input.value);

@@ -37,12 +37,19 @@ pub struct ScriptOutput {
     pub failed: bool,
     /// 脚本写入的变量（正常结束后才合并）。
     pub vars: Vec<(String, String)>,
+    /// 脚本返回值：`None` = 返回 `()`（没有返回值）；`Some(s)` = 返回了值（`s` 可以是空串）。
+    /// 区分这两者才能让「返回空串」不退回 `print` 输出（CS-06）。
+    ret: Option<String>,
 }
 
 impl ScriptOutput {
-    /// 存进 `var` 变量的文本：优先脚本返回值，没有返回值就用 `print` 输出。
+    /// 存进 `var` 变量的文本：**优先脚本返回值**，没有返回值（返回 `()`）才退回 `print`
+    /// 输出。`print("debug"); 42` 得到 `42` 而不是 `debug\n42`——调试信息看消息中心，
+    /// 变量只装结果。
     pub fn value(&self) -> String {
-        self.stdout.clone()
+        self.ret
+            .clone()
+            .unwrap_or_else(|| self.stdout.clone())
     }
 }
 
@@ -263,17 +270,20 @@ fn run_with_limits(
     let st = state.lock().unwrap_or_else(|e| e.into_inner());
     match result {
         Ok(value) => {
+            // `None` = 返回 `()`（无返回值）；`Some` = 返回了值（空串也算）——
+            // `value()` 靠这个区分「没返回值，退回 prints」和「返回了空串」（CS-06）。
             let ret = if value.is_unit() {
-                String::new()
+                None
             } else {
-                value.to_string()
+                Some(value.to_string())
             };
+            let ret_text = ret.clone().unwrap_or_default();
             let prints = st.prints.trim_end().to_string();
-            let stdout = match (prints.is_empty(), ret.is_empty()) {
+            let stdout = match (prints.is_empty(), ret_text.is_empty()) {
                 (true, true) => String::new(),
-                (true, false) => ret.clone(),
+                (true, false) => ret_text.clone(),
                 (false, true) => prints,
-                (false, false) => format!("{prints}\n{ret}"),
+                (false, false) => format!("{prints}\n{ret_text}"),
             };
             let writes: Vec<(String, String)> = st
                 .writes
@@ -285,6 +295,7 @@ fn run_with_limits(
                 stderr: String::new(),
                 failed: false,
                 vars: writes,
+                ret,
             })
         }
         Err(err) => {
@@ -299,6 +310,8 @@ fn run_with_limits(
                 stdout,
                 failed: true,
                 vars: Vec::new(),
+                // 失败没有返回值可言：`value()` 退回 prints（失败时不写变量，调用方有闸门）。
+                ret: None,
             })
         }
     }
@@ -404,6 +417,71 @@ mod tests {
         )
         .unwrap();
         assert_eq!(out.stdout, "第一行\n第二行\n42");
+    }
+
+    /// `value()` 返回值优先（CS-06）：`print` 是调试输出，不该混进变量。
+    #[test]
+    fn value_prefers_return_over_prints() {
+        let _g = crate::abort::test_lock();
+        let out = run(
+            r#"print("debug"); 42"#,
+            "",
+            "",
+            &vars(),
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(!out.failed, "{}", out.stderr);
+        assert_eq!(out.stdout, "debug\n42", "stdout 仍是展示文本");
+        assert_eq!(out.value(), "42", "变量只拿返回值");
+    }
+
+    /// 无返回值（返回 `()`）时 `value()` 退回 `print` 输出。
+    #[test]
+    fn value_falls_back_to_prints_without_return() {
+        let _g = crate::abort::test_lock();
+        let out = run(
+            r#"print("debug")"#,
+            "",
+            "",
+            &vars(),
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(!out.failed, "{}", out.stderr);
+        assert_eq!(out.value(), "debug");
+    }
+
+    /// 「返回空串」与「无返回值」是两回事：前者 `value()` 得空串（不退回 prints），
+    /// 后者才退回 prints。
+    #[test]
+    fn value_distinguishes_empty_return_from_no_return() {
+        let _g = crate::abort::test_lock();
+        let empty = run(
+            "print(\"debug\"); \"\"",
+            "",
+            "",
+            &vars(),
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(!empty.failed, "{}", empty.stderr);
+        assert_eq!(empty.value(), "", "返回空串就给空串，不退回 prints");
+
+        let none = run(
+            r#"print("debug"); let x = 1"#,
+            "",
+            "",
+            &vars(),
+            Duration::ZERO,
+            crate::abort::generation(),
+        )
+        .unwrap();
+        assert!(!none.failed, "{}", none.stderr);
+        assert_eq!(none.value(), "debug", "无返回值才退回 prints");
     }
 
     #[test]

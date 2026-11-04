@@ -1597,11 +1597,15 @@ pub enum Action {
     Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "is_false")] masked: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行命令（CMD 或 PowerShell），结果进消息中心；`var` 非空时把标准输出（去首尾空白）写入该变量。
     ///
+    /// `working_dir` 是命令运行时的工作目录（空 = 继承 Kada 进程 cwd，支持 `~` 与 `{变量}`、
+    /// 相对路径）；`timeout_ms` 为本步超时（缺省跟全局设置，`0` = 不限时）；`ok_exit_codes`
+    /// 为「算成功」的退出码表（空 = 只有 0，`robocopy` 的 1、安装器的 3010 靠它放行）。
+    ///
     /// `hide_window` = 执行时不弹出子进程的控制台窗口（Windows 专有：GUI 进程 spawn
     /// `cmd`/`powershell` 会新建一个黑窗，按一次快捷键就闪一下）。默认 `false` 保持原样——
     /// 交互式命令（要在黑窗里敲字、看进度的）靠它才能用；纯后台命令打开它更清净。
     #[cfg(feature = "automation")]
-    Command { shell: Shell, command: String, #[serde(default)] show_output: bool, #[serde(default, skip_serializing_if = "is_false")] hide_window: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Command { shell: Shell, command: String, #[serde(default, skip_serializing_if = "String::is_empty")] working_dir: String, #[serde(default, skip_serializing_if = "Option::is_none")] timeout_ms: Option<u64>, #[serde(default, skip_serializing_if = "Vec::is_empty")] ok_exit_codes: Vec<i32>, #[serde(default)] show_output: bool, #[serde(default, skip_serializing_if = "is_false")] hide_window: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
     /// 执行 CMD 命令（旧版动作，加载时自动迁移为 `Command(Cmd)`）。
     #[cfg(feature = "automation")]
     Cmd { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1687,12 +1691,27 @@ pub enum Action {
     /// 执行脚本文件（可选解释器，如 python/node/bash）。`path` 支持 `{变量名}` 占位符；
     /// 通过环境变量注入 `KADA_TRIGGER`/`KADA_NAME`/`KADA_VARS`（变量表 JSON），结果进消息中心。
     ///
+    /// `interpreter_args` 在脚本路径之前、`args` 在脚本路径之后（均为 argv，逐项做 `{变量}` 替换）；
+    /// `working_dir` 是脚本运行时的工作目录（空 = 继承 Kada 进程 cwd，支持 `~` 与相对路径）；
+    /// `timeout_ms` 为本步超时（缺省跟全局设置，`0` = 不限时）；`ok_exit_codes` 为「算成功」的
+    /// 退出码表（空 = 只有 0）。
+    ///
     /// `hide_window` 与 [`Action::Command`] 同义：执行时不弹出子进程的控制台窗口。
     #[cfg(feature = "automation")]
     Script {
         path: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         interpreter: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        interpreter_args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        working_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ok_exit_codes: Vec<i32>,
         #[serde(default)]
         show_output: bool,
         #[serde(default, skip_serializing_if = "is_false")]
@@ -4654,6 +4673,9 @@ pub fn migrate_action(a: Action) -> Action {
         Action::Cmd { command, show_output, var, description } => Action::Command {
             shell: Shell::Cmd,
             command,
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output,
             hide_window: false,
             var,
@@ -4663,6 +4685,9 @@ pub fn migrate_action(a: Action) -> Action {
         Action::Powershell { command, show_output, var, description } => Action::Command {
             shell: Shell::Powershell,
             command,
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output,
             hide_window: false,
             var,
@@ -6849,8 +6874,8 @@ mod new_action_and_folder_tests {
             Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
-            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), show_output: false, hide_window: false, var: "".into(), description: None },
-            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), show_output: true, hide_window: false, var: "".into(), description: None },
+            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false, hide_window: false, var: "".into(), description: None },
+            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true, hide_window: false, var: "".into(), description: None },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "应通过校验: {a:?}");
@@ -6862,7 +6887,7 @@ mod new_action_and_folder_tests {
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
         assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
-        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), show_output: false, hide_window: false, var: "".into(), description: None }
+        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false, hide_window: false, var: "".into(), description: None }
             .validate()
             .is_err());
     }
@@ -7198,6 +7223,9 @@ mod new_action_and_folder_tests {
         let hidden = Action::Command {
             shell: Shell::Cmd,
             command: "echo hi".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output: false,
             hide_window: true,
             var: String::new(),
@@ -7210,6 +7238,11 @@ mod new_action_and_folder_tests {
         let plain = Action::Script {
             path: "x.py".into(),
             interpreter: None,
+            interpreter_args: Vec::new(),
+            args: Vec::new(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output: false,
             hide_window: false,
             var: String::new(),
@@ -7219,6 +7252,71 @@ mod new_action_and_folder_tests {
             !serde_json::to_string(&plain).unwrap().contains("hide_window"),
             "默认值不该落盘"
         );
+    }
+
+    /// 命令 / 脚本的新字段（批次一：`working_dir` / `timeout_ms` / `ok_exit_codes` /
+    /// `args` / `interpreter_args`）：老配置缺字段读成默认值、默认值不落盘、
+    /// 设了值能原样读回（CS-01~CS-05）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn command_script_new_fields_default_and_roundtrip() {
+        // 老配置（写于新字段出现之前）缺字段 = 新默认值。
+        let old: Action = serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+        assert!(
+            matches!(
+                old,
+                Action::Command { ref working_dir, timeout_ms: None, ref ok_exit_codes, .. }
+                    if working_dir.is_empty() && ok_exit_codes.is_empty()
+            ),
+            "老配置该读成默认值: {old:?}"
+        );
+        let old_script: Action = serde_json::from_str(
+            r#"{"type":"script","path":"x.py","interpreter":"python"}"#,
+        )
+        .unwrap();
+        assert!(
+            matches!(
+                old_script,
+                Action::Script { ref interpreter_args, ref args, ref working_dir, timeout_ms: None, ref ok_exit_codes, .. }
+                    if interpreter_args.is_empty() && args.is_empty() && working_dir.is_empty() && ok_exit_codes.is_empty()
+            ),
+            "老脚本配置该读成默认值: {old_script:?}"
+        );
+
+        // 默认值不落盘；`timeout_ms` 只有 Some 才写。
+        let plain = Action::Command {
+            shell: Shell::Cmd,
+            command: "echo hi".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false,
+            hide_window: false,
+            var: String::new(),
+            description: None,
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        for key in ["working_dir", "timeout_ms", "ok_exit_codes"] {
+            assert!(!json.contains(key), "{key} 默认值不该落盘: {json}");
+        }
+
+        // 设了值能原样读回；`timeout_ms: 0`（不限时）也要落盘。
+        let full = Action::Script {
+            path: "backup.py".into(),
+            interpreter: Some("python".into()),
+            interpreter_args: vec!["-u".into()],
+            args: vec!["--dest".into(), "D:\\backup".into()],
+            working_dir: "D:\\work".into(),
+            timeout_ms: Some(0),
+            ok_exit_codes: vec![0, 3010],
+            show_output: false,
+            hide_window: false,
+            var: String::new(),
+            description: None,
+        };
+        let json = serde_json::to_string(&full).unwrap();
+        assert!(json.contains(r#""timeout_ms":0"#), "0 = 不限时该落盘: {json}");
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), full);
     }
 
     #[cfg(feature = "automation")]
@@ -7303,6 +7401,11 @@ mod new_action_and_folder_tests {
             Action::Script {
                 path: "C:\\scripts\\do.ps1".into(),
                 interpreter: None,
+                interpreter_args: Vec::new(),
+                args: Vec::new(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
                 show_output: false,
                 hide_window: false,
                 var: "".into(),
@@ -7311,6 +7414,11 @@ mod new_action_and_folder_tests {
             Action::Script {
                 path: "backup.py".into(),
                 interpreter: Some("python".into()),
+                interpreter_args: Vec::new(),
+                args: Vec::new(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
                 show_output: true,
                 hide_window: false,
                 var: "out".into(),
@@ -7328,6 +7436,11 @@ mod new_action_and_folder_tests {
         assert!(Action::Script {
             path: "  ".into(),
             interpreter: None,
+            interpreter_args: Vec::new(),
+            args: Vec::new(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output: false,
             hide_window: false,
             var: "".into(),

@@ -18,7 +18,7 @@ use std::fs;
 #[cfg(feature = "automation")]
 use std::io::Read;
 #[cfg(feature = "automation")]
-use std::path::Path;
+use std::path::{Path, PathBuf};
 #[cfg(all(
     feature = "automation",
     any(target_os = "windows", target_os = "linux", target_os = "macos")
@@ -291,7 +291,9 @@ pub fn run_actions(
     }
 }
 
-/// 开一条动作记录：`id` / 标题 / 类型 / 起始时点，执行完再由调用方补结束与结果。
+/// 开一条动作记录：`id` / 标题 / 类型 / 起始时点。**开出来就是 `running` 态**（CS-07）：
+/// 调用方先报一次让界面立刻看到「现在跑到哪」，执行完用同一个 `id` 再报最终状态，
+/// 壳层按 `id` upsert 覆盖。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn step_begin(
     action: &Action,
@@ -308,7 +310,7 @@ fn step_begin(
         title: action_summary(action, vars),
         branch: None,
         detail: None,
-        status: "ok".into(),
+        status: "running".into(),
         start_ms: ctx.elapsed_ms(),
         end_ms: 0,
         stdout: String::new(),
@@ -506,7 +508,7 @@ fn run_chain(
     lane: usize,
 ) {
     for action in actions {
-        // 中止在执行前判一次：正在跑的进程由 `run_with_limits` 的轮询杀掉，这里保证
+        // 中止在执行前判一次：正在跑的进程由 `run_with_deadline` 的轮询杀掉，这里保证
         // 「剩余动作不再执行」——否则点停止后还会继续注入按键 / 启动程序。
         if abort::aborted(ctx.gen) {
             release_scope(scope);
@@ -519,6 +521,16 @@ fn run_chain(
             continue;
         }
         let mut step = step_begin(action, ctx, parent, lane, vars);
+        // 条件判断先把分支算出来再报「执行中」：界面能立刻显示走了哪条（CS-07）。
+        #[cfg(feature = "automation")]
+        if let Action::If { condition, .. } = action {
+            step.branch = Some(condition.matches(vars, ctx.t.frontmost, ctx.t.device));
+        }
+        // 先报一条「执行中」（CS-07）：长命令跑着的时候界面立刻能看到现在跑到哪；
+        // 执行结束后用同一个 id 再报最终状态，壳层按 id upsert 覆盖。
+        // （并形成员的记录在 `run_parallel` 里是本地收集、组汇合后才提交，成员的 running
+        // 不会实时刷出——父步骤的会。别为这条去改并行收集架构。）
+        rep.on_step(step.clone());
         if let Action::Group {
             actions: members, ..
         } = action
@@ -541,14 +553,12 @@ fn run_chain(
         }
         #[cfg(feature = "automation")]
         if let Action::If {
-            condition,
             then,
             otherwise,
             ..
         } = action
         {
-            let hit = condition.matches(vars, ctx.t.frontmost, ctx.t.device);
-            step.branch = Some(hit);
+            let hit = step.branch.unwrap_or_default();
             let id = step.id;
             run_chain(
                 rep,
@@ -600,9 +610,7 @@ fn run_chain(
         }
         match run_action(action, ctx, vars, last_copied, scope) {
             Ok(Some(result)) => {
-                // 非零退出码与「被超时 / 中止强杀」（原因写在 stderr 前缀里）都算失败。
-                let failed = result.exit_code.is_some_and(|c| c != 0)
-                    || result.stderr.starts_with("〔咔哒〕");
+                let failed = step_failed(action, &result);
                 step.stdout = result.stdout.clone();
                 step.stderr = result.stderr.clone();
                 step.exit_code = result.exit_code;
@@ -630,6 +638,11 @@ fn run_chain(
         }
         if abort::aborted(ctx.gen) {
             step.status = "abort".into();
+        }
+        // 执行结束：`running` 翻成最终结论。error / abort 在上面的分支里定过，
+        // 这里只兜「正常跑完」的底（CS-07：开始报的是 running，结束时必须是 ok / error / abort）。
+        if step.status == "running" {
+            step.status = "ok".into();
         }
         step.end_ms = ctx.elapsed_ms();
         rep.on_step(step);
@@ -1561,6 +1574,8 @@ fn run_action(
         Action::Command {
             shell,
             command,
+            working_dir,
+            timeout_ms,
             show_output,
             hide_window,
             var,
@@ -1574,7 +1589,19 @@ fn run_action(
                 return Err("PowerShell 命令仅 Windows 可用".into());
             }
             let command = substitute_vars(command, vars);
-            let out = run_cmd(label, is_powershell, &command, ctx, *hide_window)?;
+            let workdir = resolve_working_dir(working_dir, vars)?;
+            // 每动作超时（CS-04）：缺省跟全局，`Some(0)` = 不限时（与全局 0 同义）。
+            let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(ctx.timeout);
+            let out = run_cmd(
+                label,
+                is_powershell,
+                &command,
+                ctx,
+                *hide_window,
+                workdir.as_deref(),
+                Some(vars),
+                timeout,
+            )?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1600,8 +1627,8 @@ fn run_action(
             ..
         } => {
             let command = substitute_vars(command, vars);
-            // 旧版动作没有 hide_window 字段（加载时会迁移成 Command，见 Config::migrate）。
-            let out = run_cmd("CMD", false, &command, ctx, false)?;
+            // 旧版动作没有 hide_window / working_dir 字段（加载时会迁移成 Command，见 Config::migrate）。
+            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1630,8 +1657,8 @@ fn run_action(
                 return Err("PowerShell 动作仅 Windows 可用".into());
             }
             let command = substitute_vars(command, vars);
-            // 同上：旧版动作无 hide_window。
-            let out = run_cmd("PowerShell", true, &command, ctx, false)?;
+            // 同上：旧版动作无 hide_window / working_dir。
+            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1754,13 +1781,35 @@ fn run_action(
         Action::Script {
             path,
             interpreter,
+            interpreter_args,
+            args,
+            working_dir,
+            timeout_ms,
             show_output,
             hide_window,
             var,
             ..
         } => {
             let path = substitute_vars(path, vars);
-            let out = run_script(interpreter.as_deref(), &path, ctx, vars, *hide_window)?;
+            // 参数逐项 {变量} 替换（CS-03）；argv 语义，不做引号拆分 / 通配符展开。
+            let interp_args: Vec<String> = interpreter_args
+                .iter()
+                .map(|a| substitute_vars(a, vars))
+                .collect();
+            let script_args: Vec<String> = args.iter().map(|a| substitute_vars(a, vars)).collect();
+            let workdir = resolve_working_dir(working_dir, vars)?;
+            let timeout = timeout_ms.map(Duration::from_millis).unwrap_or(ctx.timeout);
+            let out = run_script(
+                interpreter.as_deref(),
+                &interp_args,
+                &path,
+                &script_args,
+                workdir.as_deref(),
+                ctx,
+                vars,
+                *hide_window,
+                timeout,
+            )?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1770,10 +1819,16 @@ fn run_action(
                     }),
                 );
             }
-            let command = match interpreter {
-                Some(i) => format!("{i} \"{path}\""),
-                None => path.clone(),
-            };
+            // 展示命令行（只用于消息中心 / 日志；执行仍走 argv）：
+            // `python -u "D:\scripts\backup.py" --dest "D:\backup"`。
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(i) = interpreter {
+                parts.push(i.clone());
+                parts.extend(interp_args.iter().map(|a| quote_display(a)));
+            }
+            parts.push(quote_display(&path));
+            parts.extend(script_args.iter().map(|a| quote_display(a)));
+            let command = parts.join(" ");
             return Ok(Some(out.into_result(
                 "script",
                 "脚本",
@@ -2317,8 +2372,8 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
     } else {
         format!("pkill -f {image}")
     };
-    // 内部命令（taskkill / pkill），恒不弹黑窗。
-    let out = run_cmd("关闭程序", false, &cmd, ctx, true)?;
+    // 内部命令（taskkill / pkill），恒不弹黑窗；不注入 KADA_*（不是用户脚本）。
+    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout)?;
     Ok(out.into_result("close_program", "关闭程序", cmd, ctx, false))
 }
 
@@ -2679,6 +2734,317 @@ fn no_console_window(cmd: &mut std::process::Command) {
     let _ = cmd;
 }
 
+/// `~` / `~/` 展开：Windows 用 `USERPROFILE`、Unix 用 `HOME`。不做 `$VAR` / `%VAR%`
+/// 展开——那是 shell 的事，这里只管「用户主目录」这一个最常见的缩写。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn expand_home(path: &str) -> PathBuf {
+    let home_var = if cfg!(target_os = "windows") {
+        "USERPROFILE"
+    } else {
+        "HOME"
+    };
+    let p = path.trim();
+    if p == "~" {
+        return std::env::var_os(home_var)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(p));
+    }
+    if let Some(rest) = p.strip_prefix("~/").or_else(|| p.strip_prefix("~\\")) {
+        if let Some(home) = std::env::var_os(home_var) {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    PathBuf::from(p)
+}
+
+/// 裸程序名（不含路径分隔符）：只有这种名字才查 PATH；带分隔符的按路径处理。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn is_bare_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains('/') && !name.contains('\\')
+}
+
+/// `PATH` 之外再补着找的目录：macOS 从 Finder / Dock 启动的 GUI 进程常缺 Homebrew 路径，
+/// 用户脚本里写 `python` 就找不到；Linux 桌面启动的进程同理缺 `~/.local/bin`。
+/// Windows 的 `PATH` 通常够用（缺的是 App Execution Aliases 那种，补目录也解决不了），不加。
+#[cfg(all(feature = "automation", target_os = "macos"))]
+const EXTRA_PATH_DIRS: &[&str] = &[
+    "/opt/homebrew/bin",
+    "/usr/local/bin",
+    "/opt/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+];
+
+#[cfg(all(feature = "automation", target_os = "linux"))]
+const EXTRA_PATH_DIRS: &[&str] = &[
+    "/usr/local/bin",
+    "/usr/bin",
+    "/bin",
+    "/usr/local/sbin",
+    "/usr/sbin",
+    "/sbin",
+    "/snap/bin",
+];
+
+#[cfg(all(feature = "automation", target_os = "windows"))]
+const EXTRA_PATH_DIRS: &[&str] = &[];
+
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn supplementary_path_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        let mut dirs: Vec<PathBuf> = EXTRA_PATH_DIRS.iter().map(PathBuf::from).collect();
+        if let Some(home) = std::env::var_os("HOME") {
+            dirs.push(PathBuf::from(home).join(".local/bin"));
+        }
+        dirs
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        EXTRA_PATH_DIRS.iter().map(PathBuf::from).collect()
+    }
+}
+
+/// 在单个目录里找 `name`：Windows 按 `PATHEXT`（缺省 `.COM;.EXE;.BAT;.CMD`）补扩展名、
+/// 已带扩展名的先原样查；Unix 要求有可执行位。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn try_dir(dir: &Path, name: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        let exts: Vec<String> = std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+            .split(';')
+            .map(str::trim)
+            .filter(|e| !e.is_empty())
+            .map(str::to_string)
+            .collect();
+        let mut candidates = vec![name.to_string()];
+        for e in &exts {
+            candidates.push(format!("{name}{e}"));
+        }
+        candidates
+            .into_iter()
+            .map(|c| dir.join(c))
+            .find(|p| p.is_file())
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let p = dir.join(name);
+        let exec = p
+            .metadata()
+            .ok()
+            .map(|m| m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false);
+        if p.is_file() && exec {
+            Some(p)
+        } else {
+            None
+        }
+    }
+}
+
+/// 在当前 `PATH` 与补充目录里找裸名程序（按顺序，找到即回）。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn find_program_bare(name: &str) -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path) {
+            if let Some(p) = try_dir(&dir, name) {
+                return Some(p);
+            }
+        }
+    }
+    for dir in supplementary_path_dirs() {
+        if let Some(p) = try_dir(&dir, name) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+/// 解析解释器 / 裸程序名：
+/// - 空 → 错误；`~` 展开；
+/// - 绝对路径或带分隔符 → 原样，但**额外检查存在性**（spawn 的报错只说「找不到」，这里先说清楚）；
+/// - 裸名：先查当前 `PATH`，再查补充目录；`python` ↔ `python3` 互为候选（只在裸名时）；
+/// - 仍找不到就回原名，让系统错误原样露出（子进程自己的 PATH 里可能还有我们要不到的别名）。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn resolve_program(name: &str) -> Result<PathBuf, String> {
+    let raw = name.trim();
+    if raw.is_empty() {
+        return Err("解释器不能为空".into());
+    }
+    let p = expand_home(raw);
+    if !is_bare_name(raw) {
+        if !p.is_file() {
+            return Err(format!("解释器不存在：{}", p.display()));
+        }
+        return Ok(p);
+    }
+    if let Some(found) = find_program_bare(raw) {
+        return Ok(found);
+    }
+    let alt = match raw.to_ascii_lowercase().as_str() {
+        "python" => Some("python3"),
+        "python3" => Some("python"),
+        _ => None,
+    };
+    if let Some(alt) = alt {
+        if let Some(found) = find_program_bare(alt) {
+            return Ok(found);
+        }
+    }
+    Ok(PathBuf::from(raw))
+}
+
+/// 解析动作的工作目录（CS-01）：先 `{变量}` 替换、再 `~` 展开；空 = `None`（继承 Kada cwd）；
+/// 相对路径按 Kada cwd 拼；目录不存在报中文错误——移动硬盘 / 网络盘可能稍后才挂上，
+/// 所以保存时不拦，执行时报清楚。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn resolve_working_dir(dir: &str, vars: &Vars) -> Result<Option<PathBuf>, String> {
+    let raw = substitute_vars(dir, vars);
+    if raw.trim().is_empty() {
+        return Ok(None);
+    }
+    let p = expand_home(&raw);
+    let p = if p.is_absolute() {
+        p
+    } else {
+        std::env::current_dir()
+            .map_err(|e| format!("解析工作目录失败: {e}"))?
+            .join(p)
+    };
+    if !p.is_dir() {
+        return Err(format!("工作目录不存在：{}", p.display()));
+    }
+    Ok(Some(p))
+}
+
+/// 给子进程统一设置环境（CS-02）：`KADA_*` 触发上下文 + `PATH` 补充目录。
+/// 只改**子进程**的环境块，不动 Kada 自己的进程环境。
+/// `vars: None`（taskkill / 输入框这类内部命令）不注入 `KADA_*`——它们不是用户脚本。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn apply_child_env(
+    cmd: &mut std::process::Command,
+    ctx: &Ctx<'_>,
+    vars: Option<&Vars>,
+    working_dir: Option<&Path>,
+) {
+    let Some(vars) = vars else { return };
+    // KADA_WORKDIR = 实际工作目录（未设则 Kada cwd 的绝对路径）。
+    let workdir = match working_dir {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    cmd.env("KADA_TRIGGER", ctx.t.trigger)
+        .env("KADA_NAME", ctx.t.name)
+        .env("KADA_VARS", vars_to_json(vars))
+        .env("KADA_OS", std::env::consts::OS)
+        .env("KADA_WORKDIR", &workdir);
+    // PATH = 当前 PATH + 补充目录（去重、保持顺序）。Windows 没有补充目录，PATH 原样。
+    let extra = supplementary_path_dirs();
+    if extra.is_empty() {
+        return;
+    }
+    let mut merged: Vec<PathBuf> = Vec::new();
+    if let Some(cur) = std::env::var_os("PATH") {
+        for d in std::env::split_paths(&cur) {
+            if !d.as_os_str().is_empty() && !merged.contains(&d) {
+                merged.push(d);
+            }
+        }
+    }
+    for d in extra {
+        if !merged.contains(&d) {
+            merged.push(d);
+        }
+    }
+    if let Ok(p) = std::env::join_paths(&merged) {
+        cmd.env("PATH", p);
+    }
+}
+
+/// 退出码算不算成功（CS-05）：`codes` 空 = 只有 0；`None`（没跑起来 / 被超时或中止强杀）
+/// 恒失败——被强杀的退出码没有语义，不能靠它放行。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn exit_ok(codes: &[i32], code: Option<i32>) -> bool {
+    match code {
+        Some(c) => (codes.is_empty() && c == 0) || codes.contains(&c),
+        None => false,
+    }
+}
+
+/// 本步结果算不算失败：命令 / 脚本类用 `ok_exit_codes`（空 = 只有 0，CS-05），没跑起来 /
+/// 被超时或中止强杀（退出码 `None`）恒失败；`〔咔哒〕` 前缀仍算失败（被强杀的原因写在那里，
+/// 也防用户命令自己打印这个前缀——既有小坑，本次不拆）。其余动作维持旧口径（非零退出码或
+/// `〔咔哒〕` 前缀）——亮度这类「成功也没有退出码」的内部结果不该被误伤。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn step_failed(action: &Action, result: &CommandResult) -> bool {
+    match action {
+        Action::Command { ok_exit_codes, .. } | Action::Script { ok_exit_codes, .. } => {
+            !exit_ok(ok_exit_codes, result.exit_code) || result.stderr.starts_with("〔咔哒〕")
+        }
+        _ => {
+            result.exit_code.is_some_and(|c| c != 0)
+                || result.stderr.starts_with("〔咔哒〕")
+        }
+    }
+}
+
+/// 基础版没有命令 / 脚本动作：维持旧口径即可。
+#[cfg(all(
+    not(feature = "automation"),
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn step_failed(action: &Action, result: &CommandResult) -> bool {
+    let _ = action;
+    result.exit_code.is_some_and(|c| c != 0) || result.stderr.starts_with("〔咔哒〕")
+}
+
+/// 展示用的命令行拼装：带空白的参数补引号（只用于展示 / 日志；执行仍走 argv）。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn quote_display(s: &str) -> String {
+    if s.is_empty() || s.chars().any(char::is_whitespace) {
+        format!("\"{s}\"")
+    } else {
+        s.to_string()
+    }
+}
+
 /// 跑一个子进程并**限时**等它结束（超时或用户中止则连同子进程树一起杀掉），捕获 UTF-8 输出。
 ///
 /// 不用 `Command::output()`：它没有「等多久」，脚本挂住就永久占住本条触发的执行线程
@@ -2688,19 +3054,9 @@ fn no_console_window(cmd: &mut std::process::Command) {
 /// 管道必须边跑边读：子进程输出超过管道缓冲（Windows 约 4~64KB）而没人读时，它写阻塞、
 /// 我们等它退出——双方互等，超时判定也就永远等不到（`output()` 内部正是用读线程避开了
 /// 这一点，所以这里也不能省）。
-#[cfg(all(
-    any(target_os = "windows", target_os = "linux", target_os = "macos"),
-    feature = "automation"
-))]
-fn run_with_limits(
-    cmd: &mut std::process::Command,
-    label: &str,
-    ctx: &Ctx,
-) -> Result<CmdOutput, String> {
-    run_with_deadline(cmd, label, ctx, ctx.timeout)
-}
-
-/// 同 `run_with_limits`，但超时由调用方指定（输入框要等人，传 `Duration::ZERO` = 不限时）。
+///
+/// `timeout` 由调用方算好传入（每动作 `timeout_ms` 缺省跟全局、`0` = 不限时，见 CS-04；
+/// 输入框要等人，传 [`Duration::ZERO`]）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -2853,9 +3209,12 @@ fn kill_tree(child: &mut Child) {
     }
 }
 
-/// 执行 shell 命令并捕获 UTF-8 输出（限时、可中止，见 [`run_with_limits`]）。
+/// 执行 shell 命令并捕获 UTF-8 输出（限时、可中止，见 [`run_with_deadline`]）。
 /// Windows 下 cmd 前缀 `chcp 65001`、PowerShell 前缀设置输出编码，保证中文不乱码；
 /// macOS / Linux 下 CMD 走 `sh -c`（两边都有 `/bin/sh`）。
+///
+/// `working_dir` = 命令运行时的工作目录（`None` = 继承 Kada cwd）；`vars` 是要注入
+/// `KADA_*` 环境的变量表（`None` = 内部命令如 taskkill，不注入，见 [`apply_child_env`]）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
@@ -2866,9 +3225,12 @@ fn run_cmd(
     command: &str,
     ctx: &Ctx,
     hide_window: bool,
+    working_dir: Option<&Path>,
+    vars: Option<&Vars>,
+    timeout: Duration,
 ) -> Result<CmdOutput, String> {
     // Windows 的 CMD 走临时批处理文件（见下），跑完要删掉——被强杀时也得删。
-    let mut temp_bat: Option<std::path::PathBuf> = None;
+    let mut temp_bat: Option<PathBuf> = None;
     let mut cmd = if cfg!(target_os = "windows") {
         if is_powershell {
             let full = format!("[Console]::OutputEncoding=[Text.Encoding]::UTF8; {command}");
@@ -2881,8 +3243,7 @@ fn run_cmd(
             // 改为写入临时批处理文件再执行，彻底绕开引号二次解析；chcp 单独一行保证中文输出不乱码。
             static SERIAL: AtomicU64 = AtomicU64::new(0);
             let id = SERIAL.fetch_add(1, Ordering::Relaxed);
-            let path =
-                std::env::temp_dir().join(format!("kada_cmd_{}_{}.bat", std::process::id(), id));
+            let path = std::env::temp_dir().join(format!("kada_cmd_{}_{}.bat", std::process::id(), id));
             let content = format!("@echo off\r\nchcp 65001>nul\r\n{command}\r\n");
             std::fs::write(&path, content.as_bytes())
                 .map_err(|e| format!("写入临时批处理失败: {e}"))?;
@@ -2896,44 +3257,78 @@ fn run_cmd(
         c.args(["-c", command]);
         c
     };
+    apply_child_env(&mut cmd, ctx, vars, working_dir);
+    if let Some(d) = working_dir {
+        cmd.current_dir(d);
+    }
     if hide_window {
         no_console_window(&mut cmd);
     }
-    let out = run_with_limits(&mut cmd, label, ctx);
+    let out = run_with_deadline(&mut cmd, label, ctx, timeout);
     if let Some(path) = temp_bat {
         let _ = std::fs::remove_file(path);
     }
     out
 }
 
-/// 执行脚本文件：可选解释器（`None` = 直接执行脚本本身），注入环境变量
-/// `KADA_TRIGGER`（触发组合）、`KADA_NAME`（快捷键名）、`KADA_VARS`（变量表 JSON）。
+/// 执行脚本文件：可选解释器（`None` = 直接执行脚本本身），统一注入 `KADA_*` 环境变量
+/// （见 [`apply_child_env`]）。
+///
+/// 定位口径：`interpreter` 用 [`resolve_program`] 解析（裸名查 PATH + 补充目录）；
+/// 脚本 `path` **按 Kada cwd 解析、不跟 `working_dir` 走**——`path` 是「配置里指到哪个文件」、
+/// `working_dir` 是「脚本运行时把哪个目录当 cwd」，两者混在一起会让改工作目录顺手改坏脚本定位。
+/// 执行前检查脚本存在且是文件，错误文案带完整路径。`interpreter_args` 在脚本路径之前、
+/// `args` 在之后（CS-03，均为 argv）。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
+#[allow(clippy::too_many_arguments)]
 fn run_script(
     interpreter: Option<&str>,
+    interpreter_args: &[String],
     path: &str,
+    args: &[String],
+    working_dir: Option<&Path>,
     ctx: &Ctx,
     vars: &Vars,
     hide_window: bool,
+    timeout: Duration,
 ) -> Result<CmdOutput, String> {
-    let mut cmd = match interpreter {
-        Some(i) => {
-            let mut c = std::process::Command::new(i);
-            c.arg(path);
-            c
+    let raw = path.trim();
+    if raw.is_empty() {
+        return Err("脚本路径不能为空".into());
+    }
+    let script = if interpreter.is_none() && is_bare_name(raw) {
+        // 无解释器 + 裸名：与解释器同一套解析（查 PATH / 补充目录）。
+        resolve_program(raw)?
+    } else {
+        let p = expand_home(raw);
+        if p.is_absolute() {
+            p
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("解析脚本路径失败: {e}"))?
+                .join(p)
         }
-        None => std::process::Command::new(path),
     };
-    cmd.env("KADA_TRIGGER", ctx.t.trigger)
-        .env("KADA_NAME", ctx.t.name)
-        .env("KADA_VARS", vars_to_json(vars));
+    if !script.is_file() {
+        return Err(format!("脚本文件不存在：{}", script.display()));
+    }
+    let (program, pre_args) = match interpreter {
+        Some(i) => (resolve_program(i)?, interpreter_args.to_vec()),
+        None => (script.clone(), Vec::new()),
+    };
+    let mut cmd = std::process::Command::new(&program);
+    cmd.args(&pre_args).arg(&script).args(args);
+    apply_child_env(&mut cmd, ctx, Some(vars), working_dir);
+    if let Some(d) = working_dir {
+        cmd.current_dir(d);
+    }
     if hide_window {
         no_console_window(&mut cmd);
     }
-    run_with_limits(&mut cmd, "脚本", ctx)
+    run_with_deadline(&mut cmd, "脚本", ctx, timeout)
 }
 
 /// 弹一个输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
@@ -3116,7 +3511,17 @@ mod tests {
     #[test]
     fn run_cmd_captures_output_of_normal_command() {
         let _g = abort::test_lock();
-        let out = run_cmd("CMD", false, "echo kada", &ctx(10_000), false).expect("命令应能执行");
+        let out = run_cmd(
+            "CMD",
+            false,
+            "echo kada",
+            &ctx(10_000),
+            false,
+            None,
+            None,
+            Duration::from_millis(10_000),
+        )
+        .expect("命令应能执行");
         assert_eq!(out.killed, None, "正常结束不算被打断");
         assert_eq!(out.exit_code, Some(0));
         assert!(
@@ -3159,10 +3564,14 @@ mod tests {
         let run = |hide: bool| {
             run_script(
                 Some("powershell"),
+                &[],
                 probe.to_str().unwrap(),
+                &[],
+                None,
                 &ctx(60_000),
                 &vars,
                 hide,
+                Duration::from_millis(60_000),
             )
             .expect("探针脚本应能跑完")
         };
@@ -3199,7 +3608,7 @@ mod tests {
     fn timeout_kills_hung_process_and_reports_reason() {
         let _g = abort::test_lock();
         let start = Instant::now();
-        let out = run_with_limits(&mut sleeper(30), "测试", &ctx(800)).expect("进程应能启动");
+        let out = run_with_deadline(&mut sleeper(30), "测试", &ctx(800), Duration::from_millis(800)).expect("进程应能启动");
         assert!(
             matches!(&out.killed, Some(r) if r.contains("超时")),
             "超时必须标记为被强制终止且说明原因：{:?}",
@@ -3248,7 +3657,7 @@ mod tests {
             ]);
             c
         };
-        let out = run_with_limits(&mut cmd, "测试", &ctx(1_200)).expect("进程应能启动");
+        let out = run_with_deadline(&mut cmd, "测试", &ctx(1_200), Duration::from_millis(1_200)).expect("进程应能启动");
         assert!(out.killed.is_some(), "1.2 秒还没结束就该判超时");
         std::thread::sleep(Duration::from_millis(3_500));
         assert!(
@@ -3269,7 +3678,7 @@ mod tests {
         let start = Instant::now();
         // 不限时（0）：能结束只可能是因为中止生效。
         let mut cmd = sleeper(30);
-        let out = run_with_limits(&mut cmd, "测试", &ctx(0)).expect("进程应能启动");
+        let out = run_with_deadline(&mut cmd, "测试", &ctx(0), Duration::ZERO).expect("进程应能启动");
         requester.join().unwrap();
         assert_eq!(out.killed.as_deref(), Some("已中止"));
         assert!(start.elapsed() < Duration::from_secs(8), "中止后应立即返回");
@@ -3303,6 +3712,19 @@ mod tests {
         (results, steps, status)
     }
 
+    /// 每个动作报两次（开始 `running` / 结束最终态，CS-07）：测试按 id 去重、留最终态，
+    /// 才好沿用「一个动作一条记录」的旧断言。
+    fn dedupe_steps(steps: Vec<ActionStep>) -> Vec<ActionStep> {
+        let mut out: Vec<ActionStep> = Vec::new();
+        for s in steps {
+            match out.iter_mut().find(|e| e.id == s.id) {
+                Some(e) => *e = s,
+                None => out.push(s),
+            }
+        }
+        out
+    }
+
     /// 每个动作都留下一条执行记录，父子关系与并行泳道对得上（时间线 / 流水线的骨架）。
     #[test]
     fn every_action_reports_a_step_with_parent_and_lane() {
@@ -3326,9 +3748,10 @@ mod tests {
                 description: None,
             },
         ];
-        let (results, steps, status) = run_all(&actions, &RunOptions::default());
+        let (results, raw_steps, status) = run_all(&actions, &RunOptions::default());
         assert!(results.is_empty(), "{results:?}");
         assert_eq!(status, RunStatus::Finished);
+        let steps = dedupe_steps(raw_steps);
         // 2 条顶层 + 1 个并行容器 + 2 个成员 = 4。
         assert_eq!(steps.len(), 4, "{steps:?}");
         assert_eq!(steps[0].parent, None, "顶层动作不属于任何容器");
@@ -3371,7 +3794,11 @@ mod tests {
         ];
         let (_results, steps, status) = run_all(&actions, &RunOptions::default());
         assert_eq!(status, RunStatus::Finished);
-        assert_eq!(steps.len(), 1, "禁用的那条不该留下执行记录：{steps:?}");
+        assert_eq!(
+            dedupe_steps(steps).len(),
+            1,
+            "禁用的那条不该留下执行记录"
+        );
     }
 
     /// 分组只是组织结构：成员按顺序跑，执行记录挂在分组这一步下面（嵌套分组再挂一层）。
@@ -3394,8 +3821,9 @@ mod tests {
                 },
             ],
         }];
-        let (_, steps, status) = run_all(&actions, &RunOptions::default());
+        let (_, raw_steps, status) = run_all(&actions, &RunOptions::default());
         assert_eq!(status, RunStatus::Finished);
+        let steps = dedupe_steps(raw_steps);
         // 外层分组 + 第一个成员 + 内层分组 + 内层成员 = 4。
         assert_eq!(steps.len(), 4, "{steps:?}");
         let outer = steps
@@ -3418,6 +3846,63 @@ mod tests {
         for s in &steps {
             assert_eq!(s.status, "ok", "{s:?}");
         }
+    }
+
+    /// 动作开始即上报 `running`（CS-07）：同一个 id 报两次，先 running 后最终态；
+    /// 长命令跑着的时候界面靠第一条立刻看到「现在跑到哪」。
+    #[test]
+    fn steps_report_running_before_final() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Command {
+            shell: Shell::Cmd,
+            command: if cfg!(target_os = "windows") {
+                "powershell -NoProfile -Command Start-Sleep -Milliseconds 150".into()
+            } else {
+                "sleep 0.2".into()
+            },
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        }];
+        let (_, steps, status) = run_all(&actions, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert_eq!(steps.len(), 2, "同一步该报两次：{steps:?}");
+        assert_eq!(steps[0].id, steps[1].id, "两次上报用同一个 id");
+        assert_eq!(steps[0].status, "running", "开始时是执行中");
+        assert_eq!(steps[1].status, "ok", "结束后是最终态");
+        assert!(steps[1].end_ms >= steps[1].start_ms);
+    }
+
+    /// 条件判断（CS-07）：先算分支再报 running——报出来的第一条就带着走了哪条。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn if_step_reports_branch_on_running_entry() {
+        use kada_core::Condition;
+        let _g = abort::test_lock();
+        let actions = vec![Action::If {
+            condition: Condition::Equals {
+                var: "nope".into(),
+                field: String::new(),
+                value: "x".into(),
+            },
+            then: vec![],
+            otherwise: vec![Action::PauseMs {
+                ms: 5,
+                description: None,
+            }],
+            description: None,
+        }];
+        let (_, steps, _) = run_all(&actions, &RunOptions::default());
+        // If 的 running 报告（第一条）应已带 branch=false（变量不存在 → 走否则）。
+        let if_running = steps
+            .iter()
+            .find(|s| s.kind == "if" && s.status == "running")
+            .expect("If 要先报一条 running");
+        assert_eq!(if_running.branch, Some(false), "{if_running:?}");
     }
 
     #[test]
@@ -3607,6 +4092,11 @@ mod tests {
         let actions = vec![Action::Script {
             path: missing,
             interpreter: None,
+            interpreter_args: Vec::new(),
+            args: Vec::new(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output: true,
             hide_window: false,
             var: String::new(),
@@ -3622,14 +4112,381 @@ mod tests {
         );
         assert_eq!(results[0].label, "脚本失败");
         assert!(
-            results[0].stderr.contains("失败"),
-            "错误原因进 stderr：{}",
+            results[0].stderr.contains("脚本文件不存在"),
+            "错误原因进 stderr（执行前查得到的不该等 spawn 报）：{}",
             results[0].stderr
         );
         assert!(
             results[0].show_output,
             "动作开了「显示输出」，连启动失败也该弹出来"
         );
+    }
+
+    // ---- CS-01~CS-05：工作目录 / KADA_* 环境变量 / 脚本参数 / 每动作超时 / 成功退出码 ----
+
+    /// `~` 展开用当前用户主目录（Windows `USERPROFILE`、Unix `HOME`）。
+    #[test]
+    fn expand_home_uses_profile_dir() {
+        let home = std::env::var(if cfg!(target_os = "windows") {
+            "USERPROFILE"
+        } else {
+            "HOME"
+        })
+        .expect("测试进程应有主目录环境变量");
+        assert_eq!(expand_home("~"), PathBuf::from(&home));
+        assert_eq!(expand_home("~/sub"), PathBuf::from(&home).join("sub"));
+        assert_eq!(expand_home("~\\sub"), PathBuf::from(&home).join("sub"));
+        // 不是 `~` 开头的路径原样返回。
+        assert_eq!(expand_home("/opt"), PathBuf::from("/opt"));
+        assert_eq!(expand_home("C:\\x"), PathBuf::from("C:\\x"));
+    }
+
+    #[test]
+    fn resolve_working_dir_rejects_missing_dir_and_empty() {
+        let vars: Vars = BTreeMap::new();
+        assert_eq!(resolve_working_dir("  ", &vars).unwrap(), None, "空 = 不设");
+        let err = resolve_working_dir("D:\\kada_no_such_dir_42", &vars).unwrap_err();
+        assert!(err.contains("工作目录不存在"), "{err}");
+        assert!(err.contains("kada_no_such_dir_42"), "错误要带路径：{err}");
+    }
+
+    /// `{变量}` 替换参与工作目录解析。
+    #[test]
+    fn resolve_working_dir_substitutes_vars() {
+        let dir = std::env::temp_dir().join(format!("kada_wd_var_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert(
+            "d".into(),
+            Value::Text(TextValue {
+                text: dir.display().to_string(),
+                exit_code: None,
+            }),
+        );
+        assert_eq!(resolve_working_dir("{d}", &vars).unwrap(), Some(dir.clone()));
+        let _ = fs::remove_dir(&dir);
+    }
+
+    /// 工作目录真的生效：子进程按**相对路径**读工作目录里的文件（说明 cwd 就是它）。
+    #[test]
+    fn run_cmd_runs_in_working_dir() {
+        let _g = abort::test_lock();
+        let dir = std::env::temp_dir().join(format!("kada_wd_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("marker.txt"), b"kada-wd-ok").unwrap();
+        let vars: Vars = BTreeMap::new();
+        let cmd = if cfg!(target_os = "windows") {
+            "type marker.txt"
+        } else {
+            "cat marker.txt"
+        };
+        let out = run_cmd(
+            "CMD",
+            false,
+            cmd,
+            &ctx(10_000),
+            false,
+            Some(&dir),
+            Some(&vars),
+            Duration::from_millis(10_000),
+        )
+        .expect("命令应能执行");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(
+            out.stdout.contains("kada-wd-ok"),
+            "子进程应工作在 working_dir 里：{:?}",
+            out.stdout
+        );
+    }
+
+    /// `KADA_*` 环境变量（CS-02）：命令与脚本同套注入；`KADA_WORKDIR` 是实际工作目录。
+    #[test]
+    fn kada_env_vars_are_injected_into_children() {
+        let _g = abort::test_lock();
+        let dir = std::env::temp_dir().join(format!("kada_env_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert(
+            "secret".into(),
+            Value::Text(TextValue {
+                text: "hello".into(),
+                exit_code: None,
+            }),
+        );
+        let script_text = if cfg!(target_os = "windows") {
+            "@echo off\r\nchcp 65001>nul\r\necho TRIGGER=%KADA_TRIGGER%\r\necho NAME=%KADA_NAME%\r\necho OS=%KADA_OS%\r\necho WORKDIR=%KADA_WORKDIR%\r\necho VARS=%KADA_VARS%\r\n"
+                .to_string()
+        } else {
+            "echo TRIGGER=$KADA_TRIGGER\necho NAME=$KADA_NAME\necho OS=$KADA_OS\necho WORKDIR=$KADA_WORKDIR\necho VARS=$KADA_VARS\n".to_string()
+        };
+        let probe = dir.join(if cfg!(target_os = "windows") {
+            "probe.bat"
+        } else {
+            "probe.sh"
+        });
+        fs::write(&probe, script_text).unwrap();
+        let out = run_script(
+            None,
+            &[],
+            probe.to_str().unwrap(),
+            &[],
+            Some(&dir),
+            &ctx(60_000),
+            &vars,
+            false,
+            Duration::from_millis(60_000),
+        )
+        .expect("探针脚本应能跑完");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(out.stdout.contains("TRIGGER=Ctrl+Alt+T"), "{}", out.stdout);
+        assert!(out.stdout.contains("NAME=测试宏"), "{}", out.stdout);
+        let os = if cfg!(target_os = "windows") {
+            "windows"
+        } else if cfg!(target_os = "macos") {
+            "macos"
+        } else {
+            "linux"
+        };
+        assert!(out.stdout.contains(&format!("OS={os}")), "{}", out.stdout);
+        assert!(
+            out.stdout.to_lowercase()
+                .contains(&dir.display().to_string().to_lowercase()),
+            "KADA_WORKDIR 应是实际工作目录：{}",
+            out.stdout
+        );
+        assert!(
+            out.stdout.contains("VARS=") && out.stdout.contains("hello"),
+            "KADA_VARS 应含变量表：{}",
+            out.stdout
+        );
+    }
+
+    /// 脚本参数（CS-03）：`interpreter_args` 在脚本路径之前、`args` 在之后；
+    /// 逐项 `{变量}` 替换；空格 / 中文参数原样到达（argv 语义）。
+    #[test]
+    fn script_args_arrive_in_order_with_vars_substituted() {
+        let _g = abort::test_lock();
+        let dir = std::env::temp_dir().join(format!("kada_args_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert(
+            "dest".into(),
+            Value::Text(TextValue {
+                text: "D 盘备份".into(),
+                exit_code: None,
+            }),
+        );
+        let probe = dir.join(if cfg!(target_os = "windows") {
+            "args.ps1"
+        } else {
+            "args.sh"
+        });
+        if cfg!(target_os = "windows") {
+            // PS 5.1 对重定向 stdout 默认用系统 OEM 代码页，中文会乱——探针自己切 UTF-8
+            // （run_cmd 对 PowerShell 命令也做同样的事）。
+            fs::write(
+                &probe,
+                "[Console]::OutputEncoding=[Text.Encoding]::UTF8\nforeach ($a in $args) { [Console]::Out.WriteLine(\"ARG=\" + $a) }\n",
+            )
+            .unwrap();
+        } else {
+            fs::write(&probe, "for a in \"$@\"; do echo \"ARG=$a\"; done\n").unwrap();
+        }
+        let (interp, interp_args): (&str, Vec<String>) = if cfg!(target_os = "windows") {
+            // powershell.exe 不带 `-File` 时走 `-Command` 模式，会把参数按空格重新拆开——
+            // argv 原样到达靠用户在解释器参数里写 `-File`（编辑器帮助文案也这么写）。
+            ("powershell", vec!["-NoProfile".into(), "-File".into()])
+        } else {
+            ("sh", vec!["-u".into()])
+        };
+        // 走完整链路（run_action）：`{变量}` 替换发生在动作分支，不在 run_script 里。
+        let action = Action::Script {
+            path: probe.display().to_string(),
+            interpreter: Some(interp.into()),
+            interpreter_args: interp_args,
+            args: vec!["a b".into(), "中文 参数".into(), "{dest}".into()],
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        };
+        let results = run_collect(&[action], &mut vars);
+        let _ = fs::remove_dir_all(&dir);
+        assert!(!results.is_empty(), "脚本应产出结果");
+        let out_text = &results[0].stdout;
+        for want in ["ARG=a b", "ARG=中文 参数", "ARG=D 盘备份"] {
+            assert!(out_text.contains(want), "应有 {want}：{}", out_text);
+        }
+        assert!(
+            !out_text.contains("{dest}"),
+            "占位符要被替换掉：{}",
+            out_text
+        );
+    }
+
+    /// 解释器解析（CS-02）：绝对路径额外检查存在性；空报错；目录内查找按 PATHEXT /
+    /// 可执行位（Windows 的 `.bat` / Unix 的可执行脚本都能被 `try_dir` 找到并真跑起来）。
+    #[test]
+    fn resolve_program_checks_paths_and_try_dir_finds_fake_interpreter() {
+        let _g = abort::test_lock();
+        assert!(resolve_program("  ").is_err(), "空解释器要报错");
+        let missing = if cfg!(target_os = "windows") {
+            "C:\\kada_no_such_interp_42.exe"
+        } else {
+            "/opt/kada_no_such_interp_42"
+        };
+        let err = resolve_program(missing).unwrap_err();
+        assert!(err.contains("解释器不存在"), "{err}");
+
+        let dir = std::env::temp_dir().join(format!("kada_prog_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join(if cfg!(target_os = "windows") {
+            "kada_fake_prog.bat"
+        } else {
+            "kada_fake_prog.sh"
+        });
+        #[cfg(windows)]
+        fs::write(&fake, "@echo off\r\necho fake-prog-ok\r\n").unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::write(&fake, "#!/bin/sh\necho fake-prog-ok\n").unwrap();
+            fs::set_permissions(&fake, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let found = try_dir(&dir, "kada_fake_prog").expect("应能在给定目录找到假解释器");
+        assert!(found.is_file());
+        // 找到的路径真的能跑（PATH 之外的假解释器，走绝对路径分支）。
+        let vars: Vars = BTreeMap::new();
+        let out = run_script(
+            Some(found.to_str().unwrap()),
+            &[],
+            fake.to_str().unwrap(),
+            &[],
+            None,
+            &ctx(60_000),
+            &vars,
+            false,
+            Duration::from_millis(60_000),
+        )
+        .expect("假解释器应能跑完");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(out.stdout.contains("fake-prog-ok"), "{}", out.stdout);
+    }
+
+    /// 每动作超时（CS-04）：全局 10 秒、动作 300ms → 30 秒的 sleep 在 ~300ms 被杀。
+    #[test]
+    fn per_action_timeout_overrides_global() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Command {
+            shell: Shell::Cmd,
+            command: if cfg!(target_os = "windows") {
+                "powershell -NoProfile -Command Start-Sleep -Seconds 30".into()
+            } else {
+                "sleep 30".into()
+            },
+            working_dir: String::new(),
+            timeout_ms: Some(300),
+            ok_exit_codes: Vec::new(),
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        }];
+        let opts = RunOptions {
+            action_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let start = Instant::now();
+        let (results, steps, _) = run_all(&actions, &opts);
+        assert!(
+            start.elapsed() < Duration::from_secs(8),
+            "应按动作自己的 300ms 超时，而不是全局 10 秒"
+        );
+        assert!(results[0].stderr.contains("超时"), "{}", results[0].stderr);
+        assert_eq!(results[0].exit_code, None, "被强杀的退出码置空");
+        assert_eq!(steps.last().unwrap().status, "error");
+    }
+
+    /// `timeout_ms: Some(0)` = 不限时（与全局 0 同义）：全局 300ms 也拦不住它跑完 1 秒。
+    #[test]
+    fn per_action_timeout_zero_means_unlimited() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Command {
+            shell: Shell::Cmd,
+            command: if cfg!(target_os = "windows") {
+                "powershell -NoProfile -Command Start-Sleep -Seconds 1".into()
+            } else {
+                "sleep 1".into()
+            },
+            working_dir: String::new(),
+            timeout_ms: Some(0),
+            ok_exit_codes: Vec::new(),
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        }];
+        let opts = RunOptions {
+            action_timeout: Duration::from_millis(300),
+            ..Default::default()
+        };
+        let (results, steps, _) = run_all(&actions, &opts);
+        assert_eq!(results[0].exit_code, Some(0), "不限时应正常跑完");
+        assert!(
+            !results[0].stderr.contains("超时"),
+            "{}",
+            results[0].stderr
+        );
+        assert_eq!(steps.last().unwrap().status, "ok");
+    }
+
+    /// `ok_exit_codes`（CS-05）：空 = 只有 0；列出 1 就放行；被强杀（退出码 None）仍失败。
+    #[test]
+    fn ok_exit_codes_decide_failure() {
+        let _g = abort::test_lock();
+        let mk = |codes: Vec<i32>, command: String, timeout_ms: Option<u64>| Action::Command {
+            shell: Shell::Cmd,
+            command,
+            working_dir: String::new(),
+            timeout_ms,
+            ok_exit_codes: codes,
+            show_output: false,
+            hide_window: true,
+            var: String::new(),
+            description: None,
+        };
+        let exit1 = if cfg!(target_os = "windows") {
+            "exit 1".to_string()
+        } else {
+            "exit 1".to_string()
+        };
+        let sleep30 = if cfg!(target_os = "windows") {
+            "powershell -NoProfile -Command Start-Sleep -Seconds 30".to_string()
+        } else {
+            "sleep 30".to_string()
+        };
+
+        // 退出 1 + 默认（空 = [0]）→ 失败。
+        let (_, steps, _) = run_all(&[mk(vec![], exit1.clone(), None)], &RunOptions::default());
+        assert_eq!(steps.last().unwrap().status, "error");
+        // 退出 1 + [0,1] → 成功。
+        let (_, steps, _) = run_all(
+            &[mk(vec![0, 1], exit1.clone(), None)],
+            &RunOptions::default(),
+        );
+        assert_eq!(steps.last().unwrap().status, "ok");
+        // 被强杀（超时）+ [0,1] → 仍失败：退出码 None 不能靠表放行。
+        let (_, steps, _) = run_all(
+            &[mk(vec![0, 1], sleep30, Some(300))],
+            &RunOptions {
+                action_timeout: Duration::from_secs(10),
+                ..Default::default()
+            },
+        );
+        assert_eq!(steps.last().unwrap().status, "error");
     }
 
     #[test]
@@ -3674,12 +4531,13 @@ mod tests {
                 description: None,
             },
         ];
-        let (results, steps, status) = run_all(&actions, &RunOptions::default());
+        let (results, raw_steps, status) = run_all(&actions, &RunOptions::default());
         assert_eq!(status, RunStatus::Finished);
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].label, "内置脚本");
         assert!(results[0].exit_code.is_some_and(|c| c != 0));
         assert!(results[0].stderr.contains("〔咔哒〕"), "{}", results[0].stderr);
+        let steps = dedupe_steps(raw_steps);
         assert_eq!(steps[0].kind, "inline_script");
         assert_eq!(steps[0].status, "error", "失败要落在这一步的记录上");
         assert_eq!(steps[1].status, "ok", "一步失败不该吞掉后面的动作");

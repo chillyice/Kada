@@ -2053,6 +2053,12 @@ select.action-type-name:focus-visible {
   resize: vertical;
 }
 
+/* 一行一个参数的参数框（脚本参数 / 解释器参数）：与 action-input 一样撑满行。 */
+.action-textarea.grow {
+  flex: 1;
+  min-height: 44px;
+}
+
 /* 内置脚本文本框：等宽字体 + 高一点的编辑区，缩进才看得清。 */
 .action-code {
   min-height: 140px;

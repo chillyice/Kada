@@ -1013,5 +1013,16 @@
   "暂停快捷键触发": "Pause hotkey triggers",
   "快捷键提示": "Shortcut hints",
   "重载配置": "Reload config",
-  "退出": "Quit"
+  "退出": "Quit",
+  "工作目录（可空 = 跟随 Kada；支持 {变量} 与 ~）": "Working directory (empty = follow Kada; {var} and ~ supported)",
+  "超时（秒）": "Timeout (s)",
+  "请填不小于 0 的秒数（留空 = 跟随设置）": "Enter seconds ≥ 0 (empty = follow the global setting)",
+  "本步最长等多少秒：留空 = 用设置页「动作超时」的全局值；0 = 不限时；只覆盖这一步，不改全局。超时会把命令连同它启动的子进程一起结束。": "How long this step may run, in seconds: empty = use the global \"Action timeout\" in Settings; 0 = no limit; only overrides this step. On timeout the command and its child processes are terminated together.",
+  "成功退出码": "Success exit codes",
+  "退出码要是整数（-2147483648 ~ 2147483647），用逗号分隔": "Exit codes must be integers (-2147483648 ~ 2147483647), separated by commas",
+  "哪些退出码算成功（逗号分隔，空 = 只有 0）。例：robocopy 复制了文件时退出 1，填「0, 1」；MSI 安装完要求重启时退出 3010，填「0, 3010」。被超时 / 手动停止强杀的进程没有退出码，仍算失败。": "Which exit codes count as success (comma-separated; empty = only 0). E.g. robocopy exits 1 when files were copied — use \"0, 1\"; an MSI that needs a reboot exits 3010 — use \"0, 3010\". A process killed by timeout / manual stop has no exit code and still counts as failed.",
+  "解释器参数": "Interpreter arguments",
+  "写在脚本路径之前的参数，一行一个。例：python 的 -u（不缓冲输出）；PowerShell 的 -NoProfile 和 -File（-File 必须带上，否则参数里的空格会被 PowerShell 重新拆开）。": "Arguments placed before the script path, one per line. E.g. -u for python (unbuffered output); -NoProfile and -File for PowerShell (-File is required, otherwise PowerShell re-splits arguments at spaces).",
+  "脚本参数": "Script arguments",
+  "写在脚本路径之后的参数，一行一个，支持 {变量}。例：python -u script.py --file \"{path}\" 就是两行：--file 与 {path}。含空格的参数（如 C:\\My Files）整行原样到达，不需要自己加引号。": "Arguments placed after the script path, one per line, {var} supported. E.g. python -u script.py --file \"{path}\" is two lines: --file and {path}. Arguments with spaces (e.g. C:\\My Files) arrive intact — no manual quoting needed."
 }

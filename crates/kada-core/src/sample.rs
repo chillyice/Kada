@@ -363,6 +363,9 @@ pub fn sample_config() -> Config {
         vec![Action::Command {
             shell: Shell::Cmd,
             command: "echo 来自 Kada 的命令输出".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
             show_output: true,
             hide_window: false,
             var: String::new(),
@@ -377,6 +380,9 @@ pub fn sample_config() -> Config {
             Action::Command {
                 shell: Shell::Cmd,
                 command: "whoami".into(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
                 show_output: false,
                 hide_window: false,
                 var: "user".into(),
@@ -426,6 +432,9 @@ pub fn sample_config() -> Config {
                 Action::Command {
                     shell: Shell::Cmd,
                     command: "echo parallel-A".into(),
+                    working_dir: String::new(),
+                    timeout_ms: None,
+                    ok_exit_codes: Vec::new(),
                     show_output: false,
                     hide_window: false,
                     var: String::new(),
@@ -434,6 +443,9 @@ pub fn sample_config() -> Config {
                 Action::Command {
                     shell: Shell::Cmd,
                     command: "echo parallel-B".into(),
+                    working_dir: String::new(),
+                    timeout_ms: None,
+                    ok_exit_codes: Vec::new(),
                     show_output: false,
                     hide_window: false,
                     var: String::new(),

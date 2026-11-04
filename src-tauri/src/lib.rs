@@ -2725,7 +2725,20 @@ fn update_run(
     Some(snapshot)
 }
 
-/// 追加一条动作执行记录（时间线的一个时间块 / 流水线的一个节点），顺带把总耗时推到最新。
+/// 按动作 id 合并一条执行记录：每个动作报两次（开始 `running` / 结束最终态，CS-07），
+/// 同 id 第二次**覆盖**第一条，界面才是一条从「执行中」变「成功」的记录而不是两条。
+/// 极端长链里正在跑的步骤可能已被 `MAX_RUN_STEPS` 裁掉，找不到就当新的一条 push
+/// （时间线少一个起点，但不丢结论）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn upsert_step(steps: &mut Vec<ActionStep>, step: ActionStep) {
+    if let Some(existing) = steps.iter_mut().find(|s| s.id == step.id) {
+        *existing = step;
+    } else {
+        steps.push(step);
+    }
+}
+
+/// 记一条动作执行记录（时间线的一个时间块 / 流水线的一个节点），顺带把总耗时推到最新。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn add_step(
     app: &tauri::AppHandle,
@@ -2741,7 +2754,7 @@ fn add_step(
         if failed && run.status != "abort" {
             run.status = "error".into();
         }
-        run.steps.push(step);
+        upsert_step(&mut run.steps, step);
     });
     if snapshot.is_some() {
         unread.store(true, Ordering::Relaxed);
@@ -5058,6 +5071,42 @@ mod tests {
             }];
             assert!(!injects_keys(&file));
         }
+    }
+
+    /// 每个动作报两次（开始 running / 结束最终态，CS-07）：壳层按 id upsert——
+    /// 同 id 第二次覆盖第一条；被 `MAX_RUN_STEPS` 裁掉的步骤找不到就当新的一条 push。
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn add_step_upserts_by_id() {
+        let mk = |id: u64, status: &str, end: u64| ActionStep {
+            id,
+            parent: None,
+            lane: 0,
+            kind: "command".into(),
+            title: "echo hi".into(),
+            branch: None,
+            detail: None,
+            status: status.into(),
+            start_ms: 0,
+            end_ms: end,
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: Some(0),
+        };
+        let mut steps: Vec<ActionStep> = Vec::new();
+        upsert_step(&mut steps, mk(1, "running", 0));
+        assert_eq!(steps.len(), 1, "先报一条执行中");
+        assert_eq!(steps[0].status, "running");
+        // 同 id 的最终态覆盖，不留两条。
+        upsert_step(&mut steps, mk(1, "ok", 120));
+        assert_eq!(steps.len(), 1, "同 id 该覆盖而不是追加");
+        assert_eq!(steps[0].status, "ok");
+        assert_eq!(steps[0].end_ms, 120);
+        // 失败覆盖：最终态说了算（error 步把记录标 error 的逻辑在 add_step 里）。
+        upsert_step(&mut steps, mk(2, "running", 0));
+        upsert_step(&mut steps, mk(2, "error", 300));
+        assert_eq!(steps.len(), 2);
+        assert_eq!(steps[1].status, "error");
     }
 
     /// 假注入器：只记录发出的键，绝不真的注入（会打到跑测试的这台机器上）。
