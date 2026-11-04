@@ -1024,5 +1024,22 @@
   "解释器参数": "Interpreter arguments",
   "写在脚本路径之前的参数，一行一个。例：python 的 -u（不缓冲输出）；PowerShell 的 -NoProfile 和 -File（-File 必须带上，否则参数里的空格会被 PowerShell 重新拆开）。": "Arguments placed before the script path, one per line. E.g. -u for python (unbuffered output); -NoProfile and -File for PowerShell (-File is required, otherwise PowerShell re-splits arguments at spaces).",
   "脚本参数": "Script arguments",
-  "写在脚本路径之后的参数，一行一个，支持 {变量}。例：python -u script.py --file \"{path}\" 就是两行：--file 与 {path}。含空格的参数（如 C:\\My Files）整行原样到达，不需要自己加引号。": "Arguments placed after the script path, one per line, {var} supported. E.g. python -u script.py --file \"{path}\" is two lines: --file and {path}. Arguments with spaces (e.g. C:\\My Files) arrive intact — no manual quoting needed."
+  "写在脚本路径之后的参数，一行一个，支持 {变量}。例：python -u script.py --file \"{path}\" 就是两行：--file 与 {path}。含空格的参数（如 C:\\My Files）整行原样到达，不需要自己加引号。": "Arguments placed after the script path, one per line, {var} supported. E.g. python -u script.py --file \"{path}\" is two lines: --file and {path}. Arguments with spaces (e.g. C:\\My Files) arrive intact — no manual quoting needed.",
+  "「启动后不管」：不等待、不捕获输出、也不受「停止执行」控制——命令会自己跑完。变量不会写入，结果卡只显示已启动。": "“Fire and forget”: does not wait, capture output, or get stopped by “Stop”. The command runs to completion on its own. No variable is written; the result card only shows that it was started.",
+  "从不弹窗（只亮红点）": "Never pop up (red dot only)",
+  "只在失败时弹": "Only on failure",
+  "只跑这一条动作（不保存、不执行前面的动作）；依赖的 {变量} 为空时命令可能报错。": "Run only this action (not saved, earlier actions are not run); commands that rely on {var} may fail because it is empty.",
+  "复制全文": "Copy all",
+  "复制失败: {0}": "Copy failed: {0}",
+  "失败时停止后续动作": "Stop later actions on failure",
+  "已启动，不等待完成；未捕获输出（「停止执行」也收不回它）": "Started without waiting; output not captured (Stop cannot take it back)",
+  "已复制": "Copied",
+  "打开完整日志": "Open full log",
+  "打开日志失败: {0}": "Could not open log: {0}",
+  "每次都弹": "Always pop up",
+  "等它跑完再执行下一步": "Wait for it before the next action",
+  "结果弹窗": "Result popup",
+  "结果消息始终会进消息中心；这里只决定要不要额外弹窗。「只在失败时弹」按本步真实成败判断（退出码表与超时 / 中止都算）。": "Results always go to Messages; this only controls the extra popup. “Only on failure” uses the real outcome of this step (exit-code list, timeout and abort all count).",
+  "试运行": "Test run",
+  "默认不勾：这一步失败后仍继续执行后面的动作（和以前一样）": "Off by default: later actions still run after this step fails (same as before)"
 }

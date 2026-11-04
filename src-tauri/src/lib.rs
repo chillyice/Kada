@@ -495,6 +495,9 @@ struct KadaState {
     _hook: Mutex<Option<input::HookHandle>>,
     /// 消息中心：命令结果（内存态，重启清空）。
     results: Arc<Mutex<Vec<CommandResult>>>,
+    /// 冷启动补发（CS-11）：`show_output` 为真、但主窗口当时还没建出来时先存一份，
+    /// 前端启动并注册好监听器后调 `take_pending_result_modal` 取走（取走即清）。
+    pending_result_modal: Mutex<Option<CommandResult>>,
     /// 是否有未读命令结果（红点）。
     unread: Arc<AtomicBool>,
     /// 消息中心的执行记录表（内存态，重启清空）：一次触发一条，内含逐步记录
@@ -748,6 +751,8 @@ fn spawn_hotstring(
                     stdout: String::new(),
                     stderr: format!("注入替换文本失败：{e}（触发词已被回删）"),
                     exit_code: None,
+                    detached: false,
+                    log_path: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1242,6 +1247,8 @@ fn report_secure_input(app: &tauri::AppHandle, on: bool) {
             stdout,
             stderr: String::new(),
             exit_code: None,
+            detached: false,
+            log_path: None,
             // 不弹窗：这条随时可能在用户输密码的当下出现，弹窗既抢焦点又不合时宜。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -1328,6 +1335,8 @@ fn report_elevated_notice(app: &tauri::AppHandle, notice: input::elevated::Notic
             stdout: detail,
             stderr: String::new(),
             exit_code: None,
+            detached: false,
+            log_path: None,
             // 不弹窗：这条随时可能因为用户正好在提权窗口里按快捷键而出现，弹窗会抢焦点。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -1386,6 +1395,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                     ),
                     stderr: err,
                     exit_code: None,
+                    detached: false,
+                    log_path: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1422,6 +1433,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                 ),
                 stderr: String::new(),
                 exit_code: None,
+                detached: false,
+                log_path: None,
                 show_output: false,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 run_id: None,
@@ -1496,6 +1509,8 @@ fn reload_config_now(app: &tauri::AppHandle) {
                     stdout: String::new(),
                     stderr: e,
                     exit_code: None,
+                    detached: false,
+                    log_path: None,
                     show_output: false,
                     time: now.clone(),
                     run_id: None,
@@ -1517,6 +1532,8 @@ fn reload_config_now(app: &tauri::AppHandle) {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: None,
+            detached: false,
+            log_path: None,
             show_output: false,
             time: now,
             run_id: None,
@@ -1602,6 +1619,8 @@ fn fire(
                              成 Ctrl+Alt+<键>，本次文本/按键动作已跳过——松键再触发即可。"
                         .into(),
                     exit_code: None,
+                    detached: false,
+                    log_path: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: Some(id),
@@ -4381,6 +4400,11 @@ const MAX_RESULTS: usize = 200;
 /// 单条 stdout / stderr 保留的最大字节数（超出截断并加提示）。避免一条 `npm install`
 /// 之类的大输出把整份消息中心撑大。
 const MAX_RESULT_TEXT: usize = 16 * 1024;
+/// 命令完整日志的保留上限（个文件，CS-10）：消息中心只留 16KB 截断版，全文在
+/// `app_data_dir()/logs/commands/` 里，按修改时间删最旧的。
+const MAX_COMMAND_LOGS: usize = 200;
+/// 同秒内多次写日志的序号，避免文件名互相覆盖。
+static COMMAND_LOG_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// 把超长文本截到至多 `max` 字节，落在字符边界上（不腰断 UTF-8），并附截断提示。
 fn truncate_text(s: &mut String, max: usize) {
@@ -4395,14 +4419,112 @@ fn truncate_text(s: &mut String, max: usize) {
     s.push_str("\n…（输出过长，已截断）");
 }
 
+/// 完整命令日志的目录（CS-10）。拿不到应用数据目录时返回 `None`。
+fn command_logs_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("logs").join("commands"))
+}
+
+/// 写一份完整日志；失败只 `eprintln`，绝不拖累结果进消息中心（CS-10）。
+fn write_command_log(app: &tauri::AppHandle, result: &CommandResult) -> Option<String> {
+    match write_command_log_inner(app, result) {
+        Ok(path) => {
+            prune_command_logs(app);
+            Some(path.display().to_string())
+        }
+        Err(e) => {
+            eprintln!("写命令日志失败: {e}");
+            None
+        }
+    }
+}
+
+fn write_command_log_inner(
+    app: &tauri::AppHandle,
+    result: &CommandResult,
+) -> Result<PathBuf, String> {
+    use std::fmt::Write as _;
+
+    let dir = command_logs_dir(app).ok_or_else(|| "拿不到应用数据目录".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("创建日志目录失败: {e}"))?;
+    let serial = COMMAND_LOG_SERIAL.fetch_add(1, Ordering::Relaxed);
+    let path = dir.join(format!(
+        "{}-{serial:04}.log",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    ));
+    let mut body = String::new();
+    let _ = writeln!(body, "时间：{}", result.time);
+    let _ = writeln!(body, "触发键：{}", result.trigger);
+    let _ = writeln!(body, "名称：{}", result.name);
+    let _ = writeln!(body, "动作：{}（{}）", result.kind, result.label);
+    let _ = writeln!(body, "命令：{}", result.command);
+    let _ = writeln!(
+        body,
+        "退出码：{}",
+        result
+            .exit_code
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "无（未等待完成 / 进程未启动）".into())
+    );
+    if result.detached {
+        let _ = writeln!(body, "等待：否（启动后不管，未捕获输出）");
+    }
+    let _ = writeln!(body, "\n===== stdout =====\n{}", result.stdout);
+    let _ = writeln!(body, "\n===== stderr =====\n{}", result.stderr);
+    // 明确不写 `KADA_VARS`：变量表可能含密码 / 私密文本（见计划 §8 设计口径）。
+    std::fs::write(&path, body.as_bytes()).map_err(|e| format!("写日志文件失败: {e}"))?;
+    Ok(path)
+}
+
+/// 只保留最近 [`MAX_COMMAND_LOGS`] 份日志：按修改时间排序，删最旧的。
+fn prune_command_logs(app: &tauri::AppHandle) {
+    let dir = match command_logs_dir(app) {
+        Some(d) => d,
+        None => return,
+    };
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    let mut logs: Vec<(std::time::SystemTime, PathBuf)> = entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+        .filter_map(|e| {
+            let modified = e.metadata().ok()?.modified().ok()?;
+            Some((modified, e.path()))
+        })
+        .collect();
+    if logs.len() <= MAX_COMMAND_LOGS {
+        return;
+    }
+    logs.sort_by_key(|(t, _)| *t);
+    let drop = logs.len() - MAX_COMMAND_LOGS;
+    for (_, path) in logs.into_iter().take(drop) {
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("清理旧命令日志失败（{}）: {e}", path.display());
+        }
+    }
+}
+
 /// 记录一条命令结果：写入消息中心；弹窗开则唤起主窗口，否则亮未读红点。
-/// 两种情况都会向主窗口发 `command-result` 事件。
+/// 两种情况都会向主窗口发 `command-result` 事件。返回完整日志路径（若有），
+/// 供 `run_chain` 抄进执行记录的 `log_path`（CS-10）。
 fn commit_result(
     app: &tauri::AppHandle,
     results: &Mutex<Vec<CommandResult>>,
     unread: &AtomicBool,
     mut result: CommandResult,
-) {
+) -> Option<String> {
+    // 先落全量日志，再截断内存里的副本（CS-10）。
+    if matches!(
+        result.kind.as_str(),
+        "cmd" | "powershell" | "script" | "inline_script"
+    ) {
+        result.log_path = write_command_log(app, &result);
+    }
+    let log_path = result.log_path.clone();
     truncate_text(&mut result.stdout, MAX_RESULT_TEXT);
     truncate_text(&mut result.stderr, MAX_RESULT_TEXT);
     {
@@ -4415,12 +4537,19 @@ fn commit_result(
         }
     }
     if result.show_output {
+        // 冷启动补发（CS-11）：窗口还没建时 `emit` 没人接，先存一份，前端启动后取走。
+        if app.get_webview_window("main").is_none() {
+            if let Some(state) = app.try_state::<KadaState>() {
+                *state.pending_result_modal.lock().unwrap() = Some(result.clone());
+            }
+        }
         show_main_window(app);
     } else {
         unread.store(true, Ordering::Relaxed);
         set_tray_unread(app, true);
     }
     let _ = app.emit("command-result", &result);
+    log_path
 }
 
 /// 切换托盘图标的红点（未读态带红点，已读态还原基础图标）。
@@ -5092,6 +5221,8 @@ mod tests {
             stdout: String::new(),
             stderr: String::new(),
             exit_code: Some(0),
+            detached: false,
+            log_path: None,
         };
         let mut steps: Vec<ActionStep> = Vec::new();
         upsert_step(&mut steps, mk(1, "running", 0));
@@ -6638,6 +6769,8 @@ fn hidpp_unlock(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) -> Hi
             stdout: detail,
             stderr: String::new(),
             exit_code: None,
+            detached: false,
+            log_path: None,
             // 不弹窗：用户就在设置页看着结果，弹窗只会多一步要关。
             show_output: false,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
@@ -7416,6 +7549,65 @@ fn mark_results_read(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) 
     set_tray_unread(&app, false);
 }
 
+/// 冷启动补发（CS-11）：前端启动并注册好监听器后取走没弹出来的结果（取走即清）。
+#[tauri::command]
+fn take_pending_result_modal(state: tauri::State<'_, KadaState>) -> Option<CommandResult> {
+    state.pending_result_modal.lock().unwrap().take()
+}
+
+/// 复制文本到系统剪贴板（CS-10）：走平台注入层，不依赖 WebView 的
+/// `navigator.clipboard` 权限（各平台 / 各 WebView 不一致）。
+#[tauri::command]
+fn copy_result_text(text: String) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("没有可复制的文本".into());
+    }
+    input::simulate::set_clipboard_text(&text).map_err(|e| format!("复制失败：{e}"))
+}
+
+/// 打开完整命令日志（CS-10）：只允许 `app_data_dir()/logs/commands/` 下的文件，
+/// 用系统文件管理器定位到该文件（Windows `explorer /select,`、macOS `open -R`、
+/// Linux `xdg-open <父目录>`）。
+#[tauri::command]
+fn open_result_log(app: tauri::AppHandle, path: String) -> Result<(), String> {
+    let dir = command_logs_dir(&app)
+        .ok_or_else(|| "拿不到应用数据目录".to_string())?
+        .canonicalize()
+        .map_err(|e| format!("命令日志目录不存在：{e}"))?;
+    let file = PathBuf::from(&path)
+        .canonicalize()
+        .map_err(|e| format!("日志文件不存在：{e}"))?;
+    if !file.starts_with(&dir) || !file.is_file() {
+        return Err("只能打开命令日志目录里的文件".into());
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", file.display()))
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败：{e}"))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg("-R")
+            .arg(&file)
+            .spawn()
+            .map_err(|e| format!("打开 Finder 失败：{e}"))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let parent = file
+            .parent()
+            .ok_or_else(|| "日志文件没有父目录".to_string())?;
+        std::process::Command::new("xdg-open")
+            .arg(parent)
+            .spawn()
+            .map_err(|e| format!("打开文件管理器失败：{e}"))?;
+    }
+    Ok(())
+}
+
 /// 清空消息中心（命令结果与执行记录一起清，同时熄灭红点）。
 #[tauri::command]
 fn clear_command_results(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
@@ -7497,6 +7689,9 @@ pub fn run() {
             hints_set_visible,
             mark_results_read,
             clear_command_results,
+            take_pending_result_modal,
+            copy_result_text,
+            open_result_log,
             update::get_update_status,
             update::check_update,
             update::download_update,
@@ -7842,6 +8037,7 @@ pub fn run() {
                 cfg_stale,
                 _hook: Mutex::new(hook_handle),
                 results,
+                pending_result_modal: Mutex::new(None),
                 unread,
                 runs,
                 tray: Mutex::new(None),
@@ -7993,6 +8189,8 @@ pub fn run() {
                             stdout: String::new(),
                             stderr: detail,
                             exit_code: None,
+                            detached: false,
+                            log_path: None,
                             show_output: false,
                             time: time.clone(),
                             run_id: None,

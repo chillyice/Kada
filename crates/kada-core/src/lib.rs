@@ -1580,6 +1580,86 @@ fn is_tap_mode(m: &KeysMode) -> bool {
     matches!(m, KeysMode::Tap)
 }
 
+/// 本步失败后整条动作链怎么办（CS-13）：默认继续跑后续动作（既有语义），
+/// `stop` 是显式选择——失败后只把当前这一步收尾，后面的动作不再执行。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OnError {
+    /// 继续执行后续动作（默认，缺字段也是它）。
+    #[default]
+    Continue,
+    /// 本步失败后停整条链（并行组里已开跑的兄弟不取消，组结束后才停）。
+    Stop,
+}
+
+/// `serde` 帮手：默认的 `continue` 不落盘。
+#[cfg(feature = "automation")]
+fn is_continue(v: &OnError) -> bool {
+    matches!(v, OnError::Continue)
+}
+
+/// `serde` 帮手：默认的「从不弹窗」不落盘（老布尔 false 也按默认处理）。
+#[cfg(feature = "automation")]
+fn is_show_output_default(v: &ShowOutput) -> bool {
+    matches!(v, ShowOutput::Bool(false) | ShowOutput::Mode(ShowOutputMode::Never))
+}
+
+/// 「弹窗显示结果」的三种口径（CS-11）：老配置的 `true` / `false` 照旧读，
+/// 新口径序列化成 `"always"` / `"on_error"` / `"never"`。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ShowOutputMode {
+    /// 每次都弹。
+    Always,
+    /// 只在失败时弹（成功只进消息中心）。
+    OnError,
+    /// 从不弹，只亮未读红点（默认）。
+    Never,
+}
+
+/// `show_output` 的兼容形态：老配置是布尔，新配置可写三态字符串。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ShowOutput {
+    Bool(bool),
+    Mode(ShowOutputMode),
+}
+
+#[cfg(feature = "automation")]
+impl Default for ShowOutput {
+    fn default() -> Self {
+        Self::Bool(false)
+    }
+}
+
+#[cfg(feature = "automation")]
+impl From<bool> for ShowOutput {
+    fn from(v: bool) -> Self {
+        Self::Bool(v)
+    }
+}
+
+#[cfg(feature = "automation")]
+impl ShowOutput {
+    /// 这次结果该不该弹窗：`failed` 是本次执行的真实成败（命令看退出码表）。
+    pub fn shows(self, failed: bool) -> bool {
+        match self {
+            Self::Bool(v) => v,
+            Self::Mode(ShowOutputMode::Always) => true,
+            Self::Mode(ShowOutputMode::OnError) => failed,
+            Self::Mode(ShowOutputMode::Never) => false,
+        }
+    }
+
+    /// 老布尔口径：给「只知道开关、不知道本次成败」的地方用（如动作失败记录）。
+    pub fn is_on(self) -> bool {
+        !matches!(self, Self::Bool(false) | Self::Mode(ShowOutputMode::Never))
+    }
+}
+
 /// 内置脚本的源码上限（UTF-8 字节）：超长多半是误粘贴，执行前直接拒绝。
 pub const INLINE_SCRIPT_MAX_BYTES: usize = 64 * 1024;
 
@@ -1604,8 +1684,32 @@ pub enum Action {
     /// `hide_window` = 执行时不弹出子进程的控制台窗口（Windows 专有：GUI 进程 spawn
     /// `cmd`/`powershell` 会新建一个黑窗，按一次快捷键就闪一下）。默认 `false` 保持原样——
     /// 交互式命令（要在黑窗里敲字、看进度的）靠它才能用；纯后台命令打开它更清净。
+    ///
+    /// `wait = false`（CS-12）= 启动后不管：不捕获输出、不可被「停止执行」收回；
+    /// `on_error = stop`（CS-13）= 本步失败后停整条链；`show_output` 为三态（CS-11）。
     #[cfg(feature = "automation")]
-    Command { shell: Shell, command: String, #[serde(default, skip_serializing_if = "String::is_empty")] working_dir: String, #[serde(default, skip_serializing_if = "Option::is_none")] timeout_ms: Option<u64>, #[serde(default, skip_serializing_if = "Vec::is_empty")] ok_exit_codes: Vec<i32>, #[serde(default)] show_output: bool, #[serde(default, skip_serializing_if = "is_false")] hide_window: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Command {
+        shell: Shell,
+        command: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        working_dir: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timeout_ms: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ok_exit_codes: Vec<i32>,
+        #[serde(default, skip_serializing_if = "is_show_output_default")]
+        show_output: ShowOutput,
+        #[serde(default, skip_serializing_if = "is_false")]
+        hide_window: bool,
+        #[serde(default)]
+        var: String,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        wait: bool,
+        #[serde(default, skip_serializing_if = "is_continue")]
+        on_error: OnError,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 执行 CMD 命令（旧版动作，加载时自动迁移为 `Command(Cmd)`）。
     #[cfg(feature = "automation")]
     Cmd { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
@@ -1697,6 +1801,7 @@ pub enum Action {
     /// 退出码表（空 = 只有 0）。
     ///
     /// `hide_window` 与 [`Action::Command`] 同义：执行时不弹出子进程的控制台窗口。
+    /// `wait` / `on_error` / `show_output` 也与 [`Action::Command`] 同义（CS-11~CS-13）。
     #[cfg(feature = "automation")]
     Script {
         path: String,
@@ -1712,12 +1817,16 @@ pub enum Action {
         timeout_ms: Option<u64>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         ok_exit_codes: Vec<i32>,
-        #[serde(default)]
-        show_output: bool,
+        #[serde(default, skip_serializing_if = "is_show_output_default")]
+        show_output: ShowOutput,
         #[serde(default, skip_serializing_if = "is_false")]
         hide_window: bool,
         #[serde(default)]
         var: String,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        wait: bool,
+        #[serde(default, skip_serializing_if = "is_continue")]
+        on_error: OnError,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -4676,9 +4785,11 @@ pub fn migrate_action(a: Action) -> Action {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output,
+            show_output: show_output.into(),
             hide_window: false,
             var,
+            wait: true,
+            on_error: OnError::Continue,
             description,
         },
         #[cfg(feature = "automation")]
@@ -4688,9 +4799,11 @@ pub fn migrate_action(a: Action) -> Action {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output,
+            show_output: show_output.into(),
             hide_window: false,
             var,
+            wait: true,
+            on_error: OnError::Continue,
             description,
         },
         #[cfg(feature = "automation")]
@@ -6874,8 +6987,8 @@ mod new_action_and_folder_tests {
             Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
             Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
-            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false, hide_window: false, var: "".into(), description: None },
-            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true, hide_window: false, var: "".into(), description: None },
+            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None },
+            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "应通过校验: {a:?}");
@@ -6887,9 +7000,50 @@ mod new_action_and_folder_tests {
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
         assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
-        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false, hide_window: false, var: "".into(), description: None }
+        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), description: None }
             .validate()
             .is_err());
+    }
+
+    /// `show_output` 三态（CS-11）兼容老布尔；`wait` / `on_error` 缺省保持旧语义且不落盘。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn show_output_tri_state_and_command_defaults_are_compatible() {
+        let old_false: ShowOutput = serde_json::from_str("false").unwrap();
+        assert_eq!(old_false, ShowOutput::Bool(false));
+        assert!(!old_false.shows(false) && !old_false.shows(true));
+        let old_true: ShowOutput = serde_json::from_str("true").unwrap();
+        assert!(old_true.shows(false) && old_true.shows(true));
+
+        let always: ShowOutput = serde_json::from_str("\"always\"").unwrap();
+        assert!(always.shows(false) && always.shows(true));
+        let on_error: ShowOutput = serde_json::from_str("\"on_error\"").unwrap();
+        assert!(!on_error.shows(false) && on_error.shows(true));
+        let never: ShowOutput = serde_json::from_str("\"never\"").unwrap();
+        assert!(!never.shows(false) && !never.shows(true));
+        assert_eq!(
+            serde_json::to_string(&ShowOutput::Mode(ShowOutputMode::OnError)).unwrap(),
+            "\"on_error\""
+        );
+
+        let a: Action =
+            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo a"}"#).unwrap();
+        match &a {
+            Action::Command {
+                show_output,
+                wait,
+                on_error,
+                ..
+            } => {
+                assert_eq!(*show_output, ShowOutput::Bool(false), "老配置缺省不弹窗");
+                assert!(*wait, "缺省要等它跑完");
+                assert_eq!(*on_error, OnError::Continue, "缺省失败后继续");
+            }
+            other => panic!("应解析成 Command：{other:?}"),
+        }
+        let json = serde_json::to_string(&a).unwrap();
+        assert!(!json.contains("\"wait\""), "默认 wait 不落盘：{json}");
+        assert!(!json.contains("\"on_error\""), "默认 on_error 不落盘：{json}");
     }
 
     /// 「当前窗口」动作（EXT-14）：配置 / 卡带里的形状是
@@ -7226,9 +7380,11 @@ mod new_action_and_folder_tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         };
         let json = serde_json::to_string(&hidden).unwrap();
@@ -7243,9 +7399,11 @@ mod new_action_and_folder_tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: false,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         };
         assert!(
@@ -7290,13 +7448,22 @@ mod new_action_and_folder_tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: false,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         };
         let json = serde_json::to_string(&plain).unwrap();
-        for key in ["working_dir", "timeout_ms", "ok_exit_codes"] {
+        for key in [
+            "working_dir",
+            "timeout_ms",
+            "ok_exit_codes",
+            "show_output",
+            "wait",
+            "on_error",
+        ] {
             assert!(!json.contains(key), "{key} 默认值不该落盘: {json}");
         }
 
@@ -7309,9 +7476,11 @@ mod new_action_and_folder_tests {
             working_dir: "D:\\work".into(),
             timeout_ms: Some(0),
             ok_exit_codes: vec![0, 3010],
-            show_output: false,
+            show_output: false.into(),
             hide_window: false,
             var: String::new(),
+            wait: false,
+            on_error: OnError::Stop,
             description: None,
         };
         let json = serde_json::to_string(&full).unwrap();
@@ -7406,9 +7575,11 @@ mod new_action_and_folder_tests {
                 working_dir: String::new(),
                 timeout_ms: None,
                 ok_exit_codes: Vec::new(),
-                show_output: false,
+                show_output: false.into(),
                 hide_window: false,
                 var: "".into(),
+                wait: true,
+                on_error: OnError::Continue,
                 description: None,
             },
             Action::Script {
@@ -7419,9 +7590,11 @@ mod new_action_and_folder_tests {
                 working_dir: String::new(),
                 timeout_ms: None,
                 ok_exit_codes: Vec::new(),
-                show_output: true,
+                show_output: true.into(),
                 hide_window: false,
                 var: "out".into(),
+                wait: true,
+                on_error: OnError::Continue,
                 description: None,
             },
         ];
@@ -7441,9 +7614,11 @@ mod new_action_and_folder_tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: false,
             var: "".into(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         }
         .validate()

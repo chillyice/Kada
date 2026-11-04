@@ -42,7 +42,7 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, BrightnessOperation, DesktopDirection, FileObject, OsOperation, Shell,
+    AppOperation, BrightnessOperation, DesktopDirection, FileObject, OnError, OsOperation, Shell,
     SystemOperation, WindowOperation,
 };
 
@@ -72,7 +72,12 @@ pub struct CommandResult {
     pub stderr: String,
     /// 进程退出码；进程未能启动时为 None。
     pub exit_code: Option<i32>,
-    /// 是否弹出结果弹窗（仅影响展示，不影响记录）。
+    /// 「启动后不管」（CS-12）：不捕获输出、不等待、不可中止；此时 stdout / stderr 为空、
+    /// `exit_code` 为 None，**不参与退出码成败判定**。
+    pub detached: bool,
+    /// 完整日志文件路径（CS-10；消息中心只留截断版，全文在这个文件里）。
+    pub log_path: Option<String>,
+    /// 是否弹出结果弹窗（仅影响展示，不影响记录；三态口径在 `kada-actions` 里已折算成布尔）。
     pub show_output: bool,
     /// 执行时间（本地时区，"YYYY-MM-DD HH:MM:SS"）。
     pub time: String,
@@ -122,6 +127,10 @@ pub struct ActionStep {
     pub stderr: String,
     /// 进程退出码；未起进程时 None。
     pub exit_code: Option<i32>,
+    /// 「启动后不管」的步骤（CS-12）：壳层 / 界面据此显示「已启动，不等待完成」。
+    pub detached: bool,
+    /// 完整日志路径（CS-10，同 [`CommandResult::log_path`]）。
+    pub log_path: Option<String>,
 }
 
 /// 一次触发 = 一条执行记录（消息中心里的一条 tab）。
@@ -148,14 +157,15 @@ pub struct RunRecord {
 /// 执行过程中的两个回调（命令结果 + 逐步记录）打包，方便整链与并行成员各自「就地借一份」。
 pub struct Reporter<'a> {
     /// 命令类结果 → 消息中心（弹窗 / 红点仍按各自的 `show_output` 走）。
-    pub commit: &'a mut dyn FnMut(CommandResult),
+    /// 返回完整日志路径（若有）：动作执行记录也要带上它（CS-10）。
+    pub commit: &'a mut dyn FnMut(CommandResult) -> Option<String>,
     /// 每个动作的执行记录 → 执行记录卡片（时间线 / 流水线）。
     pub on_step: &'a mut dyn FnMut(ActionStep),
 }
 
 impl Reporter<'_> {
     /// 记一条命令结果（字段名与方法同名，包一层省得每次写 `(self.commit)(…)`）。
-    fn commit(&mut self, r: CommandResult) {
+    fn commit(&mut self, r: CommandResult) -> Option<String> {
         (self.commit)(r)
     }
 
@@ -230,6 +240,9 @@ struct Ctx<'a> {
     /// 链内注入串行锁（规划 7.2-㉞）：注入类动作（文本 / 按键 / 鼠标）持锁执行，保证
     /// 并行分组的成员之间注入不交错、剪贴板不被并发覆盖。单线程链无竞争，取锁零代价。
     inject_lock: Mutex<()>,
+    /// 「失败即停」（CS-13）：任一 `on_error: stop` 的命令 / 脚本失败后置位，
+    /// `run_chain` 在下一轮开头看到它就不再执行后续动作（并行组里已开跑的兄弟不取消）。
+    stop: std::sync::atomic::AtomicBool,
 }
 
 impl Ctx<'_> {
@@ -280,6 +293,7 @@ pub fn run_actions(
         step_seq: AtomicU64::new(0),
         scope_seq: AtomicU64::new(1),
         inject_lock: Mutex::new(()),
+        stop: std::sync::atomic::AtomicBool::new(false),
     };
     let scope = ctx.next_scope();
     let _held = HeldScope(scope);
@@ -316,6 +330,8 @@ fn step_begin(
         stdout: String::new(),
         stderr: String::new(),
         exit_code: None,
+        detached: false,
+        log_path: None,
     };
     step.end_ms = step.start_ms;
     // 条件本体交给界面渲染摘要：条件的展示格式是界面那边的事，不在这里抄一份。
@@ -390,6 +406,8 @@ fn abort_step(ctx: &Ctx) -> ActionStep {
         stdout: String::new(),
         stderr: "已停止执行：剩余动作不再执行，正在运行的命令 / 脚本已强制终止。".into(),
         exit_code: None,
+        detached: false,
+        log_path: None,
     }
 }
 
@@ -516,6 +534,10 @@ fn run_chain(
             rep.on_step(abort_step(ctx));
             return;
         }
+        // 「失败即停」（CS-13）：上一步是 on_error=stop 且失败了，后续动作不再执行。
+        if ctx.stop.load(Ordering::Relaxed) {
+            return;
+        }
         // 禁用的动作整条跳过：既不执行，也不占一条执行记录（界面上开关关着 = 它不存在）。
         if matches!(action, Action::Disabled { .. }) {
             continue;
@@ -614,12 +636,17 @@ fn run_chain(
                 step.stdout = result.stdout.clone();
                 step.stderr = result.stderr.clone();
                 step.exit_code = result.exit_code;
+                step.detached = result.detached;
                 // 命令结果仍照旧进消息中心（开了「显示输出」还要弹窗），执行记录只是同一件事的另一面。
-                rep.commit(result);
+                // 壳层写完整日志后把路径回传，步骤详情也能「打开完整日志」（CS-10）。
+                step.log_path = rep.commit(result);
                 if abort::aborted(ctx.gen) {
                     step.status = "abort".into();
                 } else if failed {
                     step.status = "error".into();
+                    if action_stops_chain(action) {
+                        ctx.stop.store(true, Ordering::Relaxed);
+                    }
                 }
             }
             Ok(None) => {}
@@ -634,6 +661,9 @@ fn run_chain(
                 step.stderr = failure.stderr.clone();
                 step.status = "error".into();
                 rep.commit(failure);
+                if action_stops_chain(action) {
+                    ctx.stop.store(true, Ordering::Relaxed);
+                }
             }
         }
         if abort::aborted(ctx.gen) {
@@ -687,7 +717,10 @@ fn run_parallel(
                 let mut local: Vec<CommandResult> = Vec::new();
                 let mut local_steps: Vec<ActionStep> = Vec::new();
                 {
-                    let mut collect = |r: CommandResult| local.push(r);
+                    let mut collect = |r: CommandResult| {
+                        local.push(r);
+                        None
+                    };
                     let mut collect_step = |s: ActionStep| local_steps.push(s);
                     let mut local_rep = Reporter {
                         commit: &mut collect,
@@ -723,7 +756,10 @@ fn run_parallel(
                         let member_scope = ctx.next_scope();
                         let _held = HeldScope(member_scope);
                         {
-                            let mut collect = |r: CommandResult| local.push(r);
+                            let mut collect = |r: CommandResult| {
+                                local.push(r);
+                                None
+                            };
                             let mut collect_step = |s: ActionStep| local_steps.push(s);
                             let mut local_rep = Reporter {
                                 commit: &mut collect,
@@ -786,6 +822,8 @@ fn abort_result(ctx: &Ctx) -> CommandResult {
         stdout: String::new(),
         stderr: "已停止执行：剩余动作不再执行，正在运行的命令 / 脚本已强制终止。".into(),
         exit_code: None,
+        detached: false,
+        log_path: None,
         show_output: false,
         time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         run_id: ctx.run_id,
@@ -808,6 +846,8 @@ fn failure_result(action: &Action, ctx: &Ctx, vars: &Vars, err: &str) -> Command
         stdout: String::new(),
         stderr: err.to_string(),
         exit_code: None,
+        detached: false,
+        log_path: None,
         show_output: action_show_output(action),
         time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
         run_id: ctx.run_id,
@@ -945,18 +985,42 @@ fn action_label(action: &Action) -> &'static str {
 
 /// 失败记录是否弹窗：沿用动作自己的 `show_output`——用户给命令 / 脚本开了「显示输出」，
 /// 那它连启动都没成功这件事同样该弹出来；其余动作静默记入消息中心 + 未读红点。
+/// 三态口径（CS-11）：失败算 `failed = true`，`on_error` 模式正好弹、`never` / 老 `false` 不弹。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn action_show_output(action: &Action) -> bool {
     match action {
         #[cfg(feature = "automation")]
-        Action::Command { show_output, .. }
-        | Action::Cmd { show_output, .. }
-        | Action::Powershell { show_output, .. }
-        | Action::Script { show_output, .. } => *show_output,
+        Action::Command { show_output, .. } => show_output.shows(true),
+        #[cfg(feature = "automation")]
+        Action::Cmd { show_output, .. } | Action::Powershell { show_output, .. } => *show_output,
+        #[cfg(feature = "automation")]
+        Action::Script { show_output, .. } => show_output.shows(true),
         #[cfg(feature = "automation")]
         Action::InlineScript { show_output, .. } => *show_output,
         _ => false,
     }
+}
+
+/// 本步失败后要不要停整条链（CS-13）：只有命令 / 脚本带这个开关，其余动作恒继续。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn action_stops_chain(action: &Action) -> bool {
+    match action {
+        Action::Command { on_error, .. } | Action::Script { on_error, .. } => {
+            *on_error == OnError::Stop
+        }
+        _ => false,
+    }
+}
+
+#[cfg(all(
+    not(feature = "automation"),
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+fn action_stops_chain(_action: &Action) -> bool {
+    false
 }
 
 /// 「命令」一栏的内容：用户写的动作说明优先（它才是用户认得的那句话），
@@ -1576,9 +1640,11 @@ fn run_action(
             command,
             working_dir,
             timeout_ms,
+            ok_exit_codes,
             show_output,
             hide_window,
             var,
+            wait,
             ..
         } => {
             let (label, kind, is_powershell) = match shell {
@@ -1601,8 +1667,12 @@ fn run_action(
                 workdir.as_deref(),
                 Some(vars),
                 timeout,
+                *wait,
             )?;
-            if !var.trim().is_empty() {
+            // 不等待（CS-12）没有输出可写变量，也没有退出码可判成败。
+            let failed = !out.detached
+                && (!exit_ok(ok_exit_codes, out.exit_code) || out.stderr.starts_with("〔咔哒〕"));
+            if !out.detached && !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
                     Value::Text(TextValue {
@@ -1611,13 +1681,8 @@ fn run_action(
                     }),
                 );
             }
-            return Ok(Some(out.into_result(
-                kind,
-                label,
-                command,
-                ctx,
-                *show_output,
-            )));
+            let popup = !out.detached && show_output.shows(failed);
+            return Ok(Some(out.into_result(kind, label, command, ctx, popup)));
         }
         #[cfg(feature = "automation")]
         Action::Cmd {
@@ -1628,7 +1693,7 @@ fn run_action(
         } => {
             let command = substitute_vars(command, vars);
             // 旧版动作没有 hide_window / working_dir 字段（加载时会迁移成 Command，见 Config::migrate）。
-            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout)?;
+            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout, true)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1658,7 +1723,7 @@ fn run_action(
             }
             let command = substitute_vars(command, vars);
             // 同上：旧版动作无 hide_window / working_dir。
-            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout)?;
+            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout, true)?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1785,9 +1850,11 @@ fn run_action(
             args,
             working_dir,
             timeout_ms,
+            ok_exit_codes,
             show_output,
             hide_window,
             var,
+            wait,
             ..
         } => {
             let path = substitute_vars(path, vars);
@@ -1809,8 +1876,11 @@ fn run_action(
                 vars,
                 *hide_window,
                 timeout,
+                *wait,
             )?;
-            if !var.trim().is_empty() {
+            let failed = !out.detached
+                && (!exit_ok(ok_exit_codes, out.exit_code) || out.stderr.starts_with("〔咔哒〕"));
+            if !out.detached && !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
                     Value::Text(TextValue {
@@ -1829,13 +1899,8 @@ fn run_action(
             parts.push(quote_display(&path));
             parts.extend(script_args.iter().map(|a| quote_display(a)));
             let command = parts.join(" ");
-            return Ok(Some(out.into_result(
-                "script",
-                "脚本",
-                command,
-                ctx,
-                *show_output,
-            )));
+            let popup = !out.detached && show_output.shows(failed);
+            return Ok(Some(out.into_result("script", "脚本", command, ctx, popup)));
         }
         #[cfg(feature = "automation")]
         Action::InlineScript {
@@ -1872,6 +1937,8 @@ fn run_action(
                 stdout: out.stdout,
                 stderr: out.stderr,
                 exit_code: Some(if out.failed { 1 } else { 0 }),
+                detached: false,
+                log_path: None,
                 show_output: *show_output,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 run_id: ctx.run_id,
@@ -2059,6 +2126,8 @@ fn run_system(
                 stdout: msg,
                 stderr: String::new(),
                 exit_code: None,
+                detached: false,
+                log_path: None,
                 show_output: false,
                 trigger: ctx.t.trigger.into(),
                 name: ctx.t.name.into(),
@@ -2373,7 +2442,7 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
         format!("pkill -f {image}")
     };
     // 内部命令（taskkill / pkill），恒不弹黑窗；不注入 KADA_*（不是用户脚本）。
-    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout)?;
+    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout, true)?;
     Ok(out.into_result("close_program", "关闭程序", cmd, ctx, false))
 }
 
@@ -2658,6 +2727,8 @@ struct CmdOutput {
     exit_code: Option<i32>,
     /// `Some(说明)` = 因超时 / 用户中止被强制终止（退出码不再是进程自己的语义，置 None）。
     killed: Option<String>,
+    /// 「启动后不管」（CS-12）：spawn 成功后立刻返回，输出不捕获、退出码未知。
+    detached: bool,
 }
 
 #[cfg(all(
@@ -2694,6 +2765,8 @@ impl CmdOutput {
             stdout: self.stdout,
             stderr,
             exit_code: self.exit_code,
+            detached: self.detached,
+            log_path: None,
             show_output,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             run_id: ctx.run_id,
@@ -3011,6 +3084,10 @@ fn exit_ok(codes: &[i32], code: Option<i32>) -> bool {
     any(target_os = "windows", target_os = "linux", target_os = "macos")
 ))]
 fn step_failed(action: &Action, result: &CommandResult) -> bool {
+    // 「启动后不管」没有退出码可判：spawn 成功就是成功（CS-12）。
+    if result.detached {
+        return false;
+    }
     match action {
         Action::Command { ok_exit_codes, .. } | Action::Script { ok_exit_codes, .. } => {
             !exit_ok(ok_exit_codes, result.exit_code) || result.stderr.starts_with("〔咔哒〕")
@@ -3029,6 +3106,9 @@ fn step_failed(action: &Action, result: &CommandResult) -> bool {
 ))]
 fn step_failed(action: &Action, result: &CommandResult) -> bool {
     let _ = action;
+    if result.detached {
+        return false;
+    }
     result.exit_code.is_some_and(|c| c != 0) || result.stderr.starts_with("〔咔哒〕")
 }
 
@@ -3067,9 +3147,65 @@ fn run_with_deadline(
     ctx: &Ctx,
     timeout: Duration,
 ) -> Result<CmdOutput, String> {
+    run_child(cmd, label, ctx, timeout, true, None)
+}
+
+/// [`run_with_deadline`] 的实际实现，额外支持「启动后不管」（`wait = false`，CS-12）。
+///
+/// 不等待时：stdio 全接 `null`（没人读管道，接管道只会让子进程写阻塞）、spawn 成功后立刻
+/// 返回 `detached = true`；回收交给一条独立线程（`child.wait()` 后顺手删临时批处理），
+/// 所以「停止执行」也收不回它——这是用户明确选择的语义。
+///
+/// `cleanup` 是跑完要删的临时文件（Windows CMD 的临时批处理）：同步路径在 `wait` 之后删，
+/// 不等待路径在回收线程里删；spawn 失败则当场删，别留垃圾。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+#[allow(clippy::too_many_arguments)]
+fn run_child(
+    cmd: &mut std::process::Command,
+    label: &str,
+    ctx: &Ctx,
+    timeout: Duration,
+    wait: bool,
+    cleanup: Option<PathBuf>,
+) -> Result<CmdOutput, String> {
+    if !wait {
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        make_process_group(cmd);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                if let Some(path) = cleanup {
+                    let _ = std::fs::remove_file(path);
+                }
+                return Err(format!("执行 {label} 失败: {e}"));
+            }
+        };
+        std::thread::spawn(move || {
+            let _ = child.wait();
+            if let Some(path) = cleanup {
+                let _ = std::fs::remove_file(path);
+            }
+        });
+        return Ok(CmdOutput {
+            stdout: String::new(),
+            stderr: String::new(),
+            exit_code: None,
+            killed: None,
+            detached: true,
+        });
+    }
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
     make_process_group(cmd);
-    let mut child = cmd.spawn().map_err(|e| format!("执行 {label} 失败: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| {
+        if let Some(path) = &cleanup {
+            let _ = std::fs::remove_file(path);
+        }
+        format!("执行 {label} 失败: {e}")
+    })?;
 
     let stdout = child.stdout.take().map(|mut s| {
         std::thread::spawn(move || {
@@ -3106,6 +3242,9 @@ fn run_with_deadline(
             Err(e) => {
                 let _ = child.kill();
                 let _ = child.wait();
+                if let Some(path) = &cleanup {
+                    let _ = std::fs::remove_file(path);
+                }
                 return Err(format!("等待 {label} 结束失败: {e}"));
             }
         }
@@ -3114,9 +3253,18 @@ fn run_with_deadline(
     if killed.is_some() {
         kill_tree(&mut child);
     }
-    let status = child
-        .wait()
-        .map_err(|e| format!("回收 {label} 进程失败: {e}"))?;
+    let status = match child.wait() {
+        Ok(s) => s,
+        Err(e) => {
+            if let Some(path) = &cleanup {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(format!("回收 {label} 进程失败: {e}"));
+        }
+    };
+    if let Some(path) = &cleanup {
+        let _ = std::fs::remove_file(path);
+    }
     // 读线程到这里必然已经结束：进程退出 / 被杀 → 管道写端全部关闭 → read_to_end 返回。
     let join = |h: Option<std::thread::JoinHandle<Vec<u8>>>| {
         h.map(|h| h.join().unwrap_or_default()).unwrap_or_default()
@@ -3133,6 +3281,7 @@ fn run_with_deadline(
         stderr,
         exit_code,
         killed,
+        detached: false,
     })
 }
 
@@ -3228,6 +3377,7 @@ fn run_cmd(
     working_dir: Option<&Path>,
     vars: Option<&Vars>,
     timeout: Duration,
+    wait: bool,
 ) -> Result<CmdOutput, String> {
     // Windows 的 CMD 走临时批处理文件（见下），跑完要删掉——被强杀时也得删。
     let mut temp_bat: Option<PathBuf> = None;
@@ -3264,10 +3414,7 @@ fn run_cmd(
     if hide_window {
         no_console_window(&mut cmd);
     }
-    let out = run_with_deadline(&mut cmd, label, ctx, timeout);
-    if let Some(path) = temp_bat {
-        let _ = std::fs::remove_file(path);
-    }
+    let out = run_child(&mut cmd, label, ctx, timeout, wait, temp_bat);
     out
 }
 
@@ -3294,6 +3441,7 @@ fn run_script(
     vars: &Vars,
     hide_window: bool,
     timeout: Duration,
+    wait: bool,
 ) -> Result<CmdOutput, String> {
     let raw = path.trim();
     if raw.is_empty() {
@@ -3328,7 +3476,7 @@ fn run_script(
     if hide_window {
         no_console_window(&mut cmd);
     }
-    run_with_deadline(&mut cmd, "脚本", ctx, timeout)
+    run_child(&mut cmd, "脚本", ctx, timeout, wait, None)
 }
 
 /// 弹一个输入框，返回用户填写的内容（`var` 为空 / 取消 = 报错）。
@@ -3486,6 +3634,7 @@ mod tests {
             step_seq: AtomicU64::new(0),
             scope_seq: AtomicU64::new(1),
             inject_lock: Mutex::new(()),
+            stop: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -3520,6 +3669,7 @@ mod tests {
             None,
             None,
             Duration::from_millis(10_000),
+            true,
         )
         .expect("命令应能执行");
         assert_eq!(out.killed, None, "正常结束不算被打断");
@@ -3572,6 +3722,7 @@ mod tests {
                 &vars,
                 hide,
                 Duration::from_millis(60_000),
+                true,
             )
             .expect("探针脚本应能跑完")
         };
@@ -3694,7 +3845,10 @@ mod tests {
         let mut steps = Vec::new();
         let mut vars: Vars = BTreeMap::new();
         let mut last_copied = None;
-        let mut commit = |r: CommandResult| results.push(r);
+        let mut commit = |r: CommandResult| {
+            results.push(r);
+            None
+        };
         let mut on_step = |s: ActionStep| steps.push(s);
         let mut rep = Reporter {
             commit: &mut commit,
@@ -3863,9 +4017,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         }];
         let (_, steps, status) = run_all(&actions, &RunOptions::default());
@@ -3925,7 +4081,10 @@ mod tests {
         let mut results: Vec<CommandResult> = Vec::new();
         let start = Instant::now();
         {
-            let mut commit = |r: CommandResult| results.push(r);
+            let mut commit = |r: CommandResult| {
+            results.push(r);
+            None
+        };
             let mut vars: Vars = BTreeMap::new();
             let mut last_copied = None;
             let mut on_step = |_s: ActionStep| {};
@@ -3982,7 +4141,10 @@ mod tests {
     fn run_collect(actions: &[Action], vars: &mut Vars) -> Vec<CommandResult> {
         let mut results: Vec<CommandResult> = Vec::new();
         {
-            let mut commit = |r: CommandResult| results.push(r);
+            let mut commit = |r: CommandResult| {
+            results.push(r);
+            None
+        };
             let mut on_step = |_s: ActionStep| {};
             let mut rep = Reporter {
                 commit: &mut commit,
@@ -4097,9 +4259,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: true,
+            show_output: true.into(),
             hide_window: false,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         }];
         let mut vars: Vars = BTreeMap::new();
@@ -4189,6 +4353,7 @@ mod tests {
             Some(&dir),
             Some(&vars),
             Duration::from_millis(10_000),
+            true,
         )
         .expect("命令应能执行");
         let _ = fs::remove_dir_all(&dir);
@@ -4235,6 +4400,7 @@ mod tests {
             &vars,
             false,
             Duration::from_millis(60_000),
+            true,
         )
         .expect("探针脚本应能跑完");
         let _ = fs::remove_dir_all(&dir);
@@ -4308,9 +4474,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms: None,
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         };
         let results = run_collect(&[action], &mut vars);
@@ -4370,6 +4538,7 @@ mod tests {
             &vars,
             false,
             Duration::from_millis(60_000),
+            true,
         )
         .expect("假解释器应能跑完");
         let _ = fs::remove_dir_all(&dir);
@@ -4390,9 +4559,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms: Some(300),
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         }];
         let opts = RunOptions {
@@ -4424,9 +4595,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms: Some(0),
             ok_exit_codes: Vec::new(),
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         }];
         let opts = RunOptions {
@@ -4443,6 +4616,82 @@ mod tests {
         assert_eq!(steps.last().unwrap().status, "ok");
     }
 
+    /// `wait = false`（CS-12）：spawn 后立刻返回、没输出、没退出码，步骤算成功；
+    /// 强制关掉弹窗（没有输出可弹），也不写变量。
+    #[test]
+    fn detached_command_returns_immediately_and_counts_as_ok() {
+        let _g = abort::test_lock();
+        let actions = vec![Action::Command {
+            shell: Shell::Cmd,
+            command: if cfg!(target_os = "windows") {
+                "powershell -NoProfile -Command Start-Sleep -Seconds 2".into()
+            } else {
+                "sleep 2".into()
+            },
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: true.into(),
+            hide_window: true,
+            var: "out".into(),
+            wait: false,
+            on_error: OnError::Continue,
+            description: None,
+        }];
+        let start = Instant::now();
+        let (results, steps, status) = run_all(&actions, &RunOptions::default());
+        assert!(
+            start.elapsed() < Duration::from_millis(1500),
+            "不等待就该立刻返回，实际 {:?}",
+            start.elapsed()
+        );
+        assert_eq!(status, RunStatus::Finished);
+        assert_eq!(results.len(), 1);
+        assert!(results[0].detached, "结果要标成 detached");
+        assert_eq!(results[0].exit_code, None, "没等待就没有退出码");
+        assert!(results[0].stdout.is_empty() && results[0].stderr.is_empty());
+        assert!(!results[0].show_output, "没有输出可弹，强制不弹");
+        let steps = dedupe_steps(steps);
+        assert_eq!(steps.last().unwrap().status, "ok", "spawn 成功就是成功");
+        assert!(steps.last().unwrap().detached);
+    }
+
+    /// `on_error = stop`（CS-13）：失败后不再执行后续动作；默认 continue 保持旧语义。
+    #[test]
+    fn on_error_stop_halts_chain_but_continue_keeps_going() {
+        let _g = abort::test_lock();
+        let failing = |on_error: OnError| Action::Command {
+            shell: Shell::Cmd,
+            command: "exit 1".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false.into(),
+            hide_window: true,
+            var: String::new(),
+            wait: true,
+            on_error,
+            description: None,
+        };
+        let later = || Action::PauseMs { ms: 1, description: None };
+
+        let stop = vec![failing(OnError::Stop), later()];
+        let (_, steps, status) = run_all(&stop, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert!(
+            !dedupe_steps(steps).iter().any(|s| s.kind == "pause_ms"),
+            "stop 之后不应再执行后续动作"
+        );
+
+        let cont = vec![failing(OnError::Continue), later()];
+        let (_, steps, status) = run_all(&cont, &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        assert!(
+            dedupe_steps(steps).iter().any(|s| s.kind == "pause_ms"),
+            "默认 continue 要把后续动作跑完"
+        );
+    }
+
     /// `ok_exit_codes`（CS-05）：空 = 只有 0；列出 1 就放行；被强杀（退出码 None）仍失败。
     #[test]
     fn ok_exit_codes_decide_failure() {
@@ -4453,9 +4702,11 @@ mod tests {
             working_dir: String::new(),
             timeout_ms,
             ok_exit_codes: codes,
-            show_output: false,
+            show_output: false.into(),
             hide_window: true,
             var: String::new(),
+            wait: true,
+            on_error: OnError::Continue,
             description: None,
         };
         let exit1 = if cfg!(target_os = "windows") {
@@ -4959,7 +5210,10 @@ mod tests {
         });
         let mut results: Vec<CommandResult> = Vec::new();
         {
-            let mut commit = |r: CommandResult| results.push(r);
+            let mut commit = |r: CommandResult| {
+            results.push(r);
+            None
+        };
             let mut on_step = |_s: ActionStep| {};
             let mut rep = Reporter {
                 commit: &mut commit,

@@ -96,9 +96,10 @@ type KeysMode = "tap" | "press" | "release";
 type SendPayload =
   | { kind: "keys"; keys: string[] }
   | { kind: "text"; text: string };
+type ShowOutput = boolean | "always" | "on_error" | "never";
 type ActionBase =
   | { type: "text"; text: string; mode: TextMode; masked?: boolean; description?: string }
-  | { type: "command"; shell: Shell; command: string; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "command"; shell: Shell; command: string; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; description?: string }
   | { type: "keys"; keys: string[]; mode?: KeysMode; description?: string }
   | { type: "send_to"; target: string; payload: SendPayload; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
@@ -116,7 +117,7 @@ type ActionBase =
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
-  | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: boolean; hide_window?: boolean; var: string; description?: string }
+  | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; description?: string }
   | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }
   | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
 /** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
@@ -603,6 +604,8 @@ type CommandResult = {
   stdout: string;
   stderr: string;
   exit_code: number | null;
+  detached?: boolean;
+  log_path?: string | null;
   show_output: boolean;
   time: string;
   run_id: number | null;
@@ -623,6 +626,8 @@ type ActionStep = {
   stdout: string;
   stderr: string;
   exit_code: number | null;
+  detached?: boolean;
+  log_path?: string | null;
 };
 
 // 一次触发 = 一条执行记录。
@@ -1118,8 +1123,10 @@ function newAction(type: ActionBase["type"]): ActionBase {
         working_dir: "",
         timeout_ms: null,
         ok_exit_codes: [],
-        show_output: false,
+        show_output: "never",
         var: "",
+        wait: true,
+        on_error: "continue",
       };
     case "script":
       return {
@@ -1131,8 +1138,10 @@ function newAction(type: ActionBase["type"]): ActionBase {
         working_dir: "",
         timeout_ms: null,
         ok_exit_codes: [],
-        show_output: false,
+        show_output: "never",
         var: "",
+        wait: true,
+        on_error: "continue",
       };
     case "inline_script":
       return { type: "inline_script", source: "", var: "", show_output: false };
@@ -6337,7 +6346,23 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
       collapsedActions.delete(act);
       rerender();
     });
-    head.append(titleInput, tags, offBtn, del);
+    // 单动作试运行（CS-14）：只跑这一条（不保存、不跑前面的动作），强制弹结果。
+    // 依赖 `{变量}` 时变量为空、命令可能报错——这是预期；提示写在按钮 title 里。
+    if (act.type === "command" || act.type === "script") {
+      const tryBtn = el("button", "action-try-btn", tr("试运行")) as HTMLButtonElement;
+      tryBtn.type = "button";
+      tryBtn.title = tr(
+        "只跑这一条动作（不保存、不执行前面的动作）；依赖的 {变量} 为空时命令可能报错。",
+      );
+      tryBtn.addEventListener("click", () => {
+        const preview = structuredClone(act);
+        preview.show_output = "always";
+        void runActions([preview], tr("试运行"));
+      });
+      head.append(titleInput, tags, tryBtn, offBtn, del);
+    } else {
+      head.append(titleInput, tags, offBtn, del);
+    }
   }
 
   row.append(head);
@@ -7350,28 +7375,7 @@ function actionFields(
     body.append(workingDirField(a.working_dir, (v) => (a.working_dir = v)));
     body.append(timeoutField(a.timeout_ms, (v) => (a.timeout_ms = v)));
     body.append(okExitCodesField(a.ok_exit_codes, (v) => (a.ok_exit_codes = v)));
-
-    const flags = el("div", "action-checks");
-    const popup = el("label", "action-check") as HTMLLabelElement;
-    const cb = el("input", "toggle") as HTMLInputElement;
-    cb.type = "checkbox";
-    cb.checked = a.show_output;
-    cb.addEventListener("change", () => {
-      a.show_output = cb.checked;
-    });
-    popup.append(cb, el("span", undefined, tr("弹窗显示结果")));
-
-    const hidden = el("label", "action-check") as HTMLLabelElement;
-    const hcb = el("input", "toggle") as HTMLInputElement;
-    hcb.type = "checkbox";
-    hcb.checked = !!a.hide_window;
-    hidden.title = tr("勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）");
-    hcb.addEventListener("change", () => {
-      a.hide_window = hcb.checked;
-    });
-    hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
-    flags.append(popup, hidden);
-    body.append(flags);
+    body.append(...commandRunControlFields(a, rerender));
 
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
@@ -7427,28 +7431,7 @@ function actionFields(
     body.append(workingDirField(a.working_dir, (v) => (a.working_dir = v)));
     body.append(timeoutField(a.timeout_ms, (v) => (a.timeout_ms = v)));
     body.append(okExitCodesField(a.ok_exit_codes, (v) => (a.ok_exit_codes = v)));
-
-    const flags = el("div", "action-checks");
-    const popup = el("label", "action-check") as HTMLLabelElement;
-    const cb = el("input", "toggle") as HTMLInputElement;
-    cb.type = "checkbox";
-    cb.checked = a.show_output;
-    cb.addEventListener("change", () => {
-      a.show_output = cb.checked;
-    });
-    popup.append(cb, el("span", undefined, tr("弹窗显示结果")));
-
-    const hidden = el("label", "action-check") as HTMLLabelElement;
-    const hcb = el("input", "toggle") as HTMLInputElement;
-    hcb.type = "checkbox";
-    hcb.checked = !!a.hide_window;
-    hidden.title = tr("勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）");
-    hcb.addEventListener("change", () => {
-      a.hide_window = hcb.checked;
-    });
-    hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
-    flags.append(popup, hidden);
-    body.append(flags);
+    body.append(...commandRunControlFields(a, rerender));
 
     const vline = el("div", "action-line");
     const vname = el("input", "action-input") as HTMLInputElement;
@@ -8220,6 +8203,87 @@ function okExitCodesField(
     ),
   );
   return line;
+}
+
+// 命令 / 脚本共用的运行开关（CS-11~CS-13）：结果弹窗三态、等待、失败即停、隐藏控制台。
+// 返回的是若干行（取消「等待」时多一行醒目警告），调用方直接 `body.append(...)`。
+function commandRunControlFields(
+  a: {
+    show_output: ShowOutput;
+    wait?: boolean;
+    on_error?: "continue" | "stop";
+    hide_window?: boolean;
+  },
+  rerender: () => void,
+): HTMLElement[] {
+  const popupLine = el("div", "action-line");
+  const sel = el("select", "action-input") as HTMLSelectElement;
+  sel.append(
+    new Option(tr("从不弹窗（只亮红点）"), "never"),
+    new Option(tr("只在失败时弹"), "on_error"),
+    new Option(tr("每次都弹"), "always"),
+  );
+  const current =
+    a.show_output === true ? "always" : a.show_output === false ? "never" : a.show_output;
+  sel.value = current;
+  sel.addEventListener("change", () => {
+    a.show_output = sel.value as ShowOutput;
+  });
+  popupLine.append(
+    el("span", "unit-hint", tr("结果弹窗")),
+    sel,
+    helpIcon(
+      tr(
+        "结果消息始终会进消息中心；这里只决定要不要额外弹窗。「只在失败时弹」按本步真实成败判断（退出码表与超时 / 中止都算）。",
+      ),
+    ),
+  );
+
+  const flags = el("div", "action-checks");
+  const waitLabel = el("label", "action-check") as HTMLLabelElement;
+  const wcb = el("input", "toggle") as HTMLInputElement;
+  wcb.type = "checkbox";
+  wcb.checked = a.wait !== false;
+  wcb.addEventListener("change", () => {
+    a.wait = wcb.checked;
+    rerender();
+  });
+  waitLabel.append(wcb, el("span", undefined, tr("等它跑完再执行下一步")));
+
+  const stopLabel = el("label", "action-check") as HTMLLabelElement;
+  const scb = el("input", "toggle") as HTMLInputElement;
+  scb.type = "checkbox";
+  scb.checked = a.on_error === "stop";
+  stopLabel.title = tr("默认不勾：这一步失败后仍继续执行后面的动作（和以前一样）");
+  scb.addEventListener("change", () => {
+    a.on_error = scb.checked ? "stop" : "continue";
+  });
+  stopLabel.append(scb, el("span", undefined, tr("失败时停止后续动作")));
+
+  const hidden = el("label", "action-check") as HTMLLabelElement;
+  const hcb = el("input", "toggle") as HTMLInputElement;
+  hcb.type = "checkbox";
+  hcb.checked = !!a.hide_window;
+  hidden.title = tr("勾上后执行时不弹出黑色控制台窗口（Windows 专有，其余平台无效果）");
+  hcb.addEventListener("change", () => {
+    a.hide_window = hcb.checked;
+  });
+  hidden.append(hcb, el("span", undefined, tr("隐藏控制台窗口")));
+
+  flags.append(waitLabel, stopLabel, hidden);
+  const out: HTMLElement[] = [popupLine, flags];
+  if (a.wait === false) {
+    out.push(
+      el(
+        "div",
+        "unit-hint unit-hint-wrap action-warning",
+        tr(
+          "「启动后不管」：不等待、不捕获输出、也不受「停止执行」控制——命令会自己跑完。变量不会写入，结果卡只显示已启动。",
+        ),
+      ),
+    );
+  }
+  return out;
 }
 
 // 一行一个参数的 textarea（脚本参数 / 解释器参数）：脚本参数里带空格太常见
@@ -10542,15 +10606,62 @@ function msgField(k: string, v: string, code = false, inline = false): HTMLEleme
   return row;
 }
 
+// 结果卡 / 步骤详情共用的两个动作（CS-10）：「复制全文」走后端剪贴板（不依赖 WebView
+// 权限），「打开完整日志」只交给壳层校验路径后在文件管理器里定位。
+function copyResultButton(text: string): HTMLButtonElement {
+  const btn = el("button", "ghost msg-action-btn", tr("复制全文")) as HTMLButtonElement;
+  btn.type = "button";
+  btn.addEventListener("click", async () => {
+    try {
+      await invoke("copy_result_text", { text });
+      toast(tr("已复制"));
+    } catch (e) {
+      toast(trt`复制失败: ${e}`);
+    }
+  });
+  return btn;
+}
+
+function openLogButton(path: string): HTMLButtonElement {
+  const btn = el("button", "ghost msg-action-btn", tr("打开完整日志")) as HTMLButtonElement;
+  btn.type = "button";
+  btn.title = path;
+  btn.addEventListener("click", async () => {
+    try {
+      await invoke("open_result_log", { path });
+    } catch (e) {
+      toast(trt`打开日志失败: ${e}`);
+    }
+  });
+  return btn;
+}
+
+function resultActions(r: { stdout: string; stderr: string; log_path?: string | null }): HTMLElement {
+  const row = el("div", "msg-card-actions");
+  const text = [r.stdout, r.stderr].filter((s) => s.length > 0).join("\n");
+  if (text) row.append(copyResultButton(text));
+  if (r.log_path) row.append(openLogButton(r.log_path));
+  return row;
+}
+
 function resultCard(r: CommandResult): HTMLElement {
   const card = el("div", "msg-card");
   card.append(msgField(tr("快捷键"), r.trigger));
   if (r.name) card.append(msgField(tr("名称"), r.name));
   card.append(msgField(tr("时间"), r.time));
   card.append(msgField(tr("命令"), r.command, true));
+  if (r.detached) {
+    card.append(
+      msgField(tr("状态"), tr("已启动，不等待完成；未捕获输出（「停止执行」也收不回它）")),
+    );
+  }
   card.append(msgField("stdout", r.stdout, true));
   if (r.stderr) card.append(msgField("stderr", r.stderr, true));
-  card.append(msgField(tr("退出码"), r.exit_code === null ? "—" : String(r.exit_code)));
+  if (!r.detached) {
+    card.append(msgField(tr("退出码"), r.exit_code === null ? "—" : String(r.exit_code)));
+  }
+  const actions = resultActions(r);
+  if (actions.childElementCount > 0) card.append(actions);
   return card;
 }
 
@@ -10682,9 +10793,16 @@ function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
     if (!title.includes(summary)) box.append(msgField(tr("条件"), summary));
     box.append(msgField(tr("走向"), step.branch ? tr("条件成立（then）") : tr("条件不成立（otherwise）")));
   }
+  if (step.detached) {
+    box.append(
+      msgField(tr("状态"), tr("已启动，不等待完成；未捕获输出（「停止执行」也收不回它）")),
+    );
+  }
   if (step.stdout) box.append(msgField("stdout", step.stdout, true));
   if (step.stderr) box.append(msgField("stderr", step.stderr, true));
   if (step.exit_code !== null) box.append(msgField(tr("退出码"), String(step.exit_code)));
+  const actions = resultActions(step);
+  if (actions.childElementCount > 0) box.append(actions);
   return box;
 }
 
@@ -11009,11 +11127,20 @@ async function initEvents() {
     }
     if (r.show_output) {
       showResultModal(r);
+      // 冷启动补发的那条已经由启动流程弹过（或正躺在 pending 里）：窗口已开时新事件
+      // 走监听器，把可能残留的 pending 清掉，避免同一条再弹第二次（CS-11）。
+      void invoke("take_pending_result_modal").catch(() => null);
     } else {
       unread = true;
     }
     renderMessages();
   });
+  // 冷启动补发（CS-11）：主窗口是 commit_result 之后才建出来的，事件早于监听器注册，
+  // 后端把「弹窗结果」暂存了一份；监听完再取，取走即清。
+  const pendingResult = await invoke<CommandResult | null>("take_pending_result_modal").catch(
+    () => null,
+  );
+  if (pendingResult) showResultModal(pendingResult);
   // 执行记录：每条动作结束就推一次整张卡（后台线程边跑边刷，界面能看到逐步推进）。
   await listen<RunRecord>("run-update", (event) => {
     const run = event.payload;

@@ -1844,6 +1844,23 @@ select.action-type-name:focus-visible {
   height: 100%;
 }
 
+/* 单动作试运行（CS-14）：只是跑一下，不保存，所以做成低调的文字按钮。 */
+.action-try-btn {
+  flex-shrink: 0;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+}
+
+.action-try-btn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 /* 已禁用的动作整条压暗；鼠标进来 / 键盘聚焦时恢复，改内容不受影响。 */
 .action-row.off {
   opacity: 0.55;
@@ -1997,6 +2014,11 @@ select.action-type-name:focus-visible {
 .unit-hint-wrap {
   white-space: normal;
   line-height: 1.5;
+}
+
+/* 「启动后不管」这类需要用户停一下看清楚的提示：用警示色，别当普通说明灰字。 */
+.action-warning {
+  color: #d98a2b;
 }
 
 .help {
@@ -3492,6 +3514,18 @@ body:has(.hints-panel) {
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 14px 16px;
+}
+
+/* 结果卡底部的复制 / 打开日志按钮（CS-10）。 */
+.msg-card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.msg-action-btn {
+  padding: 3px 10px;
+  font-size: var(--fs-sm);
 }
 
 .msg-field {
