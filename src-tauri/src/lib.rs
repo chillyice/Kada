@@ -24,14 +24,17 @@ use kada_actions::{
     abort as actions_abort, release_held_keys, run_actions, ActionStep, CommandResult, Reporter,
     RunOptions, RunRecord, RunStatus, TriggerCtx,
 };
+// 只有 Q-06 之后搬进 `cfg(test)` 的双击判定用得到。
+#[cfg(test)]
+use kada_core::ClipboardMenu;
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
     is_touchpad_trigger, matches, parse_snippet_index, publish_payload, sanitize_config,
-    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardMenu,
-    ClipboardOperation, Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent, Remap,
-    Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan,
-    TextExpansion, TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL,
-    DEFAULT_SNIPPET_INDEX_URL, DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
+    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardOperation,
+    Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent, Remap, Settings, Severity,
+    Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan, TextExpansion, TextInjectMode,
+    TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL,
+    DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -3605,6 +3608,7 @@ const CLIPBOARD_MENU_OFFSET: f64 = 12.0;
 
 /// 发给菜单浮窗的展示树（动作本身留在壳层，前端只画标签与结构）。
 // ponytail: 复制快捷菜单已下线（EXT-13），这些建窗 / 判定函数留着给旧配置回看，先不删。
+// 刻意保留、不是技术债：等旧配置彻底不可能回来（`Settings.clipboard_menu` 全仓无读者）时整链删除。
 #[allow(dead_code)]
 #[derive(Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -3659,7 +3663,9 @@ fn menu_node_views(items: &[MenuEntry], prefix: &[usize]) -> Vec<MenuNodeView> {
 
 /// 双击 Ctrl+C 判定：只认「按下、非 repeat、主键 C、修饰键恰为 Ctrl」，两次间隔不超过
 /// `double_copy_ms`。命中后清空窗口（避免连按三次又弹一次）；`last` 由调用方跨事件保存。
-#[allow(dead_code)]
+///
+/// 复制快捷菜单已下线，生产链路没有调用者；判定逻辑仍由下面的单测守着，等恢复接入时直接用。
+#[cfg(test)]
 fn double_copy_hit(menu: &ClipboardMenu, ev: &Ev, last: &mut Option<Instant>) -> bool {
     let Ev::Down { key, mods, repeat } = ev else {
         return false;
