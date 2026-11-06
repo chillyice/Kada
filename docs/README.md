@@ -40,11 +40,12 @@
 
 ```
 crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、卡带摘取
-  src/lib.rs                # 配置模型 / 清洗 / 冲突：只留 mod 声明 + pub use 重导出
+  src/lib.rs                # 冲突检测 / 清洗 / 迁移：只留 mod 声明 + pub use 重导出
   src/keys.rs               # 键模型：Modifier / Key（含 ALL）/ RawEvent / Shortcut / 解析（mod parse）/ format_shortcut / matches
   src/trigger.rs            # 触发单元：组合 / 序列 / 和弦的解析与时序（Tracker）、热串的键→字符映射
   src/action.rs             # 动作模型：各类 Operation / Condition / 设备与前台上下文 / Action 本体 + validate
   src/config.rs             # 配置模型：目录 / 层 / 条目 / 改键 / 文本扩展 / 浮窗与角动作 / Settings / Config
+  src/vars.rs               # 变量模型：文件属性 / 文本值 / 变量表与 `{变量}` 替换（纯叶子，无 crate 内依赖）
   src/tests.rs              # 单元测试整块（C-01 从 lib.rs 搬出：顶层用例 + 18 个按主题分的子模块）
   src/gesture.rs            # 鼠标手势 / 触摸板手势模型与识别（方向串量化 / 归一化 / 精确匹配 / 24 点模板，7.1-MG）
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
