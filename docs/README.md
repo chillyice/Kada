@@ -41,6 +41,7 @@
 ```
 crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/匹配、配置模型、冲突检测、卡带摘取
   src/lib.rs                # Key/Modifier/RawEvent/Shortcut + parse/format/matches + Config/Action/Trigger/sanitize
+  src/tests.rs              # 单元测试整块（C-01 从 lib.rs 搬出：顶层用例 + 18 个按主题分的子模块）
   src/gesture.rs            # 鼠标手势 / 触摸板手势模型与识别（方向串量化 / 归一化 / 精确匹配 / 24 点模板，7.1-MG）
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
   src/snippet.rs            # 配置卡带（分享用）：按「类别+下标」摘出条目 + 被引用的层；卡带市场的索引模型/解析，见 AGENTS「铁律」
