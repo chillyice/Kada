@@ -1843,12 +1843,6 @@ fn wait_gesture_overlay_ready() {
     }
 }
 
-/// 手势浮层前端注册完监听器后回报（避免冷启动第一笔手势的轨迹事件丢失）。
-#[tauri::command]
-fn gesture_overlay_ready() {
-    GESTURE_OVERLAY_READY.store(true, Ordering::Relaxed);
-}
-
 /// 收起浮层，并让旧的隐藏定时器失效。
 fn hide_gesture_overlay(app: &tauri::AppHandle) {
     GESTURE_VISUAL_SERIAL.fetch_add(1, Ordering::Relaxed);
@@ -2813,96 +2807,6 @@ fn fire(
     // 无钩子即无触发入口，本分支不会运行（macOS 占位）。
 }
 
-/// 悬浮指示窗渲染完成（前端量出内容宽高后调用）：按内容调整窗口、贴工作区底部居中并显示。
-#[tauri::command]
-fn hud_ready(app: tauri::AppHandle, width: f64, height: f64) {
-    let Some(w) = app.get_webview_window("hud") else {
-        return;
-    };
-    // 尺寸来自界面，不可全信：钳一下，别让异常值把窗口撑满屏幕或只剩一条缝。
-    let w_logical = width.clamp(120.0, 900.0);
-    let h_logical = height.clamp(24.0, 240.0);
-    let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
-    let state = app.state::<KadaState>();
-    // 先读配置、再读状态载荷（加锁顺序与 [`publish_status`] 一致）。
-    let enabled = state
-        .config
-        .read()
-        .map(|c| c.settings.show_status_hud)
-        .unwrap_or(true);
-    let active = state
-        .status
-        .lock()
-        .unwrap()
-        .as_ref()
-        .map(|p| !p.idle())
-        .unwrap_or(false);
-    if !enabled || !active {
-        // 量尺寸这段时间里状态已经过去了（或指示被关掉）：别把刚藏起来的窗又亮回来。
-        let _ = w.hide();
-        return;
-    }
-    if let Ok(Some(m)) = app.primary_monitor() {
-        let scale = m.scale_factor();
-        let work = m.work_area();
-        let x =
-            (work.position.x as f64 + (work.size.width as f64 - w_logical * scale) / 2.0) / scale;
-        let y =
-            (work.position.y as f64 + work.size.height as f64 - h_logical * scale - 24.0 * scale)
-                / scale;
-        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
-    }
-    let _ = w.show();
-}
-
-/// 读取当前输入状态载荷（悬浮指示窗懒创建后，前端加载时调用兜底渲染）。
-#[tauri::command]
-fn get_status_payload(state: tauri::State<'_, KadaState>) -> Option<StatusPayload> {
-    state.status.lock().unwrap().clone()
-}
-
-/// 输入窗渲染完成（前端量出内容宽高）：居中到光标所在显示器、显示并拿到焦点。
-#[tauri::command]
-fn prompt_ready(app: tauri::AppHandle, width: f64, height: f64) {
-    let Some(w) = app.get_webview_window(PROMPT_WINDOW) else {
-        return;
-    };
-    // 尺寸来自界面，钳一下：提示语很长时别把窗口撑满屏幕。
-    let w_logical = width.clamp(260.0, 900.0);
-    let h_logical = height.clamp(120.0, 480.0);
-    let _ = w.set_size(tauri::LogicalSize::new(w_logical, h_logical));
-    // 放到**光标所在显示器**中央：多屏时用户刚在哪儿操作就在哪儿弹。
-    let monitor = app
-        .cursor_position()
-        .ok()
-        .and_then(|p| app.monitor_from_point(p.x, p.y).ok().flatten());
-    if let Some(m) = monitor {
-        let scale = m.scale_factor();
-        let work = m.work_area();
-        let x =
-            (work.position.x as f64 + (work.size.width as f64 - w_logical * scale) / 2.0) / scale;
-        let y =
-            (work.position.y as f64 + (work.size.height as f64 - h_logical * scale) / 2.0) / scale;
-        let _ = w.set_position(tauri::LogicalPosition::new(x, y));
-    }
-    let _ = w.show();
-    let _ = w.set_focus();
-}
-
-/// 输入窗回传结果：`Some` = 确定（空串按「留空」报错）、`None` = 取消 / Esc。
-#[tauri::command]
-fn prompt_done(state: tauri::State<'_, KadaState>, value: Option<String>) {
-    if let Some(tx) = state.prompt_tx.lock().unwrap().take() {
-        let _ = tx.send(value);
-    }
-}
-
-/// 读取当前输入框载荷（输入窗懒创建后，前端加载时兜底渲染）。
-#[tauri::command]
-fn get_prompt_payload(state: tauri::State<'_, KadaState>) -> Option<PromptPayload> {
-    state.prompt_payload.lock().unwrap().clone()
-}
-
 /// 保存配置的一小处改动（提示框的位置 / 外观 / 可见性）：与 [`set_config`] 同一套口径——
 /// 「写盘 + 改内存 + 给监听销账」同持 `cfg_watch` 锁。
 ///
@@ -3339,18 +3243,18 @@ pub fn run() {
             commands::results::get_run_records,
             commands::results::get_unread,
             commands::results::get_toast_payload,
-            get_status_payload,
+            commands::windows::get_status_payload,
             overlays::get_clipboard_menu_payload,
             overlays::clipboard_menu_ready,
             overlays::clipboard_menu_exec,
             tray::get_tray_menu_payload,
             tray::tray_menu_ready,
             tray::tray_menu_exec,
-            hud_ready,
-            prompt_ready,
-            prompt_done,
-            get_prompt_payload,
-            gesture_overlay_ready,
+            commands::windows::hud_ready,
+            commands::windows::prompt_ready,
+            commands::windows::prompt_done,
+            commands::windows::get_prompt_payload,
+            commands::windows::gesture_overlay_ready,
             overlays::get_hints_state,
             overlays::hints_ready,
             overlays::hints_move,
