@@ -2,16 +2,18 @@ import { deepClone, el, toast } from "./dom";
 import { tr, trt } from "./i18n";
 import { isDraftDirty, state } from "./state";
 import {
-  actionDropAt,
-  applyActionDrop,
   askConfirm,
-  clearActionDropIndicators,
   KIND_SECTION,
   render,
-  renderActions,
   save,
-  updateActionDropTarget,
 } from "./main";
+import {
+  actionDropAt,
+  applyActionDrop,
+  clearActionDropIndicators,
+  renderActions,
+  updateActionDropTarget,
+} from "./form";
 import {
   appendLayerMark,
   discardDraft,

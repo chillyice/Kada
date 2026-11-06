@@ -23,24 +23,26 @@ import { syncSettings } from "./settings";
 import {
   KIND_SECTION,
   askConfirm,
-  collapseAllActions,
   currentDraft,
   currentKind,
   endCapture,
-  expansionTriggerError,
   isListSection,
   render,
-  renderActions,
-  renderConflictBubble,
-  renderWhenEditor,
   save,
   setCaptureCleanup,
-  showFieldError,
   stopCapture,
   stopRecIfAny,
   syncRailTab,
   switchSectionNow,
 } from "./main";
+import {
+  collapseAllActions,
+  expansionTriggerError,
+  renderActions,
+  renderConflictBubble,
+  renderWhenEditor,
+  showFieldError,
+} from "./form";
 import type {
   Action,
   Config,

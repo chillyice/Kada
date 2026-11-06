@@ -5,8 +5,9 @@ import { state } from "./state";
 import { actionSummary, unwrapAction } from "./options";
 import { msgEntries, renderRunCard, runState } from "./runs";
 import { collapsedActions } from "./list";
-import { askConfirm, renderConflictList, switchSectionNow } from "./main";
+import { askConfirm, switchSectionNow } from "./main";
 import { confirmLeaveDraft, openDetail, renderDetail } from "./editor";
+import { renderConflictList } from "./form";
 import type { Action, ActionStep, CommandResult, RunRecord, Section } from "./types";
 
 // 消息中心 + 结果卡深链（U-03 从 main.ts 搬出）：执行记录列表 / 视图切换 / 结果卡 /
