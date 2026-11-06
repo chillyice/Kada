@@ -1,6 +1,6 @@
 [package]
 name = "kada"
-version = "1.2.3"
+version = "1.2.4"
 description = "咔哒 - 轻快跨平台快捷键工具"
 edition = "2021"
 
@@ -28,6 +28,10 @@ tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
+# 单实例守卫（V2.62）：执行记录是**进程内内存**、全局键盘钩子是**一条链**
+# （后装先调，吞键返回非 0 就断链）——双开时只有拿到钩子的那个实例执行并记录，
+# 另一个的消息页永远是空的。插件同时负责把已跑着的实例唤到前台。
+tauri-plugin-single-instance = "2"
 
 # 更新器判定「当前是安装版还是免安装版」要读 NSIS 安装器写的安装目录
 # （`HKCU/HKLM\Software\kada\Kada` 的默认值）。这个 crate 本来就在依赖树里

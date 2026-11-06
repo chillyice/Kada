@@ -374,9 +374,33 @@ pub(crate) use app_env::{
     input_env_cached, launched_by_autostart, platform_caps, push_sync, sync_autostart, sync_file,
 };
 
+/// 重启后的让位时长（毫秒，V2.62）：够旧进程走完 `exit` 并释放单实例锁，又短到用户
+/// 察觉不到（更新 / 重启本来就有一两秒的启动时间）。
+const RELAUNCH_GRACE_MS: u64 = 600;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    // 自更新重启的竞态（V2.62）：更新 / `app.restart()` 都是「先拉起新进程、再退出旧进程」，
+    // 新进程往往比旧进程释放单实例锁更早跑到守卫那里，会被判成第二个实例直接退掉——表现
+    // 就是「更新完 Kada 自己消失了」。起进程时打了 [`update::RELAUNCH_ENV`] 标记的，先让出
+    // 一小段时间等旧进程真的走完；标记立刻清掉，别让后面拉起的子进程继承。
+    if std::env::var_os(update::RELAUNCH_ENV).is_some() {
+        std::env::remove_var(update::RELAUNCH_ENV);
+        std::thread::sleep(Duration::from_millis(RELAUNCH_GRACE_MS));
+    }
+    let builder = tauri::Builder::default();
+    // 单实例守卫（V2.62）**必须最先注册**：第二个实例在这里就被拦下并退出，
+    // 同时把已经跑着的那个实例的主窗口拉到前台（冷启动按需建窗，这里会建出来）。
+    //
+    // 为什么非要有它：全局键盘钩子是**一条链**（后装先调，吞键返回非 0 就断链），
+    // 而执行记录只存在**进程内存**里——双开时只有拿到钩子的那个实例执行动作并落记录，
+    // 另一个实例的消息页永远是空的，看起来就像「很多条目都不记录执行记录了」。
+    // 提权伴随进程（`kada.exe --kada-agent <pid>`）走 `main.rs` 的分派、不到这里，不受影响。
+    #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+        show_main_window(app);
+    }));
+    builder
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec!["--autostart"]),

@@ -32,6 +32,11 @@ use serde::{Deserialize, Serialize};
 use tauri::{Manager, Url};
 use tauri_plugin_updater::{Error as UpdateError, Update, Updater, UpdaterExt};
 
+/// 自更新重启的标记（V2.62）：重启类路径都是「先拉起新进程、再退出旧进程」，
+/// 而单实例守卫（`lib.rs` 的 `run()`）会让新进程在旧进程还没走完时就被判成第二个实例。
+/// 新进程见到这个环境变量就先让出一小段时间（见 `run()`）。
+pub(crate) const RELAUNCH_ENV: &str = "KADA_RELAUNCH";
+
 /// 启动后台检查的延迟（秒）：避开启动瞬间的钩子安装与窗口初始化。
 const STARTUP_CHECK_DELAY_SECS: u64 = 8;
 
@@ -1037,6 +1042,9 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
     }
     // Windows 上走不到这里（install 内部 exit）。其它平台装完不会自己重启，
     // 不重启就一直跑着旧二进制——等于「更新了但没生效」。
+    // 先给新进程挂上「我是重启来的」标记（见 [`RELAUNCH_ENV`]）：`restart` 是先
+    // spawn 再 exit，新进程可能比旧进程先跑到单实例守卫那里，会被当成第二个实例退掉。
+    std::env::set_var(RELAUNCH_ENV, "1");
     app.restart();
 }
 
@@ -1065,8 +1073,11 @@ fn apply_portable_update(app: &tauri::AppHandle, pending: &PendingUpdate) -> Res
     }
     clear_pending(app);
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    // 同一个坑的另一半：这里是「拉起新 exe → exit(0)」，新进程起步时旧进程往往还没
+    // 完全退出，会被单实例守卫当成第二个实例。标记见 [`RELAUNCH_ENV`]。
     std::process::Command::new(&exe)
         .args(args)
+        .env(RELAUNCH_ENV, "1")
         .spawn()
         .map_err(|e| format!("启动新版本失败：{e}"))?;
     std::process::exit(0);
