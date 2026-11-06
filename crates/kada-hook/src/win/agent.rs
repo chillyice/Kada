@@ -24,7 +24,7 @@ use std::ffi::c_void;
 use std::io;
 use std::mem::size_of;
 use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -42,9 +42,9 @@ use windows::Win32::Security::{
     TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER,
 };
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES, FILE_FLAG_FIRST_PIPE_INSTANCE,
-    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    CreateFileW, ReadFile, WriteFile, FILE_ATTRIBUTE_NORMAL, FILE_FLAGS_AND_ATTRIBUTES,
+    FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
@@ -175,11 +175,22 @@ fn decode_op(line: &str) -> Option<Op> {
             hex => Op::Text(from_hex(hex)?),
         },
         "mouse" => match it.next()? {
-            "move" => Op::Mouse(MouseOp::Move { dx: num(&mut it)?, dy: num(&mut it)? }),
-            "moveto" => Op::Mouse(MouseOp::MoveTo { x: num(&mut it)?, y: num(&mut it)? }),
+            "move" => Op::Mouse(MouseOp::Move {
+                dx: num(&mut it)?,
+                dy: num(&mut it)?,
+            }),
+            "moveto" => Op::Mouse(MouseOp::MoveTo {
+                x: num(&mut it)?,
+                y: num(&mut it)?,
+            }),
             "moveto-origin" => Op::Mouse(MouseOp::MoveToOrigin),
-            "scroll" => Op::Mouse(MouseOp::Scroll { dx: num(&mut it)?, dy: num(&mut it)? }),
-            "click" => Op::Mouse(MouseOp::Click { button: button_from(it.next()?)? }),
+            "scroll" => Op::Mouse(MouseOp::Scroll {
+                dx: num(&mut it)?,
+                dy: num(&mut it)?,
+            }),
+            "click" => Op::Mouse(MouseOp::Click {
+                button: button_from(it.next()?)?,
+            }),
             _ => return None,
         },
         _ => return None,
@@ -341,7 +352,10 @@ pub fn start(wait: Duration) -> io::Result<String> {
 pub fn forward(ops: &[Op]) -> Option<io::Result<()>> {
     let app = elevated_foreground()?;
     if !ENABLED.load(Ordering::Relaxed) {
-        note(Notice { app, reason: Reason::Disabled });
+        note(Notice {
+            app,
+            reason: Reason::Disabled,
+        });
         return None;
     }
     let attempt = CHANNEL.lock().unwrap().as_ref().map(|ch| ch.request(ops));
@@ -351,12 +365,18 @@ pub fn forward(ops: &[Op]) -> Option<io::Result<()>> {
         // 通道在，但这批没送成：撤掉它（别让下一次注入再白等 2 秒），回落本地并提示。
         Some(Err(e)) => {
             stop();
-            note(Notice { app, reason: Reason::Failed });
+            note(Notice {
+                app,
+                reason: Reason::Failed,
+            });
             Some(Err(e))
         }
         // 开关开着但提权进程没起来：回落本地并提示怎么把它起来。
         None => {
-            note(Notice { app, reason: Reason::NotRunning });
+            note(Notice {
+                app,
+                reason: Reason::NotRunning,
+            });
             None
         }
     }
@@ -452,7 +472,12 @@ fn image_path(pid: u32) -> Option<String> {
     let mut buf = [0u16; 1024];
     let mut len = buf.len() as u32;
     let ok = unsafe {
-        QueryFullProcessImageNameW(handle, PROCESS_NAME_FORMAT(0), PWSTR(buf.as_mut_ptr()), &mut len)
+        QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_FORMAT(0),
+            PWSTR(buf.as_mut_ptr()),
+            &mut len,
+        )
     };
     let _ = unsafe { CloseHandle(handle) };
     ok.ok()?;
@@ -697,7 +722,8 @@ fn verify_server(pipe: HANDLE, require_elevated: bool) -> io::Result<u32> {
 
 /// 校验某进程的镜像路径与自身一致（大小写不敏感）。
 fn ensure_same_image(pid: u32, who: &str) -> io::Result<()> {
-    let other = image_path(pid).ok_or_else(|| io::Error::other(format!("取不到{who}的镜像路径")))?;
+    let other =
+        image_path(pid).ok_or_else(|| io::Error::other(format!("取不到{who}的镜像路径")))?;
     let own = std::env::current_exe().map_err(io::Error::other)?;
     let own = own.to_string_lossy();
     if other.to_lowercase() != own.to_lowercase() {
@@ -737,17 +763,19 @@ fn spawn_elevated() -> io::Result<()> {
 
 /// 父进程一退出就跟着退（提权进程绝不能变成留在系统里的孤儿）。
 fn spawn_parent_watch(pid: u32) {
-    thread::spawn(move || match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
-        Ok(handle) => {
-            unsafe { WaitForSingleObject(handle, INFINITE) };
-            std::process::exit(0)
-        }
-        // 父进程已经不在（pid 无效）→ 干净退出；其它错误（多半是无权开它）→ 当作异常退出。
-        Err(e) if (e.code().0 as u32 & 0xFFFF) == ERROR_INVALID_PARAMETER.0 => {
-            std::process::exit(0)
-        }
-        Err(_) => std::process::exit(2),
-    });
+    thread::spawn(
+        move || match unsafe { OpenProcess(PROCESS_SYNCHRONIZE, false, pid) } {
+            Ok(handle) => {
+                unsafe { WaitForSingleObject(handle, INFINITE) };
+                std::process::exit(0)
+            }
+            // 父进程已经不在（pid 无效）→ 干净退出；其它错误（多半是无权开它）→ 当作异常退出。
+            Err(e) if (e.code().0 as u32 & 0xFFFF) == ERROR_INVALID_PARAMETER.0 => {
+                std::process::exit(0)
+            }
+            Err(_) => std::process::exit(2),
+        },
+    );
 }
 
 /// 与提权进程的连接：一批 op = 一次请求 / 一次回复。
@@ -779,7 +807,14 @@ unsafe impl Sync for Channel {}
 impl Channel {
     fn request(&self, ops: &[Op]) -> io::Result<()> {
         let (tx, rx) = mpsc::channel();
-        if self.jobs.send(Job { ops: ops.to_vec(), reply: tx }).is_err() {
+        if self
+            .jobs
+            .send(Job {
+                ops: ops.to_vec(),
+                reply: tx,
+            })
+            .is_err()
+        {
             return Err(io::Error::new(io::ErrorKind::BrokenPipe, "提权进程已断开"));
         }
         match rx.recv_timeout(REPLY_TIMEOUT) {
@@ -806,11 +841,7 @@ impl Drop for Channel {
 ///
 /// 一次读失败（对端断开 / 回了看不懂的东西）就收工退出：连接可疑，后面每批都会白等 2 秒，
 /// 不如让调用方下次请求直接得到「已断开」。
-fn spawn_worker(
-    handle: isize,
-    jobs: mpsc::Receiver<Job>,
-    ready: mpsc::Sender<Result<(), String>>,
-) {
+fn spawn_worker(handle: isize, jobs: mpsc::Receiver<Job>, ready: mpsc::Sender<Result<(), String>>) {
     thread::spawn(move || {
         let mut pipe = Pipe::new(HANDLE(handle as *mut c_void));
         // 握手：第一行必须是版本行。对端可能是另一个版本的提权进程（升级后残留的），
@@ -842,7 +873,9 @@ fn spawn_worker(
                 match line.strip_prefix("err ") {
                     Some(msg) => Err(io::Error::other(msg.to_string())),
                     None if line == "ok" => Ok(()),
-                    None => Err(io::Error::other(format!("提权通道回了一条看不懂的内容：{line}"))),
+                    None => Err(io::Error::other(format!(
+                        "提权通道回了一条看不懂的内容：{line}"
+                    ))),
                 }
             })();
             let broken = result.is_err();
@@ -873,7 +906,11 @@ impl ProbeClient {
 /// 管道 DACL、双方身份校验、行协议往返）。`wait` 内轮询重试，代理还没建好管道时用得上；
 /// `require_elevated` 放开时跳过「对端必须提权」这一条（探针里的代理跑在本进程、不是提权的，
 /// **闸门本身**由探针先用 `true` 那一遍验）。
-pub fn connect_for_probe(name: &str, wait: Duration, require_elevated: bool) -> io::Result<ProbeClient> {
+pub fn connect_for_probe(
+    name: &str,
+    wait: Duration,
+    require_elevated: bool,
+) -> io::Result<ProbeClient> {
     connect_named(name, wait, require_elevated).map(ProbeClient)
 }
 
@@ -915,7 +952,11 @@ fn connect_named(name: &str, wait: Duration, require_elevated: bool) -> io::Resu
     let (ready_tx, ready_rx) = mpsc::channel();
     spawn_worker(raw, jobs_rx, ready_tx);
     match ready_rx.recv_timeout(REPLY_TIMEOUT) {
-        Ok(Ok(_)) => Ok(Channel { jobs: jobs_tx, handle: raw, agent_pid: pid }),
+        Ok(Ok(_)) => Ok(Channel {
+            jobs: jobs_tx,
+            handle: raw,
+            agent_pid: pid,
+        }),
         Ok(Err(e)) => {
             let _ = unsafe { CloseHandle(handle) };
             Err(io::Error::other(e))
@@ -939,7 +980,10 @@ struct Pipe {
 
 impl Pipe {
     fn new(handle: HANDLE) -> Self {
-        Self { handle, buf: Vec::new() }
+        Self {
+            handle,
+            buf: Vec::new(),
+        }
     }
 
     /// 读一行（阻塞；去掉行尾 `\n` / `\r`）。连接断开时返回 `Err`。
@@ -976,9 +1020,8 @@ fn write_all(handle: HANDLE, mut bytes: &[u8]) -> io::Result<()> {
         let mut written = 0u32;
         // 切一段最多 4KB 再写：`WriteFile` 一次最多这么大一块才稳（跨大量数据时本就分段）。
         let chunk = &bytes[..bytes.len().min(4096)];
-        unsafe { WriteFile(handle, Some(chunk), Some(&mut written), None) }.map_err(|e| {
-            io::Error::new(io::ErrorKind::BrokenPipe, format!("写通道失败：{e}"))
-        })?;
+        unsafe { WriteFile(handle, Some(chunk), Some(&mut written), None) }
+            .map_err(|e| io::Error::new(io::ErrorKind::BrokenPipe, format!("写通道失败：{e}")))?;
         if written == 0 {
             return Err(io::Error::new(io::ErrorKind::WriteZero, "通道写入 0 字节"));
         }
@@ -1017,15 +1060,29 @@ mod tests {
             Op::Mouse(MouseOp::MoveTo { x: -1920, y: 1080 }),
             Op::Mouse(MouseOp::MoveToOrigin),
             Op::Mouse(MouseOp::Scroll { dx: -3, dy: 120 }),
-            Op::Mouse(MouseOp::Click { button: MouseButton::Left }),
-            Op::Mouse(MouseOp::Click { button: MouseButton::Right }),
-            Op::Mouse(MouseOp::Click { button: MouseButton::Middle }),
-            Op::Mouse(MouseOp::Click { button: MouseButton::Back }),
-            Op::Mouse(MouseOp::Click { button: MouseButton::Forward }),
+            Op::Mouse(MouseOp::Click {
+                button: MouseButton::Left,
+            }),
+            Op::Mouse(MouseOp::Click {
+                button: MouseButton::Right,
+            }),
+            Op::Mouse(MouseOp::Click {
+                button: MouseButton::Middle,
+            }),
+            Op::Mouse(MouseOp::Click {
+                button: MouseButton::Back,
+            }),
+            Op::Mouse(MouseOp::Click {
+                button: MouseButton::Forward,
+            }),
         ];
         for op in ops {
             let line = encode_op(&op);
-            assert_eq!(format!("{:?}", decode_op(&line).unwrap()), format!("{op:?}"), "{line}");
+            assert_eq!(
+                format!("{:?}", decode_op(&line).unwrap()),
+                format!("{op:?}"),
+                "{line}"
+            );
         }
     }
 
@@ -1034,7 +1091,10 @@ mod tests {
     fn text_round_trips() {
         for text in ["hello world", "咔哒 Kada\n第二行", "\u{1F600}", ""] {
             let line = encode_op(&Op::Text(text.to_string()));
-            assert!(!line.contains(' ') || line.starts_with("text "), "文本不能带裸空格：{line}");
+            assert!(
+                !line.contains(' ') || line.starts_with("text "),
+                "文本不能带裸空格：{line}"
+            );
             match decode_op(&line) {
                 Some(Op::Text(back)) => assert_eq!(back, text),
                 other => panic!("{text:?} 解成了 {other:?}"),
@@ -1066,19 +1126,22 @@ mod tests {
     fn bad_lines_are_rejected() {
         let bad = [
             "down NoSuchKey",
-            "down",                       // 缺参数
-            "down Ctrl extra",            // 多余字段
+            "down",            // 缺参数
+            "down Ctrl extra", // 多余字段
             "mouse click sideways",
-            "mouse move 1",               // 缺 dy
-            "text 4f6",                   // 十六进制长度为奇数
-            "text zz",                    // 非十六进制
+            "mouse move 1", // 缺 dy
+            "text 4f6",     // 十六进制长度为奇数
+            "text zz",      // 非十六进制
             "pause abc",
-            "run calc",                   // 通道上不存在「执行命令」这类口子
+            "run calc", // 通道上不存在「执行命令」这类口子
             "",
         ];
         for line in bad {
             assert!(decode_op(line).is_none(), "{line:?} 不该被认下");
-            assert!(decode_batch(&[line.to_string()]).is_err(), "{line:?} 该整批报错");
+            assert!(
+                decode_batch(&[line.to_string()]).is_err(),
+                "{line:?} 该整批报错"
+            );
         }
     }
 }

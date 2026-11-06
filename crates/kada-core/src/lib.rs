@@ -170,10 +170,10 @@ pub mod sample;
 /// 鼠标手势 / 触摸板手势（规划 7.2-MG）：方向串 + 形状模板。纯逻辑，识别在壳层做。
 mod gesture;
 pub use gesture::{
-    app_excluded, find_gesture, find_touchpad, find_touchpad_by_template,
-    gesture_capture_enabled, gesture_enabled, is_touchpad_trigger, lasso_bbox, normalize_pattern,
-    pattern_from_points, pattern_from_stroke, template_distance, template_from_points,
-    touchpad_gesture_enabled, Gesture, TouchpadGesture, TEMPLATE_MAX_DISTANCE, TEMPLATE_POINTS,
+    app_excluded, find_gesture, find_touchpad, find_touchpad_by_template, gesture_capture_enabled,
+    gesture_enabled, is_touchpad_trigger, lasso_bbox, normalize_pattern, pattern_from_points,
+    pattern_from_stroke, template_distance, template_from_points, touchpad_gesture_enabled,
+    Gesture, TouchpadGesture, TEMPLATE_MAX_DISTANCE, TEMPLATE_POINTS,
 };
 
 mod parse {
@@ -182,12 +182,19 @@ mod parse {
     /// 解析 "Ctrl+Alt+K" 形式的字符串。
     /// 单独的修饰键名（"Shift"）按按键处理，供改键配置使用。
     pub fn shortcut(s: &str) -> Result<Shortcut, ParseError> {
-        let parts: Vec<&str> = s.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
+        let parts: Vec<&str> = s
+            .split('+')
+            .map(str::trim)
+            .filter(|p| !p.is_empty())
+            .collect();
         if parts.is_empty() {
             return Err(ParseError::Empty);
         }
         if parts.len() == 1 {
-            return Ok(Shortcut { mods: BTreeSet::new(), key: key(parts[0])? });
+            return Ok(Shortcut {
+                mods: BTreeSet::new(),
+                key: key(parts[0])?,
+            });
         }
         let mut mods = BTreeSet::new();
         let mut main_key = None;
@@ -203,7 +210,10 @@ mod parse {
         let Some(main_key) = main_key else {
             return Err(ParseError::Empty);
         };
-        Ok(Shortcut { mods, key: main_key })
+        Ok(Shortcut {
+            mods,
+            key: main_key,
+        })
     }
 
     /// 修饰键名 → `Modifier`（`Ctrl`/`Control`/`Cmd`/`Win`、`Alt`/`Option`、`Shift`、
@@ -242,15 +252,41 @@ mod parse {
             "Down" => ArrowDown,
             "Left" => ArrowLeft,
             "Right" => ArrowRight,
-            "F1" => F1, "F2" => F2, "F3" => F3, "F4" => F4,
-            "F5" => F5, "F6" => F6, "F7" => F7, "F8" => F8,
-            "F9" => F9, "F10" => F10, "F11" => F11, "F12" => F12,
-            "F13" => F13, "F14" => F14, "F15" => F15, "F16" => F16,
-            "F17" => F17, "F18" => F18, "F19" => F19, "F20" => F20,
-            "F21" => F21, "F22" => F22, "F23" => F23, "F24" => F24,
-            "," => Comma, "." => Period, "/" => Slash, "\\" => Backslash,
-            ";" => Semicolon, "\"" => Quote, "`" => Backquote,
-            "-" => Minus, "=" => Equal, "[" => BracketLeft, "]" => BracketRight,
+            "F1" => F1,
+            "F2" => F2,
+            "F3" => F3,
+            "F4" => F4,
+            "F5" => F5,
+            "F6" => F6,
+            "F7" => F7,
+            "F8" => F8,
+            "F9" => F9,
+            "F10" => F10,
+            "F11" => F11,
+            "F12" => F12,
+            "F13" => F13,
+            "F14" => F14,
+            "F15" => F15,
+            "F16" => F16,
+            "F17" => F17,
+            "F18" => F18,
+            "F19" => F19,
+            "F20" => F20,
+            "F21" => F21,
+            "F22" => F22,
+            "F23" => F23,
+            "F24" => F24,
+            "," => Comma,
+            "." => Period,
+            "/" => Slash,
+            "\\" => Backslash,
+            ";" => Semicolon,
+            "\"" => Quote,
+            "`" => Backquote,
+            "-" => Minus,
+            "=" => Equal,
+            "[" => BracketLeft,
+            "]" => BracketRight,
             "MediaPlayPause" | "PlayPause" => MediaPlayPause,
             "MediaPrev" | "PrevTrack" => MediaPrev,
             "MediaNext" | "NextTrack" => MediaNext,
@@ -258,9 +294,15 @@ mod parse {
             "VolumeDown" | "VolDown" => VolumeDown,
             "VolumeUp" | "VolUp" => VolumeUp,
             "NumLock" => NumLock,
-            "Numpad0" => Numpad0, "Numpad1" => Numpad1, "Numpad2" => Numpad2,
-            "Numpad3" => Numpad3, "Numpad4" => Numpad4, "Numpad5" => Numpad5,
-            "Numpad6" => Numpad6, "Numpad7" => Numpad7, "Numpad8" => Numpad8,
+            "Numpad0" => Numpad0,
+            "Numpad1" => Numpad1,
+            "Numpad2" => Numpad2,
+            "Numpad3" => Numpad3,
+            "Numpad4" => Numpad4,
+            "Numpad5" => Numpad5,
+            "Numpad6" => Numpad6,
+            "Numpad7" => Numpad7,
+            "Numpad8" => Numpad8,
             "Numpad9" => Numpad9,
             "NumpadAdd" | "NumpadPlus" => NumpadAdd,
             "NumpadSubtract" | "NumpadMinus" => NumpadSubtract,
@@ -285,14 +327,42 @@ mod parse {
             return None;
         }
         Some(match c {
-            'A' => A, 'B' => B, 'C' => C, 'D' => D, 'E' => E, 'F' => F,
-            'G' => G, 'H' => H, 'I' => I, 'J' => J, 'K' => K, 'L' => L,
-            'M' => M, 'N' => N, 'O' => O, 'P' => P, 'Q' => Q, 'R' => R,
-            'S' => S, 'T' => T, 'U' => U, 'V' => V, 'W' => W, 'X' => X,
-            'Y' => Y, 'Z' => Z,
-            '0' => Digit0, '1' => Digit1, '2' => Digit2, '3' => Digit3,
-            '4' => Digit4, '5' => Digit5, '6' => Digit6, '7' => Digit7,
-            '8' => Digit8, '9' => Digit9,
+            'A' => A,
+            'B' => B,
+            'C' => C,
+            'D' => D,
+            'E' => E,
+            'F' => F,
+            'G' => G,
+            'H' => H,
+            'I' => I,
+            'J' => J,
+            'K' => K,
+            'L' => L,
+            'M' => M,
+            'N' => N,
+            'O' => O,
+            'P' => P,
+            'Q' => Q,
+            'R' => R,
+            'S' => S,
+            'T' => T,
+            'U' => U,
+            'V' => V,
+            'W' => W,
+            'X' => X,
+            'Y' => Y,
+            'Z' => Z,
+            '0' => Digit0,
+            '1' => Digit1,
+            '2' => Digit2,
+            '3' => Digit3,
+            '4' => Digit4,
+            '5' => Digit5,
+            '6' => Digit6,
+            '7' => Digit7,
+            '8' => Digit8,
+            '9' => Digit9,
             _ => return None,
         })
     }
@@ -316,7 +386,12 @@ impl FromStr for Key {
 pub fn format_shortcut(s: &Shortcut) -> String {
     use Modifier::*;
     let mut parts: Vec<&str> = vec![];
-    for (m, name) in [(Ctrl, "Ctrl"), (Alt, "Alt"), (Shift, "Shift"), (Meta, "Meta")] {
+    for (m, name) in [
+        (Ctrl, "Ctrl"),
+        (Alt, "Alt"),
+        (Shift, "Shift"),
+        (Meta, "Meta"),
+    ] {
         if s.mods.contains(&m) {
             parts.push(name);
         }
@@ -447,14 +522,23 @@ fn parse_chord_member(s: &str) -> Result<Shortcut, ParseError> {
 /// `{mods: 前面的, key: 最后一个}`。取最后一个当「成员键」是为了沿用同一套 `Shortcut`
 /// 表示，且 [`format_shortcut`] 按 Ctrl→Alt→Shift→Meta 渲染，显示会原样回到 `Ctrl+Alt`。
 fn modifier_only_member(s: &str) -> Option<Shortcut> {
-    let parts: Vec<&str> = s.split('+').map(str::trim).filter(|p| !p.is_empty()).collect();
-    let mut mods: Vec<Modifier> =
-        parts.iter().map(|p| parse::modifier(p)).collect::<Option<Vec<_>>>()?;
+    let parts: Vec<&str> = s
+        .split('+')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .collect();
+    let mut mods: Vec<Modifier> = parts
+        .iter()
+        .map(|p| parse::modifier(p))
+        .collect::<Option<Vec<_>>>()?;
     if mods.len() < 2 {
         return None;
     }
     let key = modifier_key(mods.pop()?);
-    Some(Shortcut { mods: mods.into_iter().collect(), key })
+    Some(Shortcut {
+        mods: mods.into_iter().collect(),
+        key,
+    })
 }
 
 /// 键序列匹配的结果。
@@ -527,7 +611,9 @@ impl SequenceTracker {
         for (idx, steps, progress) in self.candidates.iter() {
             let idx = *idx;
             let progress = *progress;
-            let Some(next) = steps.get(progress) else { continue };
+            let Some(next) = steps.get(progress) else {
+                continue;
+            };
             if matches(ev, next) {
                 if progress + 1 == steps.len() {
                     self.reset();
@@ -655,53 +741,335 @@ pub fn is_hotstring_terminator(key: Key) -> bool {
 pub fn key_to_char(key: Key, shift: bool) -> Option<char> {
     use Key::*;
     let c = match key {
-        A => if shift { 'A' } else { 'a' },
-        B => if shift { 'B' } else { 'b' },
-        C => if shift { 'C' } else { 'c' },
-        D => if shift { 'D' } else { 'd' },
-        E => if shift { 'E' } else { 'e' },
-        F => if shift { 'F' } else { 'f' },
-        G => if shift { 'G' } else { 'g' },
-        H => if shift { 'H' } else { 'h' },
-        I => if shift { 'I' } else { 'i' },
-        J => if shift { 'J' } else { 'j' },
-        K => if shift { 'K' } else { 'k' },
-        L => if shift { 'L' } else { 'l' },
-        M => if shift { 'M' } else { 'm' },
-        N => if shift { 'N' } else { 'n' },
-        O => if shift { 'O' } else { 'o' },
-        P => if shift { 'P' } else { 'p' },
-        Q => if shift { 'Q' } else { 'q' },
-        R => if shift { 'R' } else { 'r' },
-        S => if shift { 'S' } else { 's' },
-        T => if shift { 'T' } else { 't' },
-        U => if shift { 'U' } else { 'u' },
-        V => if shift { 'V' } else { 'v' },
-        W => if shift { 'W' } else { 'w' },
-        X => if shift { 'X' } else { 'x' },
-        Y => if shift { 'Y' } else { 'y' },
-        Z => if shift { 'Z' } else { 'z' },
-        Digit0 => if shift { ')' } else { '0' },
-        Digit1 => if shift { '!' } else { '1' },
-        Digit2 => if shift { '@' } else { '2' },
-        Digit3 => if shift { '#' } else { '3' },
-        Digit4 => if shift { '$' } else { '4' },
-        Digit5 => if shift { '%' } else { '5' },
-        Digit6 => if shift { '^' } else { '6' },
-        Digit7 => if shift { '&' } else { '7' },
-        Digit8 => if shift { '*' } else { '8' },
-        Digit9 => if shift { '(' } else { '9' },
-        Comma => if shift { '<' } else { ',' },
-        Period => if shift { '>' } else { '.' },
-        Slash => if shift { '?' } else { '/' },
-        Backslash => if shift { '|' } else { '\\' },
-        Semicolon => if shift { ':' } else { ';' },
-        Quote => if shift { '"' } else { '\'' },
-        Backquote => if shift { '~' } else { '`' },
-        Minus => if shift { '_' } else { '-' },
-        Equal => if shift { '+' } else { '=' },
-        BracketLeft => if shift { '{' } else { '[' },
-        BracketRight => if shift { '}' } else { ']' },
+        A => {
+            if shift {
+                'A'
+            } else {
+                'a'
+            }
+        }
+        B => {
+            if shift {
+                'B'
+            } else {
+                'b'
+            }
+        }
+        C => {
+            if shift {
+                'C'
+            } else {
+                'c'
+            }
+        }
+        D => {
+            if shift {
+                'D'
+            } else {
+                'd'
+            }
+        }
+        E => {
+            if shift {
+                'E'
+            } else {
+                'e'
+            }
+        }
+        F => {
+            if shift {
+                'F'
+            } else {
+                'f'
+            }
+        }
+        G => {
+            if shift {
+                'G'
+            } else {
+                'g'
+            }
+        }
+        H => {
+            if shift {
+                'H'
+            } else {
+                'h'
+            }
+        }
+        I => {
+            if shift {
+                'I'
+            } else {
+                'i'
+            }
+        }
+        J => {
+            if shift {
+                'J'
+            } else {
+                'j'
+            }
+        }
+        K => {
+            if shift {
+                'K'
+            } else {
+                'k'
+            }
+        }
+        L => {
+            if shift {
+                'L'
+            } else {
+                'l'
+            }
+        }
+        M => {
+            if shift {
+                'M'
+            } else {
+                'm'
+            }
+        }
+        N => {
+            if shift {
+                'N'
+            } else {
+                'n'
+            }
+        }
+        O => {
+            if shift {
+                'O'
+            } else {
+                'o'
+            }
+        }
+        P => {
+            if shift {
+                'P'
+            } else {
+                'p'
+            }
+        }
+        Q => {
+            if shift {
+                'Q'
+            } else {
+                'q'
+            }
+        }
+        R => {
+            if shift {
+                'R'
+            } else {
+                'r'
+            }
+        }
+        S => {
+            if shift {
+                'S'
+            } else {
+                's'
+            }
+        }
+        T => {
+            if shift {
+                'T'
+            } else {
+                't'
+            }
+        }
+        U => {
+            if shift {
+                'U'
+            } else {
+                'u'
+            }
+        }
+        V => {
+            if shift {
+                'V'
+            } else {
+                'v'
+            }
+        }
+        W => {
+            if shift {
+                'W'
+            } else {
+                'w'
+            }
+        }
+        X => {
+            if shift {
+                'X'
+            } else {
+                'x'
+            }
+        }
+        Y => {
+            if shift {
+                'Y'
+            } else {
+                'y'
+            }
+        }
+        Z => {
+            if shift {
+                'Z'
+            } else {
+                'z'
+            }
+        }
+        Digit0 => {
+            if shift {
+                ')'
+            } else {
+                '0'
+            }
+        }
+        Digit1 => {
+            if shift {
+                '!'
+            } else {
+                '1'
+            }
+        }
+        Digit2 => {
+            if shift {
+                '@'
+            } else {
+                '2'
+            }
+        }
+        Digit3 => {
+            if shift {
+                '#'
+            } else {
+                '3'
+            }
+        }
+        Digit4 => {
+            if shift {
+                '$'
+            } else {
+                '4'
+            }
+        }
+        Digit5 => {
+            if shift {
+                '%'
+            } else {
+                '5'
+            }
+        }
+        Digit6 => {
+            if shift {
+                '^'
+            } else {
+                '6'
+            }
+        }
+        Digit7 => {
+            if shift {
+                '&'
+            } else {
+                '7'
+            }
+        }
+        Digit8 => {
+            if shift {
+                '*'
+            } else {
+                '8'
+            }
+        }
+        Digit9 => {
+            if shift {
+                '('
+            } else {
+                '9'
+            }
+        }
+        Comma => {
+            if shift {
+                '<'
+            } else {
+                ','
+            }
+        }
+        Period => {
+            if shift {
+                '>'
+            } else {
+                '.'
+            }
+        }
+        Slash => {
+            if shift {
+                '?'
+            } else {
+                '/'
+            }
+        }
+        Backslash => {
+            if shift {
+                '|'
+            } else {
+                '\\'
+            }
+        }
+        Semicolon => {
+            if shift {
+                ':'
+            } else {
+                ';'
+            }
+        }
+        Quote => {
+            if shift {
+                '"'
+            } else {
+                '\''
+            }
+        }
+        Backquote => {
+            if shift {
+                '~'
+            } else {
+                '`'
+            }
+        }
+        Minus => {
+            if shift {
+                '_'
+            } else {
+                '-'
+            }
+        }
+        Equal => {
+            if shift {
+                '+'
+            } else {
+                '='
+            }
+        }
+        BracketLeft => {
+            if shift {
+                '{'
+            } else {
+                '['
+            }
+        }
+        BracketRight => {
+            if shift {
+                '}'
+            } else {
+                ']'
+            }
+        }
         Space => ' ',
         _ => return None,
     };
@@ -779,7 +1147,11 @@ pub enum OsOperation {
     /// 把 `source` 的 zip 压缩包解压到 `dest` 目录。
     Unzip { source: String, dest: String },
     /// 取文件属性，存入变量 `var`（默认 "file"），供后续动作用占位符引用。
-    GetFileProps { path: String, #[serde(default = "default_var")] var: String },
+    GetFileProps {
+        path: String,
+        #[serde(default = "default_var")]
+        var: String,
+    },
 }
 
 /// 操作系统动作：对操作系统本身做的动作（虚拟桌面 / 回收站 / 显示器 / 桌面图标 /
@@ -807,13 +1179,19 @@ pub enum SystemOperation {
     /// 只有 Windows 实现，其它平台执行时报错并由冲突检测标平台缺失。目标程序靠 Raw Input /
     /// 焦点 / IME 收键时（Chromium、UWP、游戏、提权窗口）通常收不到——这是 `PostMessage`
     /// 的固有限制，不是回退前台的信号。
-    SendTo { target: String, payload: SendPayload },
+    SendTo {
+        target: String,
+        payload: SendPayload,
+    },
     /// 显示器亮度（原 `Action::Brightness`，入口已并入操作系统）：主显示器调高 / 调低 /
     /// 恢复原始值。Windows 走 DDC/CI，其它平台执行报错并由冲突检测标平台缺失。
     Brightness {
         #[serde(default, skip_serializing_if = "is_default_brightness_op")]
         operation: BrightnessOperation,
-        #[serde(default = "default_brightness_step", skip_serializing_if = "is_default_brightness_step")]
+        #[serde(
+            default = "default_brightness_step",
+            skip_serializing_if = "is_default_brightness_step"
+        )]
         step: i64,
     },
 }
@@ -883,13 +1261,24 @@ pub const EXTERNAL_TOOLS: &[ExternalToolInfo] = &[
         id: "bit-pouch",
         name: "比特口袋",
         processes: &["bit-pouch", "bitpouch", "比特口袋"],
-        capabilities: &[ExternalCapability { id: "open", name: "打开" }],
+        capabilities: &[ExternalCapability {
+            id: "open",
+            name: "打开",
+        }],
     },
     ExternalToolInfo {
         id: "auto-assistant",
         name: "自动化助手",
-        processes: &["automation-assistant", "auto-assistant", "autoassistant", "自动化助手"],
-        capabilities: &[ExternalCapability { id: "run", name: "运行" }],
+        processes: &[
+            "automation-assistant",
+            "auto-assistant",
+            "autoassistant",
+            "自动化助手",
+        ],
+        capabilities: &[ExternalCapability {
+            id: "run",
+            name: "运行",
+        }],
     },
 ];
 
@@ -996,12 +1385,22 @@ pub struct TriggerContext<'a> {
 impl<'a> TriggerContext<'a> {
     /// 无前台 / 无设备的空上下文（无 `when` 的按键路径、基础版、单测用）。
     pub fn empty() -> TriggerContext<'static> {
-        TriggerContext { fixed: None, fetch: None, device: None, cached: std::cell::OnceCell::new() }
+        TriggerContext {
+            fixed: None,
+            fetch: None,
+            device: None,
+            cached: std::cell::OnceCell::new(),
+        }
     }
 
     /// 固定前台 + 设备（单测用）。
     pub fn fixed(frontmost: Option<&'a FrontmostContext>, device: Option<&'a str>) -> Self {
-        TriggerContext { fixed: frontmost, fetch: None, device, cached: std::cell::OnceCell::new() }
+        TriggerContext {
+            fixed: frontmost,
+            fetch: None,
+            device,
+            cached: std::cell::OnceCell::new(),
+        }
     }
 
     /// 惰性前台查询 + 设备（壳层用）：`fetch` 只在该事件真的需要判定 `when` 时被调用一次。
@@ -1019,7 +1418,9 @@ impl<'a> TriggerContext<'a> {
         if let Some(f) = self.fixed {
             return Some(f);
         }
-        self.cached.get_or_init(|| self.fetch.and_then(|f| f())).as_ref()
+        self.cached
+            .get_or_init(|| self.fetch.and_then(|f| f()))
+            .as_ref()
     }
 
     /// 当前前台进程名（惰性；无前台时 `None`）。全局排除列表在基础版也要用。
@@ -1060,11 +1461,25 @@ pub enum Condition {
     /// 路径是目录。
     IsDir { path: String },
     /// 变量字段等于某值（`field` 为空时比较完整路径）。
-    Equals { var: String, #[serde(default)] field: String, value: String },
+    Equals {
+        var: String,
+        #[serde(default)]
+        field: String,
+        value: String,
+    },
     /// 变量字段不等于某值。
-    NotEquals { var: String, #[serde(default)] field: String, value: String },
+    NotEquals {
+        var: String,
+        #[serde(default)]
+        field: String,
+        value: String,
+    },
     /// 文件/目录的修改时间在最近 `minutes` 分钟内（`path` 支持 `{变量名}` 占位符）。
-    ModifiedWithin { path: String, #[serde(default)] minutes: u64 },
+    ModifiedWithin {
+        path: String,
+        #[serde(default)]
+        minutes: u64,
+    },
     /// 前台进程名匹配（不区分大小写；含 `*`/`?` 走通配，否则子串匹配）。
     FrontmostApp { app: String },
     /// 前台进程名不匹配。
@@ -1239,7 +1654,9 @@ pub fn device_pattern(device: &str) -> String {
 /// 去掉第二段末尾的 `&ColNN`（HID 顶层集合编号，同一块硬件的不同集合各占一个）。
 fn strip_col(segment: &str) -> &str {
     match segment.rfind("&Col") {
-        Some(i) if segment.len() > i + 4 && segment[i + 4..].bytes().all(|b| b.is_ascii_digit()) => {
+        Some(i)
+            if segment.len() > i + 4 && segment[i + 4..].bytes().all(|b| b.is_ascii_digit()) =>
+        {
             &segment[..i]
         }
         _ => segment,
@@ -1389,12 +1806,19 @@ pub enum AppOperation {
     /// `retries`：未运行时的重试次数（0 = 只查一次）；`interval_ms`：每次重试间隔。
     Status {
         program: String,
-        #[serde(default = "default_var")] var: String,
-        #[serde(default)] retries: u32,
-        #[serde(default = "default_status_interval_ms")] interval_ms: u64,
+        #[serde(default = "default_var")]
+        var: String,
+        #[serde(default)]
+        retries: u32,
+        #[serde(default = "default_status_interval_ms")]
+        interval_ms: u64,
     },
     /// 重启程序：先关闭再重新启动。
-    Restart { program: String, #[serde(default)] args: Vec<String> },
+    Restart {
+        program: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
     /// 当前窗口（原 `Action::Window`，入口已并入应用动作，EXT-14）：对**触发那一刻的前台
     /// 窗口**执行操作，不按程序名匹配、也不激活窗口（不抢焦点）。只有 Windows 有前台窗口
     /// 句柄，其它平台执行报错并由冲突检测标平台缺失。
@@ -1462,7 +1886,10 @@ pub enum MouseOp {
     /// 快捷键 / 录制等路径没有起点，执行时报错。
     MoveToOrigin,
     /// 在当前光标位置点击一下（按下 + 抬起）。
-    Click { #[serde(default)] button: MouseButton },
+    Click {
+        #[serde(default)]
+        button: MouseButton,
+    },
     /// 滚轮滚动：`dy>0` 上滚 / `dy<0` 下滚、`dx` 为横向滚轮（单位「格」）。
     Scroll { dx: i32, dy: i32 },
 }
@@ -1650,7 +2077,10 @@ pub enum WaitTarget {
 /// `serde` 帮手：默认的「从不弹窗」不落盘（老布尔 false 也按默认处理）。
 #[cfg(feature = "automation")]
 fn is_show_output_default(v: &ShowOutput) -> bool {
-    matches!(v, ShowOutput::Bool(false) | ShowOutput::Mode(ShowOutputMode::Never))
+    matches!(
+        v,
+        ShowOutput::Bool(false) | ShowOutput::Mode(ShowOutputMode::Never)
+    )
 }
 
 /// 「弹窗显示结果」的三种口径（CS-11）：老配置的 `true` / `false` 照旧读，
@@ -1722,7 +2152,16 @@ pub enum Action {
     ///
     /// `masked` 只影响**界面展示**（编辑器里这段文本以 `***` 代替，动作摘要与执行记录同款掩掉），
     /// 不改实际注入的内容——给密码 / 口令这类不该被人一眼看到的文本用。
-    Text { #[serde(default)] text: String, #[serde(default)] mode: TextMode, #[serde(default, skip_serializing_if = "is_false")] masked: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Text {
+        #[serde(default)]
+        text: String,
+        #[serde(default)]
+        mode: TextMode,
+        #[serde(default, skip_serializing_if = "is_false")]
+        masked: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 执行命令（CMD 或 PowerShell），结果进消息中心；`var` 非空时把标准输出（去首尾空白）写入该变量。
     ///
     /// `working_dir` 是命令运行时的工作目录（空 = 继承 Kada 进程 cwd，支持 `~` 与 `{变量}`、
@@ -1762,31 +2201,89 @@ pub enum Action {
     },
     /// 执行 CMD 命令（旧版动作，加载时自动迁移为 `Command(Cmd)`）。
     #[cfg(feature = "automation")]
-    Cmd { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Cmd {
+        command: String,
+        #[serde(default)]
+        show_output: bool,
+        #[serde(default)]
+        var: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 执行 PowerShell 命令（旧版动作，加载时自动迁移为 `Command(Powershell)`）。
     #[cfg(feature = "automation")]
-    Powershell { command: String, #[serde(default)] show_output: bool, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Powershell {
+        command: String,
+        #[serde(default)]
+        show_output: bool,
+        #[serde(default)]
+        var: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 启动可执行文件，可选参数。（旧版动作，加载时自动迁移为 `App::Launch`。）
     #[cfg(feature = "automation")]
-    Launch { program: String, args: Vec<String>, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Launch {
+        program: String,
+        args: Vec<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 在文件管理器中打开某个目录。（旧版动作，加载时自动迁移为 `Os::OpenFolder`。）
     #[cfg(feature = "automation")]
-    OpenFolder { path: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    OpenFolder {
+        path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 按键动作：`tap` 按下再松开（默认）；`press` 只按下并保持到链结束 / 显式抬起；
     /// `release` 抬起（逆序）。按住类按键在失败 / 中止 / 输入复位时也会自动抬起。
-    Keys { keys: Vec<String>, #[serde(default, skip_serializing_if = "is_tap_mode")] mode: KeysMode, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Keys {
+        keys: Vec<String>,
+        #[serde(default, skip_serializing_if = "is_tap_mode")]
+        mode: KeysMode,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 向**非前台**窗口发送按键 / 文本（原独立动作类型；**加载时自动迁移为
     /// `System::SendTo`**，界面入口已收进「操作系统」）。语义见 [`SystemOperation::SendTo`]。
-    SendTo { target: String, payload: SendPayload, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    SendTo {
+        target: String,
+        payload: SendPayload,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 暂停 ms 毫秒。
-    PauseMs { ms: u64, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    PauseMs {
+        ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 鼠标模拟：移动 / 点击 / 滚轮（全键盘操作，规划 7.1-㊱）。
-    Mouse { op: MouseOp, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Mouse {
+        op: MouseOp,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 剪贴板动作（EXT-15）：写入 / 读取文本到变量 / 临时文本（粘贴后恢复原剪贴板）。
-    Clipboard { operation: ClipboardOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Clipboard {
+        operation: ClipboardOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 算法动作（EXT-18）：base64 / URL 编解码、SHA-256 / SHA-512 哈希。
     /// `input` 支持 `{变量}` 占位符；结果写进变量 `var`，`inject` 为真时再按文本注入当前焦点。
-    Transform { operation: TransformOperation, #[serde(default)] input: String, #[serde(default)] var: String, #[serde(default, skip_serializing_if = "is_false")] inject: bool, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Transform {
+        operation: TransformOperation,
+        #[serde(default)]
+        input: String,
+        #[serde(default)]
+        var: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        inject: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 设置变量：弹一个输入框，把用户填的内容写进变量 `var`（文本动作的变量来源之一）。
     /// `prompt` / `default` 支持 `{变量}` 占位符；取消或留空 = 本次执行报错中止。
     #[cfg(feature = "automation")]
@@ -1812,25 +2309,43 @@ pub enum Action {
     },
     /// 禁用标记（编辑页每条动作右侧的「禁用」开关）：内容原样保留，执行时整条跳过、
     /// 不占一条执行记录。关掉开关即还原成被包住的那条动作。
-    Disabled {
-        action: Box<Action>,
-    },
+    Disabled { action: Box<Action> },
     /// 强制结束目标程序的所有进程（Windows `taskkill /F /T`，Linux `pkill -f`）。
     /// （旧版动作，加载时自动迁移为 `App::Close`。）
     #[cfg(feature = "automation")]
-    CloseProgram { program: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    CloseProgram {
+        program: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
     #[cfg(feature = "automation")]
-    Os { operation: OsOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    Os {
+        operation: OsOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 操作系统动作（切换虚拟桌面）。与 [`Action::Os`]（文件/目录）是两类，见 [`SystemOperation`]。
     #[cfg(feature = "automation")]
-    System { operation: SystemOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    System {
+        operation: SystemOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 应用动作（打开/关闭/查询状态/重启）。
     #[cfg(feature = "automation")]
-    App { operation: AppOperation, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    App {
+        operation: AppOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 用系统默认浏览器打开网址。
     #[cfg(feature = "automation")]
-    OpenUrl { url: String, #[serde(default, skip_serializing_if = "Option::is_none")] description: Option<String> },
+    OpenUrl {
+        url: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 条件判断：`condition` 为真时按顺序执行 `then`，否则执行 `otherwise`（可空）。
     #[cfg(feature = "automation")]
     If {
@@ -1923,7 +2438,10 @@ pub enum Action {
         target: WaitTarget,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         timeout_ms: Option<u64>,
-        #[serde(default = "default_wait_interval_ms", skip_serializing_if = "is_default_wait_interval")]
+        #[serde(
+            default = "default_wait_interval_ms",
+            skip_serializing_if = "is_default_wait_interval"
+        )]
         interval_ms: u64,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         var: String,
@@ -1971,7 +2489,10 @@ pub enum Action {
     Brightness {
         #[serde(default, skip_serializing_if = "is_default_brightness_op")]
         operation: BrightnessOperation,
-        #[serde(default = "default_brightness_step", skip_serializing_if = "is_default_brightness_step")]
+        #[serde(
+            default = "default_brightness_step",
+            skip_serializing_if = "is_default_brightness_step"
+        )]
         step: i64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
@@ -1982,7 +2503,8 @@ impl Action {
     /// 校验动作可执行：键名可解析、必要字段非空。非法返回中文错误。
     pub fn validate(&self) -> Result<(), String> {
         let check_key = |label: &str, k: &str| {
-            k.parse::<Key>().map_err(|e| format!("{label}「{k}」无效：{e}"))?;
+            k.parse::<Key>()
+                .map_err(|e| format!("{label}「{k}」无效：{e}"))?;
             Ok::<(), String>(())
         };
         let non_empty = |label: &str, v: &str| {
@@ -2001,7 +2523,9 @@ impl Action {
                 ClipboardOperation::GetClipboard { var } => non_empty("变量名", var),
                 ClipboardOperation::TempStr { text } => non_empty("文本", text),
             },
-            Action::Transform { input, var, inject, .. } => {
+            Action::Transform {
+                input, var, inject, ..
+            } => {
                 non_empty("输入", input)?;
                 if !*inject && var.trim().is_empty() {
                     return Err("算法动作要填结果变量名，或勾选「直接注入结果」".into());
@@ -2050,7 +2574,9 @@ impl Action {
                 }
                 Ok(())
             }
-            Action::SendTo { target, payload, .. } => {
+            Action::SendTo {
+                target, payload, ..
+            } => {
                 non_empty("目标窗口", target)?;
                 match payload {
                     SendPayload::Keys { keys } => {
@@ -2142,7 +2668,12 @@ impl Action {
             #[cfg(feature = "automation")]
             Action::OpenUrl { url, .. } => non_empty("网址", url),
             #[cfg(feature = "automation")]
-            Action::If { condition, then, otherwise, .. } => {
+            Action::If {
+                condition,
+                then,
+                otherwise,
+                ..
+            } => {
                 condition.validate()?;
                 for a in then.iter().chain(otherwise.iter()) {
                     a.validate()?;
@@ -2186,13 +2717,17 @@ impl Action {
             #[cfg(feature = "automation")]
             Action::Capture { .. } => Ok(()),
             #[cfg(feature = "automation")]
-            Action::Tool { tool, capability, .. } => {
+            Action::Tool {
+                tool, capability, ..
+            } => {
                 non_empty("外部工具", tool)?;
                 non_empty("工具能力", capability)?;
                 Ok(())
             }
             #[cfg(feature = "automation")]
-            Action::Brightness { operation, step, .. } => {
+            Action::Brightness {
+                operation, step, ..
+            } => {
                 if !matches!(operation, BrightnessOperation::Restore) && !(1..=100).contains(step) {
                     return Err("亮度步长要在 1~100 之间".into());
                 }
@@ -2204,7 +2739,12 @@ impl Action {
 
 impl Default for Action {
     fn default() -> Self {
-        Action::Text { text: String::new(), mode: TextMode::Input, masked: false, description: None }
+        Action::Text {
+            text: String::new(),
+            mode: TextMode::Input,
+            masked: false,
+            description: None,
+        }
     }
 }
 
@@ -2382,7 +2922,9 @@ impl Remap {
 
     /// 是否单次键模式。
     pub fn is_oneshot(&self) -> bool {
-        self.oneshot.as_deref().is_some_and(|v| !v.trim().is_empty())
+        self.oneshot
+            .as_deref()
+            .is_some_and(|v| !v.trim().is_empty())
     }
 
     /// 是否粘滞键模式。
@@ -2648,7 +3190,9 @@ impl HintsWindow {
     /// 「显示提示框」——想关掉它有的是正经开关，不该靠非法值达成。
     pub fn normalized(mut self) -> Self {
         self.scale = self.scale.clamp(Self::SCALE_RANGE.0, Self::SCALE_RANGE.1);
-        self.opacity = self.opacity.clamp(Self::OPACITY_RANGE.0, Self::OPACITY_RANGE.1);
+        self.opacity = self
+            .opacity
+            .clamp(Self::OPACITY_RANGE.0, Self::OPACITY_RANGE.1);
         self
     }
 }
@@ -2860,10 +3404,7 @@ impl WheelEdges {
     /// 总开关开着、且至少一条边启用——钩子层据此决定要不要装鼠标钩子 / 判定边缘。
     pub fn any_enabled(&self) -> bool {
         self.enabled
-            && (self.top.enabled
-                || self.bottom.enabled
-                || self.left.enabled
-                || self.right.enabled)
+            && (self.top.enabled || self.bottom.enabled || self.left.enabled || self.right.enabled)
     }
 }
 
@@ -3580,8 +4121,10 @@ fn chord_keys(members: &[Shortcut]) -> BTreeSet<Key> {
 /// （`a.mods ⊆ b.mods`）的成员。覆盖意味着 `b` 凑齐时 `a` 一定也凑齐了——两个完全相同的
 /// 和弦不算（那是重复触发键，另有硬冲突）。
 fn chord_covers(a: &[Shortcut], b: &[Shortcut]) -> bool {
-    a.iter().all(|m| b.iter().any(|n| n.key == m.key && m.mods.is_subset(&n.mods)))
-        && chord_signature(a) != chord_signature(b)
+    a.iter().all(|m| {
+        b.iter()
+            .any(|n| n.key == m.key && m.mods.is_subset(&n.mods))
+    }) && chord_signature(a) != chord_signature(b)
 }
 
 /// 按「同层」分组收集所有启用的和弦触发键：(触发键文本, 成员, 快捷键名)。
@@ -3595,7 +4138,9 @@ fn chord_groups(cfg: &Config) -> Vec<(Option<String>, Vec<ChordEntry>)> {
             continue;
         }
         for t in &s.triggers {
-            let Ok(Trigger::Chord(members)) = Trigger::parse(t) else { continue };
+            let Ok(Trigger::Chord(members)) = Trigger::parse(t) else {
+                continue;
+            };
             let entry = (t.clone(), members, s.name.clone().unwrap_or_default());
             match groups.iter_mut().find(|(layer, _)| layer == &s.layer) {
                 Some((_, items)) => items.push(entry),
@@ -3643,7 +4188,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Error,
                             platform: false,
-                            message: format!("触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"),
+                            message: format!(
+                                "触发键「{t}」与「{first}」重复，多个快捷键共用同一组合"
+                            ),
                             name: s.name.clone().unwrap_or_default(),
                         });
                     } else {
@@ -3651,7 +4198,10 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     }
                 }
                 Ok(Trigger::Sequence(_)) => {
-                    if seen_seq.insert((s.layer.clone(), t.clone(), s.when_key()), ()).is_some() {
+                    if seen_seq
+                        .insert((s.layer.clone(), t.clone(), s.when_key()), ())
+                        .is_some()
+                    {
                         out.push(Conflict {
                             severity: Severity::Error,
                             platform: false,
@@ -3666,7 +4216,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                         out.push(Conflict {
                             severity: Severity::Error,
                             platform: false,
-                            message: format!("和弦「{t}」与「{first}」重复，多个快捷键共用同一和弦"),
+                            message: format!(
+                                "和弦「{t}」与「{first}」重复，多个快捷键共用同一和弦"
+                            ),
                             name: s.name.clone().unwrap_or_default(),
                         });
                     } else {
@@ -3689,7 +4241,10 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         for t in &s.triggers {
             match Trigger::parse(t) {
                 Ok(Trigger::Combo(sc)) => {
-                    combos_by_layer.entry(s.layer.clone()).or_default().push((t.clone(), sc));
+                    combos_by_layer
+                        .entry(s.layer.clone())
+                        .or_default()
+                        .push((t.clone(), sc));
                 }
                 Ok(Trigger::Sequence(steps)) => {
                     if let Some(leader) = steps.first() {
@@ -3710,7 +4265,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         }
         for t in &s.triggers {
             if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
-                let Some(leader) = steps.first() else { continue };
+                let Some(leader) = steps.first() else {
+                    continue;
+                };
                 if let Some(combos) = combos_by_layer.get(&s.layer) {
                     for (ct, csc) in combos {
                         if csc == leader {
@@ -3837,7 +4394,9 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         if !r.enabled {
             continue;
         }
-        let Ok(from) = r.from.parse::<Key>() else { continue };
+        let Ok(from) = r.from.parse::<Key>() else {
+            continue;
+        };
         let desc = r.describe();
         for s in &cfg.shortcuts {
             if !s.enabled {
@@ -3909,7 +4468,10 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             .shortcuts
             .iter()
             .any(|s| s.enabled && s.layer.as_deref() == Some(l.id.as_str()))
-            || cfg.remaps.iter().any(|r| r.enabled && r.layer.as_deref() == Some(l.id.as_str()));
+            || cfg
+                .remaps
+                .iter()
+                .any(|r| r.enabled && r.layer.as_deref() == Some(l.id.as_str()));
         if !has_entries {
             continue;
         }
@@ -4034,7 +4596,10 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     }
     let name_of = |s: &ShortcutItem| s.name.clone().unwrap_or_default();
     let key_list = |keys: &BTreeSet<Key>| {
-        keys.iter().map(|k| key_name(*k)).collect::<Vec<_>>().join("、")
+        keys.iter()
+            .map(|k| key_name(*k))
+            .collect::<Vec<_>>()
+            .join("、")
     };
 
     for s in &cfg.shortcuts {
@@ -4146,7 +4711,8 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             out.push(Conflict {
                 severity: Severity::Warn,
                 platform: true,
-                message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
+                message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败"
+                    .into(),
                 name: name_of(s),
             });
         }
@@ -4172,7 +4738,9 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             out.push(Conflict {
                 severity: Severity::Warn,
                 platform: true,
-                message: "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败".into(),
+                message:
+                    "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败"
+                        .into(),
                 name: name_of(s),
             });
         }
@@ -4212,7 +4780,8 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
-                    message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败".into(),
+                    message: "鼠标绝对移动在当前平台用不了（Linux 暂不支持），执行到这一步会失败"
+                        .into(),
                     name: label,
                 });
             }
@@ -4250,7 +4819,9 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
-                    message: "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败".into(),
+                    message:
+                        "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败"
+                            .into(),
                     name: label,
                 });
             }
@@ -4301,10 +4872,7 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
-                    message: format!(
-                        "改键来源「{}」当前平台监听不到，这条改键不会生效",
-                        r.from
-                    ),
+                    message: format!("改键来源「{}」当前平台监听不到，这条改键不会生效", r.from),
                     name: String::new(),
                 });
             }
@@ -4360,7 +4928,10 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 out.push(Conflict {
                     severity: Severity::Warn,
                     platform: true,
-                    message: format!("改键「{}」的触发门控用了「设备是」条件，当前平台取不到设备，恒不成立", r.from),
+                    message: format!(
+                        "改键「{}」的触发门控用了「设备是」条件，当前平台取不到设备，恒不成立",
+                        r.from
+                    ),
                     name: String::new(),
                 });
             }
@@ -4477,11 +5048,7 @@ pub fn config_uses_mouse(cfg: &Config) -> bool {
     uses_key_as_trigger(cfg, |k| {
         matches!(
             k,
-            Key::MouseMiddle
-                | Key::MouseBack
-                | Key::MouseForward
-                | Key::WheelUp
-                | Key::WheelDown
+            Key::MouseMiddle | Key::MouseBack | Key::MouseForward | Key::WheelUp | Key::WheelDown
         )
     })
 }
@@ -4589,7 +5156,12 @@ fn scan_actions_platform(
                 }
             }
             #[cfg(feature = "automation")]
-            Action::If { condition, then, otherwise, .. } => {
+            Action::If {
+                condition,
+                then,
+                otherwise,
+                ..
+            } => {
                 if matches!(
                     condition,
                     Condition::FrontmostApp { .. }
@@ -4727,7 +5299,9 @@ fn uses_brightness(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_brightness(actions),
-        Action::If { then, otherwise, .. } => uses_brightness(then) || uses_brightness(otherwise),
+        Action::If {
+            then, otherwise, ..
+        } => uses_brightness(then) || uses_brightness(otherwise),
         Action::Parallel { actions, .. } => uses_brightness(actions),
         _ => false,
     })
@@ -4806,13 +5380,19 @@ pub struct TextValue {
 
 impl From<&str> for TextValue {
     fn from(s: &str) -> Self {
-        TextValue { text: s.to_string(), exit_code: None }
+        TextValue {
+            text: s.to_string(),
+            exit_code: None,
+        }
     }
 }
 
 impl From<String> for TextValue {
     fn from(text: String) -> Self {
-        TextValue { text, exit_code: None }
+        TextValue {
+            text,
+            exit_code: None,
+        }
     }
 }
 
@@ -4896,15 +5476,29 @@ fn file_field(obj: &FileObject, field: &str) -> Option<String> {
 pub fn migrate_action(a: Action) -> Action {
     match a {
         #[cfg(feature = "automation")]
-        Action::Launch { program, args, description } => {
-            Action::App { operation: AppOperation::Launch { program, args }, description }
-        }
+        Action::Launch {
+            program,
+            args,
+            description,
+        } => Action::App {
+            operation: AppOperation::Launch { program, args },
+            description,
+        },
         #[cfg(feature = "automation")]
-        Action::CloseProgram { program, description } => {
-            Action::App { operation: AppOperation::Close { program }, description }
-        }
+        Action::CloseProgram {
+            program,
+            description,
+        } => Action::App {
+            operation: AppOperation::Close { program },
+            description,
+        },
         #[cfg(feature = "automation")]
-        Action::Cmd { command, show_output, var, description } => Action::Command {
+        Action::Cmd {
+            command,
+            show_output,
+            var,
+            description,
+        } => Action::Command {
             shell: Shell::Cmd,
             command,
             working_dir: String::new(),
@@ -4919,7 +5513,12 @@ pub fn migrate_action(a: Action) -> Action {
             description,
         },
         #[cfg(feature = "automation")]
-        Action::Powershell { command, show_output, var, description } => Action::Command {
+        Action::Powershell {
+            command,
+            show_output,
+            var,
+            description,
+        } => Action::Command {
             shell: Shell::Powershell,
             command,
             working_dir: String::new(),
@@ -4934,34 +5533,54 @@ pub fn migrate_action(a: Action) -> Action {
             description,
         },
         #[cfg(feature = "automation")]
-        Action::OpenFolder { path, description } => {
-            Action::Os { operation: OsOperation::OpenFolder { path }, description }
-        }
+        Action::OpenFolder { path, description } => Action::Os {
+            operation: OsOperation::OpenFolder { path },
+            description,
+        },
         // 入口收口：动作类型下拉里不再单列这三类，旧配置加载时并进所属分类。
         #[cfg(feature = "automation")]
-        Action::SendTo { target, payload, description } => Action::System {
+        Action::SendTo {
+            target,
+            payload,
+            description,
+        } => Action::System {
             operation: SystemOperation::SendTo { target, payload },
             description,
         },
         #[cfg(feature = "automation")]
-        Action::Window { operation, description } => Action::App {
+        Action::Window {
+            operation,
+            description,
+        } => Action::App {
             operation: AppOperation::CurrentWindow { action: operation },
             description,
         },
         #[cfg(feature = "automation")]
-        Action::Brightness { operation, step, description } => Action::System {
+        Action::Brightness {
+            operation,
+            step,
+            description,
+        } => Action::System {
             operation: SystemOperation::Brightness { operation, step },
             description,
         },
         #[cfg(feature = "automation")]
-        Action::If { condition, then, otherwise, description } => Action::If {
+        Action::If {
+            condition,
+            then,
+            otherwise,
+            description,
+        } => Action::If {
             condition,
             then: then.into_iter().map(migrate_action).collect(),
             otherwise: otherwise.into_iter().map(migrate_action).collect(),
             description,
         },
         #[cfg(feature = "automation")]
-        Action::Parallel { actions, description } => Action::Parallel {
+        Action::Parallel {
+            actions,
+            description,
+        } => Action::Parallel {
             actions: actions.into_iter().map(migrate_action).collect(),
             description,
         },
@@ -5107,7 +5726,11 @@ fn clean_folders(folders: &[Folder]) -> (Vec<Folder>, Vec<String>) {
             ignored.push(format!("文件夹「{name}」已忽略：id 重复"));
             continue;
         }
-        out.push(Folder { id, name, parent: f.parent.clone() });
+        out.push(Folder {
+            id,
+            name,
+            parent: f.parent.clone(),
+        });
     }
 
     let ids: BTreeSet<String> = out.iter().map(|f| f.id.clone()).collect();
@@ -5129,7 +5752,10 @@ fn clean_folders(folders: &[Folder]) -> (Vec<Folder>, Vec<String>) {
         }
         if broken {
             f.parent = None;
-            ignored.push(format!("文件夹「{}」的父文件夹链无效（成环或不存在），已置为根级", f.name));
+            ignored.push(format!(
+                "文件夹「{}」的父文件夹链无效（成环或不存在），已置为根级",
+                f.name
+            ));
         }
     }
 
@@ -5152,7 +5778,12 @@ fn clean_layers(layers: &[Layer]) -> (Vec<Layer>, Vec<String>) {
             ignored.push(format!("层「{name}」已忽略：id 重复"));
             continue;
         }
-        let mark = l.mark.as_deref().map(str::trim).filter(|m| !m.is_empty()).map(|m| m.to_lowercase());
+        let mark = l
+            .mark
+            .as_deref()
+            .map(str::trim)
+            .filter(|m| !m.is_empty())
+            .map(|m| m.to_lowercase());
         out.push(Layer { id, name, mark });
     }
 
@@ -5170,7 +5801,11 @@ fn clean_menu_items(
     for item in items {
         match item {
             MenuEntry::Separator => out.push(MenuEntry::Separator),
-            MenuEntry::Action { label, enabled, action } => {
+            MenuEntry::Action {
+                label,
+                enabled,
+                action,
+            } => {
                 let label = label.trim();
                 if label.is_empty() {
                     ignored.push("快捷菜单条目已忽略：标签为空".into());
@@ -5186,7 +5821,11 @@ fn clean_menu_items(
                     action: action.clone(),
                 });
             }
-            MenuEntry::Submenu { label, enabled, items } => {
+            MenuEntry::Submenu {
+                label,
+                enabled,
+                items,
+            } => {
                 let label = label.trim();
                 if label.is_empty() {
                     ignored.push("快捷菜单子菜单已忽略：标签为空".into());
@@ -5232,7 +5871,12 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     ignored.extend(layer_ignored);
     let valid_layer_ids: BTreeSet<String> = layers.iter().map(|l| l.id.clone()).collect();
 
-    let mut out = Config { settings: cfg.settings.clone(), folders, layers, ..Default::default() };
+    let mut out = Config {
+        settings: cfg.settings.clone(),
+        folders,
+        layers,
+        ..Default::default()
+    };
     out.settings.clipboard_menu.items =
         clean_menu_items(&cfg.settings.clipboard_menu.items, 1, &mut ignored);
 
@@ -5341,7 +5985,10 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         let mut clear_key = |field: &mut Option<String>, label: &str| {
             if let Some(v) = field {
                 if v.parse::<Key>().is_err() {
-                    ignored.push(format!("改键「{}」的{label}「{v}」已忽略：键名无法解析", r.from));
+                    ignored.push(format!(
+                        "改键「{}」的{label}「{v}」已忽略：键名无法解析",
+                        r.from
+                    ));
                     *field = None;
                 }
             }
@@ -5363,12 +6010,18 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         // 归一化（优先级 sticky > oneshot > tap-hold > 普通 to）：修饰模式清掉其它形态字段。
         if item.is_sticky() || item.is_oneshot() {
             if item.is_sticky() && item.is_oneshot() {
-                ignored.push(format!("改键「{}」同时设了粘滞与单次修饰，保留粘滞", r.from));
+                ignored.push(format!(
+                    "改键「{}」同时设了粘滞与单次修饰，保留粘滞",
+                    r.from
+                ));
                 item.oneshot = None;
             }
             let mode = if item.is_sticky() { "粘滞" } else { "单次" };
             if item.is_tap_hold() || !item.to.trim().is_empty() {
-                ignored.push(format!("改键「{}」已归一化为{mode}修饰（忽略短按/长按/双击/三击/切层/普通改键）", r.from));
+                ignored.push(format!(
+                    "改键「{}」已归一化为{mode}修饰（忽略短按/长按/双击/三击/切层/普通改键）",
+                    r.from
+                ));
             }
             item.tap = None;
             item.hold = None;
@@ -5382,13 +6035,19 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             // tap-hold / 切层：短按/长按键名逐项校验，坏的单独清空并提示。
             if let Some(t) = &item.tap {
                 if t.parse::<Key>().is_err() {
-                    ignored.push(format!("改键「{}」的短按键「{t}」已忽略：键名无法解析", r.from));
+                    ignored.push(format!(
+                        "改键「{}」的短按键「{t}」已忽略：键名无法解析",
+                        r.from
+                    ));
                     item.tap = None;
                 }
             }
             if let Some(h) = &item.hold {
                 if h.parse::<Key>().is_err() {
-                    ignored.push(format!("改键「{}」的长按键「{h}」已忽略：键名无法解析", r.from));
+                    ignored.push(format!(
+                        "改键「{}」的长按键「{h}」已忽略：键名无法解析",
+                        r.from
+                    ));
                     item.hold = None;
                 }
             }
@@ -5407,7 +6066,10 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 item.from
             ));
         } else {
-            ignored.push(format!("改键「{} → {}」已忽略：键名无法解析", item.from, item.to));
+            ignored.push(format!(
+                "改键「{} → {}」已忽略：键名无法解析",
+                item.from, item.to
+            ));
         }
     }
 
@@ -5417,7 +6079,10 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 let mut item = e.clone();
                 if let Some(fid) = &item.folder {
                     if !valid_folder_ids.contains(fid) {
-                        ignored.push(format!("文本扩展「{}」所属文件夹已忽略：文件夹不存在", e.trigger));
+                        ignored.push(format!(
+                            "文本扩展「{}」所属文件夹已忽略：文件夹不存在",
+                            e.trigger
+                        ));
                         item.folder = None;
                     }
                 }
@@ -5499,16 +6164,21 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         if let Some(fid) = &item.folder {
             if !valid_folder_ids.contains(fid) {
-                ignored.push(format!("触摸板手势「{label}」所属文件夹已忽略：文件夹不存在"));
+                ignored.push(format!(
+                    "触摸板手势「{label}」所属文件夹已忽略：文件夹不存在"
+                ));
                 item.folder = None;
             }
         }
         // 模板先校验（它是纯形状条目的唯一判据）：坏了就丢掉，不值得把整条手势也废掉。
         if let Some(t) = &item.template {
             let ok = t.len() == crate::gesture::TEMPLATE_POINTS
-                && t.iter().all(|p| p[0] >= 0 && p[0] <= 1000 && p[1] >= 0 && p[1] <= 1000);
+                && t.iter()
+                    .all(|p| p[0] >= 0 && p[0] <= 1000 && p[1] >= 0 && p[1] <= 1000);
             if !ok {
-                ignored.push(format!("触摸板手势「{label}」的形状模板已忽略：点数或坐标不合法"));
+                ignored.push(format!(
+                    "触摸板手势「{label}」的形状模板已忽略：点数或坐标不合法"
+                ));
                 item.template = None;
             }
         }
@@ -5572,7 +6242,11 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         if let Some(name) = &item.name {
             let trimmed = name.trim().to_string();
-            item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
+            item.name = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
         }
         if let Some(lid) = &item.layer {
             if !valid_layer_ids.contains(lid) {
@@ -5612,7 +6286,11 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         if let Some(name) = &item.name {
             let trimmed = name.trim().to_string();
-            item.name = if trimmed.is_empty() { None } else { Some(trimmed) };
+            item.name = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
         }
         if let Some(lid) = &item.layer {
             if !valid_layer_ids.contains(lid) {
@@ -5749,11 +6427,28 @@ mod tests {
     fn new_keys_roundtrip_and_aliases() {
         // 新增键：解析 → 渲染回环必须一致。
         let cases = [
-            "F13", "F24", "MediaPlayPause", "MediaPrev", "MediaNext",
-            "VolumeMute", "VolumeDown", "VolumeUp", "NumLock",
-            "Numpad0", "Numpad9", "NumpadAdd", "NumpadSubtract",
-            "NumpadMultiply", "NumpadDivide", "NumpadDecimal", "NumpadEnter",
-            "MouseMiddle", "MouseBack", "MouseForward", "WheelUp", "WheelDown",
+            "F13",
+            "F24",
+            "MediaPlayPause",
+            "MediaPrev",
+            "MediaNext",
+            "VolumeMute",
+            "VolumeDown",
+            "VolumeUp",
+            "NumLock",
+            "Numpad0",
+            "Numpad9",
+            "NumpadAdd",
+            "NumpadSubtract",
+            "NumpadMultiply",
+            "NumpadDivide",
+            "NumpadDecimal",
+            "NumpadEnter",
+            "MouseMiddle",
+            "MouseBack",
+            "MouseForward",
+            "WheelUp",
+            "WheelDown",
         ];
         for s in cases {
             let k: Key = s.parse().unwrap();
@@ -5808,13 +6503,23 @@ mod config_tests {
                 name: Some("地址".into()),
                 description: Some("常用收货地址".into()),
                 triggers: vec!["Ctrl+Alt+K".into(), "Alt+K".into()],
-                actions: vec![Action::Text { text: "上海市徐汇区……".into(), mode: TextMode::Input, masked: false, description: None }],
+                actions: vec![Action::Text {
+                    text: "上海市徐汇区……".into(),
+                    mode: TextMode::Input,
+                    masked: false,
+                    description: None,
+                }],
                 folder: None,
                 layer: None,
                 enabled: true,
                 ..Default::default()
             }],
-            remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() }],
+            remaps: vec![Remap {
+                from: "CapsLock".into(),
+                to: "Ctrl".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             expansions: vec![],
             gestures: vec![],
             touchpad_gestures: vec![],
@@ -5838,7 +6543,12 @@ mod config_tests {
         assert_eq!(cfg.shortcuts[0].enabled, false);
         assert_eq!(
             cfg.shortcuts[0].actions,
-            vec![Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None }]
+            vec![Action::Text {
+                text: "hi".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None
+            }]
         );
     }
 
@@ -5867,14 +6577,18 @@ mod config_tests {
         .is_err());
         assert!(Action::SendTo {
             target: "chrome.exe".into(),
-            payload: SendPayload::Keys { keys: vec!["NotAKey".into()] },
+            payload: SendPayload::Keys {
+                keys: vec!["NotAKey".into()]
+            },
             description: None,
         }
         .validate()
         .is_err());
         assert!(Action::SendTo {
             target: "chrome.exe".into(),
-            payload: SendPayload::Text { text: String::new() },
+            payload: SendPayload::Text {
+                text: String::new()
+            },
             description: None,
         }
         .validate()
@@ -5885,23 +6599,56 @@ mod config_tests {
     #[test]
     fn actions_json_roundtrip_and_validate() {
         let actions = vec![
-            Action::Text { text: "你好".into(), mode: TextMode::Input, masked: false, description: None },
-            Action::Cmd { command: "echo hi".into(), show_output: false, var: "".into(), description: None },
-            Action::Powershell { command: "Get-Date".into(), show_output: true, var: "".into(), description: None },
-            Action::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()], description: None },
-            Action::OpenFolder { path: "C:\\Users".into(), description: None },
-            Action::Keys { keys: vec!["Ctrl".into(), "C".into()], mode: KeysMode::Tap, description: None },
+            Action::Text {
+                text: "你好".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None,
+            },
+            Action::Cmd {
+                command: "echo hi".into(),
+                show_output: false,
+                var: "".into(),
+                description: None,
+            },
+            Action::Powershell {
+                command: "Get-Date".into(),
+                show_output: true,
+                var: "".into(),
+                description: None,
+            },
+            Action::Launch {
+                program: "notepad.exe".into(),
+                args: vec!["a.txt".into()],
+                description: None,
+            },
+            Action::OpenFolder {
+                path: "C:\\Users".into(),
+                description: None,
+            },
+            Action::Keys {
+                keys: vec!["Ctrl".into(), "C".into()],
+                mode: KeysMode::Tap,
+                description: None,
+            },
             Action::SendTo {
                 target: "notepad.exe".into(),
-                payload: SendPayload::Keys { keys: vec!["Ctrl".into(), "S".into()] },
+                payload: SendPayload::Keys {
+                    keys: vec!["Ctrl".into(), "S".into()],
+                },
                 description: None,
             },
             Action::SendTo {
                 target: "记事本".into(),
-                payload: SendPayload::Text { text: "hi {name}".into() },
+                payload: SendPayload::Text {
+                    text: "hi {name}".into(),
+                },
                 description: None,
             },
-            Action::PauseMs { ms: 100, description: None },
+            Action::PauseMs {
+                ms: 100,
+                description: None,
+            },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "动作应通过校验: {a:?}");
@@ -5911,19 +6658,52 @@ mod config_tests {
         assert_eq!(back, actions);
 
         // 坏键名 / 空组合 / 空命令必被拒绝
-        assert!(Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }.validate().is_err());
-        assert!(Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None }.validate().is_err());
-        assert!(Action::Cmd { command: "  ".into(), show_output: false, var: "".into(), description: None }.validate().is_err());
-        assert!(Action::Launch { program: "".into(), args: vec![], description: None }.validate().is_err());
+        assert!(Action::Keys {
+            keys: vec!["NotAKey".into()],
+            mode: KeysMode::Tap,
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Keys {
+            keys: vec![],
+            mode: KeysMode::Tap,
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Cmd {
+            command: "  ".into(),
+            show_output: false,
+            var: "".into(),
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Launch {
+            program: "".into(),
+            args: vec![],
+            description: None
+        }
+        .validate()
+        .is_err());
 
         // EXT-16：默认 tap 不落盘（旧配置形状不变），press / release 正常往返。
-        let tap = Action::Keys { keys: vec!["Ctrl".into()], mode: KeysMode::Tap, description: None };
+        let tap = Action::Keys {
+            keys: vec!["Ctrl".into()],
+            mode: KeysMode::Tap,
+            description: None,
+        };
         let json = serde_json::to_string(&tap).unwrap();
         assert!(!json.contains("mode"), "默认 tap 不该写进 JSON：{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), tap);
 
         for mode in [KeysMode::Press, KeysMode::Release] {
-            let a = Action::Keys { keys: vec!["Ctrl".into()], mode, description: None };
+            let a = Action::Keys {
+                keys: vec!["Ctrl".into()],
+                mode,
+                description: None,
+            };
             let json = serde_json::to_string(&a).unwrap();
             assert!(json.contains("\"mode\":\"press\"") || json.contains("\"mode\":\"release\""));
             assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
@@ -5934,10 +6714,24 @@ mod config_tests {
     #[test]
     fn mouse_action_roundtrip_and_validate() {
         let actions = vec![
-            Action::Mouse { op: MouseOp::Move { dx: 10, dy: -5 }, description: None },
-            Action::Mouse { op: MouseOp::MoveTo { x: -1920, y: 1080 }, description: None },
-            Action::Mouse { op: MouseOp::MoveToOrigin, description: None },
-            Action::Mouse { op: MouseOp::Click { button: MouseButton::Middle }, description: None },
+            Action::Mouse {
+                op: MouseOp::Move { dx: 10, dy: -5 },
+                description: None,
+            },
+            Action::Mouse {
+                op: MouseOp::MoveTo { x: -1920, y: 1080 },
+                description: None,
+            },
+            Action::Mouse {
+                op: MouseOp::MoveToOrigin,
+                description: None,
+            },
+            Action::Mouse {
+                op: MouseOp::Click {
+                    button: MouseButton::Middle,
+                },
+                description: None,
+            },
             Action::Mouse {
                 op: MouseOp::Scroll { dx: 0, dy: 3 },
                 description: Some("向上滚".into()),
@@ -5947,35 +6741,64 @@ mod config_tests {
             assert!(a.validate().is_ok(), "动作应通过校验: {a:?}");
         }
         let json = serde_json::to_string(&actions).unwrap();
-        assert!(json.contains("\"type\":\"mouse\""), "序列化带 type=mouse：{json}");
+        assert!(
+            json.contains("\"type\":\"mouse\""),
+            "序列化带 type=mouse：{json}"
+        );
         assert!(json.contains("\"op\":\"move\""), "序列化带 op=move：{json}");
         let back: Vec<Action> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, actions);
 
         // 点击缺省左键；移动 / 滚轮偏移全 0 被拒。
-        let click: Action = serde_json::from_str(r#"{"type":"mouse","op":{"op":"click"}}"#).unwrap();
+        let click: Action =
+            serde_json::from_str(r#"{"type":"mouse","op":{"op":"click"}}"#).unwrap();
         assert_eq!(
             click,
-            Action::Mouse { op: MouseOp::Click { button: MouseButton::Left }, description: None }
+            Action::Mouse {
+                op: MouseOp::Click {
+                    button: MouseButton::Left
+                },
+                description: None
+            }
         );
-        assert!(Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None }.validate().is_err());
-        assert!(Action::Mouse { op: MouseOp::Scroll { dx: 0, dy: 0 }, description: None }.validate().is_err());
+        assert!(Action::Mouse {
+            op: MouseOp::Move { dx: 0, dy: 0 },
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Mouse {
+            op: MouseOp::Scroll { dx: 0, dy: 0 },
+            description: None
+        }
+        .validate()
+        .is_err());
     }
 
     /// 禁用标记（编辑页的「禁用」开关）：外面套一层 `disabled`，内容原样往返，校验照旧落到里面那条。
     #[test]
     fn disabled_action_roundtrip_and_validate() {
         let disabled = Action::Disabled {
-            action: Box::new(Action::PauseMs { ms: 500, description: None }),
+            action: Box::new(Action::PauseMs {
+                ms: 500,
+                description: None,
+            }),
         };
         assert!(disabled.validate().is_ok());
         let json = serde_json::to_string(&disabled).unwrap();
-        assert!(json.contains("\"type\":\"disabled\""), "序列化带 type=disabled：{json}");
+        assert!(
+            json.contains("\"type\":\"disabled\""),
+            "序列化带 type=disabled：{json}"
+        );
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), disabled);
 
         // 打开开关后要能原样跑：里面的非法配置不能藏在禁用壳后面混过去。
         let bad = Action::Disabled {
-            action: Box::new(Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None }),
+            action: Box::new(Action::Keys {
+                keys: vec![],
+                mode: KeysMode::Tap,
+                description: None,
+            }),
         };
         assert!(bad.validate().is_err());
     }
@@ -5988,14 +6811,24 @@ mod conflict_tests {
     fn item(trigger: &str) -> ShortcutItem {
         ShortcutItem {
             triggers: vec![trigger.into()],
-            actions: vec![Action::Text { text: String::new(), mode: TextMode::Input, masked: false, description: None }],
+            actions: vec![Action::Text {
+                text: String::new(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None,
+            }],
             enabled: true,
             ..Default::default()
         }
     }
 
     fn remap(from: &str, to: &str) -> Remap {
-        Remap { from: from.into(), to: to.into(), enabled: true, ..Default::default() }
+        Remap {
+            from: from.into(),
+            to: to.into(),
+            enabled: true,
+            ..Default::default()
+        }
     }
 
     fn errors(cfg: &Config) -> Vec<Conflict> {
@@ -6206,7 +7039,10 @@ mod conflict_tests {
         hi.layer = Some("L1".into());
         let mut lo = item("F&J&K");
         lo.layer = Some("L2".into());
-        let cfg = Config { shortcuts: vec![hi, lo], ..Default::default() };
+        let cfg = Config {
+            shortcuts: vec![hi, lo],
+            ..Default::default()
+        };
         assert!(warns(&cfg).is_empty(), "warns: {:?}", warns(&cfg));
     }
 
@@ -6260,16 +7096,35 @@ mod settings_text_mode_tests {
 
     #[test]
     fn text_inject_mode_parses_tolerantly() {
-        let parse = |s: &str| serde_json::from_str::<Settings>(s).unwrap().text_inject_mode;
-        assert_eq!(parse(r#"{"text_inject_mode":"unicode"}"#), TextInjectMode::Unicode);
-        assert_eq!(parse(r#"{"text_inject_mode":"clipboard"}"#), TextInjectMode::Clipboard);
+        let parse = |s: &str| {
+            serde_json::from_str::<Settings>(s)
+                .unwrap()
+                .text_inject_mode
+        };
+        assert_eq!(
+            parse(r#"{"text_inject_mode":"unicode"}"#),
+            TextInjectMode::Unicode
+        );
+        assert_eq!(
+            parse(r#"{"text_inject_mode":"clipboard"}"#),
+            TextInjectMode::Clipboard
+        );
         // 老配置缺字段 = 默认剪贴板（7.3-㉒ 之前一直只有这一种方式）。
         assert_eq!(parse("{}"), TextInjectMode::Clipboard);
         // 手改写错值回落默认，不让整份配置解析失败（加载路径对解析失败是硬处理）。
-        assert_eq!(parse(r#"{"text_inject_mode":"unicod"}"#), TextInjectMode::Clipboard);
+        assert_eq!(
+            parse(r#"{"text_inject_mode":"unicod"}"#),
+            TextInjectMode::Clipboard
+        );
         // 序列化用小写值，与解析约定一致。
-        assert_eq!(serde_json::to_string(&TextInjectMode::Unicode).unwrap(), r#""unicode""#);
-        assert_eq!(serde_json::to_string(&TextInjectMode::Clipboard).unwrap(), r#""clipboard""#);
+        assert_eq!(
+            serde_json::to_string(&TextInjectMode::Unicode).unwrap(),
+            r#""unicode""#
+        );
+        assert_eq!(
+            serde_json::to_string(&TextInjectMode::Clipboard).unwrap(),
+            r#""clipboard""#
+        );
     }
 }
 
@@ -6282,11 +7137,17 @@ mod os_and_sanitize_tests {
     fn os_action_json_roundtrip_and_validate() {
         let actions = vec![
             Action::Os {
-                operation: OsOperation::Copy { source: "C:\\a".into(), dest: "D:\\b".into() },
+                operation: OsOperation::Copy {
+                    source: "C:\\a".into(),
+                    dest: "D:\\b".into(),
+                },
                 description: None,
             },
             Action::Os {
-                operation: OsOperation::GetFileProps { path: "C:\\f.txt".into(), var: "f".into() },
+                operation: OsOperation::GetFileProps {
+                    path: "C:\\f.txt".into(),
+                    var: "f".into(),
+                },
                 description: None,
             },
         ];
@@ -6299,16 +7160,25 @@ mod os_and_sanitize_tests {
 
         // 空路径必被拒绝；变量名允许为空（回退默认）。
         assert!(Action::Os {
-            operation: OsOperation::Copy { source: "".into(), dest: "".into() },
+            operation: OsOperation::Copy {
+                source: "".into(),
+                dest: "".into()
+            },
             description: None,
         }
         .validate()
         .is_err());
-        assert!(Action::Os { operation: OsOperation::Delete { path: "  ".into() }, description: None }
-            .validate()
-            .is_err());
         assert!(Action::Os {
-            operation: OsOperation::GetFileProps { path: "x".into(), var: "".into() },
+            operation: OsOperation::Delete { path: "  ".into() },
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Os {
+            operation: OsOperation::GetFileProps {
+                path: "x".into(),
+                var: "".into()
+            },
             description: None,
         }
         .validate()
@@ -6353,26 +7223,51 @@ mod os_and_sanitize_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+K".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "ok".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["Bad+Key".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "bad".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["Ctrl+J".into()],
-                    actions: vec![Action::Cmd { command: "  ".into(), show_output: false, var: "".into(), description: None }],
+                    actions: vec![Action::Cmd {
+                        command: "  ".into(),
+                        show_output: false,
+                        var: "".into(),
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
             ],
             remaps: vec![
-                Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() },
-                Remap { from: "NotAKey".into(), to: "Ctrl".into(), enabled: true, ..Default::default() },
+                Remap {
+                    from: "CapsLock".into(),
+                    to: "Ctrl".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+                Remap {
+                    from: "NotAKey".into(),
+                    to: "Ctrl".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
             ],
             expansions: vec![],
             gestures: vec![],
@@ -6402,7 +7297,10 @@ mod os_and_sanitize_tests {
     fn sanitize_wake_key_validates_and_clears_invalid() {
         // 合法唤醒键保留；非法（非单键）清空并提示。
         let ok = Config {
-            settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
+            settings: Settings {
+                wake_key: Some("Alt".into()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (clean, ignored) = sanitize_config(&ok);
@@ -6410,7 +7308,10 @@ mod os_and_sanitize_tests {
         assert!(ignored.is_empty());
 
         let bad = Config {
-            settings: Settings { wake_key: Some("Ctrl+Alt".into()), ..Default::default() },
+            settings: Settings {
+                wake_key: Some("Ctrl+Alt".into()),
+                ..Default::default()
+            },
             ..Default::default()
         };
         let (clean, ignored) = sanitize_config(&bad);
@@ -6433,7 +7334,10 @@ mod os_and_sanitize_tests {
         };
         let (clean, _) = sanitize_config(&cfg);
         assert_eq!(clean.settings.gesture_trail_color, "#aabbcc");
-        assert_eq!(clean.settings.gesture_fail_color, default_gesture_fail_color());
+        assert_eq!(
+            clean.settings.gesture_fail_color,
+            default_gesture_fail_color()
+        );
         assert_eq!(clean.settings.gesture_trail_width, 1);
         assert_eq!(clean.settings.gesture_label_font_size, 48);
         assert_eq!(clean.settings.gesture_label_offset, 0);
@@ -6475,18 +7379,38 @@ mod os_and_sanitize_tests {
     #[test]
     fn condition_equals_and_field_resolution() {
         let vars = sample_vars();
-        assert!(Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() }
-            .matches(&vars, None, None));
-        assert!(Condition::NotEquals { var: "f".into(), field: "ext".into(), value: ".zip".into() }
-            .matches(&vars, None, None));
+        assert!(Condition::Equals {
+            var: "f".into(),
+            field: "ext".into(),
+            value: ".txt".into()
+        }
+        .matches(&vars, None, None));
+        assert!(Condition::NotEquals {
+            var: "f".into(),
+            field: "ext".into(),
+            value: ".zip".into()
+        }
+        .matches(&vars, None, None));
         // field 为空 → 比较完整路径
-        assert!(Condition::Equals { var: "f".into(), field: String::new(), value: "C:\\d\\a.txt".into() }
-            .matches(&vars, None, None));
+        assert!(Condition::Equals {
+            var: "f".into(),
+            field: String::new(),
+            value: "C:\\d\\a.txt".into()
+        }
+        .matches(&vars, None, None));
         // 变量或字段不存在 → 条件不成立
-        assert!(!Condition::Equals { var: "f".into(), field: "nope".into(), value: "x".into() }
-            .matches(&vars, None, None));
-        assert!(!Condition::Equals { var: "missing".into(), field: String::new(), value: "x".into() }
-            .matches(&vars, None, None));
+        assert!(!Condition::Equals {
+            var: "f".into(),
+            field: "nope".into(),
+            value: "x".into()
+        }
+        .matches(&vars, None, None));
+        assert!(!Condition::Equals {
+            var: "missing".into(),
+            field: String::new(),
+            value: "x".into()
+        }
+        .matches(&vars, None, None));
     }
 
     #[cfg(feature = "automation")]
@@ -6497,7 +7421,10 @@ mod os_and_sanitize_tests {
         assert!(Condition::Exists { path: ".".into() }.matches(&vars, None, None));
         assert!(Condition::IsDir { path: ".".into() }.matches(&vars, None, None));
         assert!(!Condition::IsFile { path: ".".into() }.matches(&vars, None, None));
-        assert!(Condition::NotExists { path: "___kada_no_such_path___".into() }.matches(&vars, None, None));
+        assert!(Condition::NotExists {
+            path: "___kada_no_such_path___".into()
+        }
+        .matches(&vars, None, None));
         // 路径支持变量占位符：用指向真实存在的当前目录的变量验证替换。
         vars.insert(
             "cur".into(),
@@ -6512,8 +7439,14 @@ mod os_and_sanitize_tests {
                 is_dir: true,
             }),
         );
-        assert!(Condition::Exists { path: "{cur}".into() }.matches(&vars, None, None));
-        assert!(Condition::IsDir { path: "{cur}".into() }.matches(&vars, None, None));
+        assert!(Condition::Exists {
+            path: "{cur}".into()
+        }
+        .matches(&vars, None, None));
+        assert!(Condition::IsDir {
+            path: "{cur}".into()
+        }
+        .matches(&vars, None, None));
     }
 
     #[cfg(feature = "automation")]
@@ -6525,18 +7458,36 @@ mod os_and_sanitize_tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let tmp = std::env::temp_dir().join(format!("kada_mtime_{}_{}.txt", std::process::id(), nanos));
+        let tmp =
+            std::env::temp_dir().join(format!("kada_mtime_{}_{}.txt", std::process::id(), nanos));
         std::fs::write(&tmp, b"x").unwrap();
         let tmp_path = tmp.to_string_lossy().into_owned();
-        assert!(Condition::ModifiedWithin { path: tmp_path.clone(), minutes: 10 }.matches(&vars, None, None));
+        assert!(Condition::ModifiedWithin {
+            path: tmp_path.clone(),
+            minutes: 10
+        }
+        .matches(&vars, None, None));
         let _ = std::fs::remove_file(&tmp);
 
         // 不存在的路径 → 条件不成立
-        assert!(!Condition::ModifiedWithin { path: "___kada_no_such_path___".into(), minutes: 10 }
-            .matches(&vars, None, None));
+        assert!(!Condition::ModifiedWithin {
+            path: "___kada_no_such_path___".into(),
+            minutes: 10
+        }
+        .matches(&vars, None, None));
         // 路径为空 → 校验拒绝
-        assert!(Condition::ModifiedWithin { path: "  ".into(), minutes: 10 }.validate().is_err());
-        assert!(Condition::ModifiedWithin { path: tmp_path, minutes: 10 }.validate().is_ok());
+        assert!(Condition::ModifiedWithin {
+            path: "  ".into(),
+            minutes: 10
+        }
+        .validate()
+        .is_err());
+        assert!(Condition::ModifiedWithin {
+            path: tmp_path,
+            minutes: 10
+        }
+        .validate()
+        .is_ok());
     }
 
     #[cfg(feature = "automation")]
@@ -6550,26 +7501,74 @@ mod os_and_sanitize_tests {
         let none: Option<FrontmostContext> = None;
 
         // 子串匹配（不区分大小写）
-        assert!(Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(Condition::FrontmostApp { app: "CHROME.EXE".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(!Condition::FrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(!Condition::NotFrontmostApp { app: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp {
+            app: "chrome".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp {
+            app: "CHROME.EXE".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::FrontmostApp { app: "code".into() }.matches(
+            &Vars::new(),
+            chrome.as_ref(),
+            None
+        ));
+        assert!(Condition::NotFrontmostApp { app: "code".into() }.matches(
+            &Vars::new(),
+            chrome.as_ref(),
+            None
+        ));
+        assert!(!Condition::NotFrontmostApp {
+            app: "chrome".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
 
         // 通配匹配（* / ?）
-        assert!(Condition::FrontmostApp { app: "chrome.*".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(Condition::FrontmostApp { app: "chr?me.exe".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(!Condition::FrontmostApp { app: "*.txt".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp {
+            app: "chrome.*".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::FrontmostApp {
+            app: "chr?me.exe".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::FrontmostApp {
+            app: "*.txt".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
 
         // 窗口标题子串（不区分大小写）
-        assert!(Condition::WindowTitleContains { text: "chrome".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(Condition::WindowTitleContains { text: "CHROME".into() }.matches(&Vars::new(), chrome.as_ref(), None));
-        assert!(!Condition::WindowTitleContains { text: "safari".into() }.matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::WindowTitleContains {
+            text: "chrome".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(Condition::WindowTitleContains {
+            text: "CHROME".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
+        assert!(!Condition::WindowTitleContains {
+            text: "safari".into()
+        }
+        .matches(&Vars::new(), chrome.as_ref(), None));
 
         // 无前台上下文 → 前台条件一律不成立
-        assert!(!Condition::FrontmostApp { app: "chrome".into() }.matches(&Vars::new(), none.as_ref(), None));
-        assert!(!Condition::NotFrontmostApp { app: "code".into() }.matches(&Vars::new(), none.as_ref(), None));
-        assert!(!Condition::WindowTitleContains { text: "x".into() }.matches(&Vars::new(), none.as_ref(), None));
+        assert!(!Condition::FrontmostApp {
+            app: "chrome".into()
+        }
+        .matches(&Vars::new(), none.as_ref(), None));
+        assert!(!Condition::NotFrontmostApp { app: "code".into() }.matches(
+            &Vars::new(),
+            none.as_ref(),
+            None
+        ));
+        assert!(
+            !Condition::WindowTitleContains { text: "x".into() }.matches(
+                &Vars::new(),
+                none.as_ref(),
+                None
+            )
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -6580,19 +7579,38 @@ mod os_and_sanitize_tests {
 
         // 子串匹配（不区分大小写）
         assert!(Condition::DeviceIs { id: "set 2".into() }.matches(&Vars::new(), None, dev));
-        assert!(Condition::DeviceIs { id: "LOGITECH".into() }.matches(&Vars::new(), None, other));
-        assert!(!Condition::DeviceIs { id: "logitech".into() }.matches(&Vars::new(), None, dev));
+        assert!(Condition::DeviceIs {
+            id: "LOGITECH".into()
+        }
+        .matches(&Vars::new(), None, other));
+        assert!(!Condition::DeviceIs {
+            id: "logitech".into()
+        }
+        .matches(&Vars::new(), None, dev));
 
         // 通配匹配（* / ?）
-        assert!(Condition::DeviceIs { id: "AT Translated*".into() }.matches(&Vars::new(), None, dev));
-        assert!(Condition::DeviceIs { id: "*Set ? keyboard".into() }.matches(&Vars::new(), None, dev));
+        assert!(Condition::DeviceIs {
+            id: "AT Translated*".into()
+        }
+        .matches(&Vars::new(), None, dev));
+        assert!(Condition::DeviceIs {
+            id: "*Set ? keyboard".into()
+        }
+        .matches(&Vars::new(), None, dev));
 
         // 无设备上下文（macOS / 取不到设备）→ 恒不成立
-        assert!(!Condition::DeviceIs { id: "keyboard".into() }.matches(&Vars::new(), None, None));
+        assert!(!Condition::DeviceIs {
+            id: "keyboard".into()
+        }
+        .matches(&Vars::new(), None, None));
 
         // 空设备标识 → 校验拒绝
         assert!(Condition::DeviceIs { id: "  ".into() }.validate().is_err());
-        assert!(Condition::DeviceIs { id: "keyboard".into() }.validate().is_ok());
+        assert!(Condition::DeviceIs {
+            id: "keyboard".into()
+        }
+        .validate()
+        .is_ok());
     }
 
     /// 「设备是」下拉存的值：Windows 设备路径压成稳定片段（实例号换口就变，别存进去）；
@@ -6601,7 +7619,10 @@ mod os_and_sanitize_tests {
     fn device_pattern_keeps_stable_part() {
         let hid = "\\\\?\\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
         assert_eq!(device_pattern(hid), "VID_046D&PID_C52B");
-        assert!(match_name(&device_pattern(hid), hid), "压出来的片段要能命中原路径");
+        assert!(
+            match_name(&device_pattern(hid), hid),
+            "压出来的片段要能命中原路径"
+        );
 
         let acpi = "\\\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
         assert_eq!(device_pattern(acpi), "ACPI#MSI0007");
@@ -6639,7 +7660,11 @@ mod os_and_sanitize_tests {
         assert_eq!(device_hardware_key(pen), device_hardware_key(mouse));
         let rcvr_kbd = "\\\\?\\HID#VID_046D&PID_C52B&MI_01&Col01#7&aa&0&0000#{884b96c3}";
         let rcvr_mouse = "\\\\?\\HID#VID_046D&PID_C52B&MI_02&Col01#7&aa&0&0000#{884b96c3}";
-        assert_eq!(device_pattern(rcvr_kbd), device_pattern(rcvr_mouse), "同一颗接收器片段相同");
+        assert_eq!(
+            device_pattern(rcvr_kbd),
+            device_pattern(rcvr_mouse),
+            "同一颗接收器片段相同"
+        );
         assert_ne!(
             device_hardware_key(rcvr_kbd),
             device_hardware_key(rcvr_mouse),
@@ -6648,13 +7673,22 @@ mod os_and_sanitize_tests {
         // 触摸板的两个集合：父设备实例相同、集合序号不同 → 同一个硬件身份。
         let pad_mouse = r"\\?\HID#CUST0001&Col01#5&135c4e80&0&0000#{378de44c}";
         let pad_touch = r"\\?\HID#CUST0001&Col02#5&135c4e80&0&0001#{4d1e55b2}";
-        assert_eq!(device_hardware_key(pad_mouse), device_hardware_key(pad_touch));
-        assert_eq!(device_hardware_key(pad_mouse), r"\\?\HID#CUST0001#5&135c4e80");
+        assert_eq!(
+            device_hardware_key(pad_mouse),
+            device_hardware_key(pad_touch)
+        );
+        assert_eq!(
+            device_hardware_key(pad_mouse),
+            r"\\?\HID#CUST0001#5&135c4e80"
+        );
         // 稳定片段把实例号也丢掉（换 USB 口不失效），并且只认到硬件 ID 一段。
         assert_eq!(device_pattern(pad_mouse), r"\\?\HID#CUST0001");
         assert_eq!(device_pattern(pad_touch), r"\\?\HID#CUST0001");
         // evdev 名字没有 # 结构：原样返回（同名就当同一台）。
-        assert_eq!(device_hardware_key("AT Translated Set 2 keyboard"), "AT Translated Set 2 keyboard");
+        assert_eq!(
+            device_hardware_key("AT Translated Set 2 keyboard"),
+            "AT Translated Set 2 keyboard"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -6662,7 +7696,12 @@ mod os_and_sanitize_tests {
     fn if_action_validate_recurses() {
         assert!(Action::If {
             condition: Condition::Exists { path: ".".into() },
-            then: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
+            then: vec![Action::Text {
+                text: "ok".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None
+            }],
             otherwise: vec![],
             description: None,
         }
@@ -6680,7 +7719,12 @@ mod os_and_sanitize_tests {
         // 嵌套动作非法 → 递归拒绝
         assert!(Action::If {
             condition: Condition::Exists { path: ".".into() },
-            then: vec![Action::Cmd { command: "  ".into(), show_output: false, var: "".into(), description: None }],
+            then: vec![Action::Cmd {
+                command: "  ".into(),
+                show_output: false,
+                var: "".into(),
+                description: None
+            }],
             otherwise: vec![],
             description: None,
         }
@@ -6693,12 +7737,24 @@ mod os_and_sanitize_tests {
     fn if_action_json_roundtrip() {
         // 递归嵌套的 If 也能完整往返（校验 serde tag 与 field 默认值）。
         let a = Action::If {
-            condition: Condition::Equals { var: "f".into(), field: "ext".into(), value: ".txt".into() },
-            then: vec![Action::Text { text: "yes".into(), mode: TextMode::Input, masked: false, description: None }],
+            condition: Condition::Equals {
+                var: "f".into(),
+                field: "ext".into(),
+                value: ".txt".into(),
+            },
+            then: vec![Action::Text {
+                text: "yes".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None,
+            }],
             otherwise: vec![Action::If {
                 condition: Condition::Exists { path: "{f}".into() },
                 then: vec![],
-                otherwise: vec![Action::PauseMs { ms: 10, description: None }],
+                otherwise: vec![Action::PauseMs {
+                    ms: 10,
+                    description: None,
+                }],
                 description: None,
             }],
             description: None,
@@ -6713,15 +7769,27 @@ mod os_and_sanitize_tests {
     fn parallel_action_validate_recurses() {
         // 合法成员 / 空组都放行（空组等价于什么都不做）。
         assert!(Action::Parallel {
-            actions: vec![Action::PauseMs { ms: 10, description: None }],
+            actions: vec![Action::PauseMs {
+                ms: 10,
+                description: None
+            }],
             description: None,
         }
         .validate()
         .is_ok());
-        assert!(Action::Parallel { actions: vec![], description: None }.validate().is_ok());
+        assert!(Action::Parallel {
+            actions: vec![],
+            description: None
+        }
+        .validate()
+        .is_ok());
         // 嵌套成员非法 → 递归拒绝。
         assert!(Action::Parallel {
-            actions: vec![Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }],
+            actions: vec![Action::Keys {
+                keys: vec!["NotAKey".into()],
+                mode: KeysMode::Tap,
+                description: None
+            }],
             description: None,
         }
         .validate()
@@ -6733,9 +7801,19 @@ mod os_and_sanitize_tests {
     fn parallel_action_json_roundtrip() {
         let a = Action::Parallel {
             actions: vec![
-                Action::Cmd { command: "echo a".into(), show_output: false, var: "".into(), description: None },
+                Action::Cmd {
+                    command: "echo a".into(),
+                    show_output: false,
+                    var: "".into(),
+                    description: None,
+                },
                 Action::Parallel {
-                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "x".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     description: None,
                 },
             ],
@@ -6751,17 +7829,29 @@ mod os_and_sanitize_tests {
         // 合法成员 / 空组都放行（空组等价于什么都不做）。
         assert!(Action::Group {
             name: "清理".into(),
-            actions: vec![Action::PauseMs { ms: 10, description: None }],
+            actions: vec![Action::PauseMs {
+                ms: 10,
+                description: None
+            }],
         }
         .validate()
         .is_ok());
-        assert!(Action::Group { name: "空".into(), actions: vec![] }.validate().is_ok());
+        assert!(Action::Group {
+            name: "空".into(),
+            actions: vec![]
+        }
+        .validate()
+        .is_ok());
         // 嵌套成员非法 → 递归拒绝（分组可套分组）。
         assert!(Action::Group {
             name: "外层".into(),
             actions: vec![Action::Group {
                 name: "内层".into(),
-                actions: vec![Action::Keys { keys: vec!["NotAKey".into()], mode: KeysMode::Tap, description: None }],
+                actions: vec![Action::Keys {
+                    keys: vec!["NotAKey".into()],
+                    mode: KeysMode::Tap,
+                    description: None
+                }],
             }],
         }
         .validate()
@@ -6771,7 +7861,12 @@ mod os_and_sanitize_tests {
             name: "备份".into(),
             actions: vec![Action::Group {
                 name: "收尾".into(),
-                actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
+                actions: vec![Action::Text {
+                    text: "x".into(),
+                    mode: TextMode::Input,
+                    masked: false,
+                    description: None,
+                }],
             }],
         };
         let json = serde_json::to_string(&a).unwrap();
@@ -6779,7 +7874,13 @@ mod os_and_sanitize_tests {
         assert_eq!(back, a, "json: {json}");
         // 老配置 / 手写配置缺字段时照旧可解析。
         let bare: Action = serde_json::from_str(r#"{"type":"group"}"#).unwrap();
-        assert_eq!(bare, Action::Group { name: String::new(), actions: vec![] });
+        assert_eq!(
+            bare,
+            Action::Group {
+                name: String::new(),
+                actions: vec![]
+            }
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -6798,7 +7899,13 @@ mod os_and_sanitize_tests {
         match migrated {
             Action::Parallel { actions, .. } => {
                 assert!(
-                    matches!(actions[0], Action::Command { shell: Shell::Cmd, .. }),
+                    matches!(
+                        actions[0],
+                        Action::Command {
+                            shell: Shell::Cmd,
+                            ..
+                        }
+                    ),
                     "组内旧版动作应被迁移：{:?}",
                     actions[0]
                 );
@@ -6812,7 +7919,10 @@ mod os_and_sanitize_tests {
     fn app_action_json_roundtrip_and_validate() {
         let actions = vec![
             Action::App {
-                operation: AppOperation::Launch { program: "notepad.exe".into(), args: vec!["a.txt".into()] },
+                operation: AppOperation::Launch {
+                    program: "notepad.exe".into(),
+                    args: vec!["a.txt".into()],
+                },
                 description: None,
             },
             Action::App {
@@ -6825,19 +7935,28 @@ mod os_and_sanitize_tests {
                 description: None,
             },
             Action::App {
-                operation: AppOperation::Restart { program: "notepad.exe".into(), args: vec![] },
+                operation: AppOperation::Restart {
+                    program: "notepad.exe".into(),
+                    args: vec![],
+                },
                 description: None,
             },
             Action::App {
-                operation: AppOperation::Maximize { program: "notepad.exe".into() },
+                operation: AppOperation::Maximize {
+                    program: "notepad.exe".into(),
+                },
                 description: None,
             },
             Action::App {
-                operation: AppOperation::Minimize { program: "notepad.exe".into() },
+                operation: AppOperation::Minimize {
+                    program: "notepad.exe".into(),
+                },
                 description: None,
             },
             Action::App {
-                operation: AppOperation::Activate { program: "notepad.exe".into() },
+                operation: AppOperation::Activate {
+                    program: "notepad.exe".into(),
+                },
                 description: None,
             },
         ];
@@ -6849,11 +7968,16 @@ mod os_and_sanitize_tests {
         assert_eq!(back, actions);
 
         // 程序为空必被拒绝；Status 变量名可空。
-        assert!(Action::App { operation: AppOperation::Close { program: "".into() }, description: None }
-            .validate()
-            .is_err());
         assert!(Action::App {
-            operation: AppOperation::Maximize { program: "  ".into() },
+            operation: AppOperation::Close { program: "".into() },
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::App {
+            operation: AppOperation::Maximize {
+                program: "  ".into()
+            },
             description: None,
         }
         .validate()
@@ -6886,14 +8010,22 @@ mod os_and_sanitize_tests {
     #[cfg(feature = "automation")]
     #[test]
     fn open_url_json_roundtrip_and_validate() {
-        let a = Action::OpenUrl { url: "https://example.com?a=1&b=2".into(), description: None };
+        let a = Action::OpenUrl {
+            url: "https://example.com?a=1&b=2".into(),
+            description: None,
+        };
         assert!(a.validate().is_ok());
         let json = serde_json::to_string(&a).unwrap();
         assert!(json.contains(r#""type":"open_url""#), "json: {json}");
         let back: Action = serde_json::from_str(&json).unwrap();
         assert_eq!(back, a);
         // 网址为空必被拒绝。
-        assert!(Action::OpenUrl { url: "".into(), description: None }.validate().is_err());
+        assert!(Action::OpenUrl {
+            url: "".into(),
+            description: None
+        }
+        .validate()
+        .is_err());
     }
 
     #[cfg(feature = "automation")]
@@ -6903,11 +8035,22 @@ mod os_and_sanitize_tests {
             shortcuts: vec![ShortcutItem {
                 triggers: vec!["Ctrl+K".into()],
                 actions: vec![
-                    Action::Launch { program: "notepad.exe".into(), args: vec![], description: None },
-                    Action::CloseProgram { program: "notepad.exe".into(), description: None },
+                    Action::Launch {
+                        program: "notepad.exe".into(),
+                        args: vec![],
+                        description: None,
+                    },
+                    Action::CloseProgram {
+                        program: "notepad.exe".into(),
+                        description: None,
+                    },
                     Action::If {
                         condition: Condition::Exists { path: ".".into() },
-                        then: vec![Action::Launch { program: "x".into(), args: vec![], description: None }],
+                        then: vec![Action::Launch {
+                            program: "x".into(),
+                            args: vec![],
+                            description: None,
+                        }],
                         otherwise: vec![],
                         description: None,
                     },
@@ -6919,12 +8062,30 @@ mod os_and_sanitize_tests {
         };
         cfg.migrate();
         let acts = &cfg.shortcuts[0].actions;
-        assert!(matches!(acts[0], Action::App { operation: AppOperation::Launch { .. }, description: _ }));
-        assert!(matches!(acts[1], Action::App { operation: AppOperation::Close { .. }, description: _ }));
+        assert!(matches!(
+            acts[0],
+            Action::App {
+                operation: AppOperation::Launch { .. },
+                description: _
+            }
+        ));
+        assert!(matches!(
+            acts[1],
+            Action::App {
+                operation: AppOperation::Close { .. },
+                description: _
+            }
+        ));
         // 嵌套 If 里的旧动作也迁移
         match &acts[2] {
             Action::If { then, .. } => {
-                assert!(matches!(then[0], Action::App { operation: AppOperation::Launch { .. }, description: _ }));
+                assert!(matches!(
+                    then[0],
+                    Action::App {
+                        operation: AppOperation::Launch { .. },
+                        description: _
+                    }
+                ));
             }
             other => panic!("expected If, got {other:?}"),
         }
@@ -6936,18 +8097,35 @@ mod os_and_sanitize_tests {
         let mut vars = Vars::new();
         vars.insert("running".into(), Value::Bool(true));
         vars.insert("text".into(), Value::Text("hello".into()));
-        vars.insert("cmd".into(), Value::Text(TextValue { text: "E".into(), exit_code: Some(0) }));
+        vars.insert(
+            "cmd".into(),
+            Value::Text(TextValue {
+                text: "E".into(),
+                exit_code: Some(0),
+            }),
+        );
         assert_eq!(substitute_vars("{running}", &vars), "true");
         assert_eq!(substitute_vars("{running.value}", &vars), "true");
         assert_eq!(substitute_vars("{text}", &vars), "hello");
         assert_eq!(substitute_vars("{cmd}", &vars), "E");
         assert_eq!(substitute_vars("{cmd.exit_code}", &vars), "0");
-        assert_eq!(substitute_vars("{text.exit_code}", &vars), "{text.exit_code}");
+        assert_eq!(
+            substitute_vars("{text.exit_code}", &vars),
+            "{text.exit_code}"
+        );
         // 条件判断能比较布尔变量
-        assert!(Condition::Equals { var: "running".into(), field: "".into(), value: "true".into() }
-            .matches(&vars, None, None));
-        assert!(Condition::Equals { var: "text".into(), field: "".into(), value: "hello".into() }
-            .matches(&vars, None, None));
+        assert!(Condition::Equals {
+            var: "running".into(),
+            field: "".into(),
+            value: "true".into()
+        }
+        .matches(&vars, None, None));
+        assert!(Condition::Equals {
+            var: "text".into(),
+            field: "".into(),
+            value: "hello".into()
+        }
+        .matches(&vars, None, None));
     }
 
     /// `sanitize_config` 的往返稳定性（原规划 7.3-⑰ 点名的缺口）：一份**全合法**的配置
@@ -6956,8 +8134,16 @@ mod os_and_sanitize_tests {
     #[test]
     fn sanitize_valid_config_is_unchanged_roundtrip_and_idempotent() {
         let cfg = Config {
-            folders: vec![Folder { id: "f1".into(), name: "工作".into(), parent: None }],
-            layers: vec![Layer { id: "l1".into(), name: "导航".into(), ..Default::default() }],
+            folders: vec![Folder {
+                id: "f1".into(),
+                name: "工作".into(),
+                parent: None,
+            }],
+            layers: vec![Layer {
+                id: "l1".into(),
+                name: "导航".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![ShortcutItem {
                 name: Some("测试".into()),
                 description: Some("说明".into()),
@@ -6966,9 +8152,21 @@ mod os_and_sanitize_tests {
                 // 组合 / 序列 / 和弦三种触发都合法。
                 triggers: vec!["Ctrl+K".into(), "F9 J".into(), "F&J".into()],
                 actions: vec![
-                    Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
-                    Action::Keys { keys: vec!["Ctrl".into(), "S".into()], mode: KeysMode::Tap, description: None },
-                    Action::PauseMs { ms: 100, description: None },
+                    Action::Text {
+                        text: "hi".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    },
+                    Action::Keys {
+                        keys: vec!["Ctrl".into(), "S".into()],
+                        mode: KeysMode::Tap,
+                        description: None,
+                    },
+                    Action::PauseMs {
+                        ms: 100,
+                        description: None,
+                    },
                 ],
                 enabled: true,
                 ..Default::default()
@@ -6982,14 +8180,27 @@ mod os_and_sanitize_tests {
                     enabled: true,
                     ..Default::default()
                 },
-                Remap { from: "F1".into(), to: "Home".into(), enabled: true, ..Default::default() },
+                Remap {
+                    from: "F1".into(),
+                    to: "Home".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
             ],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "某地".into(), enabled: true, ..Default::default() }],
+            expansions: vec![TextExpansion {
+                trigger: ";addr".into(),
+                replace: "某地".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             gestures: vec![],
             touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
-            settings: Settings { wake_key: Some("Alt".into()), ..Default::default() },
+            settings: Settings {
+                wake_key: Some("Alt".into()),
+                ..Default::default()
+            },
         };
 
         let (clean, ignored) = sanitize_config(&cfg);
@@ -7031,7 +8242,10 @@ mod os_and_sanitize_tests {
         assert!(menu.enabled);
         assert_eq!(menu.items.len(), 3);
         // 缺省 enabled = true；显式 false 保留。
-        assert!(matches!(&menu.items[0], MenuEntry::Action { enabled: true, .. }));
+        assert!(matches!(
+            &menu.items[0],
+            MenuEntry::Action { enabled: true, .. }
+        ));
         assert!(matches!(&menu.items[2], MenuEntry::Submenu { items, .. }
             if matches!(&items[0], MenuEntry::Action { enabled: false, .. })));
 
@@ -7054,12 +8268,19 @@ mod os_and_sanitize_tests {
         cfg.settings.clipboard_menu.items.push(MenuEntry::Action {
             label: "  ".into(),
             enabled: true,
-            action: Action::PauseMs { ms: 1, description: None },
+            action: Action::PauseMs {
+                ms: 1,
+                description: None,
+            },
         });
         cfg.settings.clipboard_menu.items.push(MenuEntry::Action {
             label: "坏动作".into(),
             enabled: true,
-            action: Action::Keys { keys: vec![], mode: KeysMode::Tap, description: None },
+            action: Action::Keys {
+                keys: vec![],
+                mode: KeysMode::Tap,
+                description: None,
+            },
         });
         cfg.settings.clipboard_menu.items.push(MenuEntry::Submenu {
             label: "空".into(),
@@ -7067,7 +8288,11 @@ mod os_and_sanitize_tests {
             items: Vec::new(),
         });
         let (clean, ignored) = sanitize_config(&cfg);
-        assert_eq!(clean.settings.clipboard_menu.items.len(), 3, "只该留下 3 条合法条目");
+        assert_eq!(
+            clean.settings.clipboard_menu.items.len(),
+            3,
+            "只该留下 3 条合法条目"
+        );
         assert_eq!(ignored.len(), 3, "三处坏条目都要有提示：{ignored:?}");
     }
 
@@ -7081,7 +8306,10 @@ mod os_and_sanitize_tests {
             description: None,
         };
         let json = serde_json::to_string(&a).unwrap();
-        assert!(json.contains("\"inline_script\""), "serde 标签要稳定：{json}");
+        assert!(
+            json.contains("\"inline_script\""),
+            "serde 标签要稳定：{json}"
+        );
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
         assert!(a.validate().is_ok());
 
@@ -7111,11 +8339,52 @@ mod new_action_and_folder_tests {
     #[test]
     fn text_mode_and_shell_json_roundtrip() {
         let actions = vec![
-            Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None },
-            Action::Text { text: "".into(), mode: TextMode::ToUpper, masked: false, description: None },
-            Action::Text { text: "".into(), mode: TextMode::ToLower, masked: false, description: None },
-            Action::Command { shell: Shell::Cmd, command: "echo hi".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None },
-            Action::Command { shell: Shell::Powershell, command: "Get-Date".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: true.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None },
+            Action::Text {
+                text: "hi".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None,
+            },
+            Action::Text {
+                text: "".into(),
+                mode: TextMode::ToUpper,
+                masked: false,
+                description: None,
+            },
+            Action::Text {
+                text: "".into(),
+                mode: TextMode::ToLower,
+                masked: false,
+                description: None,
+            },
+            Action::Command {
+                shell: Shell::Cmd,
+                command: "echo hi".into(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
+                show_output: false.into(),
+                hide_window: false,
+                var: "".into(),
+                wait: true,
+                on_error: Default::default(),
+                if_running: Default::default(),
+                description: None,
+            },
+            Action::Command {
+                shell: Shell::Powershell,
+                command: "Get-Date".into(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
+                show_output: true.into(),
+                hide_window: false,
+                var: "".into(),
+                wait: true,
+                on_error: Default::default(),
+                if_running: Default::default(),
+                description: None,
+            },
         ];
         for a in &actions {
             assert!(a.validate().is_ok(), "应通过校验: {a:?}");
@@ -7126,10 +8395,31 @@ mod new_action_and_folder_tests {
 
         // 旧版 text（无 mode）默认 Input；Command 命令为空被拒绝。
         let legacy: Action = serde_json::from_str(r#"{"type":"text","text":"x"}"#).unwrap();
-        assert_eq!(legacy, Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None });
-        assert!(Action::Command { shell: Shell::Cmd, command: "  ".into(), working_dir: String::new(), timeout_ms: None, ok_exit_codes: Vec::new(), show_output: false.into(), hide_window: false, var: "".into(), wait: true, on_error: Default::default(), if_running: Default::default(), description: None }
-            .validate()
-            .is_err());
+        assert_eq!(
+            legacy,
+            Action::Text {
+                text: "x".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None
+            }
+        );
+        assert!(Action::Command {
+            shell: Shell::Cmd,
+            command: "  ".into(),
+            working_dir: String::new(),
+            timeout_ms: None,
+            ok_exit_codes: Vec::new(),
+            show_output: false.into(),
+            hide_window: false,
+            var: "".into(),
+            wait: true,
+            on_error: Default::default(),
+            if_running: Default::default(),
+            description: None
+        }
+        .validate()
+        .is_err());
     }
 
     /// `show_output` 三态（CS-11）兼容老布尔；`wait` / `on_error` 缺省保持旧语义且不落盘。
@@ -7170,7 +8460,10 @@ mod new_action_and_folder_tests {
         }
         let json = serde_json::to_string(&a).unwrap();
         assert!(!json.contains("\"wait\""), "默认 wait 不落盘：{json}");
-        assert!(!json.contains("\"on_error\""), "默认 on_error 不落盘：{json}");
+        assert!(
+            !json.contains("\"on_error\""),
+            "默认 on_error 不落盘：{json}"
+        );
     }
 
     /// 「当前窗口」动作（EXT-14）：配置 / 卡带里的形状是
@@ -7305,9 +8598,10 @@ mod new_action_and_folder_tests {
     #[cfg(feature = "automation")]
     #[test]
     fn legacy_capture_action_still_parses() {
-        let a: Action =
-            serde_json::from_str(r#"{"type":"capture","operation":"region","output":"file","path":"D:\\a.png"}"#)
-                .unwrap();
+        let a: Action = serde_json::from_str(
+            r#"{"type":"capture","operation":"region","output":"file","path":"D:\\a.png"}"#,
+        )
+        .unwrap();
         assert!(matches!(
             a,
             Action::Capture {
@@ -7316,7 +8610,12 @@ mod new_action_and_folder_tests {
                 ..
             }
         ));
-        assert_eq!(serde_json::to_string(&a).unwrap().contains(r#""type":"capture""#), true);
+        assert_eq!(
+            serde_json::to_string(&a)
+                .unwrap()
+                .contains(r#""type":"capture""#),
+            true
+        );
     }
 
     /// 外部工具占位动作：工具 / 能力都不许为空；目录里的 id 能查到展示名。
@@ -7329,12 +8628,15 @@ mod new_action_and_folder_tests {
         assert!(matches!(a, Action::Tool { .. }));
         assert!(a.validate().is_ok());
         assert_eq!(external_tool("bit-pouch").unwrap().name, "比特口袋");
-        assert_eq!(external_tool("bit-pouch").unwrap().capabilities[0].name, "打开");
+        assert_eq!(
+            external_tool("bit-pouch").unwrap().capabilities[0].name,
+            "打开"
+        );
 
         let empty: Action = serde_json::from_str(r#"{"type":"tool"}"#).unwrap();
         assert!(empty.validate().is_err());
-        let unknown: Action = serde_json::from_str(r#"{"type":"tool","tool":"x","capability":"y"}"#)
-            .unwrap();
+        let unknown: Action =
+            serde_json::from_str(r#"{"type":"tool","tool":"x","capability":"y"}"#).unwrap();
         assert!(unknown.validate().is_ok());
         assert!(external_tool("x").is_none());
     }
@@ -7352,7 +8654,10 @@ mod new_action_and_folder_tests {
                 ..
             }
         ));
-        assert_eq!(serde_json::to_string(&a).unwrap(), r#"{"type":"brightness"}"#);
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            r#"{"type":"brightness"}"#
+        );
         let down: Action =
             serde_json::from_str(r#"{"type":"brightness","operation":"down","step":25}"#).unwrap();
         assert_eq!(down.validate(), Ok(()));
@@ -7360,7 +8665,8 @@ mod new_action_and_folder_tests {
             serde_json::from_str(r#"{"type":"brightness","operation":"up","step":0}"#).unwrap();
         assert!(zero.validate().is_err());
         let restore: Action =
-            serde_json::from_str(r#"{"type":"brightness","operation":"restore","step":0}"#).unwrap();
+            serde_json::from_str(r#"{"type":"brightness","operation":"restore","step":0}"#)
+                .unwrap();
         assert_eq!(restore.validate(), Ok(()));
     }
 
@@ -7399,7 +8705,9 @@ mod new_action_and_folder_tests {
 
         // 空文本清空剪贴板是合法操作；读取剪贴板必须给变量名；临时文本不能为空。
         assert!(Action::Clipboard {
-            operation: ClipboardOperation::SetClipboard { text: String::new() },
+            operation: ClipboardOperation::SetClipboard {
+                text: String::new()
+            },
             description: None,
         }
         .validate()
@@ -7411,7 +8719,9 @@ mod new_action_and_folder_tests {
         .validate()
         .is_err());
         assert!(Action::Clipboard {
-            operation: ClipboardOperation::TempStr { text: String::new() },
+            operation: ClipboardOperation::TempStr {
+                text: String::new()
+            },
             description: None,
         }
         .validate()
@@ -7486,8 +8796,16 @@ mod new_action_and_folder_tests {
         assert!(json.contains(r#""masked":true"#), "隐藏标记该落盘: {json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), hidden);
 
-        let plain = Action::Text { text: "hi".into(), mode: TextMode::Input, masked: false, description: None };
-        assert!(!serde_json::to_string(&plain).unwrap().contains("masked"), "默认值不该落盘");
+        let plain = Action::Text {
+            text: "hi".into(),
+            mode: TextMode::Input,
+            masked: false,
+            description: None,
+        };
+        assert!(
+            !serde_json::to_string(&plain).unwrap().contains("masked"),
+            "默认值不该落盘"
+        );
     }
 
     /// 「隐式执行」开关（`Command` / `Script` 的 `hide_window`）与 `masked` 同一套口径：
@@ -7495,9 +8813,17 @@ mod new_action_and_folder_tests {
     #[cfg(feature = "automation")]
     #[test]
     fn command_and_script_hide_window_roundtrip() {
-        let old: Action = serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+        let old: Action =
+            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#)
+                .unwrap();
         assert!(
-            matches!(old, Action::Command { hide_window: false, .. }),
+            matches!(
+                old,
+                Action::Command {
+                    hide_window: false,
+                    ..
+                }
+            ),
             "老配置该读成不隐藏: {old:?}"
         );
 
@@ -7536,7 +8862,9 @@ mod new_action_and_folder_tests {
             description: None,
         };
         assert!(
-            !serde_json::to_string(&plain).unwrap().contains("hide_window"),
+            !serde_json::to_string(&plain)
+                .unwrap()
+                .contains("hide_window"),
             "默认值不该落盘"
         );
     }
@@ -7548,7 +8876,9 @@ mod new_action_and_folder_tests {
     #[test]
     fn command_script_new_fields_default_and_roundtrip() {
         // 老配置（写于新字段出现之前）缺字段 = 新默认值。
-        let old: Action = serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+        let old: Action =
+            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#)
+                .unwrap();
         assert!(
             matches!(
                 old,
@@ -7557,10 +8887,9 @@ mod new_action_and_folder_tests {
             ),
             "老配置该读成默认值: {old:?}"
         );
-        let old_script: Action = serde_json::from_str(
-            r#"{"type":"script","path":"x.py","interpreter":"python"}"#,
-        )
-        .unwrap();
+        let old_script: Action =
+            serde_json::from_str(r#"{"type":"script","path":"x.py","interpreter":"python"}"#)
+                .unwrap();
         assert!(
             matches!(
                 old_script,
@@ -7616,7 +8945,10 @@ mod new_action_and_folder_tests {
             description: None,
         };
         let json = serde_json::to_string(&full).unwrap();
-        assert!(json.contains(r#""timeout_ms":0"#), "0 = 不限时该落盘: {json}");
+        assert!(
+            json.contains(r#""timeout_ms":0"#),
+            "0 = 不限时该落盘: {json}"
+        );
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), full);
     }
 
@@ -7625,7 +8957,9 @@ mod new_action_and_folder_tests {
     #[test]
     fn wait_for_roundtrip_and_defaults() {
         let file = Action::WaitFor {
-            target: WaitTarget::File { path: "D:\\out.zip".into() },
+            target: WaitTarget::File {
+                path: "D:\\out.zip".into(),
+            },
             timeout_ms: None,
             interval_ms: default_wait_interval_ms(),
             var: String::new(),
@@ -7637,7 +8971,9 @@ mod new_action_and_folder_tests {
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), file);
 
         let process = Action::WaitFor {
-            target: WaitTarget::Process { program: "notepad.exe".into() },
+            target: WaitTarget::Process {
+                program: "notepad.exe".into(),
+            },
             timeout_ms: Some(0),
             interval_ms: 500,
             var: "pid".into(),
@@ -7650,7 +8986,9 @@ mod new_action_and_folder_tests {
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), process);
 
         let window = Action::WaitFor {
-            target: WaitTarget::Window { title: "*记事本*".into() },
+            target: WaitTarget::Window {
+                title: "*记事本*".into(),
+            },
             timeout_ms: Some(5000),
             interval_ms: default_wait_interval_ms(),
             var: String::new(),
@@ -7695,9 +9033,16 @@ mod new_action_and_folder_tests {
         assert!(json.contains(r#""if_running":"skip""#), "{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), skipped);
         let old: Action =
-            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#).unwrap();
+            serde_json::from_str(r#"{"type":"command","shell":"cmd","command":"echo hi"}"#)
+                .unwrap();
         assert!(
-            matches!(old, Action::Command { if_running: IfRunning::Run, .. }),
+            matches!(
+                old,
+                Action::Command {
+                    if_running: IfRunning::Run,
+                    ..
+                }
+            ),
             "老配置缺 if_running 该是默认 run: {old:?}"
         );
     }
@@ -7709,9 +9054,22 @@ mod new_action_and_folder_tests {
             shortcuts: vec![ShortcutItem {
                 triggers: vec!["Ctrl+K".into()],
                 actions: vec![
-                    Action::Cmd { command: "echo hi".into(), show_output: true, var: "out".into(), description: None },
-                    Action::Powershell { command: "Get-Date".into(), show_output: false, var: "".into(), description: None },
-                    Action::OpenFolder { path: "C:\\Users".into(), description: None },
+                    Action::Cmd {
+                        command: "echo hi".into(),
+                        show_output: true,
+                        var: "out".into(),
+                        description: None,
+                    },
+                    Action::Powershell {
+                        command: "Get-Date".into(),
+                        show_output: false,
+                        var: "".into(),
+                        description: None,
+                    },
+                    Action::OpenFolder {
+                        path: "C:\\Users".into(),
+                        description: None,
+                    },
                 ],
                 enabled: true,
                 ..Default::default()
@@ -7720,26 +9078,60 @@ mod new_action_and_folder_tests {
         };
         cfg.migrate();
         let acts = &cfg.shortcuts[0].actions;
-        assert!(matches!(acts[0], Action::Command { shell: Shell::Cmd, .. }));
-        assert!(matches!(acts[1], Action::Command { shell: Shell::Powershell, .. }));
-        assert!(matches!(acts[2], Action::Os { operation: OsOperation::OpenFolder { .. }, description: _ }));
+        assert!(matches!(
+            acts[0],
+            Action::Command {
+                shell: Shell::Cmd,
+                ..
+            }
+        ));
+        assert!(matches!(
+            acts[1],
+            Action::Command {
+                shell: Shell::Powershell,
+                ..
+            }
+        ));
+        assert!(matches!(
+            acts[2],
+            Action::Os {
+                operation: OsOperation::OpenFolder { .. },
+                description: _
+            }
+        ));
     }
 
     #[cfg(feature = "automation")]
     #[test]
     fn os_open_folder_new_folder_validate() {
-        assert!(Action::Os { operation: OsOperation::OpenFolder { path: "C:\\".into() }, description: None }
-            .validate()
-            .is_ok());
-        assert!(Action::Os { operation: OsOperation::NewFolder { path: "C:\\x".into() }, description: None }
-            .validate()
-            .is_ok());
-        assert!(Action::Os { operation: OsOperation::OpenFolder { path: "  ".into() }, description: None }
-            .validate()
-            .is_err());
-        assert!(Action::Os { operation: OsOperation::NewFolder { path: "".into() }, description: None }
-            .validate()
-            .is_err());
+        assert!(Action::Os {
+            operation: OsOperation::OpenFolder {
+                path: "C:\\".into()
+            },
+            description: None
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Os {
+            operation: OsOperation::NewFolder {
+                path: "C:\\x".into()
+            },
+            description: None
+        }
+        .validate()
+        .is_ok());
+        assert!(Action::Os {
+            operation: OsOperation::OpenFolder { path: "  ".into() },
+            description: None
+        }
+        .validate()
+        .is_err());
+        assert!(Action::Os {
+            operation: OsOperation::NewFolder { path: "".into() },
+            description: None
+        }
+        .validate()
+        .is_err());
     }
 
     /// 切换虚拟桌面（操作系统动作）：没有必填字段（方向有缺省）；手工只写
@@ -7748,33 +9140,52 @@ mod new_action_and_folder_tests {
     #[test]
     fn switch_desktop_validate_and_default_direction() {
         for direction in [DesktopDirection::Prev, DesktopDirection::Next] {
-            assert!(Action::System { operation: SystemOperation::SwitchDesktop { direction }, description: None }
-                .validate()
-                .is_ok());
+            assert!(Action::System {
+                operation: SystemOperation::SwitchDesktop { direction },
+                description: None
+            }
+            .validate()
+            .is_ok());
         }
 
         let bare: Action =
-            serde_json::from_str(r#"{"type":"system","operation":{"op":"switch_desktop"}}"#).unwrap();
+            serde_json::from_str(r#"{"type":"system","operation":{"op":"switch_desktop"}}"#)
+                .unwrap();
         assert!(
             matches!(
                 bare,
-                Action::System { operation: SystemOperation::SwitchDesktop { direction: DesktopDirection::Next }, .. }
+                Action::System {
+                    operation: SystemOperation::SwitchDesktop {
+                        direction: DesktopDirection::Next
+                    },
+                    ..
+                }
             ),
             "缺省方向该是下一个: {bare:?}"
         );
 
         let prev = Action::System {
-            operation: SystemOperation::SwitchDesktop { direction: DesktopDirection::Prev },
+            operation: SystemOperation::SwitchDesktop {
+                direction: DesktopDirection::Prev,
+            },
             description: None,
         };
         let json = serde_json::to_string(&prev).unwrap();
-        assert!(json.contains(r#""type":"system""#), "类型该是 system: {json}");
+        assert!(
+            json.contains(r#""type":"system""#),
+            "类型该是 system: {json}"
+        );
         assert!(json.contains(r#""direction":"prev""#), "方向该落盘: {json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), prev);
 
         // 文件/目录动作里不该再有切桌面这项（两类已分开）。
-        let file_only: Action = serde_json::from_str(r#"{"type":"os","operation":{"op":"delete","path":"x"}}"#).unwrap();
-        assert!(matches!(file_only, Action::Os { .. }), "文件动作照旧读成 Os");
+        let file_only: Action =
+            serde_json::from_str(r#"{"type":"os","operation":{"op":"delete","path":"x"}}"#)
+                .unwrap();
+        assert!(
+            matches!(file_only, Action::Os { .. }),
+            "文件动作照旧读成 Os"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -7857,8 +9268,18 @@ mod new_action_and_folder_tests {
         assert_eq!(back, ok);
 
         for bad in [
-            Action::Ask { var: " ".into(), prompt: "p".into(), default: String::new(), description: None },
-            Action::Ask { var: "v".into(), prompt: " ".into(), default: String::new(), description: None },
+            Action::Ask {
+                var: " ".into(),
+                prompt: "p".into(),
+                default: String::new(),
+                description: None,
+            },
+            Action::Ask {
+                var: "v".into(),
+                prompt: " ".into(),
+                default: String::new(),
+                description: None,
+            },
         ] {
             assert!(bad.validate().is_err(), "{bad:?}");
         }
@@ -7868,24 +9289,58 @@ mod new_action_and_folder_tests {
     fn sanitize_cleans_folders() {
         let cfg = Config {
             folders: vec![
-                Folder { id: "a".into(), name: "工作".into(), parent: None },
-                Folder { id: "b".into(), name: "子目录".into(), parent: Some("a".into()) },
-                Folder { id: "a".into(), name: "重复".into(), parent: None }, // 重复 id
-                Folder { id: "".into(), name: "空id".into(), parent: None }, // 空 id
-                Folder { id: "c".into(), name: "孤儿父".into(), parent: Some("nope".into()) }, // 父不存在
-                Folder { id: "d".into(), name: "成环".into(), parent: Some("d".into()) }, // 自环
+                Folder {
+                    id: "a".into(),
+                    name: "工作".into(),
+                    parent: None,
+                },
+                Folder {
+                    id: "b".into(),
+                    name: "子目录".into(),
+                    parent: Some("a".into()),
+                },
+                Folder {
+                    id: "a".into(),
+                    name: "重复".into(),
+                    parent: None,
+                }, // 重复 id
+                Folder {
+                    id: "".into(),
+                    name: "空id".into(),
+                    parent: None,
+                }, // 空 id
+                Folder {
+                    id: "c".into(),
+                    name: "孤儿父".into(),
+                    parent: Some("nope".into()),
+                }, // 父不存在
+                Folder {
+                    id: "d".into(),
+                    name: "成环".into(),
+                    parent: Some("d".into()),
+                }, // 自环
             ],
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+K".into()],
-                    actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "x".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     folder: Some("a".into()),
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["Ctrl+J".into()],
-                    actions: vec![Action::Text { text: "y".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "y".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     folder: Some("missing".into()), // 引用不存在目录
                     enabled: true,
                     ..Default::default()
@@ -7919,11 +9374,29 @@ mod new_action_and_folder_tests {
         };
         let (clean, ignored) = sanitize_config(&cfg);
         // 保留 a、b、c、d（d 的环被断），去掉重复 a 与空 id。
-        assert_eq!(clean.folders.len(), 4, "folders: {:?} ignored: {:?}", clean.folders, ignored);
+        assert_eq!(
+            clean.folders.len(),
+            4,
+            "folders: {:?} ignored: {:?}",
+            clean.folders,
+            ignored
+        );
         assert_eq!(clean.folders[0].name, "工作");
         assert_eq!(clean.folders[1].parent.as_deref(), Some("a"));
-        assert!(clean.folders.iter().find(|f| f.id == "c").unwrap().parent.is_none());
-        assert!(clean.folders.iter().find(|f| f.id == "d").unwrap().parent.is_none());
+        assert!(clean
+            .folders
+            .iter()
+            .find(|f| f.id == "c")
+            .unwrap()
+            .parent
+            .is_none());
+        assert!(clean
+            .folders
+            .iter()
+            .find(|f| f.id == "d")
+            .unwrap()
+            .parent
+            .is_none());
         // 无效目录引用被清空
         assert_eq!(clean.shortcuts[0].folder.as_deref(), Some("a"));
         assert!(clean.shortcuts[1].folder.is_none());
@@ -7969,48 +9442,106 @@ mod hotstring_tests {
     #[test]
     fn match_expansion_longest_wins() {
         let exps = vec![
-            TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true, ..Default::default() },
-            TextExpansion { trigger: "email".into(), replace: "邮箱".into(), enabled: true, ..Default::default() },
-            TextExpansion { trigger: "work-email".into(), replace: "工作邮箱".into(), enabled: true, ..Default::default() },
-            TextExpansion { trigger: "off".into(), replace: "关".into(), enabled: false, ..Default::default() }, // 停用
+            TextExpansion {
+                trigger: "addr".into(),
+                replace: "地址".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            TextExpansion {
+                trigger: "email".into(),
+                replace: "邮箱".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            TextExpansion {
+                trigger: "work-email".into(),
+                replace: "工作邮箱".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            TextExpansion {
+                trigger: "off".into(),
+                replace: "关".into(),
+                enabled: false,
+                ..Default::default()
+            }, // 停用
         ];
         assert_eq!(match_expansion(":addr", &exps).unwrap().replace, "地址");
         // 最长匹配优先（work-email 而非 email）
-        assert_eq!(match_expansion("work-email", &exps).unwrap().replace, "工作邮箱");
+        assert_eq!(
+            match_expansion("work-email", &exps).unwrap().replace,
+            "工作邮箱"
+        );
         // 停用的不命中
         assert_eq!(match_expansion("off", &exps), None);
         // 无命中
         assert_eq!(match_expansion("xyz", &exps), None);
         // 空触发词不参与匹配
-        let exps2 = vec![TextExpansion { trigger: "".into(), replace: "x".into(), enabled: true, ..Default::default() }];
+        let exps2 = vec![TextExpansion {
+            trigger: "".into(),
+            replace: "x".into(),
+            enabled: true,
+            ..Default::default()
+        }];
         assert_eq!(match_expansion("", &exps2), None);
     }
 
     #[test]
     fn expansion_json_roundtrip_and_validate() {
         let exps = vec![
-            TextExpansion { trigger: ":addr".into(), replace: "上海市…".into(), enabled: true, ..Default::default() },
-            TextExpansion { trigger: ";sig".into(), replace: "{date}".into(), enabled: false, ..Default::default() },
+            TextExpansion {
+                trigger: ":addr".into(),
+                replace: "上海市…".into(),
+                enabled: true,
+                ..Default::default()
+            },
+            TextExpansion {
+                trigger: ";sig".into(),
+                replace: "{date}".into(),
+                enabled: false,
+                ..Default::default()
+            },
         ];
         let json = serde_json::to_string(&exps).unwrap();
         let back: Vec<TextExpansion> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, exps);
 
         // 空触发词必被拒绝；空替换允许（等价删除触发词）
-        assert!(TextExpansion { trigger: "  ".into(), replace: "x".into(), enabled: true, ..Default::default() }
-            .validate()
-            .is_err());
-        assert!(TextExpansion { trigger: "ok".into(), replace: "".into(), enabled: true, ..Default::default() }
-            .validate()
-            .is_ok());
+        assert!(TextExpansion {
+            trigger: "  ".into(),
+            replace: "x".into(),
+            enabled: true,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+        assert!(TextExpansion {
+            trigger: "ok".into(),
+            replace: "".into(),
+            enabled: true,
+            ..Default::default()
+        }
+        .validate()
+        .is_ok());
     }
 
     #[test]
     fn sanitize_drops_invalid_expansions() {
         let cfg = Config {
             expansions: vec![
-                TextExpansion { trigger: "addr".into(), replace: "地址".into(), enabled: true, ..Default::default() },
-                TextExpansion { trigger: "  ".into(), replace: "坏".into(), enabled: true, ..Default::default() },
+                TextExpansion {
+                    trigger: "addr".into(),
+                    replace: "地址".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+                TextExpansion {
+                    trigger: "  ".into(),
+                    replace: "坏".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
@@ -8164,8 +9695,16 @@ mod layer_tests {
     #[test]
     fn layer_json_roundtrip() {
         let layers = vec![
-            Layer { id: "base".into(), name: "基础".into(), ..Default::default() },
-            Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() },
+            Layer {
+                id: "base".into(),
+                name: "基础".into(),
+                ..Default::default()
+            },
+            Layer {
+                id: "symbols".into(),
+                name: "符号".into(),
+                ..Default::default()
+            },
         ];
         let json = serde_json::to_string(&layers).unwrap();
         let back: Vec<Layer> = serde_json::from_str(&json).unwrap();
@@ -8176,9 +9715,21 @@ mod layer_tests {
     fn layer_mark_survives_sanitize_and_json_roundtrip() {
         let cfg = Config {
             layers: vec![
-                Layer { id: "c".into(), name: "颜色".into(), mark: Some("  #4F9CF9 ".into()) },
-                Layer { id: "e".into(), name: "图标".into(), mark: Some("🎮".into()) },
-                Layer { id: "n".into(), name: "空".into(), mark: Some("   ".into()) },
+                Layer {
+                    id: "c".into(),
+                    name: "颜色".into(),
+                    mark: Some("  #4F9CF9 ".into()),
+                },
+                Layer {
+                    id: "e".into(),
+                    name: "图标".into(),
+                    mark: Some("🎮".into()),
+                },
+                Layer {
+                    id: "n".into(),
+                    name: "空".into(),
+                    mark: Some("   ".into()),
+                },
             ],
             ..Default::default()
         };
@@ -8189,7 +9740,9 @@ mod layer_tests {
         assert_eq!(clean.layers[2].mark, None); // 空白 → 无标记
 
         // 无标记时字段省略（老配置没有 mark，保存不该凭空多写一个字段）。
-        assert!(!serde_json::to_string(&clean.layers[2]).unwrap().contains("mark"));
+        assert!(!serde_json::to_string(&clean.layers[2])
+            .unwrap()
+            .contains("mark"));
 
         let back: Config = serde_json::from_str(&serde_json::to_string(&clean).unwrap()).unwrap();
         assert_eq!(back, clean);
@@ -8207,7 +9760,11 @@ mod layer_tests {
             ..Default::default()
         };
         let base = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
+            layers: vec![Layer {
+                id: "symbols".into(),
+                name: "符号".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![layered],
             ..Default::default()
         };
@@ -8228,7 +9785,9 @@ mod layer_tests {
             }],
             ..base.clone()
         };
-        assert!(!detect_conflicts(&with_key, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")));
+        assert!(!detect_conflicts(&with_key, &PlatformCaps::default())
+            .iter()
+            .any(|c| c.message.contains("没有切层键")));
 
         // 「长按锁定层」同样是切层键，指向它也算可达（层内放和弦/序列只能用这种）。
         let with_lock = Config {
@@ -8242,17 +9801,25 @@ mod layer_tests {
             ..base.clone()
         };
         assert!(
-            !detect_conflicts(&with_lock, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")),
+            !detect_conflicts(&with_lock, &PlatformCaps::default())
+                .iter()
+                .any(|c| c.message.contains("没有切层键")),
             "长按锁定层也应算可达：{:?}",
             detect_conflicts(&with_lock, &PlatformCaps::default())
         );
 
         // 层里没有启用的条目时不报（空层不算问题）。
         let empty = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
+            layers: vec![Layer {
+                id: "symbols".into(),
+                name: "符号".into(),
+                ..Default::default()
+            }],
             ..Default::default()
         };
-        assert!(!detect_conflicts(&empty, &PlatformCaps::default()).iter().any(|c| c.message.contains("没有切层键")));
+        assert!(!detect_conflicts(&empty, &PlatformCaps::default())
+            .iter()
+            .any(|c| c.message.contains("没有切层键")));
     }
 
     #[test]
@@ -8267,7 +9834,11 @@ mod layer_tests {
         assert!(remap.needs_timing_state());
         assert_eq!(remap.lock_layer_id(), Some("symbols"));
         assert_eq!(remap.hold_layer_id(), None);
-        assert!(remap.describe().contains("长按锁定层"), "摘要要能看出是锁定式：{}", remap.describe());
+        assert!(
+            remap.describe().contains("长按锁定层"),
+            "摘要要能看出是锁定式：{}",
+            remap.describe()
+        );
 
         let blank = Remap {
             from: "Tab".into(),
@@ -8281,7 +9852,11 @@ mod layer_tests {
     #[test]
     fn sanitize_keeps_lock_layer_and_drops_blank_refs() {
         let cfg = Config {
-            layers: vec![Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() }],
+            layers: vec![Layer {
+                id: "symbols".into(),
+                name: "符号".into(),
+                ..Default::default()
+            }],
             remaps: vec![
                 Remap {
                     from: "Tab".into(),
@@ -8320,34 +9895,57 @@ mod layer_tests {
     fn sanitize_cleans_layers_and_dangling_refs() {
         let cfg = Config {
             layers: vec![
-                Layer { id: "symbols".into(), name: "符号".into(), ..Default::default() },
-                Layer { id: "symbols".into(), name: "重复".into(), ..Default::default() }, // 重复 id → 忽略
-                Layer { id: "".into(), name: "坏".into(), ..Default::default() }, // 空 id → 忽略
+                Layer {
+                    id: "symbols".into(),
+                    name: "符号".into(),
+                    ..Default::default()
+                },
+                Layer {
+                    id: "symbols".into(),
+                    name: "重复".into(),
+                    ..Default::default()
+                }, // 重复 id → 忽略
+                Layer {
+                    id: "".into(),
+                    name: "坏".into(),
+                    ..Default::default()
+                }, // 空 id → 忽略
             ],
-            shortcuts: vec![ShortcutItem {
-                layer: Some("symbols".into()),
-                triggers: vec!["1".into()],
-                actions: vec![Action::Text { text: "F1".into(), mode: TextMode::Input, masked: false, description: None }],
-                enabled: true,
-                ..Default::default()
-            }, ShortcutItem {
-                layer: Some("nope".into()), // 层不存在 → 清空
-                triggers: vec!["2".into()],
-                actions: vec![],
-                enabled: true,
-                ..Default::default()
-            }],
-            remaps: vec![Remap {
-                from: "Space".into(),
-                to: "".into(),
-                hold_layer: Some("symbols".into()),
-                ..Default::default()
-            }, Remap {
-                from: "A".into(),
-                to: "".into(),
-                hold_layer: Some("nope".into()), // 层不存在 → 清空 → 整条忽略
-                ..Default::default()
-            }],
+            shortcuts: vec![
+                ShortcutItem {
+                    layer: Some("symbols".into()),
+                    triggers: vec!["1".into()],
+                    actions: vec![Action::Text {
+                        text: "F1".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
+                    enabled: true,
+                    ..Default::default()
+                },
+                ShortcutItem {
+                    layer: Some("nope".into()), // 层不存在 → 清空
+                    triggers: vec!["2".into()],
+                    actions: vec![],
+                    enabled: true,
+                    ..Default::default()
+                },
+            ],
+            remaps: vec![
+                Remap {
+                    from: "Space".into(),
+                    to: "".into(),
+                    hold_layer: Some("symbols".into()),
+                    ..Default::default()
+                },
+                Remap {
+                    from: "A".into(),
+                    to: "".into(),
+                    hold_layer: Some("nope".into()), // 层不存在 → 清空 → 整条忽略
+                    ..Default::default()
+                },
+            ],
             ..Default::default()
         };
         let (clean, ignored) = sanitize_config(&cfg);
@@ -8367,7 +9965,11 @@ mod sequence_tests {
     use super::*;
 
     fn ev(key: Key, mods: &[Modifier]) -> RawEvent {
-        RawEvent { key, mods: mods.iter().copied().collect(), pressed: true }
+        RawEvent {
+            key,
+            mods: mods.iter().copied().collect(),
+            pressed: true,
+        }
     }
 
     /// 把 "F9 J K" 解析成一串步骤。
@@ -8390,7 +9992,10 @@ mod sequence_tests {
         assert_eq!(t.first(), &"F9".parse::<Shortcut>().unwrap());
 
         // "Space" 单 token 仍是 Combo；"F9 Space" 是序列。
-        assert!(matches!(Trigger::parse("Space").unwrap(), Trigger::Combo(_)));
+        assert!(matches!(
+            Trigger::parse("Space").unwrap(),
+            Trigger::Combo(_)
+        ));
         assert!(matches!(
             Trigger::parse("F9 Space").unwrap(),
             Trigger::Sequence(ref steps) if steps.len() == 2
@@ -8468,13 +10073,23 @@ mod sequence_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["F9 J K".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "ok".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["F9 BadStep".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "bad".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
@@ -8589,7 +10204,10 @@ mod chord_tests {
         let chords = vec![chord("Ctrl+F&J")];
         let ctrl = BTreeSet::from([Modifier::Ctrl]);
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.press(Key::F, &BTreeSet::new(), &chords), ChordAdvance::Await);
+        assert_eq!(
+            tr.press(Key::F, &BTreeSet::new(), &chords),
+            ChordAdvance::Await
+        );
         assert_eq!(
             tr.press(Key::J, &BTreeSet::new(), &chords),
             ChordAdvance::Await,
@@ -8605,10 +10223,17 @@ mod chord_tests {
         // Ctrl+Alt&J：前一个成员是纯修饰键要求，只按时不参与按住集合、也不吞键。
         let chords = vec![chord("Ctrl+Alt&J")];
         let mut tr = ChordTracker::new();
-        assert_eq!(tr.press(Key::J, &BTreeSet::from([Modifier::Ctrl]), &chords),
-            ChordAdvance::Await, "只有 Ctrl 还差 Alt");
         assert_eq!(
-            tr.press(Key::J, &BTreeSet::from([Modifier::Ctrl, Modifier::Alt]), &chords),
+            tr.press(Key::J, &BTreeSet::from([Modifier::Ctrl]), &chords),
+            ChordAdvance::Await,
+            "只有 Ctrl 还差 Alt"
+        );
+        assert_eq!(
+            tr.press(
+                Key::J,
+                &BTreeSet::from([Modifier::Ctrl, Modifier::Alt]),
+                &chords
+            ),
             ChordAdvance::Complete(0)
         );
         assert!(!tr.held().contains(&Key::Alt), "修饰键成员不进按住集合");
@@ -8632,13 +10257,23 @@ mod chord_tests {
             shortcuts: vec![
                 ShortcutItem {
                     triggers: vec!["Ctrl+F&J".into()],
-                    actions: vec![Action::Text { text: "ok".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "ok".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
                 ShortcutItem {
                     triggers: vec!["F&F".into()],
-                    actions: vec![Action::Text { text: "bad".into(), mode: TextMode::Input, masked: false, description: None }],
+                    actions: vec![Action::Text {
+                        text: "bad".into(),
+                        mode: TextMode::Input,
+                        masked: false,
+                        description: None,
+                    }],
                     enabled: true,
                     ..Default::default()
                 },
@@ -8650,7 +10285,10 @@ mod chord_tests {
         // 合法和弦（成员带修饰）保留；坏和弦（成员重复）被清空并提示。
         assert_eq!(clean.shortcuts[0].triggers, vec!["Ctrl+F&J".to_string()]);
         assert!(clean.shortcuts[1].triggers.is_empty());
-        assert!(ignored.iter().any(|m| m.contains("F&F")), "ignored: {ignored:?}");
+        assert!(
+            ignored.iter().any(|m| m.contains("F&F")),
+            "ignored: {ignored:?}"
+        );
     }
     #[test]
     fn trigger_parse_chord() {
@@ -8669,13 +10307,28 @@ mod chord_tests {
         assert!(matches!(Trigger::parse("F").unwrap(), Trigger::Combo(_)));
 
         // 坏输入：空成员。
-        assert!(matches!(Trigger::parse("F&"), Err(ParseError::ChordInvalid(_))));
-        assert!(matches!(Trigger::parse("F&&J"), Err(ParseError::ChordInvalid(_))));
+        assert!(matches!(
+            Trigger::parse("F&"),
+            Err(ParseError::ChordInvalid(_))
+        ));
+        assert!(matches!(
+            Trigger::parse("F&&J"),
+            Err(ParseError::ChordInvalid(_))
+        ));
         // 成员重复（同一个键 + 同一个修饰要求按两次不算更「同时」）。
-        assert!(matches!(Trigger::parse("F&F"), Err(ParseError::ChordInvalid(_))));
-        assert!(matches!(Trigger::parse("Ctrl+F&Ctrl+F"), Err(ParseError::ChordInvalid(_))));
+        assert!(matches!(
+            Trigger::parse("F&F"),
+            Err(ParseError::ChordInvalid(_))
+        ));
+        assert!(matches!(
+            Trigger::parse("Ctrl+F&Ctrl+F"),
+            Err(ParseError::ChordInvalid(_))
+        ));
         // 全是修饰键成员：没有可吞的键，也就没有「同时按下」的判定时机。
-        assert!(matches!(Trigger::parse("Ctrl&Alt"), Err(ParseError::ChordInvalid(_))));
+        assert!(matches!(
+            Trigger::parse("Ctrl&Alt"),
+            Err(ParseError::ChordInvalid(_))
+        ));
         // 一个成员里两个主键（`Ctrl+K+L`）无法表达，报未知按键而不是含糊的和弦无效。
         assert!(Trigger::parse("Ctrl+K+L&J").is_err());
     }
@@ -8684,7 +10337,9 @@ mod chord_tests {
     fn trigger_parse_chord_with_modifier_members() {
         // 成员可带修饰：Ctrl+F&J = 按住 Ctrl 的同时把 F、J 一起按住。
         let t = Trigger::parse("Ctrl+F&J").unwrap();
-        let Trigger::Chord(members) = &t else { panic!("应为和弦") };
+        let Trigger::Chord(members) = &t else {
+            panic!("应为和弦")
+        };
         assert_eq!(members[0].key, Key::F);
         assert_eq!(members[0].mods, BTreeSet::from([Modifier::Ctrl]));
         assert_eq!(members[1].key, Key::J);
@@ -8693,7 +10348,9 @@ mod chord_tests {
 
         // 纯修饰键成员（`Ctrl+Alt`）：折叠成「要求 Ctrl 按住 + 成员键 Alt」，显示不变。
         let t = Trigger::parse("Ctrl+Alt&J").unwrap();
-        let Trigger::Chord(members) = &t else { panic!("应为和弦") };
+        let Trigger::Chord(members) = &t else {
+            panic!("应为和弦")
+        };
         assert_eq!(members[0].key, Key::Alt);
         assert_eq!(members[0].mods, BTreeSet::from([Modifier::Ctrl]));
         assert_eq!(format_shortcut(t.first()), "Ctrl+Alt");
@@ -8701,7 +10358,9 @@ mod chord_tests {
 
         // 单个修饰键成员本来就是合法裸键（无需折叠）。
         let t = Trigger::parse("F&Shift").unwrap();
-        let Trigger::Chord(members) = &t else { panic!("应为和弦") };
+        let Trigger::Chord(members) = &t else {
+            panic!("应为和弦")
+        };
         assert_eq!(members[1].key, Key::Shift);
         assert!(members[1].mods.is_empty());
     }
@@ -8725,8 +10384,12 @@ mod settings_timeout_tests {
         // 老配置（写于这两个字段出现之前）应拿到 1000ms，而不是 `#[serde(default)]` 的 0
         // （0 在这里 = 不限时，等于悄悄把等待窗取消）。
         let old: Config =
-            serde_json::from_str(r#"{"settings":{"autostart":true,"action_timeout_ms":5000}}"#).unwrap();
-        assert_eq!(old.settings.sequence_timeout_ms, DEFAULT_SEQUENCE_TIMEOUT_MS);
+            serde_json::from_str(r#"{"settings":{"autostart":true,"action_timeout_ms":5000}}"#)
+                .unwrap();
+        assert_eq!(
+            old.settings.sequence_timeout_ms,
+            DEFAULT_SEQUENCE_TIMEOUT_MS
+        );
         assert_eq!(old.settings.chord_timeout_ms, DEFAULT_CHORD_TIMEOUT_MS);
         assert_eq!(old.settings.action_timeout_ms, 5000, "已有的字段照旧");
     }
@@ -8737,7 +10400,10 @@ mod settings_timeout_tests {
         let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
         assert!(!old.settings.ignore_fullscreen);
         let cfg = Config {
-            settings: Settings { ignore_fullscreen: true, ..Default::default() },
+            settings: Settings {
+                ignore_fullscreen: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -8749,13 +10415,20 @@ mod settings_timeout_tests {
     #[test]
     fn zero_means_unlimited_and_survives_roundtrip() {
         let cfg = Config {
-            settings: Settings { sequence_timeout_ms: 0, chord_timeout_ms: 2500, ..Default::default() },
+            settings: Settings {
+                sequence_timeout_ms: 0,
+                chord_timeout_ms: 2500,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let back: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(back.settings, cfg.settings);
-        assert_eq!(back.settings.sequence_timeout_ms, 0, "0（不限时）不能被缺省值盖回 1000");
+        assert_eq!(
+            back.settings.sequence_timeout_ms, 0,
+            "0（不限时）不能被缺省值盖回 1000"
+        );
     }
 }
 
@@ -8777,7 +10450,10 @@ mod update_source_tests {
         let old: Config = serde_json::from_str(r#"{"settings":{"autostart":true}}"#).unwrap();
         assert!(!old.settings.auto_update);
         let cfg = Config {
-            settings: Settings { auto_update: true, ..Default::default() },
+            settings: Settings {
+                auto_update: true,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -8789,7 +10465,10 @@ mod update_source_tests {
     #[test]
     fn source_roundtrips_with_kebab_case_values() {
         let cfg = Config {
-            settings: Settings { update_source: UpdateSource::Github, ..Default::default() },
+            settings: Settings {
+                update_source: UpdateSource::Github,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -8802,10 +10481,21 @@ mod update_source_tests {
     #[test]
     fn endpoints_are_https_and_distinct() {
         for source in [UpdateSource::Ihomy, UpdateSource::Github] {
-            assert!(source.endpoint().starts_with("https://"), "{}", source.endpoint());
-            assert!(source.endpoint().ends_with("latest.json"), "{}", source.endpoint());
+            assert!(
+                source.endpoint().starts_with("https://"),
+                "{}",
+                source.endpoint()
+            );
+            assert!(
+                source.endpoint().ends_with("latest.json"),
+                "{}",
+                source.endpoint()
+            );
         }
-        assert_ne!(UpdateSource::Ihomy.endpoint(), UpdateSource::Github.endpoint());
+        assert_ne!(
+            UpdateSource::Ihomy.endpoint(),
+            UpdateSource::Github.endpoint()
+        );
     }
 }
 
@@ -8859,13 +10549,22 @@ mod hints_window_tests {
     fn migrate_clamps_out_of_range_look() {
         let mut cfg = Config {
             settings: Settings {
-                hints: HintsWindow { visible: true, scale: 0, opacity: 250, ..Default::default() },
+                hints: HintsWindow {
+                    visible: true,
+                    scale: 0,
+                    opacity: 250,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             ..Default::default()
         };
         cfg.migrate();
-        assert_eq!(cfg.settings.hints.scale, HintsWindow::SCALE_RANGE.0, "缩成 0 等于把窗口弄没");
+        assert_eq!(
+            cfg.settings.hints.scale,
+            HintsWindow::SCALE_RANGE.0,
+            "缩成 0 等于把窗口弄没"
+        );
         assert_eq!(cfg.settings.hints.opacity, HintsWindow::OPACITY_RANGE.1);
         assert!(cfg.settings.hints.visible, "钳值不该顺手改可见性");
     }
@@ -8955,30 +10654,62 @@ mod advanced_modifier_tests {
             r.tap = Some("Esc".into());
             r.tap2 = Some("Backspace".into());
         });
-        assert_eq!(r.tap_outputs(), [Some(Key::Escape), Some(Key::Backspace), Some(Key::Backspace)]);
+        assert_eq!(
+            r.tap_outputs(),
+            [
+                Some(Key::Escape),
+                Some(Key::Backspace),
+                Some(Key::Backspace)
+            ]
+        );
         // 只有 tap：三击都回落 tap。
         let t = remap(|r| {
             r.to = String::new();
             r.tap = Some("Esc".into());
         });
-        assert_eq!(t.tap_outputs(), [Some(Key::Escape), Some(Key::Escape), Some(Key::Escape)]);
+        assert_eq!(
+            t.tap_outputs(),
+            [Some(Key::Escape), Some(Key::Escape), Some(Key::Escape)]
+        );
     }
 
     #[test]
     fn describe_covers_all_modes() {
         assert_eq!(remap(|_| {}).describe(), "Ctrl");
-        assert_eq!(remap(|r| { r.oneshot = Some("Ctrl".into()); r.to = String::new(); }).describe(), "单击 Ctrl");
-        assert_eq!(remap(|r| { r.sticky = Some("Shift".into()); r.to = String::new(); }).describe(), "粘滞 Shift");
-        assert_eq!(remap(|r| {
-            r.to = String::new();
-            r.tap = Some("Esc".into());
-            r.hold = Some("Ctrl".into());
-        }).describe(), "单击 Esc · 长按 Ctrl");
-        assert_eq!(remap(|r| {
-            r.to = String::new();
-            r.tap = Some("Esc".into());
-            r.tap2 = Some("Backspace".into());
-        }).describe(), "单击 Esc · 双击 Backspace");
+        assert_eq!(
+            remap(|r| {
+                r.oneshot = Some("Ctrl".into());
+                r.to = String::new();
+            })
+            .describe(),
+            "单击 Ctrl"
+        );
+        assert_eq!(
+            remap(|r| {
+                r.sticky = Some("Shift".into());
+                r.to = String::new();
+            })
+            .describe(),
+            "粘滞 Shift"
+        );
+        assert_eq!(
+            remap(|r| {
+                r.to = String::new();
+                r.tap = Some("Esc".into());
+                r.hold = Some("Ctrl".into());
+            })
+            .describe(),
+            "单击 Esc · 长按 Ctrl"
+        );
+        assert_eq!(
+            remap(|r| {
+                r.to = String::new();
+                r.tap = Some("Esc".into());
+                r.tap2 = Some("Backspace".into());
+            })
+            .describe(),
+            "单击 Esc · 双击 Backspace"
+        );
     }
 
     #[test]
@@ -9043,7 +10774,13 @@ mod advanced_modifier_tests {
             ..Default::default()
         };
         let (clean, ignored) = sanitize_config(&cfg);
-        assert_eq!(clean.remaps.len(), 3, "remaps: {:?}\nignored: {:?}", clean.remaps, ignored);
+        assert_eq!(
+            clean.remaps.len(),
+            3,
+            "remaps: {:?}\nignored: {:?}",
+            clean.remaps,
+            ignored
+        );
 
         // 第 0 条：粘滞 Shift，其它清空。
         assert_eq!(clean.remaps[0].sticky.as_deref(), Some("Shift"));
@@ -9084,9 +10821,7 @@ mod platform_caps_tests {
     /// macOS 口径的 caps：F21~F24 无对应键码，监听与注入都不行（媒体键已随 7.1-㊹ 支持）。
     fn macos_caps() -> PlatformCaps {
         let mut keys = BTreeSet::new();
-        for k in [
-            Key::F21, Key::F22, Key::F23, Key::F24,
-        ] {
+        for k in [Key::F21, Key::F22, Key::F23, Key::F24] {
             keys.insert(k);
         }
         PlatformCaps {
@@ -9163,8 +10898,15 @@ mod platform_caps_tests {
                 "s",
                 "Ctrl+K",
                 vec![Action::If {
-                    condition: Condition::FrontmostApp { app: "firefox".into() },
-                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), masked: false, description: None }],
+                    condition: Condition::FrontmostApp {
+                        app: "firefox".into(),
+                    },
+                    then: vec![Action::Text {
+                        text: "x".into(),
+                        mode: TextMode::default(),
+                        masked: false,
+                        description: None,
+                    }],
                     otherwise: vec![],
                     description: None,
                 }],
@@ -9187,8 +10929,15 @@ mod platform_caps_tests {
                 "s",
                 "Ctrl+K",
                 vec![Action::If {
-                    condition: Condition::DeviceIs { id: "keyboard".into() },
-                    then: vec![Action::Text { text: "x".into(), mode: TextMode::default(), masked: false, description: None }],
+                    condition: Condition::DeviceIs {
+                        id: "keyboard".into(),
+                    },
+                    then: vec![Action::Text {
+                        text: "x".into(),
+                        mode: TextMode::default(),
+                        masked: false,
+                        description: None,
+                    }],
                     otherwise: vec![],
                     description: None,
                 }],
@@ -9256,7 +11005,9 @@ mod platform_caps_tests {
         assert!(detect_conflicts(&cfg, &macos_caps()).is_empty());
         let hits = detect_conflicts(&cfg, &linux_caps());
         assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
-        assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+        assert!(hits
+            .iter()
+            .all(|c| c.platform && c.severity == Severity::Warn));
         assert!(hits.iter().all(|c| c.message.contains("鼠标绝对移动")));
     }
 
@@ -9264,7 +11015,9 @@ mod platform_caps_tests {
     fn background_input_flagged_where_unsupported() {
         let action = Action::SendTo {
             target: "notepad.exe".into(),
-            payload: SendPayload::Keys { keys: vec!["Ctrl".into(), "S".into()] },
+            payload: SendPayload::Keys {
+                keys: vec!["Ctrl".into(), "S".into()],
+            },
             description: None,
         };
         let cfg = Config {
@@ -9281,7 +11034,9 @@ mod platform_caps_tests {
         for caps in [macos_caps(), linux_caps()] {
             let hits = detect_conflicts(&cfg, &caps);
             assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
-            assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+            assert!(hits
+                .iter()
+                .all(|c| c.platform && c.severity == Severity::Warn));
             assert!(hits.iter().all(|c| c.message.contains("后台发送")));
         }
     }
@@ -9307,7 +11062,9 @@ mod platform_caps_tests {
         for caps in [macos_caps(), linux_caps()] {
             let hits = detect_conflicts(&cfg, &caps);
             assert_eq!(hits.len(), 2, "快捷键与手势各一条：{hits:?}");
-            assert!(hits.iter().all(|c| c.platform && c.severity == Severity::Warn));
+            assert!(hits
+                .iter()
+                .all(|c| c.platform && c.severity == Severity::Warn));
             assert!(hits.iter().all(|c| c.message.contains("清空回收站")));
         }
     }
@@ -9316,7 +11073,9 @@ mod platform_caps_tests {
     #[test]
     fn shell_actions_validate_paths() {
         assert!(Action::Os {
-            operation: OsOperation::Reveal { path: "C:\\tmp\\a.txt".into() },
+            operation: OsOperation::Reveal {
+                path: "C:\\tmp\\a.txt".into()
+            },
             description: None,
         }
         .validate()
@@ -9332,7 +11091,12 @@ mod platform_caps_tests {
             SystemOperation::MonitorOff,
             SystemOperation::ToggleDesktopIcons,
         ] {
-            assert!(Action::System { operation, description: None }.validate().is_ok());
+            assert!(Action::System {
+                operation,
+                description: None
+            }
+            .validate()
+            .is_ok());
         }
     }
 
@@ -9344,9 +11108,13 @@ mod platform_caps_tests {
                 "s",
                 "F9",
                 vec![Action::If {
-                    condition: Condition::Exists { path: "/tmp".into() },
+                    condition: Condition::Exists {
+                        path: "/tmp".into(),
+                    },
                     then: vec![Action::If {
-                        condition: Condition::WindowTitleContains { text: "编辑".into() },
+                        condition: Condition::WindowTitleContains {
+                            text: "编辑".into(),
+                        },
                         then: vec![],
                         otherwise: vec![],
                         description: None,
@@ -9385,7 +11153,9 @@ mod platform_caps_tests {
                     "F10",
                     vec![Action::Parallel {
                         actions: vec![Action::If {
-                            condition: Condition::WindowTitleContains { text: "编辑".into() },
+                            condition: Condition::WindowTitleContains {
+                                text: "编辑".into(),
+                            },
                             then: vec![],
                             otherwise: vec![],
                             description: None,
@@ -9398,12 +11168,14 @@ mod platform_caps_tests {
         };
         let mac = detect_conflicts(&cfg, &macos_caps());
         assert!(
-            mac.iter().any(|c| c.message.contains("注入不了") && c.name == "注入"),
+            mac.iter()
+                .any(|c| c.message.contains("注入不了") && c.name == "注入"),
             "并行组内的注入不了键要报出来：{mac:?}"
         );
         let lin = detect_conflicts(&cfg, &linux_caps());
         assert!(
-            lin.iter().any(|c| c.message.contains("前台") && c.name == "前台"),
+            lin.iter()
+                .any(|c| c.message.contains("前台") && c.name == "前台"),
             "并行组内嵌套的前台条件要报出来：{lin:?}"
         );
     }
@@ -9427,15 +11199,24 @@ mod platform_caps_tests {
             ..Default::default()
         };
         let hits2 = detect_conflicts(&cfg2, &macos_caps());
-        assert!(hits2.iter().any(|c| c.message.contains("「F9 F21 K」")), "{hits2:?}");
-        assert!(hits2.iter().any(|c| c.message.contains("「F22&J」")), "{hits2:?}");
+        assert!(
+            hits2.iter().any(|c| c.message.contains("「F9 F21 K」")),
+            "{hits2:?}"
+        );
+        assert!(
+            hits2.iter().any(|c| c.message.contains("「F22&J」")),
+            "{hits2:?}"
+        );
     }
 
     #[test]
     fn disabled_entries_not_flagged() {
         let mut s = shortcut("s", "Ctrl+VolumeUp", vec![]);
         s.enabled = false;
-        let cfg = Config { shortcuts: vec![s], ..Default::default() };
+        let cfg = Config {
+            shortcuts: vec![s],
+            ..Default::default()
+        };
         assert!(detect_conflicts(&cfg, &macos_caps()).is_empty());
     }
 
@@ -9443,14 +11224,32 @@ mod platform_caps_tests {
     fn remap_sides_flagged() {
         let cfg = Config {
             remaps: vec![
-                Remap { from: "F21".into(), to: "A".into(), enabled: true, ..Default::default() },
-                Remap { from: "B".into(), to: "F24".into(), enabled: true, ..Default::default() },
+                Remap {
+                    from: "F21".into(),
+                    to: "A".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
+                Remap {
+                    from: "B".into(),
+                    to: "F24".into(),
+                    enabled: true,
+                    ..Default::default()
+                },
             ],
             ..Default::default()
         };
         let hits = detect_conflicts(&cfg, &macos_caps());
-        assert!(hits.iter().any(|c| c.message.contains("改键来源") && c.message.contains("F21")), "{hits:?}");
-        assert!(hits.iter().any(|c| c.message.contains("目标键") && c.message.contains("F24")), "{hits:?}");
+        assert!(
+            hits.iter()
+                .any(|c| c.message.contains("改键来源") && c.message.contains("F21")),
+            "{hits:?}"
+        );
+        assert!(
+            hits.iter()
+                .any(|c| c.message.contains("目标键") && c.message.contains("F24")),
+            "{hits:?}"
+        );
     }
 
     #[test]
@@ -9459,13 +11258,19 @@ mod platform_caps_tests {
             shortcuts: vec![shortcut(
                 "s",
                 "Ctrl+K",
-                vec![Action::Keys { keys: vec!["F21".into(), "Enter".into()], mode: KeysMode::Tap, description: None }],
+                vec![Action::Keys {
+                    keys: vec!["F21".into(), "Enter".into()],
+                    mode: KeysMode::Tap,
+                    description: None,
+                }],
             )],
             ..Default::default()
         };
         let hits = detect_conflicts(&cfg, &macos_caps());
         assert!(!hits.is_empty(), "{hits:?}");
-        assert!(hits.iter().any(|c| c.message.contains("F21") && c.message.contains("注入不了")));
+        assert!(hits
+            .iter()
+            .any(|c| c.message.contains("F21") && c.message.contains("注入不了")));
     }
 
     #[test]
@@ -9475,13 +11280,23 @@ mod platform_caps_tests {
             shortcuts: vec![shortcut(
                 "s",
                 "F22",
-                vec![Action::Keys { keys: vec!["F23".into()], mode: KeysMode::Tap, description: None }],
+                vec![Action::Keys {
+                    keys: vec!["F23".into()],
+                    mode: KeysMode::Tap,
+                    description: None,
+                }],
             )],
             ..Default::default()
         };
         let hits = detect_conflicts(&cfg, &macos_caps());
-        assert!(hits.iter().any(|c| c.message.contains("监听不到")), "{hits:?}");
-        assert!(hits.iter().any(|c| c.message.contains("注入不了")), "{hits:?}");
+        assert!(
+            hits.iter().any(|c| c.message.contains("监听不到")),
+            "{hits:?}"
+        );
+        assert!(
+            hits.iter().any(|c| c.message.contains("注入不了")),
+            "{hits:?}"
+        );
     }
 
     // ---- 触发侧 when 门控（7.2-㊶） ----
@@ -9490,12 +11305,21 @@ mod platform_caps_tests {
     #[test]
     fn when_matches_gates_by_frontmost_and_device() {
         use Condition::*;
-        let chrome =
-            FrontmostContext { process_name: "chrome.exe".into(), window_title: "Google".into() };
-        let mut s =
-            ShortcutItem { when: Some(FrontmostApp { app: "chrome".into() }), ..Default::default() };
+        let chrome = FrontmostContext {
+            process_name: "chrome.exe".into(),
+            window_title: "Google".into(),
+        };
+        let mut s = ShortcutItem {
+            when: Some(FrontmostApp {
+                app: "chrome".into(),
+            }),
+            ..Default::default()
+        };
         assert!(s.when_matches(&TriggerContext::fixed(Some(&chrome), None)));
-        assert!(!s.when_matches(&TriggerContext::empty()), "无前台上下文时恒不成立");
+        assert!(
+            !s.when_matches(&TriggerContext::empty()),
+            "无前台上下文时恒不成立"
+        );
         // 无条件条目恒真。
         s.when = None;
         assert!(s.when_matches(&TriggerContext::empty()));
@@ -9503,7 +11327,9 @@ mod platform_caps_tests {
         let r = Remap {
             from: "A".into(),
             to: "B".into(),
-            when: Some(DeviceIs { id: "keyboard".into() }),
+            when: Some(DeviceIs {
+                id: "keyboard".into(),
+            }),
             ..Default::default()
         };
         assert!(r.when_matches(&TriggerContext::fixed(None, Some("AT keyboard"))));
@@ -9512,8 +11338,10 @@ mod platform_caps_tests {
 
     #[test]
     fn trigger_context_checks_global_exclude_list() {
-        let chrome =
-            FrontmostContext { process_name: "Photoshop.exe".into(), window_title: "PS".into() };
+        let chrome = FrontmostContext {
+            process_name: "Photoshop.exe".into(),
+            window_title: "PS".into(),
+        };
         let ctx = TriggerContext::fixed(Some(&chrome), None);
         assert!(ctx.app_excluded(&["photoshop.exe".into()]));
         assert!(ctx.app_excluded(&["*shop*".into()]));
@@ -9533,14 +11361,22 @@ mod platform_caps_tests {
                 .count()
         };
         let mut a = shortcut("chrome 用", "Ctrl+K", vec![]);
-        a.when = Some(FrontmostApp { app: "chrome".into() });
+        a.when = Some(FrontmostApp {
+            app: "chrome".into(),
+        });
         let mut b = shortcut("vscode 用", "Ctrl+K", vec![]);
         b.when = Some(FrontmostApp { app: "code".into() });
-        let cfg = Config { shortcuts: vec![a.clone(), b], ..Default::default() };
+        let cfg = Config {
+            shortcuts: vec![a.clone(), b],
+            ..Default::default()
+        };
         assert_eq!(hard(&cfg), 0, "同触发键 + 不同 when 是按条件分流，不算重复");
 
         // 同触发键 + 相同 when（或都无 when）仍是硬冲突。
-        let dup = Config { shortcuts: vec![a.clone(), a], ..Default::default() };
+        let dup = Config {
+            shortcuts: vec![a.clone(), a],
+            ..Default::default()
+        };
         assert_eq!(hard(&dup), 1);
     }
 
@@ -9561,10 +11397,23 @@ mod platform_caps_tests {
             enabled: true,
             ..Default::default()
         };
-        let b =
-            Remap { from: "CapsLock".into(), to: "Ctrl".into(), enabled: true, ..Default::default() };
-        assert_eq!(hard(&Config { remaps: vec![a, b.clone()], ..Default::default() }), 0);
-        let dup = Config { remaps: vec![b.clone(), b], ..Default::default() };
+        let b = Remap {
+            from: "CapsLock".into(),
+            to: "Ctrl".into(),
+            enabled: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            hard(&Config {
+                remaps: vec![a, b.clone()],
+                ..Default::default()
+            }),
+            0
+        );
+        let dup = Config {
+            remaps: vec![b.clone(), b],
+            ..Default::default()
+        };
         assert_eq!(hard(&dup), 1);
     }
 
@@ -9574,17 +11423,32 @@ mod platform_caps_tests {
         use Condition::*;
         let mut s = shortcut("s", "Ctrl+K", vec![]);
         s.when = Some(FrontmostApp { app: "   ".into() }); // 空进程名 → 非法
-        let (out, ignored) =
-            sanitize_config(&Config { shortcuts: vec![s], ..Default::default() });
+        let (out, ignored) = sanitize_config(&Config {
+            shortcuts: vec![s],
+            ..Default::default()
+        });
         assert!(out.shortcuts[0].when.is_none(), "非法 when 被清掉");
-        assert!(ignored.iter().any(|m| m.contains("触发条件")), "{ignored:?}");
+        assert!(
+            ignored.iter().any(|m| m.contains("触发条件")),
+            "{ignored:?}"
+        );
 
-        let mut r =
-            Remap { from: "A".into(), to: "B".into(), enabled: true, ..Default::default() };
+        let mut r = Remap {
+            from: "A".into(),
+            to: "B".into(),
+            enabled: true,
+            ..Default::default()
+        };
         r.when = Some(DeviceIs { id: "".into() });
-        let (out, ignored) = sanitize_config(&Config { remaps: vec![r], ..Default::default() });
+        let (out, ignored) = sanitize_config(&Config {
+            remaps: vec![r],
+            ..Default::default()
+        });
         assert!(out.remaps[0].when.is_none());
-        assert!(ignored.iter().any(|m| m.contains("触发条件")), "{ignored:?}");
+        assert!(
+            ignored.iter().any(|m| m.contains("触发条件")),
+            "{ignored:?}"
+        );
     }
 
     #[cfg(feature = "automation")]
@@ -9592,11 +11456,17 @@ mod platform_caps_tests {
     fn when_frontmost_condition_flagged_on_linux() {
         use Condition::*;
         let mut s = shortcut("s", "Ctrl+K", vec![]);
-        s.when = Some(FrontmostApp { app: "chrome".into() });
-        let cfg = Config { shortcuts: vec![s], ..Default::default() };
+        s.when = Some(FrontmostApp {
+            app: "chrome".into(),
+        });
+        let cfg = Config {
+            shortcuts: vec![s],
+            ..Default::default()
+        };
         let hits = detect_conflicts(&cfg, &linux_caps());
         assert!(
-            hits.iter().any(|c| c.message.contains("前台") && c.message.contains("恒不成立")),
+            hits.iter()
+                .any(|c| c.message.contains("前台") && c.message.contains("恒不成立")),
             "{hits:?}"
         );
         assert!(detect_conflicts(&cfg, &PlatformCaps::default()).is_empty());
@@ -9638,12 +11508,23 @@ mod input_env_tests {
             }],
             ..Default::default()
         };
-        let env = InputEnv { diverters: vec!["logi-options-plus".into()], hvci: None };
+        let env = InputEnv {
+            diverters: vec!["logi-options-plus".into()],
+            hvci: None,
+        };
         assert!(diagnose_input_env(&cfg, &env).is_empty());
         // 改键来源是鼠标键同样算「用到鼠标键」（`from` 侧要监听）。
-        let mut r = Remap { from: "MouseBack".into(), to: "Escape".into(), enabled: true, ..Default::default() };
+        let mut r = Remap {
+            from: "MouseBack".into(),
+            to: "Escape".into(),
+            enabled: true,
+            ..Default::default()
+        };
         r.enabled = true;
-        let cfg = Config { remaps: vec![r], ..Default::default() };
+        let cfg = Config {
+            remaps: vec![r],
+            ..Default::default()
+        };
         assert_eq!(diagnose_input_env(&cfg, &env).len(), 1);
     }
 
@@ -9651,12 +11532,19 @@ mod input_env_tests {
     /// （`platform: true` + `Warn`），不阻止保存。
     #[test]
     fn diverter_reported_with_advice() {
-        let env = InputEnv { diverters: vec!["logi-options-plus".into()], hvci: None };
+        let env = InputEnv {
+            diverters: vec!["logi-options-plus".into()],
+            hvci: None,
+        };
         let hits = diagnose_input_env(&mouse_cfg(), &env);
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].severity, Severity::Warn);
         assert!(hits[0].platform);
-        assert!(hits[0].message.contains("Logi Options+"), "{}", hits[0].message);
+        assert!(
+            hits[0].message.contains("Logi Options+"),
+            "{}",
+            hits[0].message
+        );
         // 处置办法要真的在里面（能照做），不是只有一句「可能有问题」。
         assert!(hits[0].message.contains("无操作"), "{}", hits[0].message);
     }
@@ -9665,7 +11553,11 @@ mod input_env_tests {
     #[test]
     fn unknown_and_duplicate_ids_are_normalized() {
         let env = InputEnv {
-            diverters: vec!["不存在的接管者".into(), "logi-ghub".into(), "logi-ghub".into()],
+            diverters: vec![
+                "不存在的接管者".into(),
+                "logi-ghub".into(),
+                "logi-ghub".into(),
+            ],
             hvci: None,
         };
         let hits = diagnose_input_env(&mouse_cfg(), &env);
@@ -9696,7 +11588,10 @@ mod input_env_tests {
     /// HVCI 只作环境信息：即便开着也不产出冲突（它拦内核驱动，不影响用户态钩子）。
     #[test]
     fn hvci_is_info_not_conflict() {
-        let env = InputEnv { diverters: vec![], hvci: Some(true) };
+        let env = InputEnv {
+            diverters: vec![],
+            hvci: Some(true),
+        };
         assert!(diagnose_input_env(&mouse_cfg(), &env).is_empty());
     }
 
@@ -9869,8 +11764,14 @@ mod hot_corner_tests {
     #[test]
     fn hot_corners_flagged_where_unsupported() {
         let mut cfg = Config::default();
-        assert!(detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() })
-            .is_empty());
+        assert!(detect_conflicts(
+            &cfg,
+            &PlatformCaps {
+                hot_corners: false,
+                ..Default::default()
+            }
+        )
+        .is_empty());
         cfg.hot_corners.push(HotCornerRule {
             spot: HotCornerSpot::BottomLeft,
             name: None,
@@ -9884,7 +11785,13 @@ mod hot_corner_tests {
             folder: None,
             order: 0,
         });
-        let hits = detect_conflicts(&cfg, &PlatformCaps { hot_corners: false, ..Default::default() });
+        let hits = detect_conflicts(
+            &cfg,
+            &PlatformCaps {
+                hot_corners: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(hits.len(), 1);
         assert!(hits[0].platform);
         assert!(hits[0].message.contains("触发角"));
@@ -9905,7 +11812,10 @@ mod hot_corner_tests {
             when: None,
             actions: vec![
                 text("ok"),
-                Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+                Action::Mouse {
+                    op: MouseOp::Move { dx: 0, dy: 0 },
+                    description: None,
+                },
             ],
             enabled: true,
             folder: None,
@@ -10107,8 +12017,14 @@ mod hot_corner_tests {
     #[test]
     fn wheel_edges_flagged_where_unsupported() {
         let mut cfg = Config::default();
-        assert!(detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() })
-            .is_empty());
+        assert!(detect_conflicts(
+            &cfg,
+            &PlatformCaps {
+                wheel_edges: false,
+                ..Default::default()
+            }
+        )
+        .is_empty());
         cfg.wheel_edges.push(WheelEdgeRule {
             edge: WheelEdgeSpot::Bottom,
             name: None,
@@ -10121,7 +12037,13 @@ mod hot_corner_tests {
             folder: None,
             order: 0,
         });
-        let hits = detect_conflicts(&cfg, &PlatformCaps { wheel_edges: false, ..Default::default() });
+        let hits = detect_conflicts(
+            &cfg,
+            &PlatformCaps {
+                wheel_edges: false,
+                ..Default::default()
+            },
+        );
         assert_eq!(hits.len(), 1);
         assert!(hits[0].platform);
         assert!(hits[0].message.contains("边缘滚动"));
@@ -10141,7 +12063,10 @@ mod hot_corner_tests {
             when: None,
             actions: vec![
                 text("ok"),
-                Action::Mouse { op: MouseOp::Move { dx: 0, dy: 0 }, description: None },
+                Action::Mouse {
+                    op: MouseOp::Move { dx: 0, dy: 0 },
+                    description: None,
+                },
             ],
             enabled: true,
             folder: None,

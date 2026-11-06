@@ -55,7 +55,10 @@ pub fn load(file: &Path) -> LoadOutcome {
         Err(e) => return recover(file, &format!("配置读取失败：{e}")),
     };
     match parse(&text) {
-        Ok(cfg) => LoadOutcome { config: cfg, warnings: Vec::new() },
+        Ok(cfg) => LoadOutcome {
+            config: cfg,
+            warnings: Vec::new(),
+        },
         Err(e) => recover(file, &format!("配置解析失败：{e}")),
     }
 }
@@ -78,7 +81,10 @@ fn load_without_primary(file: &Path) -> LoadOutcome {
     let bak = bak_path(file);
     let Ok(text) = fs::read_to_string(&bak) else {
         // 真正的首次启动：没有任何配置，用默认值且不算异常。
-        return LoadOutcome { config: Config::default(), warnings: Vec::new() };
+        return LoadOutcome {
+            config: Config::default(),
+            warnings: Vec::new(),
+        };
     };
     match parse(&text) {
         Ok(cfg) => self_heal(
@@ -113,7 +119,10 @@ fn load_without_primary(file: &Path) -> LoadOutcome {
 fn recover(file: &Path, reason: &str) -> LoadOutcome {
     let archive_note = match archive_corrupt(file) {
         Some(p) => format!("损坏文件已留档为 {}", p.display()),
-        None => format!("{} 留档失败（文件可能被占用），原文件仍在原处", file.display()),
+        None => format!(
+            "{} 留档失败（文件可能被占用），原文件仍在原处",
+            file.display()
+        ),
     };
     let bak = bak_path(file);
     match read_backup(file) {
@@ -148,7 +157,10 @@ fn self_heal(file: &Path, cfg: Config, mut warning: LoadWarning) -> LoadOutcome 
     if let Err(e) = save(file, &cfg) {
         warning.detail.push_str(&format!("；回写失败：{e}"));
     }
-    LoadOutcome { config: cfg, warnings: vec![warning] }
+    LoadOutcome {
+        config: cfg,
+        warnings: vec![warning],
+    }
 }
 
 /// 把损坏的原文件改名留档（`config.json.corrupt-20260929-153000`），返回留档路径。
@@ -169,7 +181,11 @@ pub fn archive_copy(file: &Path, mark: &str) -> Option<PathBuf> {
     let base = file_name(file);
     let stamp = stamp();
     for n in 0..64u32 {
-        let seq = if n == 0 { String::new() } else { format!("-{n}") };
+        let seq = if n == 0 {
+            String::new()
+        } else {
+            format!("-{n}")
+        };
         let dest = file.with_file_name(format!("{base}{mark}{stamp}{seq}"));
         if dest.exists() {
             continue;
@@ -213,7 +229,9 @@ pub fn save(file: &Path, cfg: &Config) -> Result<(), String> {
 /// 只在现有内容确实能解析时才留——否则损坏内容会把好备份盖掉，自愈就断了来源。
 /// 尽力而为：留档失败不影响本次保存。
 fn backup_existing(file: &Path) {
-    let Ok(text) = fs::read_to_string(file) else { return };
+    let Ok(text) = fs::read_to_string(file) else {
+        return;
+    };
     if parse(&text).is_err() {
         return;
     }
@@ -254,7 +272,10 @@ fn create_tmp(path: &Path) -> std::io::Result<(File, PathBuf)> {
             Err(e) => return Err(e),
         }
     }
-    Err(std::io::Error::new(ErrorKind::AlreadyExists, "无法分配临时文件名"))
+    Err(std::io::Error::new(
+        ErrorKind::AlreadyExists,
+        "无法分配临时文件名",
+    ))
 }
 
 /// `rename` 覆盖目标。Windows 上目标被别的进程短暂持有（杀软扫描、同步客户端）会
@@ -336,7 +357,12 @@ mod tests {
             shortcuts: vec![ShortcutItem {
                 name: Some(name.into()),
                 triggers: vec!["Ctrl+Alt+K".into()],
-                actions: vec![Action::Text { text: name.into(), mode: TextMode::Input, masked: false, description: None }],
+                actions: vec![Action::Text {
+                    text: name.into(),
+                    mode: TextMode::Input,
+                    masked: false,
+                    description: None,
+                }],
                 enabled: true,
                 ..Default::default()
             }],
@@ -366,7 +392,11 @@ mod tests {
         let out = load(&file);
         assert!(out.warnings.is_empty());
         assert_eq!(first_shortcut_name(&out.config), "v1");
-        assert_eq!(tmp.entries(), vec!["config.json".to_string()], "落盘不留临时文件");
+        assert_eq!(
+            tmp.entries(),
+            vec!["config.json".to_string()],
+            "落盘不留临时文件"
+        );
     }
 
     #[test]
@@ -387,9 +417,15 @@ mod tests {
             .filter(|n| n.contains(CORRUPT_MARK))
             .collect();
         assert_eq!(archived.len(), 1, "损坏文件应留档：{:?}", tmp.entries());
-        assert_eq!(fs::read_to_string(tmp.0.join(&archived[0])).unwrap(), garbage);
+        assert_eq!(
+            fs::read_to_string(tmp.0.join(&archived[0])).unwrap(),
+            garbage
+        );
         assert!(!file.exists(), "留档用改名而非复制，主文件已移走");
-        assert!(out.warnings[0].detail.contains("corrupt"), "细节里要给出留档位置");
+        assert!(
+            out.warnings[0].detail.contains("corrupt"),
+            "细节里要给出留档位置"
+        );
     }
 
     #[test]
@@ -403,12 +439,20 @@ mod tests {
 
         let out = load(&file);
         assert_eq!(out.warnings.len(), 1);
-        assert_eq!(first_shortcut_name(&out.config), "v1", "应从 .bak 恢复上次良好副本");
+        assert_eq!(
+            first_shortcut_name(&out.config),
+            "v1",
+            "应从 .bak 恢复上次良好副本"
+        );
         assert!(file.exists(), "自愈要把恢复出来的配置写回主文件");
 
         // 写回的主文件能正常解析，且 .bak 仍在（下次损坏还能救）。
         let again = load(&file);
-        assert!(again.warnings.is_empty(), "自愈后再次加载应完全正常：{:?}", again.warnings.len());
+        assert!(
+            again.warnings.is_empty(),
+            "自愈后再次加载应完全正常：{:?}",
+            again.warnings.len()
+        );
         assert_eq!(first_shortcut_name(&again.config), "v1");
         assert!(tmp.0.join("config.json.bak").exists());
     }
@@ -471,22 +515,37 @@ mod tests {
 
         assert_ne!(a, b, "同一秒内的两次留档不能互相覆盖：{:?}", tmp.entries());
         assert!(file.exists(), "留档是复制，主文件必须还在");
-        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()), "v1");
-        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&b).unwrap()).unwrap()), "v1");
+        assert_eq!(
+            first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()),
+            "v1"
+        );
+        assert_eq!(
+            first_shortcut_name(&parse(&fs::read_to_string(&b).unwrap()).unwrap()),
+            "v1"
+        );
         assert!(
-            a.file_name().unwrap().to_string_lossy().contains(PRE_IMPORT_MARK),
+            a.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(PRE_IMPORT_MARK),
             "留档名要能一眼看出是导入前快照：{}",
             a.display()
         );
         // 留档是快照：主文件被导入内容覆盖后，快照仍是旧内容。
         save(&file, &cfg_named("v2")).unwrap();
-        assert_eq!(first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()), "v1");
+        assert_eq!(
+            first_shortcut_name(&parse(&fs::read_to_string(&a).unwrap()).unwrap()),
+            "v1"
+        );
     }
 
     #[test]
     fn archive_copy_without_target_is_none() {
         let tmp = TmpDir::new("archive_none");
-        assert!(archive_copy(&tmp.config(), PRE_IMPORT_MARK).is_none(), "没有配置可留档时返回 None");
+        assert!(
+            archive_copy(&tmp.config(), PRE_IMPORT_MARK).is_none(),
+            "没有配置可留档时返回 None"
+        );
         assert_eq!(tmp.entries(), Vec::<String>::new(), "失败不留垃圾文件");
     }
 
@@ -503,7 +562,10 @@ mod tests {
         h2.join().unwrap().unwrap();
 
         // 两次保存都成功，磁盘上只剩主文件 + 备份（没有残留临时文件）。
-        assert_eq!(tmp.entries(), vec!["config.json".to_string(), "config.json.bak".to_string()]);
+        assert_eq!(
+            tmp.entries(),
+            vec!["config.json".to_string(), "config.json.bak".to_string()]
+        );
         assert!(load(&file).warnings.is_empty());
     }
 }

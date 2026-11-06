@@ -4,7 +4,8 @@
 //! 目录 / 层用固定 id：重复载入时合并按判重跳过，不会翻倍。
 
 use crate::{
-    Action, Config, Folder, KeysMode, Layer, MouseButton, MouseOp, Remap, ShortcutItem, TextExpansion, TextMode,
+    Action, Config, Folder, KeysMode, Layer, MouseButton, MouseOp, Remap, ShortcutItem,
+    TextExpansion, TextMode,
 };
 #[cfg(feature = "automation")]
 use crate::{Condition, Shell};
@@ -59,7 +60,9 @@ pub fn sample_config() -> Config {
     });
     cfg.remaps.push(Remap {
         name: Some("F2 长按锁定「示例层」".into()),
-        description: Some("锁定式切层：长按 F2 切换示例层开 / 关，层保持生效（层内放和弦 / 序列用这种）".into()),
+        description: Some(
+            "锁定式切层：长按 F2 切换示例层开 / 关，层保持生效（层内放和弦 / 序列用这种）".into(),
+        ),
         folder: folder.clone(),
         from: "F2".into(),
         to: String::new(),
@@ -98,7 +101,9 @@ pub fn sample_config() -> Config {
     });
     cfg.remaps.push(Remap {
         name: Some("F3 单次 Shift".into()),
-        description: Some("oneshot：按一下 F3，紧接着按的那个键自动带上 Shift（松开即用即走）".into()),
+        description: Some(
+            "oneshot：按一下 F3，紧接着按的那个键自动带上 Shift（松开即用即走）".into(),
+        ),
         folder: folder.clone(),
         from: "F3".into(),
         to: String::new(),
@@ -108,7 +113,9 @@ pub fn sample_config() -> Config {
     });
     cfg.remaps.push(Remap {
         name: Some("F4 粘滞 Ctrl".into()),
-        description: Some("sticky：按一下 F4 锁定 Ctrl，再按一下解锁（「按住说话」类连续组合键用）".into()),
+        description: Some(
+            "sticky：按一下 F4 锁定 Ctrl，再按一下解锁（「按住说话」类连续组合键用）".into(),
+        ),
         folder: folder.clone(),
         from: "F4".into(),
         to: String::new(),
@@ -139,16 +146,17 @@ pub fn sample_config() -> Config {
         ..ShortcutItem::default()
     };
     // 同上的层内版本：条目归属「示例层」，只有该层激活时才参与匹配。
-    let sc_in_layer = |name: &str, desc: &str, triggers: &[&str], actions: Vec<Action>| ShortcutItem {
-        name: Some(name.into()),
-        description: Some(desc.into()),
-        folder: folder.clone(),
-        layer: layer.clone(),
-        triggers: triggers.iter().map(|s| s.to_string()).collect(),
-        actions,
-        enabled: true,
-        ..ShortcutItem::default()
-    };
+    let sc_in_layer =
+        |name: &str, desc: &str, triggers: &[&str], actions: Vec<Action>| ShortcutItem {
+            name: Some(name.into()),
+            description: Some(desc.into()),
+            folder: folder.clone(),
+            layer: layer.clone(),
+            triggers: triggers.iter().map(|s| s.to_string()).collect(),
+            actions,
+            enabled: true,
+            ..ShortcutItem::default()
+        };
     cfg.shortcuts.push(sc(
         "文本注入演示",
         "触发后在光标处打出一段文本（中文走剪贴板注入，最稳）",
@@ -174,11 +182,32 @@ pub fn sample_config() -> Config {
         "快捷键可以串一串动作：打字 → 停 0.5 秒 → 再打字（还有按键组合 / 命令 / 鼠标等）",
         &["Ctrl+Alt+P"],
         vec![
-            Action::Text { text: "3… ".into(), mode: Default::default(), masked: false, description: None },
-            Action::PauseMs { ms: 500, description: None },
-            Action::Text { text: "2… ".into(), mode: Default::default(), masked: false, description: None },
-            Action::PauseMs { ms: 500, description: None },
-            Action::Text { text: "1！".into(), mode: Default::default(), masked: false, description: None },
+            Action::Text {
+                text: "3… ".into(),
+                mode: Default::default(),
+                masked: false,
+                description: None,
+            },
+            Action::PauseMs {
+                ms: 500,
+                description: None,
+            },
+            Action::Text {
+                text: "2… ".into(),
+                mode: Default::default(),
+                masked: false,
+                description: None,
+            },
+            Action::PauseMs {
+                ms: 500,
+                description: None,
+            },
+            Action::Text {
+                text: "1！".into(),
+                mode: Default::default(),
+                masked: false,
+                description: None,
+            },
         ],
     ));
     cfg.shortcuts.push(sc(
@@ -294,12 +323,33 @@ pub fn sample_config() -> Config {
         replace: replace.into(),
         enabled: true,
     };
-    cfg.expansions.push(ex(";sig", "此致\n—— 来自咔哒 Kada", "输入 ;sig 再按空格 / 回车 / Tab 展开多行签名"));
-    cfg.expansions.push(ex(";addr", "某市某区某路 88 号", "输入 ;addr 再按空格 / 回车 / Tab 展开地址"));
-    cfg.expansions.push(ex(";btw", "顺带一提，", "热串适合高频短语；触发词要避开日常单词，加个前缀最稳"));
-    cfg.expansions.push(ex(";date", "{date}", "替换文本里的 {date} / {time} / {clipboard} 是动态片段：展开时才求值，这里插入当天日期"));
-    cfg.expansions.push(ex(";time", "{time}", "同上，插入当前时间（时分秒）"));
-    cfg.expansions.push(ex(";clip", "{clipboard}", "动态片段三兄弟之一：展开时插入当前剪贴板内容（{date} / {time} / {clipboard}）"));
+    cfg.expansions.push(ex(
+        ";sig",
+        "此致\n—— 来自咔哒 Kada",
+        "输入 ;sig 再按空格 / 回车 / Tab 展开多行签名",
+    ));
+    cfg.expansions.push(ex(
+        ";addr",
+        "某市某区某路 88 号",
+        "输入 ;addr 再按空格 / 回车 / Tab 展开地址",
+    ));
+    cfg.expansions.push(ex(
+        ";btw",
+        "顺带一提，",
+        "热串适合高频短语；触发词要避开日常单词，加个前缀最稳",
+    ));
+    cfg.expansions.push(ex(
+        ";date",
+        "{date}",
+        "替换文本里的 {date} / {time} / {clipboard} 是动态片段：展开时才求值，这里插入当天日期",
+    ));
+    cfg.expansions
+        .push(ex(";time", "{time}", "同上，插入当前时间（时分秒）"));
+    cfg.expansions.push(ex(
+        ";clip",
+        "{clipboard}",
+        "动态片段三兄弟之一：展开时插入当前剪贴板内容（{date} / {time} / {clipboard}）",
+    ));
     cfg.expansions.push(ex(
         ";site",
         "咔哒 Kada 下载页：https://ihomy.top/kada",
@@ -311,7 +361,9 @@ pub fn sample_config() -> Config {
     {
         cfg.remaps.push(Remap {
             name: Some("记事本里 F6 → Esc（改键条件门控）".into()),
-            description: Some("带 when 条件的改键：只有前台是记事本时 F6 才变 Esc，其它应用里 F6 保持原样".into()),
+            description: Some(
+                "带 when 条件的改键：只有前台是记事本时 F6 才变 Esc，其它应用里 F6 保持原样".into(),
+            ),
             folder: folder.clone(),
             from: "F6".into(),
             to: "Escape".into(),
@@ -339,43 +391,45 @@ pub fn sample_config() -> Config {
                 description: None,
             }],
         ));
-    cfg.shortcuts.push(ShortcutItem {
-        name: Some("条件门控演示（记事本限定）".into()),
-        description: Some("带 when 条件：前台是记事本时这条才生效，其它应用里完全不存在".into()),
-        folder: folder.clone(),
-        layer: None,
-        when: Some(Condition::FrontmostApp {
-            app: "notepad".into(),
-        }),
-        triggers: vec!["Ctrl+Alt+B".into()],
-        actions: vec![Action::Text {
-            text: "条件快捷键生效：只在记事本里触发".into(),
-            mode: Default::default(),
-            masked: false,
-            description: None,
-        }],
-        enabled: true,
-    });
-    cfg.shortcuts.push(sc(
-        "命令输出到消息中心",
-        "Command 动作：执行一条命令，输出弹窗展示（也可存成变量给后续动作用）",
-        &["Ctrl+Alt+R"],
-        vec![Action::Command {
-            shell: Shell::Cmd,
-            command: "echo 来自 Kada 的命令输出".into(),
-            working_dir: String::new(),
-            timeout_ms: None,
-            ok_exit_codes: Vec::new(),
-            show_output: true.into(),
-            hide_window: false,
-            var: String::new(),
-            wait: true,
-            on_error: Default::default(),
-            if_running: Default::default(),
-            description: None,
-        }],
-    ));
-    cfg.shortcuts.push(sc(
+        cfg.shortcuts.push(ShortcutItem {
+            name: Some("条件门控演示（记事本限定）".into()),
+            description: Some(
+                "带 when 条件：前台是记事本时这条才生效，其它应用里完全不存在".into(),
+            ),
+            folder: folder.clone(),
+            layer: None,
+            when: Some(Condition::FrontmostApp {
+                app: "notepad".into(),
+            }),
+            triggers: vec!["Ctrl+Alt+B".into()],
+            actions: vec![Action::Text {
+                text: "条件快捷键生效：只在记事本里触发".into(),
+                mode: Default::default(),
+                masked: false,
+                description: None,
+            }],
+            enabled: true,
+        });
+        cfg.shortcuts.push(sc(
+            "命令输出到消息中心",
+            "Command 动作：执行一条命令，输出弹窗展示（也可存成变量给后续动作用）",
+            &["Ctrl+Alt+R"],
+            vec![Action::Command {
+                shell: Shell::Cmd,
+                command: "echo 来自 Kada 的命令输出".into(),
+                working_dir: String::new(),
+                timeout_ms: None,
+                ok_exit_codes: Vec::new(),
+                show_output: true.into(),
+                hide_window: false,
+                var: String::new(),
+                wait: true,
+                on_error: Default::default(),
+                if_running: Default::default(),
+                description: None,
+            }],
+        ));
+        cfg.shortcuts.push(sc(
         "命令取变量 + 引用",
         "命令动作用 whoami 取当前用户名存进变量 user，下一步文本用 {user} 引用它——变量是把多步动作串成一条流水线的纽带",
         &["Ctrl+Alt+V"],
@@ -402,7 +456,7 @@ pub fn sample_config() -> Config {
             },
         ],
     ));
-    cfg.shortcuts.push(ShortcutItem {
+        cfg.shortcuts.push(ShortcutItem {
         name: Some("条件判断演示".into()),
         description: Some("If 动作：前台是记事本时走「满足条件」分支，否则走「否则」分支（与触发条件共用同一套判定）".into()),
         folder: folder.clone(),
@@ -429,45 +483,45 @@ pub fn sample_config() -> Config {
         }],
         enabled: true,
     });
-    cfg.shortcuts.push(sc(
-        "并行动作演示",
-        "Parallel 动作：两条命令各起一线程同时跑，全部结束才进下一步，两份输出都进消息中心",
-        &["Ctrl+Alt+Shift+A"],
-        vec![Action::Parallel {
-            actions: vec![
-                Action::Command {
-                    shell: Shell::Cmd,
-                    command: "echo parallel-A".into(),
-                    working_dir: String::new(),
-                    timeout_ms: None,
-                    ok_exit_codes: Vec::new(),
-                    show_output: false.into(),
-                    hide_window: false,
-                    var: String::new(),
-                    wait: true,
-                    on_error: Default::default(),
-                    if_running: Default::default(),
-                    description: None,
-                },
-                Action::Command {
-                    shell: Shell::Cmd,
-                    command: "echo parallel-B".into(),
-                    working_dir: String::new(),
-                    timeout_ms: None,
-                    ok_exit_codes: Vec::new(),
-                    show_output: false.into(),
-                    hide_window: false,
-                    var: String::new(),
-                    wait: true,
-                    on_error: Default::default(),
-                    if_running: Default::default(),
-                    description: None,
-                },
-            ],
-            description: None,
-        }],
-    ));
-}
+        cfg.shortcuts.push(sc(
+            "并行动作演示",
+            "Parallel 动作：两条命令各起一线程同时跑，全部结束才进下一步，两份输出都进消息中心",
+            &["Ctrl+Alt+Shift+A"],
+            vec![Action::Parallel {
+                actions: vec![
+                    Action::Command {
+                        shell: Shell::Cmd,
+                        command: "echo parallel-A".into(),
+                        working_dir: String::new(),
+                        timeout_ms: None,
+                        ok_exit_codes: Vec::new(),
+                        show_output: false.into(),
+                        hide_window: false,
+                        var: String::new(),
+                        wait: true,
+                        on_error: Default::default(),
+                        if_running: Default::default(),
+                        description: None,
+                    },
+                    Action::Command {
+                        shell: Shell::Cmd,
+                        command: "echo parallel-B".into(),
+                        working_dir: String::new(),
+                        timeout_ms: None,
+                        ok_exit_codes: Vec::new(),
+                        show_output: false.into(),
+                        hide_window: false,
+                        var: String::new(),
+                        wait: true,
+                        on_error: Default::default(),
+                        if_running: Default::default(),
+                        description: None,
+                    },
+                ],
+                description: None,
+            }],
+        ));
+    }
 
     cfg
 }
@@ -502,9 +556,20 @@ mod tests {
     #[test]
     fn sample_covers_core_features() {
         let cfg = sample_config();
-        assert!(cfg.remaps.iter().any(|r| r.tap.is_some() && r.hold.is_some()), "缺 tap-hold");
-        assert!(cfg.remaps.iter().any(|r| r.hold_layer.is_some()), "缺 momentary 切层");
-        assert!(cfg.remaps.iter().any(|r| r.lock_layer.is_some()), "缺锁定切层");
+        assert!(
+            cfg.remaps
+                .iter()
+                .any(|r| r.tap.is_some() && r.hold.is_some()),
+            "缺 tap-hold"
+        );
+        assert!(
+            cfg.remaps.iter().any(|r| r.hold_layer.is_some()),
+            "缺 momentary 切层"
+        );
+        assert!(
+            cfg.remaps.iter().any(|r| r.lock_layer.is_some()),
+            "缺锁定切层"
+        );
         assert!(cfg.remaps.iter().any(|r| r.tap2.is_some()), "缺连击");
         assert!(cfg.remaps.iter().any(|r| r.tap3.is_some()), "缺三击");
         assert!(cfg.remaps.iter().any(|r| r.oneshot.is_some()), "缺单次键");
@@ -523,54 +588,120 @@ mod tests {
                 && r.lock_layer.is_none()),
             "缺普通改键（to）"
         );
-        assert!(cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.split(' ').count() > 1)), "缺序列");
-        assert!(cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.contains('&'))), "缺和弦");
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| s.triggers.iter().any(|t| t.split(' ').count() > 1)),
+            "缺序列"
+        );
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| s.triggers.iter().any(|t| t.contains('&'))),
+            "缺和弦"
+        );
         assert!(cfg.expansions.len() >= 5, "热串太少");
-        assert!(cfg.shortcuts.iter().all(|s| s.enabled) && cfg.remaps.iter().all(|r| r.enabled), "样例必须全启用");
+        assert!(
+            cfg.shortcuts.iter().all(|s| s.enabled) && cfg.remaps.iter().all(|r| r.enabled),
+            "样例必须全启用"
+        );
     }
 
     /// 动作类型与条目形态的覆盖面（跟着样例一起长：加新动作类型时先想「样例里怎么演示它」）。
     #[test]
     fn sample_covers_action_types_and_shapes() {
         let cfg = sample_config();
-        let has_action = |pred: fn(&Action) -> bool| cfg.shortcuts.iter().any(|s| s.actions.iter().any(pred));
-        assert!(has_action(|a| matches!(a, Action::Text { .. })), "缺文本动作");
-        assert!(has_action(|a| matches!(a, Action::Keys { .. })), "缺注入组合键");
-        assert!(has_action(|a| matches!(a, Action::Mouse { .. })), "缺鼠标动作");
+        let has_action =
+            |pred: fn(&Action) -> bool| cfg.shortcuts.iter().any(|s| s.actions.iter().any(pred));
         assert!(
-            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Move { .. }, .. })),
+            has_action(|a| matches!(a, Action::Text { .. })),
+            "缺文本动作"
+        );
+        assert!(
+            has_action(|a| matches!(a, Action::Keys { .. })),
+            "缺注入组合键"
+        );
+        assert!(
+            has_action(|a| matches!(a, Action::Mouse { .. })),
+            "缺鼠标动作"
+        );
+        assert!(
+            has_action(|a| matches!(
+                a,
+                Action::Mouse {
+                    op: MouseOp::Move { .. },
+                    ..
+                }
+            )),
             "缺鼠标移动"
         );
         assert!(
-            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Click { .. }, .. })),
+            has_action(|a| matches!(
+                a,
+                Action::Mouse {
+                    op: MouseOp::Click { .. },
+                    ..
+                }
+            )),
             "缺鼠标点击"
         );
         assert!(
-            has_action(|a| matches!(a, Action::Mouse { op: MouseOp::Scroll { .. }, .. })),
+            has_action(|a| matches!(
+                a,
+                Action::Mouse {
+                    op: MouseOp::Scroll { .. },
+                    ..
+                }
+            )),
             "缺鼠标滚轮"
         );
-        assert!(has_action(|a| matches!(a, Action::PauseMs { .. })), "缺延迟");
         assert!(
-            has_action(|a| matches!(a, Action::Text { mode: TextMode::ToUpper, .. })),
+            has_action(|a| matches!(a, Action::PauseMs { .. })),
+            "缺延迟"
+        );
+        assert!(
+            has_action(|a| matches!(
+                a,
+                Action::Text {
+                    mode: TextMode::ToUpper,
+                    ..
+                }
+            )),
             "缺「转大写」模式"
         );
         assert!(
-            has_action(|a| matches!(a, Action::Text { mode: TextMode::ToLower, .. })),
+            has_action(|a| matches!(
+                a,
+                Action::Text {
+                    mode: TextMode::ToLower,
+                    ..
+                }
+            )),
             "缺「转小写」模式"
         );
         // 层内快捷键（不是层内改键）：成套快捷键收进层的用法要在样例里立着。
-        assert!(cfg.shortcuts.iter().any(|s| s.layer.is_some()), "缺层内快捷键");
+        assert!(
+            cfg.shortcuts.iter().any(|s| s.layer.is_some()),
+            "缺层内快捷键"
+        );
         // 鼠标键作触发键（配置引用鼠标键时才会挂鼠标钩子）。
         assert!(
-            cfg.shortcuts.iter().any(|s| s.triggers.iter().any(|t| t.contains("Mouse"))),
+            cfg.shortcuts
+                .iter()
+                .any(|s| s.triggers.iter().any(|t| t.contains("Mouse"))),
             "缺鼠标键触发"
         );
         // 层标记（V0.60）：样例层带个标记，用户一眼看到「层标记」长什么样。
         assert!(cfg.layers.iter().all(|l| l.mark.is_some()), "缺层标记演示");
         // 热串要含动态片段，否则 {date}/{time}/{clipboard} 这条能力在样例里没有落点。
-        assert!(cfg.expansions.iter().any(|e| e.replace.contains("{date}")), "缺动态片段 {{date}}");
         assert!(
-            cfg.expansions.iter().any(|e| e.replace.contains("{clipboard}")),
+            cfg.expansions.iter().any(|e| e.replace.contains("{date}")),
+            "缺动态片段 {{date}}"
+        );
+        assert!(
+            cfg.expansions
+                .iter()
+                .any(|e| e.replace.contains("{clipboard}")),
             "缺动态片段 {{clipboard}}"
         );
     }
@@ -580,13 +711,36 @@ mod tests {
     #[test]
     fn sample_covers_automation_features() {
         let cfg = sample_config();
-        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::OpenUrl { .. }))), "缺 OpenUrl");
-        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::Command { .. }))), "缺命令");
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| matches!(s.actions.first(), Some(Action::OpenUrl { .. }))),
+            "缺 OpenUrl"
+        );
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| matches!(s.actions.first(), Some(Action::Command { .. }))),
+            "缺命令"
+        );
         assert!(cfg.shortcuts.iter().any(|s| s.when.is_some()), "缺条件门控");
         // 改键侧的触发条件门控（`when`）与快捷键侧是两套，各要有一条样例。
-        assert!(cfg.remaps.iter().any(|r| r.when.is_some()), "缺改键条件门控");
-        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::If { .. }))), "缺条件判断动作");
-        assert!(cfg.shortcuts.iter().any(|s| matches!(s.actions.first(), Some(Action::Parallel { .. }))), "缺并行动作");
+        assert!(
+            cfg.remaps.iter().any(|r| r.when.is_some()),
+            "缺改键条件门控"
+        );
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| matches!(s.actions.first(), Some(Action::If { .. }))),
+            "缺条件判断动作"
+        );
+        assert!(
+            cfg.shortcuts
+                .iter()
+                .any(|s| matches!(s.actions.first(), Some(Action::Parallel { .. }))),
+            "缺并行动作"
+        );
         // 变量要真的被「写出来又读回去」，否则 {var} 这条链在样例里只是摆设。
         let writes: Vec<&str> = cfg
             .shortcuts

@@ -22,7 +22,9 @@
 fn main() {
     let unlock = std::env::args().any(|a| a == "--unlock");
     if !kada_hook::hidpp::supported() {
-        println!("当前平台不支持（这是 Windows 专属能力：HID++ 控制接口只在 Windows 侧共享打开）。");
+        println!(
+            "当前平台不支持（这是 Windows 专属能力：HID++ 控制接口只在 Windows 侧共享打开）。"
+        );
         return;
     }
 
@@ -49,11 +51,22 @@ fn main() {
                 c.cid,
                 c.label,
                 c.diverted,
-                if c.persistent { "（含持久标志）" } else { "" }
+                if c.persistent {
+                    "（含持久标志）"
+                } else {
+                    ""
+                }
             );
         }
     }
-    println!("\n保持解锁：{}", if st.keeper_active { "运行中" } else { "未启动" });
+    println!(
+        "\n保持解锁：{}",
+        if st.keeper_active {
+            "运行中"
+        } else {
+            "未启动"
+        }
+    );
     if let Some(e) = &st.keeper_error {
         println!("保持解锁最近一次错误：{e}");
     }
@@ -94,5 +107,7 @@ fn main() {
             }
         }
     }
-    println!("\n提示：本探针进程退出后「保持解锁」就结束了；应用里的按钮会在 Kada 运行期间一直保持。");
+    println!(
+        "\n提示：本探针进程退出后「保持解锁」就结束了；应用里的按钮会在 Kada 运行期间一直保持。"
+    );
 }

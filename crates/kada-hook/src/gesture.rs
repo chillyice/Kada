@@ -261,7 +261,10 @@ mod tests {
         let circle: Vec<(i32, i32)> = (0..=16)
             .map(|i| {
                 let a = std::f64::consts::TAU * i as f64 / 16.0;
-                ((140.0 + 40.0 * a.cos()) as i32, (140.0 + 40.0 * a.sin()) as i32)
+                (
+                    (140.0 + 40.0 * a.cos()) as i32,
+                    (140.0 + 40.0 * a.sin()) as i32,
+                )
             })
             .collect();
         for p in &circle[1..] {

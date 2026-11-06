@@ -58,7 +58,11 @@ static SINK: Mutex<Option<EdgeSink>> = Mutex::new(None);
 pub fn configure(enabled: bool, edges: [bool; 4], monitors: Vec<(i32, i32, i32, i32)>) {
     ENABLED.store(enabled, Ordering::Relaxed);
     *ACTIVE.lock().unwrap() = None;
-    *CONFIG.lock().unwrap() = Some(Config { enabled, edges, monitors });
+    *CONFIG.lock().unwrap() = Some(Config {
+        enabled,
+        edges,
+        monitors,
+    });
 }
 
 /// 注册出口（`None` = 取消注册）。
@@ -83,7 +87,9 @@ pub fn on_move(pt: (i32, i32)) {
     if !enabled() {
         return;
     }
-    let Some(cfg) = CONFIG.lock().unwrap().clone() else { return };
+    let Some(cfg) = CONFIG.lock().unwrap().clone() else {
+        return;
+    };
     let mut active = ACTIVE.lock().unwrap();
     if let Some(i) = *active {
         if !within(&cfg, i, pt, REARM_DISTANCE) {
@@ -194,7 +200,11 @@ mod tests {
         assert_eq!(on_wheel((0, 500)), Some(Edge::Left));
 
         // 多显示器：四边配置应用到每台显示器。
-        configure(true, [true, false, false, false], vec![(0, 0, 100, 100), (100, 0, 300, 100)]);
+        configure(
+            true,
+            [true, false, false, false],
+            vec![(0, 0, 100, 100), (100, 0, 300, 100)],
+        );
         assert_eq!(on_wheel((50, 50)), None, "屏幕中间不贴边");
         assert_eq!(on_wheel((101, 1)), Some(Edge::Top), "第二台显示器的上边");
         assert_eq!(got.lock().unwrap().len(), 7);

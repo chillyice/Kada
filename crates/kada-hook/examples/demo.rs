@@ -25,12 +25,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use std::sync::Arc;
 
-#[cfg(windows)]
-use kada_hook::win::{simulate, start, Action, KeyEvent};
 #[cfg(target_os = "linux")]
 use kada_hook::linux::{simulate, start, Action, KeyEvent};
 #[cfg(target_os = "macos")]
 use kada_hook::macos::{simulate, start, Action, KeyEvent};
+#[cfg(windows)]
+use kada_hook::win::{simulate, start, Action, KeyEvent};
 
 #[cfg(any(windows, target_os = "linux", target_os = "macos"))]
 use kada_hook::{Key, Modifier};
@@ -66,7 +66,11 @@ fn run() {
             mods.contains(&Modifier::Ctrl) && mods.contains(&Modifier::Alt)
         };
         match ev {
-            KeyEvent::Down { key: Key::K, mods, repeat: false } if ctrl_alt(&mods) => {
+            KeyEvent::Down {
+                key: Key::K,
+                mods,
+                repeat: false,
+            } if ctrl_alt(&mods) => {
                 eprintln!("[触发] Ctrl+Alt+K -> 输入文本");
                 // 注入必须离开回调线程：文本走剪贴板 + Ctrl+V / ⌘V，要上百毫秒，跑在钩子
                 // 回调里会被系统判超时（Windows 摘掉钩子 / macOS 停用 tap）。壳层同样是把
@@ -80,13 +84,21 @@ fn run() {
                 });
                 Action::Block
             }
-            KeyEvent::Down { key: Key::M, mods, repeat } if ctrl_alt(&mods) => {
+            KeyEvent::Down {
+                key: Key::M,
+                mods,
+                repeat,
+            } if ctrl_alt(&mods) => {
                 if !repeat {
                     eprintln!("[改键] M -> N");
                 }
                 Action::Replace(Key::N)
             }
-            KeyEvent::Down { key: Key::Q, mods, repeat: false } if ctrl_alt(&mods) => {
+            KeyEvent::Down {
+                key: Key::Q,
+                mods,
+                repeat: false,
+            } if ctrl_alt(&mods) => {
                 eprintln!("[退出]");
                 q.store(true, Ordering::Relaxed);
                 Action::Block

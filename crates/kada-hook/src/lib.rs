@@ -184,7 +184,8 @@ pub enum WindowOp {
 /// 三平台各自实现（`win` / `linux` / `macos`），失败返回能直接展示给用户的中文原因。
 /// 本接口不属于输入注入，**不走提权通道**；目标程序若以管理员身份运行，非提权的 Kada
 /// 可能改不动它的窗口（Windows 上表现为 `ShowWindow` 无效果）。
-pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {    #[cfg(windows)]
+pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
+    #[cfg(windows)]
     {
         win::control_window(program, op)
     }
@@ -256,7 +257,6 @@ pub fn window_action(hwnd: Option<isize>, op: WindowAction) -> Result<(), String
         Err("「当前窗口」动作目前只支持 Windows".into())
     }
 }
-
 
 /// 本机正在运行的外部工具 id（`kada_core::EXTERNAL_TOOLS` 的子集）。
 pub fn platform_running_tools() -> Vec<String> {
@@ -370,7 +370,6 @@ pub fn send_to_window(target: &str, input: WindowInput<'_>) -> Result<(), String
     }
 }
 
-
 /// 提权伴随进程（规划 7.2-㉑a / `docs/底层输入能力规划.md` 档位 B）：补 UIPI 挡住的
 /// 「往提权窗口注入」。
 ///
@@ -435,11 +434,19 @@ pub mod elevated {
         #[cfg(windows)]
         {
             let s = super::win::agent::status();
-            Status { supported: true, enabled: s.enabled, connected: s.connected }
+            Status {
+                supported: true,
+                enabled: s.enabled,
+                connected: s.connected,
+            }
         }
         #[cfg(not(windows))]
         {
-            Status { supported: false, enabled: false, connected: false }
+            Status {
+                supported: false,
+                enabled: false,
+                connected: false,
+            }
         }
     }
 

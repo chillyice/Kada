@@ -59,7 +59,10 @@ fn main() {
         .expect("安装钩子失败")
     };
     std::thread::sleep(std::time::Duration::from_millis(300));
-    println!("A1 起钩子（配置无鼠标键）→ reinstall_count = {}", reinstall_count());
+    println!(
+        "A1 起钩子（配置无鼠标键）→ reinstall_count = {}",
+        reinstall_count()
+    );
 
     set_mouse_enabled(true);
     std::thread::sleep(std::time::Duration::from_millis(600));
@@ -68,7 +71,10 @@ fn main() {
 
     set_mouse_enabled(false);
     std::thread::sleep(std::time::Duration::from_millis(600));
-    println!("A3 配置移除鼠标键触发 → set_mouse_enabled(false) → reinstall_count = {}", reinstall_count());
+    println!(
+        "A3 配置移除鼠标键触发 → set_mouse_enabled(false) → reinstall_count = {}",
+        reinstall_count()
+    );
 
     if after_true == 0 {
         println!("   ✗ A 判定：重挂请求**没有**落地（reinstall_count 没涨）——问题在壳层/钩子层的重装链。");
@@ -78,7 +84,10 @@ fn main() {
     // 留成「开着」的状态，B 段才有鼠标钩子可用。
     set_mouse_enabled(true);
     std::thread::sleep(std::time::Duration::from_millis(600));
-    println!("A4 回到「配置有鼠标键」状态 → reinstall_count = {}", reinstall_count());
+    println!(
+        "A4 回到「配置有鼠标键」状态 → reinstall_count = {}",
+        reinstall_count()
+    );
     println!("———————————————————————————————————————————");
 
     // ---- B. 自己再挂一枚裸 WH_MOUSE_LL，看事件本身 ---------------------------
@@ -99,15 +108,27 @@ fn main() {
                     let name = match wparam.0 as u32 {
                         WM_MBUTTONDOWN => Some("middle down"),
                         WM_MBUTTONUP => Some("middle up"),
-                        WM_XBUTTONDOWN => Some(if xb == 1 { "X1(back) down" } else { "X2(forward) down" }),
-                        WM_XBUTTONUP => Some(if xb == 1 { "X1(back) up" } else { "X2(forward) up" }),
+                        WM_XBUTTONDOWN => Some(if xb == 1 {
+                            "X1(back) down"
+                        } else {
+                            "X2(forward) down"
+                        }),
+                        WM_XBUTTONUP => Some(if xb == 1 {
+                            "X1(back) up"
+                        } else {
+                            "X2(forward) up"
+                        }),
                         _ => None,
                     };
                     if let Some(name) = name {
                         let injected = ms.flags & LLMHF_INJECTED != 0;
                         println!(
                             "[raw hook]   {name:<16} injected={}",
-                            if injected { "是 ✗（别的程序注入的）" } else { "否" }
+                            if injected {
+                                "是 ✗（别的程序注入的）"
+                            } else {
+                                "否"
+                            }
                         );
                         RAW_SEEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         if injected {
@@ -144,7 +165,10 @@ fn main() {
     for i in (1..=30).rev() {
         std::thread::sleep(std::time::Duration::from_secs(1));
         if i % 10 == 0 {
-            println!("   还有 {i} 秒…（已看到 kada-hook={} 个）", seen_handler.load(Ordering::Relaxed));
+            println!(
+                "   还有 {i} 秒…（已看到 kada-hook={} 个）",
+                seen_handler.load(Ordering::Relaxed)
+            );
         }
     }
     stop.store(true, Ordering::Relaxed);

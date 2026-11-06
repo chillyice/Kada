@@ -15,8 +15,8 @@
 
 #[cfg(windows)]
 fn main() {
-    use kada_hook::win::agent::{self, Op};
     use kada_core::{Key, MouseOp};
+    use kada_hook::win::agent::{self, Op};
 
     let name = match agent::probe_pipe_name() {
         Ok(name) => name,
@@ -28,7 +28,10 @@ fn main() {
     println!("通道名：{name}");
 
     // 1) 路由闸门：开关没开、前台也不是提权窗口 —— 不该路由，也不该留提示。
-    assert!(agent::forward(&[Op::Pause(0)]).is_none(), "开关没开时不该路由");
+    assert!(
+        agent::forward(&[Op::Pause(0)]).is_none(),
+        "开关没开时不该路由"
+    );
     assert!(agent::take_notice().is_none(), "前台非提权窗口不该留提示");
     println!("✓ 开关没开 / 前台非提权窗口：不路由，不留提示");
 
@@ -55,11 +58,18 @@ fn main() {
             std::process::exit(1);
         }
     };
-    println!("✓ 已连上代理（pid {}）：DACL + 双方身份校验都过了", client.agent_pid());
+    println!(
+        "✓ 已连上代理（pid {}）：DACL + 双方身份校验都过了",
+        client.agent_pid()
+    );
 
     // 3) 正常一批：都不产生真实注入（零位移移动、空文本），纯验往返。
     client
-        .request(&[Op::Pause(0), Op::Mouse(MouseOp::Move { dx: 0, dy: 0 }), Op::Text(String::new())])
+        .request(&[
+            Op::Pause(0),
+            Op::Mouse(MouseOp::Move { dx: 0, dy: 0 }),
+            Op::Text(String::new()),
+        ])
         .expect("正常批次该成功");
     println!("✓ 一批 op 往返成功（ok）");
 

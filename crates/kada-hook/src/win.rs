@@ -37,7 +37,9 @@ use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
 use windows::core::{w, BOOL, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM};
+use windows::Win32::Foundation::{
+    CloseHandle, FALSE, HANDLE, HWND, LPARAM, LRESULT, POINT, RECT, TRUE, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
@@ -46,8 +48,8 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD};
 use windows::Win32::System::RemoteDesktop::{
-    WTSFreeMemory, WTSQuerySessionInformationW, WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
-    WTSSessionInfoEx, WTSINFOEXW,
+    WTSFreeMemory, WTSQuerySessionInformationW, WTSSessionInfoEx, WTSINFOEXW,
+    WTS_CURRENT_SERVER_HANDLE, WTS_CURRENT_SESSION,
 };
 use windows::Win32::System::SystemInformation::GetTickCount;
 use windows::Win32::System::Threading::{
@@ -57,8 +59,8 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::Input::{
     GetRawInputData, GetRawInputDeviceInfoW, RegisterRawInputDevices, HRAWINPUT, RAWINPUT,
-    RAWINPUTDEVICE, RAWINPUTHEADER, RIDI_DEVICEINFO, RIDI_DEVICENAME, RIDEV_INPUTSINK, RID_INPUT,
-    RID_DEVICE_INFO, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
+    RAWINPUTDEVICE, RAWINPUTHEADER, RIDEV_INPUTSINK, RIDI_DEVICEINFO, RIDI_DEVICENAME,
+    RID_DEVICE_INFO, RID_INPUT, RIM_TYPEHID, RIM_TYPEKEYBOARD, RIM_TYPEMOUSE,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -73,8 +75,15 @@ pub mod simulate;
 /// 一次键盘事件。
 #[derive(Clone, Debug)]
 pub enum KeyEvent {
-    Down { key: Key, mods: BTreeSet<Modifier>, repeat: bool },
-    Up { key: Key, mods: BTreeSet<Modifier> },
+    Down {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+        repeat: bool,
+    },
+    Up {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+    },
 }
 
 /// 处理函数对事件的处置。
@@ -101,14 +110,14 @@ static MOUSE_ENABLED: AtomicBool = AtomicBool::new(true);
 /// 鼠标操作录制回调（仅录制期间设置）：钩子层每次鼠标触发（点击 / 滚轮）都回调它，
 /// 附「自上次触发以来的位移」。回调里只做转录（无 IO / 建窗），**永远放行**事件。
 type MouseRecorder = Box<dyn FnMut(MouseRecord) + Send>;
-static MOUSE_RECORDER: LazyLock<Mutex<Option<MouseRecorder>>> =
-    LazyLock::new(|| Mutex::new(None));
+static MOUSE_RECORDER: LazyLock<Mutex<Option<MouseRecorder>>> = LazyLock::new(|| Mutex::new(None));
 /// 上一次触发时的光标位置（屏幕坐标）：用来算「自上次触发以来的位移」。
 static LAST_TRIGGER_POS: LazyLock<Mutex<(i32, i32)>> = LazyLock::new(|| Mutex::new((0, 0)));
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
-static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 当前物理按下的键（down 且未 up），用于识别自动重复。
 static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// 看门狗心跳（键盘 / 鼠标各一路）：钩子回调每次被调用都刷新对应那一路（`GetTickCount`
@@ -251,7 +260,9 @@ fn install_hooks() -> io::Result<()> {
             Err(e) => {
                 // 只挂上一半等于「键盘能用、鼠标键不能用」，不如整体退回让看门狗整轮重试。
                 unsafe { _ = UnhookWindowsHookEx(kbd) };
-                return Err(io::Error::other(format!("SetWindowsHookEx 鼠标钩子失败: {e}")));
+                return Err(io::Error::other(format!(
+                    "SetWindowsHookEx 鼠标钩子失败: {e}"
+                )));
             }
         }
     } else {
@@ -316,7 +327,12 @@ fn reset_runtime_state() {
 
 /// 取走所有待释放的替换目标键（宿主原键 → 已注入并按住的键），并清空登记表。
 fn take_replaced_down() -> Vec<Key> {
-    REPLACED_DOWN.lock().unwrap().drain().map(|(_, target)| target).collect()
+    REPLACED_DOWN
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, target)| target)
+        .collect()
 }
 
 /// 两个 `GetTickCount` 时间戳之差（毫秒，可正可负）。该计数是 32 位、约 49.7 天回绕，
@@ -395,7 +411,10 @@ fn dead_hook(
 /// 系统最后一次键盘 / 鼠标输入的时间戳（与 `GetTickCount` 同源）。查询失败返回 0 ——
 /// `dead_hook` 会把它当成「很久没有输入」，不会据此重装。
 fn last_input_tick() -> u32 {
-    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    let mut info = LASTINPUTINFO {
+        cbSize: size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
     if unsafe { GetLastInputInfo(&mut info) }.as_bool() {
         info.dwTime
     } else {
@@ -406,7 +425,10 @@ fn last_input_tick() -> u32 {
 /// 系统空闲秒数（最后一次键盘 / 鼠标输入至今）：自动更新「长时间不使用电脑时安装」的判据。
 /// `None` = 查询失败（调用方按「不空闲」处理，绝不据此安装）。
 pub fn idle_seconds() -> Option<u64> {
-    let mut info = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    let mut info = LASTINPUTINFO {
+        cbSize: size_of::<LASTINPUTINFO>() as u32,
+        dwTime: 0,
+    };
     if !unsafe { GetLastInputInfo(&mut info) }.as_bool() {
         return None;
     }
@@ -574,7 +596,11 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
         // 不进消息中心。
         eprintln!(
             "kada-hook: 看门狗重建输入钩子（{reason}）{}",
-            if streak > 1 { format!("，连续第 {streak} 次") } else { String::new() }
+            if streak > 1 {
+                format!("，连续第 {streak} 次")
+            } else {
+                String::new()
+            }
         );
     }
 }
@@ -591,7 +617,11 @@ unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARA
         }
     }
     let hook = HOOK.load(Ordering::Relaxed);
-    let hhook = if hook == 0 { None } else { Some(HHOOK(hook as *mut std::ffi::c_void)) };
+    let hhook = if hook == 0 {
+        None
+    } else {
+        Some(HHOOK(hook as *mut std::ffi::c_void))
+    };
     unsafe { CallNextHookEx(hhook, code, wparam, lparam) }
 }
 
@@ -614,7 +644,10 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
             }
         }
         if let Some(f) = HANDLER.lock().unwrap().as_mut() {
-            let _ = f(KeyEvent::Up { key, mods: current_mods() });
+            let _ = f(KeyEvent::Up {
+                key,
+                mods: current_mods(),
+            });
         }
         return swallowed;
     }
@@ -717,7 +750,11 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         }
     }
     let hook = MOUSE_HOOK.load(Ordering::Relaxed);
-    let hhook = if hook == 0 { None } else { Some(HHOOK(hook as *mut std::ffi::c_void)) };
+    let hhook = if hook == 0 {
+        None
+    } else {
+        Some(HHOOK(hook as *mut std::ffi::c_void))
+    };
     unsafe { CallNextHookEx(hhook, code, wparam, lparam) }
 }
 
@@ -765,7 +802,10 @@ fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
             }
         }
         if let Some(f) = HANDLER.lock().unwrap().as_mut() {
-            let _ = f(KeyEvent::Up { key, mods: current_mods() });
+            let _ = f(KeyEvent::Up {
+                key,
+                mods: current_mods(),
+            });
         }
         return swallowed;
     }
@@ -774,7 +814,11 @@ fn swallow_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) -> bool {
     let action = {
         let mut h = HANDLER.lock().unwrap();
         match h.as_mut() {
-            Some(f) => f(KeyEvent::Down { key, mods, repeat: false }),
+            Some(f) => f(KeyEvent::Down {
+                key,
+                mods,
+                repeat: false,
+            }),
             None => Action::Allow,
         }
     };
@@ -839,12 +883,20 @@ fn swallow_wheel(ms: &MSLLHOOKSTRUCT) -> bool {
     if !reached {
         return false;
     }
-    let key = if delta > 0 { Key::WheelUp } else { Key::WheelDown };
+    let key = if delta > 0 {
+        Key::WheelUp
+    } else {
+        Key::WheelDown
+    };
     let mods = current_mods();
     let action = {
         let mut h = HANDLER.lock().unwrap();
         match h.as_mut() {
-            Some(f) => f(KeyEvent::Down { key, mods: mods.clone(), repeat: false }),
+            Some(f) => f(KeyEvent::Down {
+                key,
+                mods: mods.clone(),
+                repeat: false,
+            }),
             None => Action::Allow,
         }
     };
@@ -876,8 +928,14 @@ fn record_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) {
             2 => MouseRecordKind::Click(MouseButton::Forward),
             _ => return,
         },
-        WM_MOUSEWHEEL => MouseRecordKind::Scroll { dx: 0, dy: wheel_ticks(ms.mouseData) },
-        WM_MOUSEHWHEEL => MouseRecordKind::Scroll { dx: wheel_ticks(ms.mouseData), dy: 0 },
+        WM_MOUSEWHEEL => MouseRecordKind::Scroll {
+            dx: 0,
+            dy: wheel_ticks(ms.mouseData),
+        },
+        WM_MOUSEHWHEEL => MouseRecordKind::Scroll {
+            dx: wheel_ticks(ms.mouseData),
+            dy: 0,
+        },
         _ => return,
     };
     let pos = (ms.pt.x, ms.pt.y);
@@ -888,7 +946,11 @@ fn record_mouse(wparam: u32, ms: &MSLLHOOKSTRUCT) {
         d
     };
     if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
-        f(MouseRecord { kind, move_dx, move_dy });
+        f(MouseRecord {
+            kind,
+            move_dx,
+            move_dy,
+        });
     }
 }
 
@@ -949,41 +1011,120 @@ fn note_key_up(key: Key) {
 pub fn key_to_vk(k: Key) -> Option<u16> {
     use Key::*;
     let vk = match k {
-        A => VK_A, B => VK_B, C => VK_C, D => VK_D, E => VK_E, F => VK_F,
-        G => VK_G, H => VK_H, I => VK_I, J => VK_J, K => VK_K, L => VK_L,
-        M => VK_M, N => VK_N, O => VK_O, P => VK_P, Q => VK_Q, R => VK_R,
-        S => VK_S, T => VK_T, U => VK_U, V => VK_V, W => VK_W, X => VK_X,
-        Y => VK_Y, Z => VK_Z,
-        Digit0 => VK_0, Digit1 => VK_1, Digit2 => VK_2, Digit3 => VK_3,
-        Digit4 => VK_4, Digit5 => VK_5, Digit6 => VK_6, Digit7 => VK_7,
-        Digit8 => VK_8, Digit9 => VK_9,
-        F1 => VK_F1, F2 => VK_F2, F3 => VK_F3, F4 => VK_F4,
-        F5 => VK_F5, F6 => VK_F6, F7 => VK_F7, F8 => VK_F8,
-        F9 => VK_F9, F10 => VK_F10, F11 => VK_F11, F12 => VK_F12,
-        F13 => VK_F13, F14 => VK_F14, F15 => VK_F15, F16 => VK_F16,
-        F17 => VK_F17, F18 => VK_F18, F19 => VK_F19, F20 => VK_F20,
-        F21 => VK_F21, F22 => VK_F22, F23 => VK_F23, F24 => VK_F24,
-        Comma => VK_OEM_COMMA, Period => VK_OEM_PERIOD, Slash => VK_OEM_2,
-        Backslash => VK_OEM_5, Semicolon => VK_OEM_1, Quote => VK_OEM_7,
-        Backquote => VK_OEM_3, Minus => VK_OEM_MINUS, Equal => VK_OEM_PLUS,
-        BracketLeft => VK_OEM_4, BracketRight => VK_OEM_6,
-        Enter => VK_RETURN, Escape => VK_ESCAPE, Tab => VK_TAB, Space => VK_SPACE,
-        Backspace => VK_BACK, Delete => VK_DELETE, Insert => VK_INSERT,
+        A => VK_A,
+        B => VK_B,
+        C => VK_C,
+        D => VK_D,
+        E => VK_E,
+        F => VK_F,
+        G => VK_G,
+        H => VK_H,
+        I => VK_I,
+        J => VK_J,
+        K => VK_K,
+        L => VK_L,
+        M => VK_M,
+        N => VK_N,
+        O => VK_O,
+        P => VK_P,
+        Q => VK_Q,
+        R => VK_R,
+        S => VK_S,
+        T => VK_T,
+        U => VK_U,
+        V => VK_V,
+        W => VK_W,
+        X => VK_X,
+        Y => VK_Y,
+        Z => VK_Z,
+        Digit0 => VK_0,
+        Digit1 => VK_1,
+        Digit2 => VK_2,
+        Digit3 => VK_3,
+        Digit4 => VK_4,
+        Digit5 => VK_5,
+        Digit6 => VK_6,
+        Digit7 => VK_7,
+        Digit8 => VK_8,
+        Digit9 => VK_9,
+        F1 => VK_F1,
+        F2 => VK_F2,
+        F3 => VK_F3,
+        F4 => VK_F4,
+        F5 => VK_F5,
+        F6 => VK_F6,
+        F7 => VK_F7,
+        F8 => VK_F8,
+        F9 => VK_F9,
+        F10 => VK_F10,
+        F11 => VK_F11,
+        F12 => VK_F12,
+        F13 => VK_F13,
+        F14 => VK_F14,
+        F15 => VK_F15,
+        F16 => VK_F16,
+        F17 => VK_F17,
+        F18 => VK_F18,
+        F19 => VK_F19,
+        F20 => VK_F20,
+        F21 => VK_F21,
+        F22 => VK_F22,
+        F23 => VK_F23,
+        F24 => VK_F24,
+        Comma => VK_OEM_COMMA,
+        Period => VK_OEM_PERIOD,
+        Slash => VK_OEM_2,
+        Backslash => VK_OEM_5,
+        Semicolon => VK_OEM_1,
+        Quote => VK_OEM_7,
+        Backquote => VK_OEM_3,
+        Minus => VK_OEM_MINUS,
+        Equal => VK_OEM_PLUS,
+        BracketLeft => VK_OEM_4,
+        BracketRight => VK_OEM_6,
+        Enter => VK_RETURN,
+        Escape => VK_ESCAPE,
+        Tab => VK_TAB,
+        Space => VK_SPACE,
+        Backspace => VK_BACK,
+        Delete => VK_DELETE,
+        Insert => VK_INSERT,
         CapsLock => VK_CAPITAL,
-        Shift => VK_SHIFT, Control => VK_CONTROL, Alt => VK_MENU, Meta => VK_LWIN,
-        Home => VK_HOME, End => VK_END, PageUp => VK_PRIOR, PageDown => VK_NEXT,
-        ArrowUp => VK_UP, ArrowDown => VK_DOWN, ArrowLeft => VK_LEFT,
+        Shift => VK_SHIFT,
+        Control => VK_CONTROL,
+        Alt => VK_MENU,
+        Meta => VK_LWIN,
+        Home => VK_HOME,
+        End => VK_END,
+        PageUp => VK_PRIOR,
+        PageDown => VK_NEXT,
+        ArrowUp => VK_UP,
+        ArrowDown => VK_DOWN,
+        ArrowLeft => VK_LEFT,
         ArrowRight => VK_RIGHT,
-        MediaPlayPause => VK_MEDIA_PLAY_PAUSE, MediaPrev => VK_MEDIA_PREV_TRACK,
-        MediaNext => VK_MEDIA_NEXT_TRACK, VolumeMute => VK_VOLUME_MUTE,
-        VolumeDown => VK_VOLUME_DOWN, VolumeUp => VK_VOLUME_UP,
-        Numpad0 => VK_NUMPAD0, Numpad1 => VK_NUMPAD1, Numpad2 => VK_NUMPAD2,
-        Numpad3 => VK_NUMPAD3, Numpad4 => VK_NUMPAD4, Numpad5 => VK_NUMPAD5,
-        Numpad6 => VK_NUMPAD6, Numpad7 => VK_NUMPAD7, Numpad8 => VK_NUMPAD8,
+        MediaPlayPause => VK_MEDIA_PLAY_PAUSE,
+        MediaPrev => VK_MEDIA_PREV_TRACK,
+        MediaNext => VK_MEDIA_NEXT_TRACK,
+        VolumeMute => VK_VOLUME_MUTE,
+        VolumeDown => VK_VOLUME_DOWN,
+        VolumeUp => VK_VOLUME_UP,
+        Numpad0 => VK_NUMPAD0,
+        Numpad1 => VK_NUMPAD1,
+        Numpad2 => VK_NUMPAD2,
+        Numpad3 => VK_NUMPAD3,
+        Numpad4 => VK_NUMPAD4,
+        Numpad5 => VK_NUMPAD5,
+        Numpad6 => VK_NUMPAD6,
+        Numpad7 => VK_NUMPAD7,
+        Numpad8 => VK_NUMPAD8,
         Numpad9 => VK_NUMPAD9,
-        NumpadAdd => VK_ADD, NumpadSubtract => VK_SUBTRACT,
-        NumpadMultiply => VK_MULTIPLY, NumpadDivide => VK_DIVIDE,
-        NumpadDecimal => VK_DECIMAL, NumpadEnter => VK_RETURN, NumLock => VK_NUMLOCK,
+        NumpadAdd => VK_ADD,
+        NumpadSubtract => VK_SUBTRACT,
+        NumpadMultiply => VK_MULTIPLY,
+        NumpadDivide => VK_DIVIDE,
+        NumpadDecimal => VK_DECIMAL,
+        NumpadEnter => VK_RETURN,
+        NumLock => VK_NUMLOCK,
         // 鼠标键注入走 SendInput 鼠标事件（simulate），非虚拟键码。
         MouseMiddle | MouseBack | MouseForward | WheelUp | WheelDown => return None,
     };
@@ -993,7 +1134,9 @@ pub fn key_to_vk(k: Key) -> Option<u16> {
 /// 探测某快捷键是否已被系统或其他应用注册（Windows `RegisterHotKey` 试探）。
 /// 返回 true 表示「已被占用」。组合键需至少一个修饰键且主键可映射为虚拟键码。
 pub fn hotkey_occupied(shortcut: &Shortcut) -> bool {
-    let Some(vk) = key_to_vk(shortcut.key) else { return false };
+    let Some(vk) = key_to_vk(shortcut.key) else {
+        return false;
+    };
     if shortcut.mods.is_empty() {
         return false;
     }
@@ -1044,7 +1187,11 @@ fn running_diverters() -> Vec<String> {
     let names = process_names();
     kada_core::DIVERTERS
         .iter()
-        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|d| {
+            d.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|d| d.id.to_string())
         .collect()
 }
@@ -1054,7 +1201,11 @@ pub fn running_tools() -> Vec<String> {
     let names = process_names();
     kada_core::EXTERNAL_TOOLS
         .iter()
-        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|t| {
+            t.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|t| t.id.to_string())
         .collect()
 }
@@ -1102,7 +1253,9 @@ fn hvci_enabled() -> Option<bool> {
     let status = unsafe {
         RegGetValueW(
             HKEY_LOCAL_MACHINE,
-            w!(r"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"),
+            w!(
+                r"SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity"
+            ),
             w!("Enabled"),
             RRF_RT_REG_DWORD,
             None,
@@ -1162,7 +1315,10 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
     let mut pid: u32 = 0;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
     let process_name = process_name_of(pid).unwrap_or_default();
-    Some(FrontmostContext { process_name, window_title })
+    Some(FrontmostContext {
+        process_name,
+        window_title,
+    })
 }
 
 /// 前台窗口是否**占满其所在显示器**（全屏程序：游戏 / 视频 / 远程桌面）。
@@ -1437,13 +1593,17 @@ pub fn input_devices() -> Vec<InputDevice> {
     // 硬件前缀 → 最具体的 HID 大类（只由 HID 条目填）。
     let mut hw_kinds: HashMap<String, DeviceKind> = HashMap::new();
     for d in list.iter().take(got as usize) {
-        let Some(name) = device_name(d.hDevice) else { continue };
+        let Some(name) = device_name(d.hDevice) else {
+            continue;
+        };
         let kind = if d.dwType == RIM_TYPEKEYBOARD {
             DeviceKind::Keyboard
         } else if d.dwType == RIM_TYPEMOUSE {
             DeviceKind::Mouse
         } else if d.dwType == RIM_TYPEHID {
-            let Some(info) = device_info(d.hDevice) else { continue };
+            let Some(info) = device_info(d.hDevice) else {
+                continue;
+            };
             let hid = unsafe { info.Anonymous.hid };
             let kind = hid_kind(hid.usUsagePage, hid.usUsage);
             if kind != DeviceKind::Other {
@@ -1553,9 +1713,8 @@ fn process_name_of(pid: u32) -> Option<String> {
 /// 托盘辅助窗、隐藏消息窗都带 `WS_EX_TOOLWINDOW` 或有 owner，别把它们最大化。
 pub fn control_window(program: &str, op: WindowOp) -> Result<(), String> {
     let target = program.rsplit(['\\', '/']).next().unwrap_or(program);
-    let hwnd = find_app_window(target).ok_or_else(|| {
-        format!("找不到「{target}」的窗口（程序未运行，或没有可见的主窗口）")
-    })?;
+    let hwnd = find_app_window(target)
+        .ok_or_else(|| format!("找不到「{target}」的窗口（程序未运行，或没有可见的主窗口）"))?;
     unsafe {
         match op {
             WindowOp::Maximize => {
@@ -1637,9 +1796,7 @@ pub fn send_to_window(target: &str, input: crate::WindowInput<'_>) -> Result<(),
     let top = find_target_window(pattern)?;
     let foreground = unsafe { GetForegroundWindow() };
     if !foreground.0.is_null() && foreground == top {
-        return Err(
-            "目标窗口就是当前前台窗口；前台输入请用普通「文本 / 按键组合」动作".into()
-        );
+        return Err("目标窗口就是当前前台窗口；前台输入请用普通「文本 / 按键组合」动作".into());
     }
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(top, Some(&mut pid)) };
@@ -1744,9 +1901,7 @@ fn find_target_window(pattern: &str) -> Result<HWND, String> {
         own_pid: unsafe { GetCurrentProcessId() },
         found: None,
     };
-    let _ = unsafe {
-        EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize))
-    };
+    let _ = unsafe { EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize)) };
     search.found.ok_or_else(|| {
         format!("没有找到匹配「{pattern}」的窗口（匹配进程名或窗口标题，忽略大小写）")
     })
@@ -1769,7 +1924,9 @@ fn focused_child(top: HWND) -> HWND {
     if focus.0.is_null() {
         return top;
     }
-    (unsafe { GetAncestor(focus, GA_ROOT) } == top).then_some(focus).unwrap_or(top)
+    (unsafe { GetAncestor(focus, GA_ROOT) } == top)
+        .then_some(focus)
+        .unwrap_or(top)
 }
 
 /// 发送按键组合：按顺序按下 → 逆序抬起。鼠标键 / 滚轮不在 `PostMessage` 的语义内，明确报错。
@@ -1787,7 +1944,10 @@ fn post_keys(hwnd: HWND, keys: &[Key]) -> Result<(), String> {
     for k in keys {
         let Some(vk) = key_to_vk(*k) else {
             release_downs(hwnd, &downs);
-            return Err(format!("键「{}」没有可用的虚拟键码", kada_core::key_name(*k)));
+            return Err(format!(
+                "键「{}」没有可用的虚拟键码",
+                kada_core::key_name(*k)
+            ));
         };
         let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u16;
         let extended = simulate::is_extended_key(*k);
@@ -1842,9 +2002,8 @@ fn release_downs(hwnd: HWND, downs: &[(u16, isize)]) {
 }
 
 fn post(hwnd: HWND, msg: u32, wparam: u16, lparam: isize) -> Result<(), String> {
-    unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam as usize), LPARAM(lparam)) }.map_err(
-        |e| format!("后台发送失败：目标窗口拒绝消息（可能是提权窗口 / 窗口已关闭）：{e}"),
-    )
+    unsafe { PostMessageW(Some(hwnd), msg, WPARAM(wparam as usize), LPARAM(lparam)) }
+        .map_err(|e| format!("后台发送失败：目标窗口拒绝消息（可能是提权窗口 / 窗口已关闭）：{e}"))
 }
 
 /// 在窗口所在显示器的工作区里居中；最大化 / 最小化时先还原（尺寸取 `rcNormalPosition`，
@@ -1987,7 +2146,10 @@ fn find_app_window(target: &str) -> Option<HWND> {
         }
     }
 
-    let mut search = Search { target: target.to_string(), found: None };
+    let mut search = Search {
+        target: target.to_string(),
+        found: None,
+    };
     unsafe {
         let _ = EnumWindows(Some(visit), LPARAM(&mut search as *mut Search as isize));
     }
@@ -2045,8 +2207,17 @@ fn numpad_from_nav(vk: VIRTUAL_KEY, extended: bool, scan: u32, numlock_on: bool)
     }
     let nav = matches!(
         vk,
-        VK_HOME | VK_END | VK_PRIOR | VK_NEXT | VK_INSERT | VK_DELETE | VK_CLEAR
-            | VK_UP | VK_DOWN | VK_LEFT | VK_RIGHT
+        VK_HOME
+            | VK_END
+            | VK_PRIOR
+            | VK_NEXT
+            | VK_INSERT
+            | VK_DELETE
+            | VK_CLEAR
+            | VK_UP
+            | VK_DOWN
+            | VK_LEFT
+            | VK_RIGHT
     );
     if !nav {
         return None;
@@ -2077,41 +2248,121 @@ fn vk_to_key(vk: VIRTUAL_KEY, extended: bool) -> Option<Key> {
         VK_LCONTROL | VK_RCONTROL | VK_CONTROL => Control,
         VK_LMENU | VK_RMENU | VK_MENU => Alt,
         VK_LWIN | VK_RWIN => Meta,
-        VK_A => A, VK_B => B, VK_C => C, VK_D => D, VK_E => E, VK_F => F,
-        VK_G => G, VK_H => H, VK_I => I, VK_J => J, VK_K => K, VK_L => L,
-        VK_M => M, VK_N => N, VK_O => O, VK_P => P, VK_Q => Q, VK_R => R,
-        VK_S => S, VK_T => T, VK_U => U, VK_V => V, VK_W => W, VK_X => X,
-        VK_Y => Y, VK_Z => Z,
-        VK_0 => Digit0, VK_1 => Digit1, VK_2 => Digit2, VK_3 => Digit3,
-        VK_4 => Digit4, VK_5 => Digit5, VK_6 => Digit6, VK_7 => Digit7,
-        VK_8 => Digit8, VK_9 => Digit9,
-        VK_F1 => F1, VK_F2 => F2, VK_F3 => F3, VK_F4 => F4,
-        VK_F5 => F5, VK_F6 => F6, VK_F7 => F7, VK_F8 => F8,
-        VK_F9 => F9, VK_F10 => F10, VK_F11 => F11, VK_F12 => F12,
-        VK_F13 => F13, VK_F14 => F14, VK_F15 => F15, VK_F16 => F16,
-        VK_F17 => F17, VK_F18 => F18, VK_F19 => F19, VK_F20 => F20,
-        VK_F21 => F21, VK_F22 => F22, VK_F23 => F23, VK_F24 => F24,
-        VK_OEM_COMMA => Comma, VK_OEM_PERIOD => Period, VK_OEM_2 => Slash,
-        VK_OEM_5 => Backslash, VK_OEM_1 => Semicolon, VK_OEM_7 => Quote,
-        VK_OEM_3 => Backquote, VK_OEM_MINUS => Minus, VK_OEM_PLUS => Equal,
-        VK_OEM_4 => BracketLeft, VK_OEM_6 => BracketRight,
-        VK_RETURN => if extended { NumpadEnter } else { Enter },
-        VK_ESCAPE => Escape, VK_TAB => Tab, VK_SPACE => Space,
-        VK_BACK => Backspace, VK_DELETE => Delete, VK_INSERT => Insert,
+        VK_A => A,
+        VK_B => B,
+        VK_C => C,
+        VK_D => D,
+        VK_E => E,
+        VK_F => F,
+        VK_G => G,
+        VK_H => H,
+        VK_I => I,
+        VK_J => J,
+        VK_K => K,
+        VK_L => L,
+        VK_M => M,
+        VK_N => N,
+        VK_O => O,
+        VK_P => P,
+        VK_Q => Q,
+        VK_R => R,
+        VK_S => S,
+        VK_T => T,
+        VK_U => U,
+        VK_V => V,
+        VK_W => W,
+        VK_X => X,
+        VK_Y => Y,
+        VK_Z => Z,
+        VK_0 => Digit0,
+        VK_1 => Digit1,
+        VK_2 => Digit2,
+        VK_3 => Digit3,
+        VK_4 => Digit4,
+        VK_5 => Digit5,
+        VK_6 => Digit6,
+        VK_7 => Digit7,
+        VK_8 => Digit8,
+        VK_9 => Digit9,
+        VK_F1 => F1,
+        VK_F2 => F2,
+        VK_F3 => F3,
+        VK_F4 => F4,
+        VK_F5 => F5,
+        VK_F6 => F6,
+        VK_F7 => F7,
+        VK_F8 => F8,
+        VK_F9 => F9,
+        VK_F10 => F10,
+        VK_F11 => F11,
+        VK_F12 => F12,
+        VK_F13 => F13,
+        VK_F14 => F14,
+        VK_F15 => F15,
+        VK_F16 => F16,
+        VK_F17 => F17,
+        VK_F18 => F18,
+        VK_F19 => F19,
+        VK_F20 => F20,
+        VK_F21 => F21,
+        VK_F22 => F22,
+        VK_F23 => F23,
+        VK_F24 => F24,
+        VK_OEM_COMMA => Comma,
+        VK_OEM_PERIOD => Period,
+        VK_OEM_2 => Slash,
+        VK_OEM_5 => Backslash,
+        VK_OEM_1 => Semicolon,
+        VK_OEM_7 => Quote,
+        VK_OEM_3 => Backquote,
+        VK_OEM_MINUS => Minus,
+        VK_OEM_PLUS => Equal,
+        VK_OEM_4 => BracketLeft,
+        VK_OEM_6 => BracketRight,
+        VK_RETURN => {
+            if extended {
+                NumpadEnter
+            } else {
+                Enter
+            }
+        }
+        VK_ESCAPE => Escape,
+        VK_TAB => Tab,
+        VK_SPACE => Space,
+        VK_BACK => Backspace,
+        VK_DELETE => Delete,
+        VK_INSERT => Insert,
         VK_CAPITAL => CapsLock,
-        VK_HOME => Home, VK_END => End, VK_PRIOR => PageUp, VK_NEXT => PageDown,
-        VK_UP => ArrowUp, VK_DOWN => ArrowDown, VK_LEFT => ArrowLeft,
+        VK_HOME => Home,
+        VK_END => End,
+        VK_PRIOR => PageUp,
+        VK_NEXT => PageDown,
+        VK_UP => ArrowUp,
+        VK_DOWN => ArrowDown,
+        VK_LEFT => ArrowLeft,
         VK_RIGHT => ArrowRight,
-        VK_MEDIA_PLAY_PAUSE => MediaPlayPause, VK_MEDIA_PREV_TRACK => MediaPrev,
-        VK_MEDIA_NEXT_TRACK => MediaNext, VK_VOLUME_MUTE => VolumeMute,
-        VK_VOLUME_DOWN => VolumeDown, VK_VOLUME_UP => VolumeUp,
-        VK_NUMPAD0 => Numpad0, VK_NUMPAD1 => Numpad1, VK_NUMPAD2 => Numpad2,
-        VK_NUMPAD3 => Numpad3, VK_NUMPAD4 => Numpad4, VK_NUMPAD5 => Numpad5,
-        VK_NUMPAD6 => Numpad6, VK_NUMPAD7 => Numpad7, VK_NUMPAD8 => Numpad8,
+        VK_MEDIA_PLAY_PAUSE => MediaPlayPause,
+        VK_MEDIA_PREV_TRACK => MediaPrev,
+        VK_MEDIA_NEXT_TRACK => MediaNext,
+        VK_VOLUME_MUTE => VolumeMute,
+        VK_VOLUME_DOWN => VolumeDown,
+        VK_VOLUME_UP => VolumeUp,
+        VK_NUMPAD0 => Numpad0,
+        VK_NUMPAD1 => Numpad1,
+        VK_NUMPAD2 => Numpad2,
+        VK_NUMPAD3 => Numpad3,
+        VK_NUMPAD4 => Numpad4,
+        VK_NUMPAD5 => Numpad5,
+        VK_NUMPAD6 => Numpad6,
+        VK_NUMPAD7 => Numpad7,
+        VK_NUMPAD8 => Numpad8,
         VK_NUMPAD9 => Numpad9,
-        VK_ADD => NumpadAdd, VK_SUBTRACT => NumpadSubtract,
-        VK_MULTIPLY => NumpadMultiply, VK_DIVIDE => NumpadDivide,
-        VK_DECIMAL => NumpadDecimal, VK_NUMLOCK => NumLock,
+        VK_ADD => NumpadAdd,
+        VK_SUBTRACT => NumpadSubtract,
+        VK_MULTIPLY => NumpadMultiply,
+        VK_DIVIDE => NumpadDivide,
+        VK_DECIMAL => NumpadDecimal,
+        VK_NUMLOCK => NumLock,
         _ => return None,
     })
 }
@@ -2135,18 +2386,49 @@ mod tests {
     #[test]
     fn mapping_roundtrip() {
         for k in [
-            Key::A, Key::K, Key::Digit9, Key::F12, Key::CapsLock, Key::Control,
-            Key::Alt, Key::Shift, Key::Meta, Key::Enter, Key::Escape, Key::Space,
-            Key::Comma, Key::Minus, Key::Slash, Key::BracketLeft, Key::Quote,
-            Key::ArrowUp, Key::PageDown,
-            Key::F13, Key::F24, Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
-            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp, Key::NumLock,
-            Key::Numpad0, Key::Numpad9, Key::NumpadAdd, Key::NumpadSubtract,
-            Key::NumpadMultiply, Key::NumpadDivide, Key::NumpadDecimal,
+            Key::A,
+            Key::K,
+            Key::Digit9,
+            Key::F12,
+            Key::CapsLock,
+            Key::Control,
+            Key::Alt,
+            Key::Shift,
+            Key::Meta,
+            Key::Enter,
+            Key::Escape,
+            Key::Space,
+            Key::Comma,
+            Key::Minus,
+            Key::Slash,
+            Key::BracketLeft,
+            Key::Quote,
+            Key::ArrowUp,
+            Key::PageDown,
+            Key::F13,
+            Key::F24,
+            Key::MediaPlayPause,
+            Key::MediaPrev,
+            Key::MediaNext,
+            Key::VolumeMute,
+            Key::VolumeDown,
+            Key::VolumeUp,
+            Key::NumLock,
+            Key::Numpad0,
+            Key::Numpad9,
+            Key::NumpadAdd,
+            Key::NumpadSubtract,
+            Key::NumpadMultiply,
+            Key::NumpadDivide,
+            Key::NumpadDecimal,
         ] {
             let vk = key_to_vk(k).unwrap();
             let name = key_name(k);
-            assert_eq!(vk_to_key(VIRTUAL_KEY(vk), false), Some(k), "vk roundtrip {name}");
+            assert_eq!(
+                vk_to_key(VIRTUAL_KEY(vk), false),
+                Some(k),
+                "vk roundtrip {name}"
+            );
         }
         // NumpadEnter 与主键区 Enter 共用 VK_RETURN，靠扩展位区分。
         assert_eq!(key_to_vk(Key::NumpadEnter), Some(VK_RETURN.0));
@@ -2161,14 +2443,26 @@ mod tests {
     #[test]
     fn numpad_restored_from_scan_when_numlock_off() {
         // 1 / 5 / 小数点 / 7：NumLock 关 → END / CLEAR / DELETE / HOME。
-        assert_eq!(numpad_from_nav(VK_END, false, 0x4F, false), Some(Key::Numpad1));
-        assert_eq!(numpad_from_nav(VK_CLEAR, false, 0x4C, false), Some(Key::Numpad5));
+        assert_eq!(
+            numpad_from_nav(VK_END, false, 0x4F, false),
+            Some(Key::Numpad1)
+        );
+        assert_eq!(
+            numpad_from_nav(VK_CLEAR, false, 0x4C, false),
+            Some(Key::Numpad5)
+        );
         assert_eq!(
             numpad_from_nav(VK_DELETE, false, 0x53, false),
             Some(Key::NumpadDecimal)
         );
-        assert_eq!(numpad_from_nav(VK_HOME, false, 0x47, false), Some(Key::Numpad7));
-        assert_eq!(numpad_from_nav(VK_LEFT, false, 0x4B, false), Some(Key::Numpad4));
+        assert_eq!(
+            numpad_from_nav(VK_HOME, false, 0x47, false),
+            Some(Key::Numpad7)
+        );
+        assert_eq!(
+            numpad_from_nav(VK_LEFT, false, 0x4B, false),
+            Some(Key::Numpad4)
+        );
         // 真方向键带扩展位 → 不还原。
         assert_eq!(numpad_from_nav(VK_LEFT, true, 0x4B, false), None);
         // NumLock 开：这些 VK 就是真导航键，不能抢。
@@ -2218,7 +2512,10 @@ mod tests {
         let other = r"\\?\\HID#VID_056A&PID_0374&MI_02&Col01#8&99aa&0&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
         assert_ne!(hardware_key(pen), hardware_key(other));
         // 没有 Col 的老式路径：原样保留（含实例段）。
-        assert_eq!(hardware_key(r"\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3}"), r"\\?\\ACPI#MSI0007#4&1cc9388&0");
+        assert_eq!(
+            hardware_key(r"\\?\\ACPI#MSI0007#4&1cc9388&0#{884b96c3}"),
+            r"\\?\\ACPI#MSI0007#4&1cc9388&0"
+        );
     }
 
     #[test]
@@ -2252,7 +2549,9 @@ mod tests {
         }
         .expect("创建 message-only 窗口");
         assert!(is_own_window(hwnd), "本进程创建的窗口应判为「自己」");
-        unsafe { let _ = DestroyWindow(hwnd); }
+        unsafe {
+            let _ = DestroyWindow(hwnd);
+        }
     }
 
     #[test]
@@ -2268,7 +2567,10 @@ mod tests {
         }));
 
         // mouseData 高 16 位 = 1：XBUTTON1（后退/MB4）。
-        let kb = MSLLHOOKSTRUCT { mouseData: 1 << 16, ..Default::default() };
+        let kb = MSLLHOOKSTRUCT {
+            mouseData: 1 << 16,
+            ..Default::default()
+        };
         assert!(swallow_mouse(WM_XBUTTONDOWN, &kb), "成员键按下被吞");
         assert!(swallow_mouse(WM_XBUTTONUP, &kb), "抬起一并吞掉（防幽灵）");
 
@@ -2276,7 +2578,10 @@ mod tests {
         *HANDLER.lock().unwrap() = None;
         let _ = SWALLOWED.lock().unwrap().remove(&Key::MouseBack);
         assert_eq!(seen.len(), 2, "按下与抬起都要回调 handler，实际：{seen:?}");
-        assert!(seen[0].contains("Down") && seen[1].contains("Up"), "实际：{seen:?}");
+        assert!(
+            seen[0].contains("Down") && seen[1].contains("Up"),
+            "实际：{seen:?}"
+        );
     }
 
     #[test]
@@ -2301,7 +2606,10 @@ mod tests {
             Action::Block
         }));
 
-        let kb = KBDLLHOOKSTRUCT { vkCode: 0x4D, ..Default::default() }; // VK_M
+        let kb = KBDLLHOOKSTRUCT {
+            vkCode: 0x4D,
+            ..Default::default()
+        }; // VK_M
         assert!(swallow(WM_KEYDOWN, &kb), "Block 的按下要被吞");
         assert!(
             SWALLOWED.lock().unwrap().contains(&Key::M),
@@ -2317,7 +2625,10 @@ mod tests {
         *HANDLER.lock().unwrap() = None;
         note_key_up(Key::M);
         assert_eq!(seen.len(), 2, "按下与抬起都要回调 handler，实际：{seen:?}");
-        assert!(seen[0].contains("Down") && seen[1].contains("Up"), "实际：{seen:?}");
+        assert!(
+            seen[0].contains("Down") && seen[1].contains("Up"),
+            "实际：{seen:?}"
+        );
     }
 
     #[test]
@@ -2335,7 +2646,10 @@ mod tests {
 
         // VK_P：避开其它用例（它们用 D / K）。
         let key = VIRTUAL_KEY(0x50); // VK_P
-        let kb = KBDLLHOOKSTRUCT { vkCode: key.0 as u32, ..Default::default() };
+        let kb = KBDLLHOOKSTRUCT {
+            vkCode: key.0 as u32,
+            ..Default::default()
+        };
         for _ in 0..2 {
             swallow(WM_KEYDOWN, &kb);
             let seen = events.lock().unwrap().clone();
@@ -2377,7 +2691,14 @@ mod tests {
     fn modifier_and_toggle_keys_never_repeat_after_release() {
         let _g = lock_handler();
         // 双击唤醒（双击 Alt）依赖两次独立 down：抬起后再按不能被判成重复。
-        for k in [Key::Alt, Key::Control, Key::Shift, Key::Meta, Key::CapsLock, Key::NumLock] {
+        for k in [
+            Key::Alt,
+            Key::Control,
+            Key::Shift,
+            Key::Meta,
+            Key::CapsLock,
+            Key::NumLock,
+        ] {
             assert!(!detect_repeat(k), "{} 首次按下不是重复", key_name(k));
             note_key_up(k);
             assert!(!detect_repeat(k), "{} 抬起后再按不是重复", key_name(k));
@@ -2388,15 +2709,30 @@ mod tests {
     #[test]
     fn watchdog_spots_hook_that_stopped_receiving_events() {
         // 系统刚有输入，而两路钩子最后一次事件都停在同样久之前 → 钩子已被摘除。
-        assert!(dead_hook(10_000, 10_000, 7_000, 7_000, 0, true).is_some(), "系统有输入而钩子漏了 → 失效");
+        assert!(
+            dead_hook(10_000, 10_000, 7_000, 7_000, 0, true).is_some(),
+            "系统有输入而钩子漏了 → 失效"
+        );
         // 正常时序：输入到了，对应钩子回调也跟着跑了（落差远小于宽限）。
-        assert!(dead_hook(10_000, 9_900, 9_900, 9_900, 0, true).is_none(), "钩子跟得上就不能重装");
+        assert!(
+            dead_hook(10_000, 9_900, 9_900, 9_900, 0, true).is_none(),
+            "钩子跟得上就不能重装"
+        );
         // 机器闲置：没有新输入，钩子没有事件是正常的——三个时间戳一起停在原处。
-        assert!(dead_hook(60_000, 30_000, 30_000, 30_000, 0, true).is_none(), "闲置不是失效");
+        assert!(
+            dead_hook(60_000, 30_000, 30_000, 30_000, 0, true).is_none(),
+            "闲置不是失效"
+        );
         // 输入刚到、钩子回调还没跑完（落差在宽限内）→ 不能判失效。
-        assert!(dead_hook(10_000, 10_000, 9_200, 9_200, 0, true).is_none(), "回调延迟不算失效");
+        assert!(
+            dead_hook(10_000, 10_000, 9_200, 9_200, 0, true).is_none(),
+            "回调延迟不算失效"
+        );
         // 钩子事件比系统记录的最后输入还新（我们自己的注入同样会刷新心跳）→ 活的。
-        assert!(dead_hook(10_000, 9_900, 9_900, 10_000, 0, true).is_none(), "心跳比输入新就是活的");
+        assert!(
+            dead_hook(10_000, 9_900, 9_900, 10_000, 0, true).is_none(),
+            "心跳比输入新就是活的"
+        );
     }
 
     #[test]
@@ -2414,7 +2750,10 @@ mod tests {
         );
         // 没有 Raw Input 旁路时，鼠标持续移动使系统最后输入≈鼠标心跳、键盘输入归因不出来
         // ——这一拍不判失效（旁路在时由下面那组用例兜住）。
-        assert!(dead_hook(10_000, 10_000, 7_000, 10_000, 0, true).is_none(), "没有旁路时鼠标喂着心跳这一拍探不到");
+        assert!(
+            dead_hook(10_000, 10_000, 7_000, 10_000, 0, true).is_none(),
+            "没有旁路时鼠标喂着心跳这一拍探不到"
+        );
         // 鼠标钩子没装：没有鼠标事件的观察者，最近那次输入无从归因——此时只动鼠标不打字
         // 就会被误判成键盘失效，故宁可不判（漏判的代价只是钩子真被摘时不自愈）。
         assert!(
@@ -2447,7 +2786,10 @@ mod tests {
         assert!(dead_hook(10_000, 9_900, 9_900, 9_900, 9_950, true).is_none());
         // 我们自己的注入（SendInput）不进旁路心跳：系统最后输入刷新了、钩子也刷新了，
         // 旁路停在很久以前 → 这不是旁路作证，按老口径判。
-        assert!(dead_hook(10_000, 10_000, 10_000, 7_000, 7_000, true).is_none(), "注入不算物理按键");
+        assert!(
+            dead_hook(10_000, 10_000, 10_000, 7_000, 7_000, true).is_none(),
+            "注入不算物理按键"
+        );
         // 键盘钩子挂了而旁路还活着时，手打的字不能记到鼠标账上（否则误判鼠标失效）。
         assert!(
             dead_hook(10_000, 10_000, 7_000, 7_000, 9_900, true)
@@ -2471,13 +2813,50 @@ mod tests {
 
     #[test]
     fn rect_covers_requires_full_monitor() {
-        let mon = RECT { left: 0, top: 0, right: 1920, bottom: 1080 };
+        let mon = RECT {
+            left: 0,
+            top: 0,
+            right: 1920,
+            bottom: 1080,
+        };
         // 无边框全屏（含越过边缘一点）算全屏。
-        assert!(rect_covers(RECT { left: 0, top: 0, right: 1920, bottom: 1080 }, mon));
-        assert!(rect_covers(RECT { left: -8, top: -8, right: 1928, bottom: 1088 }, mon));
+        assert!(rect_covers(
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1080
+            },
+            mon
+        ));
+        assert!(rect_covers(
+            RECT {
+                left: -8,
+                top: -8,
+                right: 1928,
+                bottom: 1088
+            },
+            mon
+        ));
         // 普通窗口 / 只占一半 / 盖住任务栏但没盖满都不是。
-        assert!(!rect_covers(RECT { left: 100, top: 100, right: 900, bottom: 700 }, mon));
-        assert!(!rect_covers(RECT { left: 0, top: 0, right: 1920, bottom: 1040 }, mon));
+        assert!(!rect_covers(
+            RECT {
+                left: 100,
+                top: 100,
+                right: 900,
+                bottom: 700
+            },
+            mon
+        ));
+        assert!(!rect_covers(
+            RECT {
+                left: 0,
+                top: 0,
+                right: 1920,
+                bottom: 1040
+            },
+            mon
+        ));
     }
 
     /// 空桌面的前台就是 Progman（矩形铺满、非最大化）：必须认成桌面，不能当全屏程序。
@@ -2515,7 +2894,10 @@ mod tests {
         // 注入走 simulate，单测不敲真键盘。
         REPLACED_DOWN.lock().unwrap().insert(Key::K, Key::Control);
         assert_eq!(take_replaced_down(), vec![Key::Control]);
-        assert!(REPLACED_DOWN.lock().unwrap().is_empty(), "取走后要清空，避免重复释放");
+        assert!(
+            REPLACED_DOWN.lock().unwrap().is_empty(),
+            "取走后要清空，避免重复释放"
+        );
     }
 
     #[test]
@@ -2555,7 +2937,11 @@ mod tests {
         assert_eq!(down & 0xFFFF, 1, "重复计数 = 1");
         assert_eq!((down >> 16) & 0xFF, 0x1E, "扫描码在 bit16..23");
         assert_eq!(down & (1 << 24), 0, "普通键不带扩展位");
-        assert_eq!(down & (1 << 30) | down & (1 << 31), 0, "按下没有转换 / 抬起位");
+        assert_eq!(
+            down & (1 << 30) | down & (1 << 31),
+            0,
+            "按下没有转换 / 抬起位"
+        );
 
         let up = key_lparam(0x48, true, true);
         assert_ne!(up & (1 << 24), 0, "扩展键带扩展位");
@@ -2566,7 +2952,10 @@ mod tests {
     /// 后台发送的文本：`\r\n` 只发一次回车，`\n` 转 `\r`，控制码之外的 UTF-16 原样。
     #[test]
     fn post_text_units_normalize_newlines() {
-        assert_eq!(text_units("a\r\nb\n\t"), vec!['a' as u16, 0x0D, 'b' as u16, 0x0D, 0x09]);
+        assert_eq!(
+            text_units("a\r\nb\n\t"),
+            vec!['a' as u16, 0x0D, 'b' as u16, 0x0D, 0x09]
+        );
         assert_eq!(text_units("咔"), "咔".encode_utf16().collect::<Vec<_>>());
         assert!(text_units("").is_empty());
     }

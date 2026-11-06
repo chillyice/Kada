@@ -65,7 +65,11 @@ static SINK: Mutex<Option<CornerSink>> = Mutex::new(None);
 pub fn configure(enabled: bool, corners: [bool; 4], monitors: Vec<(i32, i32, i32, i32)>) {
     ENABLED.store(enabled, Ordering::Relaxed);
     *ACTIVE.lock().unwrap() = None;
-    *CONFIG.lock().unwrap() = Some(Config { enabled, corners, monitors });
+    *CONFIG.lock().unwrap() = Some(Config {
+        enabled,
+        corners,
+        monitors,
+    });
 }
 
 /// 注册出口（`None` = 取消注册）。
@@ -205,13 +209,24 @@ mod tests {
         assert_eq!(on_move((1919, 1)), Some(Corner::TopRight));
 
         // 多显示器：四角配置应用到每台显示器。
-        configure(true, [true, false, false, false], vec![(0, 0, 100, 100), (100, 0, 300, 100)]);
+        configure(
+            true,
+            [true, false, false, false],
+            vec![(0, 0, 100, 100), (100, 0, 300, 100)],
+        );
         assert_eq!(on_move((50, 50)), None, "屏幕中间不在任何角");
-        assert_eq!(on_move((101, 1)), Some(Corner::TopLeft), "第二台显示器的左上角");
+        assert_eq!(
+            on_move((101, 1)),
+            Some(Corner::TopLeft),
+            "第二台显示器的左上角"
+        );
         assert_eq!(got.lock().unwrap().len(), 4);
 
         // 防误触复查：等够停留时长后光标还在角附近（容差内抖动也算），走远了就不算。
-        assert!(still_near(Corner::TopLeft), "光标还贴着第二台显示器的左上角");
+        assert!(
+            still_near(Corner::TopLeft),
+            "光标还贴着第二台显示器的左上角"
+        );
         on_move((108, 8));
         assert!(still_near(Corner::TopLeft), "容差内抖动仍算贴着");
         on_move((300, 100));

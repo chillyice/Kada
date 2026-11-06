@@ -127,11 +127,9 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
                 .push(format!("鼠标手势「{}」未导入：方向串无法解析", g.label()));
             continue;
         }
-        if out
-            .gestures
-            .iter()
-            .any(|x| crate::normalize_pattern(&x.pattern) == pattern && x.when_key() == g.when_key())
-        {
+        if out.gestures.iter().any(|x| {
+            crate::normalize_pattern(&x.pattern) == pattern && x.when_key() == g.when_key()
+        }) {
             report.skipped.push(format!(
                 "鼠标手势「{}」未导入：方向串「{pattern}」已存在",
                 g.label()
@@ -223,9 +221,10 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
             c.order = 0;
             c == probe
         }) {
-            report
-                .skipped
-                .push(format!("边缘滚动「{}」未导入：相同的条目已存在", we.label()));
+            report.skipped.push(format!(
+                "边缘滚动「{}」未导入：相同的条目已存在",
+                we.label()
+            ));
             continue;
         }
         out.wheel_edges.push(we.clone());
@@ -252,7 +251,12 @@ mod tests {
     use crate::{Action, Folder, Layer, Remap, Settings, TextExpansion, TextMode};
 
     fn text(t: &str) -> Action {
-        Action::Text { text: t.into(), mode: TextMode::Input, masked: false, description: None }
+        Action::Text {
+            text: t.into(),
+            mode: TextMode::Input,
+            masked: false,
+            description: None,
+        }
     }
 
     fn shortcut(name: &str, trigger: &str) -> ShortcutItem {
@@ -266,16 +270,29 @@ mod tests {
     }
 
     fn remap(from: &str, to: &str) -> Remap {
-        Remap { from: from.into(), to: to.into(), ..Default::default() }
+        Remap {
+            from: from.into(),
+            to: to.into(),
+            ..Default::default()
+        }
     }
 
     /// 本机现有配置：一条快捷键 + 一条改键 + 一条扩展 + 设置全开。
     fn local() -> Config {
         Config {
-            folders: vec![Folder { id: "f-local".into(), name: "本机目录".into(), parent: None }],
+            folders: vec![Folder {
+                id: "f-local".into(),
+                name: "本机目录".into(),
+                parent: None,
+            }],
             shortcuts: vec![shortcut("本机快捷键", "Ctrl+Alt+K")],
             remaps: vec![remap("CapsLock", "Ctrl")],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "本机地址".into(), enabled: true, ..Default::default() }],
+            expansions: vec![TextExpansion {
+                trigger: ";addr".into(),
+                replace: "本机地址".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             settings: Settings {
                 autostart: true,
                 paused: true,
@@ -300,14 +317,26 @@ mod tests {
     fn merge_appends_and_keeps_existing() {
         let cur = local();
         let incoming = Config {
-            folders: vec![Folder { id: "f-local".into(), name: "对方目录名".into(), parent: None }],
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
+            folders: vec![Folder {
+                id: "f-local".into(),
+                name: "对方目录名".into(),
+                parent: None,
+            }],
+            layers: vec![Layer {
+                id: "l-nav".into(),
+                name: "导航层".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![shortcut("对方快捷键", "Ctrl+Alt+J")],
             ..Default::default()
         };
         let (out, report) = merge_configs(&cur, &incoming);
 
-        assert_eq!(names(&out), vec!["本机快捷键", "对方快捷键"], "导入的条目追加在后面");
+        assert_eq!(
+            names(&out),
+            vec!["本机快捷键", "对方快捷键"],
+            "导入的条目追加在后面"
+        );
         assert_eq!(report.shortcuts, 1);
         assert_eq!(report.layers, 1);
         assert_eq!(report.folders, 0, "同 id 目录视为同一个，不重复加入");
@@ -333,7 +362,10 @@ mod tests {
             ..Default::default()
         };
         let (out, _) = merge_configs(&cur, &incoming);
-        assert_eq!(out.settings, cur.settings, "合并保留本机设置（要覆盖设置就用替换导入）");
+        assert_eq!(
+            out.settings, cur.settings,
+            "合并保留本机设置（要覆盖设置就用替换导入）"
+        );
     }
 
     #[test]
@@ -343,11 +375,19 @@ mod tests {
             // 触发键撞车（哪怕名字不同、或只是多触发键里有一个交集）整条跳过。
             shortcuts: vec![
                 shortcut("换了名字的同一条", "Ctrl+Alt+K"),
-                ShortcutItem { triggers: vec!["F9 K".into(), "Ctrl+Alt+K".into()], ..Default::default() },
+                ShortcutItem {
+                    triggers: vec!["F9 K".into(), "Ctrl+Alt+K".into()],
+                    ..Default::default()
+                },
                 shortcut("真正的新条目", "F9 L"),
             ],
             remaps: vec![remap("CapsLock", "Escape")],
-            expansions: vec![TextExpansion { trigger: ";addr".into(), replace: "对方地址".into(), enabled: true, ..Default::default() }],
+            expansions: vec![TextExpansion {
+                trigger: ";addr".into(),
+                replace: "对方地址".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             ..Default::default()
         };
         let (out, report) = merge_configs(&cur, &incoming);
@@ -355,7 +395,11 @@ mod tests {
         assert_eq!(report.added(), 1, "只有触发键完全不撞的那条进来");
         assert_eq!(names(&out), vec!["本机快捷键", "真正的新条目"]);
         assert_eq!(report.skipped.len(), 4);
-        assert!(report.skipped[0].contains("Ctrl+Alt+K"), "跳过要报出是哪条：{:?}", report.skipped);
+        assert!(
+            report.skipped[0].contains("Ctrl+Alt+K"),
+            "跳过要报出是哪条：{:?}",
+            report.skipped
+        );
         assert!(report.skipped.iter().any(|s| s.contains("CapsLock")));
         assert!(report.skipped.iter().any(|s| s.contains(";addr")));
         // 撞车的现有条目保持原样。
@@ -385,7 +429,11 @@ mod tests {
         // 导入的改键「长按进入」的层随导入一起进来，引用不能断（断了该改键会整条作废）。
         let cur = local();
         let incoming = Config {
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
+            layers: vec![Layer {
+                id: "l-nav".into(),
+                name: "导航层".into(),
+                ..Default::default()
+            }],
             remaps: vec![Remap {
                 from: "Space".into(),
                 hold_layer: Some("l-nav".into()),

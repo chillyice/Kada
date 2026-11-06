@@ -480,7 +480,11 @@ pub fn pattern_from_points(points: &[(i32, i32)], min_segment: i32) -> String {
             }
         }
     }
-    tokens.iter().map(|d| d.token()).collect::<Vec<_>>().join(",")
+    tokens
+        .iter()
+        .map(|d| d.token())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 // ---------------------------------------------------------------------------
@@ -751,7 +755,11 @@ pub fn pattern_from_stroke(points: &[(i32, i32)], min_len_px: f64) -> String {
     if tokens.len() > STROKE_MAX_TOKENS {
         return String::new();
     }
-    tokens.iter().map(|d| d.token()).collect::<Vec<_>>().join(",")
+    tokens
+        .iter()
+        .map(|d| d.token())
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// 轨迹 → 归一化形状模板（[`TEMPLATE_POINTS`] 个点，每轴 `0..=1000`）。
@@ -871,9 +879,9 @@ pub fn gesture_enabled(cfg: &Config) -> bool {
 /// **纯形状条目**（方向串为空、只有 `template`）也算——它靠模板兜底匹配，
 /// 少了这一条会让「只配了形状」的配置根本开不了采集。
 pub fn touchpad_gesture_enabled(cfg: &Config) -> bool {
-    cfg.touchpad_gestures.iter().any(|g| {
-        g.enabled && g.trigger.is_some() && touchpad_gesture_has_matcher(g)
-    })
+    cfg.touchpad_gestures
+        .iter()
+        .any(|g| g.enabled && g.trigger.is_some() && touchpad_gesture_has_matcher(g))
 }
 
 /// 这条触摸板手势有没有可用的判据（方向串或形状模板，至少一个）。
@@ -892,7 +900,11 @@ pub fn is_touchpad_trigger(cfg: &Config, key: Key) -> bool {
 }
 
 /// 按方向串找**右键**手势（精确匹配）。
-pub fn find_gesture<'a>(cfg: &'a Config, pattern: &str, ctx: &TriggerContext) -> Option<&'a Gesture> {
+pub fn find_gesture<'a>(
+    cfg: &'a Config,
+    pattern: &str,
+    ctx: &TriggerContext,
+) -> Option<&'a Gesture> {
     let pattern = normalize_pattern(pattern);
     if pattern.is_empty() {
         return None;
@@ -1042,13 +1054,25 @@ mod tests {
         let circle: Vec<(i32, i32)> = (0..16)
             .map(|i| {
                 let a = std::f64::consts::TAU * i as f64 / 16.0;
-                ((100.0 + 40.0 * a.cos()) as i32, (100.0 + 40.0 * a.sin()) as i32)
+                (
+                    (100.0 + 40.0 * a.cos()) as i32,
+                    (100.0 + 40.0 * a.sin()) as i32,
+                )
             })
             .collect();
         assert_eq!(lasso_bbox(&circle), Some((60, 60, 140, 140)));
 
         // 来回画一条横线：绕中心转角正负抵消，不算圈。
-        let zigzag = [(0, 0), (100, 0), (0, 0), (100, 0), (0, 0), (100, 0), (0, 0), (100, 0)];
+        let zigzag = [
+            (0, 0),
+            (100, 0),
+            (0, 0),
+            (100, 0),
+            (0, 0),
+            (100, 0),
+            (0, 0),
+            (100, 0),
+        ];
         assert_eq!(lasso_bbox(&zigzag), None);
 
         // 太小 / 点太少都不算。
@@ -1120,7 +1144,9 @@ mod tests {
         };
         let mut cfg = Config::default();
         let mut gated = gesture("D");
-        gated.when = Some(Condition::FrontmostApp { app: "chrome".into() });
+        gated.when = Some(Condition::FrontmostApp {
+            app: "chrome".into(),
+        });
         cfg.gestures = vec![gated, gesture("D")];
 
         // 前台是 chrome → 走第一条（带 when）。
@@ -1136,7 +1162,11 @@ mod tests {
 
     #[test]
     fn app_excluded_matches_substring_and_wildcards() {
-        let list = vec!["photoshop.exe".to_string(), "*blender*".to_string(), "  ".into()];
+        let list = vec![
+            "photoshop.exe".to_string(),
+            "*blender*".to_string(),
+            "  ".into(),
+        ];
         assert!(app_excluded(&list, "Photoshop.exe"));
         assert!(app_excluded(&list, "blender"));
         assert!(!app_excluded(&list, "notepad.exe"));
@@ -1154,13 +1184,19 @@ mod tests {
             "   ".to_string(),
         ];
         assert!(app_excluded(&list, "OpenCode.exe"));
-        assert!(app_excluded(&list, "firefox.exe"), "任务管理器带引号的整条路径也认");
+        assert!(
+            app_excluded(&list, "firefox.exe"),
+            "任务管理器带引号的整条路径也认"
+        );
         assert!(app_excluded(&list, "chromium"));
         // 空白项不能变成「匹配一切」（`contains("")` 恒真）。
         let blanks = vec!["".to_string(), "  ".to_string()];
         assert!(!app_excluded(&blanks, "anything.exe"));
         // 只填目录不填文件名不该命中（剥完是空串，不能再拿空串去 `contains`）。
-        assert!(!app_excluded(&[r"C:\Program Files\Some App\".to_string()], "anything.exe"));
+        assert!(!app_excluded(
+            &[r"C:\Program Files\Some App\".to_string()],
+            "anything.exe"
+        ));
     }
 
     #[test]
@@ -1227,7 +1263,11 @@ mod tests {
                 let t = i as f64 / steps as f64;
                 let x = from.0 + (to.0 - from.0) * t;
                 let y = from.1 + (to.1 - from.1) * t;
-                let jitter = if i == 0 || i == steps { 0.0 } else { (i as f64 * 1.7).sin() * 0.8 };
+                let jitter = if i == 0 || i == steps {
+                    0.0
+                } else {
+                    (i as f64 * 1.7).sin() * 0.8
+                };
                 ((x + jitter) as i32, (y + jitter * 0.5) as i32)
             })
             .collect()
@@ -1274,7 +1314,10 @@ mod tests {
 
     #[test]
     fn stroke_pattern_rejects_tiny_and_scribbles() {
-        assert_eq!(pattern_from_stroke(&line((0.0, 0.0), (8.0, 0.0), 4), 24.0), "");
+        assert_eq!(
+            pattern_from_stroke(&line((0.0, 0.0), (8.0, 0.0), 4), 24.0),
+            ""
+        );
         assert_eq!(pattern_from_stroke(&[], 24.0), "");
         // 原地来回涂鸦：行程远超包围盒，形状没有意义。
         let mut scribble = Vec::new();
@@ -1289,7 +1332,14 @@ mod tests {
     fn stroke_pattern_never_exceeds_token_cap() {
         // 画了很多段：宁可判「不认识」，也别吐一串猜出来的方向。
         let mut pts = Vec::new();
-        let dirs = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0), (1.0, 0.0), (0.0, 1.0)];
+        let dirs = [
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (-1.0, 0.0),
+            (0.0, -1.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+        ];
         let mut cur = (0.0f64, 0.0f64);
         for (dx, dy) in dirs {
             let next = (cur.0 + dx * 40.0, cur.1 + dy * 40.0);
@@ -1317,7 +1367,10 @@ mod tests {
         b.extend(line((500.0, 500.0), (900.0, 500.0), 20));
         let tc = template_from_points(&b).expect("模板");
         let dc = template_distance(&ta, &tc).expect("同点数");
-        assert!(dc > TEMPLATE_MAX_DISTANCE, "不同形状不该落进阈值，实际 {dc}");
+        assert!(
+            dc > TEMPLATE_MAX_DISTANCE,
+            "不同形状不该落进阈值，实际 {dc}"
+        );
     }
 
     #[test]
@@ -1342,7 +1395,10 @@ mod tests {
         assert_eq!(hit.name.as_deref(), Some("触摸板"));
         // 换成别的触发键 / 走右键那条路都不串味。
         assert!(find_touchpad(&cfg, Key::F9, "D", &ctx).is_none());
-        assert_eq!(find_gesture(&cfg, "D", &ctx).map(|g| g.pattern.clone()), Some("D".into()));
+        assert_eq!(
+            find_gesture(&cfg, "D", &ctx).map(|g| g.pattern.clone()),
+            Some("D".into())
+        );
     }
 
     #[test]
@@ -1378,7 +1434,10 @@ mod tests {
             ..Default::default()
         }];
         let ctx = TriggerContext::empty();
-        assert!(find_touchpad(&cfg, Key::F9, "R", &ctx).is_none(), "空方向串不该被方向串匹配命中");
+        assert!(
+            find_touchpad(&cfg, Key::F9, "R", &ctx).is_none(),
+            "空方向串不该被方向串匹配命中"
+        );
         assert!(find_touchpad_by_template(&cfg, &stroke, Key::F9, &ctx).is_some());
         assert!(touchpad_gesture_enabled(&cfg));
         assert!(is_touchpad_trigger(&cfg, Key::F9));
@@ -1400,10 +1459,16 @@ mod tests {
         assert!(back.contains("\"trigger\":\"CapsLock\""), "{back}");
         let again: TouchpadGesture = serde_json::from_str(&back).expect("要能读回");
         assert_eq!(again, g);
-        assert_eq!(again.template.as_ref().map(|t| t.len()), Some(TEMPLATE_POINTS));
+        assert_eq!(
+            again.template.as_ref().map(|t| t.len()),
+            Some(TEMPLATE_POINTS)
+        );
 
         // 键名拼错 = 解析失败（不静默降级成「没有触发键」）。
-        assert!(serde_json::from_str::<TouchpadGesture>(r#"{"pattern":"D","trigger":"NotAKey"}"#).is_err());
+        assert!(
+            serde_json::from_str::<TouchpadGesture>(r#"{"pattern":"D","trigger":"NotAKey"}"#)
+                .is_err()
+        );
     }
 
     #[test]
@@ -1422,7 +1487,10 @@ mod tests {
         assert_eq!(cfg.touchpad_gestures.len(), 1);
         assert_eq!(cfg.touchpad_gestures[0].trigger, Some(Key::CapsLock));
         assert_eq!(cfg.touchpad_gestures[0].pattern, "D");
-        assert!(cfg.touchpad_gestures[0].template.is_some(), "模板要跟着搬过去");
+        assert!(
+            cfg.touchpad_gestures[0].template.is_some(),
+            "模板要跟着搬过去"
+        );
         // 幂等：再迁一次不会重复搬。
         cfg.migrate();
         assert_eq!(cfg.gestures.len(), 1);

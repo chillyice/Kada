@@ -38,8 +38,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use evdev::{
-    AttributeSet, Device, EventType, InputEvent, KeyCode, PropType, RelativeAxisCode,
-    AbsoluteAxisCode, uinput::VirtualDevice,
+    uinput::VirtualDevice, AbsoluteAxisCode, AttributeSet, Device, EventType, InputEvent, KeyCode,
+    PropType, RelativeAxisCode,
 };
 
 use kada_core::{DeviceKind, FrontmostContext, InputDevice, Key, Modifier, MouseButton};
@@ -61,8 +61,15 @@ const RESCAN_INTERVAL: Duration = Duration::from_secs(2);
 /// 一次键盘/鼠标键事件。
 #[derive(Clone, Debug)]
 pub enum KeyEvent {
-    Down { key: Key, mods: BTreeSet<Modifier>, repeat: bool },
-    Up { key: Key, mods: BTreeSet<Modifier> },
+    Down {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+        repeat: bool,
+    },
+    Up {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+    },
 }
 
 /// 处理函数对事件的处置。
@@ -91,7 +98,8 @@ static HANDLER: Mutex<Option<Handler>> = Mutex::new(None);
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
-static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 物理按下的修饰键码。吞键/改键不动它（与 Windows 的 GetKeyState 对齐）。
 static MODS_DOWN: LazyLock<Mutex<HashSet<u16>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// uinput 虚拟设备（键盘 + 鼠标合一）：`start` 创建，事件转发与 simulate 共用。
@@ -135,10 +143,15 @@ pub fn input_devices() -> Vec<InputDevice> {
         if dev.name() == Some(VDEV_NAME) {
             continue;
         }
-        let Some(kind) = device_kind(&dev) else { continue };
+        let Some(kind) = device_kind(&dev) else {
+            continue;
+        };
         let Some(name) = dev.name() else { continue };
         if !out.iter().any(|d| d.name == name && d.kind == kind) {
-            out.push(InputDevice { name: name.to_string(), kind });
+            out.push(InputDevice {
+                name: name.to_string(),
+                kind,
+            });
         }
     }
     out.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.name.cmp(&b.name)));
@@ -169,7 +182,11 @@ fn report_mouse_trigger(kind: MouseRecordKind) {
     let move_dx = ACC_X.swap(0, Ordering::Relaxed);
     let move_dy = ACC_Y.swap(0, Ordering::Relaxed);
     if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
-        f(MouseRecord { kind, move_dx, move_dy });
+        f(MouseRecord {
+            kind,
+            move_dx,
+            move_dy,
+        });
     }
 }
 
@@ -285,7 +302,10 @@ fn touch_feed(st: &mut TouchState, ev: &InputEvent, mt: bool, scale: f64) -> Opt
                 None
             };
             return pos.map(|(x, y)| {
-                ((f64::from(x) * scale).round() as i32, (f64::from(y) * scale).round() as i32)
+                (
+                    (f64::from(x) * scale).round() as i32,
+                    (f64::from(y) * scale).round() as i32,
+                )
             });
         }
         _ => {}
@@ -319,11 +339,15 @@ fn pad_scale(dev: &Device) -> f64 {
 /// 与 [`is_pointer`] 的排除口径互补——那些「抓了会废」的设备正是这里要旁听的。
 /// 指点杆（REL 轴、无触摸键）暂不旁听：它的移动进不了采集（记在已知天花板里）。
 fn is_touchpad_node(dev: &Device) -> bool {
-    let Some(keys) = dev.supported_keys() else { return false };
+    let Some(keys) = dev.supported_keys() else {
+        return false;
+    };
     if !(keys.contains(KeyCode::BTN_TOUCH) || keys.contains(KeyCode::BTN_TOOL_FINGER)) {
         return false;
     }
-    let Some(abs) = dev.supported_absolute_axes() else { return false };
+    let Some(abs) = dev.supported_absolute_axes() else {
+        return false;
+    };
     abs.contains(AbsoluteAxisCode::ABS_X) || abs.contains(AbsoluteAxisCode::ABS_MT_POSITION_X)
 }
 
@@ -352,7 +376,11 @@ fn running_diverters() -> Vec<String> {
     let names = process_names();
     kada_core::DIVERTERS
         .iter()
-        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|d| {
+            d.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|d| d.id.to_string())
         .collect()
 }
@@ -362,7 +390,11 @@ pub fn running_tools() -> Vec<String> {
     let names = process_names();
     kada_core::EXTERNAL_TOOLS
         .iter()
-        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|t| {
+            t.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|t| t.id.to_string())
         .collect()
 }
@@ -448,14 +480,22 @@ where
         if is_keyboard(&dev) {
             saw_keyboard = true;
             match dev.grab() {
-                Ok(()) => devices.push(Grabbed { path, dev, keyboard: true }),
+                Ok(()) => devices.push(Grabbed {
+                    path,
+                    dev,
+                    keyboard: true,
+                }),
                 Err(e) if e.raw_os_error() == Some(EBUSY) => keyboard_busy = true,
                 Err(e) => eprintln!("kada-hook: 键盘抓取失败，跳过：{e}"),
             }
         } else if is_pointer(&dev) {
             // 鼠标抓不到不致命：中键/侧键改键不可用，键盘照常工作。
             match dev.grab() {
-                Ok(()) => devices.push(Grabbed { path, dev, keyboard: false }),
+                Ok(()) => devices.push(Grabbed {
+                    path,
+                    dev,
+                    keyboard: false,
+                }),
                 Err(e) => eprintln!("kada-hook: 鼠标抓取失败，跳过：{e}"),
             }
         } else if is_touchpad_node(&dev) {
@@ -465,7 +505,13 @@ where
                 .supported_absolute_axes()
                 .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X));
             match dev.set_nonblocking(true) {
-                Ok(()) => pads.push(Pad { path, dev, name, scale, mt }),
+                Ok(()) => pads.push(Pad {
+                    path,
+                    dev,
+                    name,
+                    scale,
+                    mt,
+                }),
                 Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }
         }
@@ -508,7 +554,10 @@ where
                 eprintln!("kada-hook: {e}");
             }
         })?;
-    Ok(HookHandle { stop, join: Some(join) })
+    Ok(HookHandle {
+        stop,
+        join: Some(join),
+    })
 }
 
 /// 组装「一个设备都没抓到」的错误（[`start`]）。
@@ -533,8 +582,11 @@ fn start_error(saw_keyboard: bool, keyboard_busy: bool) -> io::Error {
 
 /// `/dev/input` 下是否存在 event* 设备文件（权限分诊用：文件在而枚举不到 = 打不开）。
 fn keyboard_files_exist() -> bool {
-    let Ok(rd) = std::fs::read_dir("/dev/input") else { return false };
-    rd.flatten().any(|e| e.file_name().to_string_lossy().starts_with("event"))
+    let Ok(rd) = std::fs::read_dir("/dev/input") else {
+        return false;
+    };
+    rd.flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("event"))
 }
 
 /// `/dev/uinput` 建不出来时的错误（[`start`]）：缺失与无权限各给一条能照抄的修复命令。
@@ -569,11 +621,15 @@ fn is_keyboard(dev: &Device) -> bool {
 /// 指点杆。触摸类设备协议复杂（多点、ABS 坐标、压力），原样转发做不到，抓了等于
 /// 废掉整个触摸板，一律不碰（7.3-㉔ 的边界：这些设备的中键 / 侧键不能作触发键）。
 fn is_pointer(dev: &Device) -> bool {
-    let Some(rel) = dev.supported_relative_axes() else { return false };
+    let Some(rel) = dev.supported_relative_axes() else {
+        return false;
+    };
     if !(rel.contains(RelativeAxisCode::REL_X) && rel.contains(RelativeAxisCode::REL_Y)) {
         return false;
     }
-    let Some(keys) = dev.supported_keys() else { return false };
+    let Some(keys) = dev.supported_keys() else {
+        return false;
+    };
     if !keys.contains(KeyCode::BTN_LEFT) {
         return false;
     }
@@ -613,7 +669,11 @@ fn device_kind(dev: &Device) -> Option<DeviceKind> {
                 || k.contains(KeyCode::BTN_STYLUS)
                 || k.contains(KeyCode::BTN_STYLUS2)
         });
-        return Some(if pen { DeviceKind::Tablet } else { DeviceKind::Touchpad });
+        return Some(if pen {
+            DeviceKind::Tablet
+        } else {
+            DeviceKind::Touchpad
+        });
     }
     None
 }
@@ -754,7 +814,9 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
 /// `/dev/input` 下所有 `eventN` 节点的名字（排序后用于「目录变没变」的比对）。
 /// 读不到目录返回空表（与 [`keyboard_files_exist`] 同口径：不报错、只是没有）。
 fn event_nodes(dir: &Path) -> Vec<String> {
-    let Ok(rd) = std::fs::read_dir(dir) else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
     let mut names: Vec<String> = rd
         .flatten()
         .filter_map(|e| {
@@ -787,7 +849,11 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
                             dev.name().unwrap_or("?"),
                             path.display()
                         );
-                        devices.push(Grabbed { path, dev, keyboard });
+                        devices.push(Grabbed {
+                            path,
+                            dev,
+                            keyboard,
+                        });
                     }
                     Err(e) => eprintln!("kada-hook: 新设备设置非阻塞失败，跳过：{e}"),
                 },
@@ -807,7 +873,13 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
                         dev.name().unwrap_or("?"),
                         path.display()
                     );
-                    pads.push(Pad { path, dev, name, scale, mt });
+                    pads.push(Pad {
+                        path,
+                        dev,
+                        name,
+                        scale,
+                        mt,
+                    });
                 }
                 Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }
@@ -828,7 +900,10 @@ fn on_device_lost() {
     SWALLOWED.lock().unwrap().clear();
     MODS_DOWN.lock().unwrap().clear();
     REINSTALLS.fetch_add(1, Ordering::Relaxed);
-    eprintln!("kada-hook: 输入设备断开，已复位按键状态（计数 {}）", reinstall_count());
+    eprintln!(
+        "kada-hook: 输入设备断开，已复位按键状态（计数 {}）",
+        reinstall_count()
+    );
 }
 
 fn handle_key(code: u16, value: i32) {
@@ -853,7 +928,11 @@ fn press(key: Key, code: u16, value: i32) {
     let action = {
         let mut h = HANDLER.lock().unwrap();
         match h.as_mut() {
-            Some(f) => f(KeyEvent::Down { key, mods: current_mods(key), repeat }),
+            Some(f) => f(KeyEvent::Down {
+                key,
+                mods: current_mods(key),
+                repeat,
+            }),
             None => Action::Allow,
         }
     };
@@ -886,7 +965,10 @@ fn release(code: u16, key: Key) {
     }
     // 无论吞掉与否都回调 handler（观察者）：tap-hold 需要在 keyup 时判定 tap/hold。
     if let Some(f) = HANDLER.lock().unwrap().as_mut() {
-        let _ = f(KeyEvent::Up { key, mods: current_mods(key) });
+        let _ = f(KeyEvent::Up {
+            key,
+            mods: current_mods(key),
+        });
     }
     if !swallowed {
         forward_raw(EventType::KEY.0, code, 0);
@@ -946,54 +1028,119 @@ fn forward_raw(type_: u16, code: u16, value: i32) {
 pub fn key_to_code(k: Key) -> Option<u16> {
     use Key::*;
     let code = match k {
-        A => KeyCode::KEY_A, B => KeyCode::KEY_B, C => KeyCode::KEY_C,
-        D => KeyCode::KEY_D, E => KeyCode::KEY_E, F => KeyCode::KEY_F,
-        G => KeyCode::KEY_G, H => KeyCode::KEY_H, I => KeyCode::KEY_I,
-        J => KeyCode::KEY_J, K => KeyCode::KEY_K, L => KeyCode::KEY_L,
-        M => KeyCode::KEY_M, N => KeyCode::KEY_N, O => KeyCode::KEY_O,
-        P => KeyCode::KEY_P, Q => KeyCode::KEY_Q, R => KeyCode::KEY_R,
-        S => KeyCode::KEY_S, T => KeyCode::KEY_T, U => KeyCode::KEY_U,
-        V => KeyCode::KEY_V, W => KeyCode::KEY_W, X => KeyCode::KEY_X,
-        Y => KeyCode::KEY_Y, Z => KeyCode::KEY_Z,
-        Digit0 => KeyCode::KEY_0, Digit1 => KeyCode::KEY_1, Digit2 => KeyCode::KEY_2,
-        Digit3 => KeyCode::KEY_3, Digit4 => KeyCode::KEY_4, Digit5 => KeyCode::KEY_5,
-        Digit6 => KeyCode::KEY_6, Digit7 => KeyCode::KEY_7, Digit8 => KeyCode::KEY_8,
+        A => KeyCode::KEY_A,
+        B => KeyCode::KEY_B,
+        C => KeyCode::KEY_C,
+        D => KeyCode::KEY_D,
+        E => KeyCode::KEY_E,
+        F => KeyCode::KEY_F,
+        G => KeyCode::KEY_G,
+        H => KeyCode::KEY_H,
+        I => KeyCode::KEY_I,
+        J => KeyCode::KEY_J,
+        K => KeyCode::KEY_K,
+        L => KeyCode::KEY_L,
+        M => KeyCode::KEY_M,
+        N => KeyCode::KEY_N,
+        O => KeyCode::KEY_O,
+        P => KeyCode::KEY_P,
+        Q => KeyCode::KEY_Q,
+        R => KeyCode::KEY_R,
+        S => KeyCode::KEY_S,
+        T => KeyCode::KEY_T,
+        U => KeyCode::KEY_U,
+        V => KeyCode::KEY_V,
+        W => KeyCode::KEY_W,
+        X => KeyCode::KEY_X,
+        Y => KeyCode::KEY_Y,
+        Z => KeyCode::KEY_Z,
+        Digit0 => KeyCode::KEY_0,
+        Digit1 => KeyCode::KEY_1,
+        Digit2 => KeyCode::KEY_2,
+        Digit3 => KeyCode::KEY_3,
+        Digit4 => KeyCode::KEY_4,
+        Digit5 => KeyCode::KEY_5,
+        Digit6 => KeyCode::KEY_6,
+        Digit7 => KeyCode::KEY_7,
+        Digit8 => KeyCode::KEY_8,
         Digit9 => KeyCode::KEY_9,
-        F1 => KeyCode::KEY_F1, F2 => KeyCode::KEY_F2, F3 => KeyCode::KEY_F3,
-        F4 => KeyCode::KEY_F4, F5 => KeyCode::KEY_F5, F6 => KeyCode::KEY_F6,
-        F7 => KeyCode::KEY_F7, F8 => KeyCode::KEY_F8, F9 => KeyCode::KEY_F9,
-        F10 => KeyCode::KEY_F10, F11 => KeyCode::KEY_F11, F12 => KeyCode::KEY_F12,
-        Comma => KeyCode::KEY_COMMA, Period => KeyCode::KEY_DOT,
-        Slash => KeyCode::KEY_SLASH, Backslash => KeyCode::KEY_BACKSLASH,
-        Semicolon => KeyCode::KEY_SEMICOLON, Quote => KeyCode::KEY_APOSTROPHE,
-        Backquote => KeyCode::KEY_GRAVE, Minus => KeyCode::KEY_MINUS,
-        Equal => KeyCode::KEY_EQUAL, BracketLeft => KeyCode::KEY_LEFTBRACE,
+        F1 => KeyCode::KEY_F1,
+        F2 => KeyCode::KEY_F2,
+        F3 => KeyCode::KEY_F3,
+        F4 => KeyCode::KEY_F4,
+        F5 => KeyCode::KEY_F5,
+        F6 => KeyCode::KEY_F6,
+        F7 => KeyCode::KEY_F7,
+        F8 => KeyCode::KEY_F8,
+        F9 => KeyCode::KEY_F9,
+        F10 => KeyCode::KEY_F10,
+        F11 => KeyCode::KEY_F11,
+        F12 => KeyCode::KEY_F12,
+        Comma => KeyCode::KEY_COMMA,
+        Period => KeyCode::KEY_DOT,
+        Slash => KeyCode::KEY_SLASH,
+        Backslash => KeyCode::KEY_BACKSLASH,
+        Semicolon => KeyCode::KEY_SEMICOLON,
+        Quote => KeyCode::KEY_APOSTROPHE,
+        Backquote => KeyCode::KEY_GRAVE,
+        Minus => KeyCode::KEY_MINUS,
+        Equal => KeyCode::KEY_EQUAL,
+        BracketLeft => KeyCode::KEY_LEFTBRACE,
         BracketRight => KeyCode::KEY_RIGHTBRACE,
-        Enter => KeyCode::KEY_ENTER, Escape => KeyCode::KEY_ESC,
-        Tab => KeyCode::KEY_TAB, Space => KeyCode::KEY_SPACE,
-        Backspace => KeyCode::KEY_BACKSPACE, Delete => KeyCode::KEY_DELETE,
+        Enter => KeyCode::KEY_ENTER,
+        Escape => KeyCode::KEY_ESC,
+        Tab => KeyCode::KEY_TAB,
+        Space => KeyCode::KEY_SPACE,
+        Backspace => KeyCode::KEY_BACKSPACE,
+        Delete => KeyCode::KEY_DELETE,
         Insert => KeyCode::KEY_INSERT,
         CapsLock => KeyCode::KEY_CAPSLOCK,
-        Shift => KeyCode::KEY_LEFTSHIFT, Control => KeyCode::KEY_LEFTCTRL,
-        Alt => KeyCode::KEY_LEFTALT, Meta => KeyCode::KEY_LEFTMETA,
-        Home => KeyCode::KEY_HOME, End => KeyCode::KEY_END,
-        PageUp => KeyCode::KEY_PAGEUP, PageDown => KeyCode::KEY_PAGEDOWN,
-        ArrowUp => KeyCode::KEY_UP, ArrowDown => KeyCode::KEY_DOWN,
-        ArrowLeft => KeyCode::KEY_LEFT, ArrowRight => KeyCode::KEY_RIGHT,
-        F13 => KeyCode::KEY_F13, F14 => KeyCode::KEY_F14, F15 => KeyCode::KEY_F15,
-        F16 => KeyCode::KEY_F16, F17 => KeyCode::KEY_F17, F18 => KeyCode::KEY_F18,
-        F19 => KeyCode::KEY_F19, F20 => KeyCode::KEY_F20, F21 => KeyCode::KEY_F21,
-        F22 => KeyCode::KEY_F22, F23 => KeyCode::KEY_F23, F24 => KeyCode::KEY_F24,
-        MediaPlayPause => KeyCode::KEY_PLAYPAUSE, MediaPrev => KeyCode::KEY_PREVIOUSSONG,
-        MediaNext => KeyCode::KEY_NEXTSONG, VolumeMute => KeyCode::KEY_MUTE,
-        VolumeDown => KeyCode::KEY_VOLUMEDOWN, VolumeUp => KeyCode::KEY_VOLUMEUP,
-        Numpad0 => KeyCode::KEY_KP0, Numpad1 => KeyCode::KEY_KP1, Numpad2 => KeyCode::KEY_KP2,
-        Numpad3 => KeyCode::KEY_KP3, Numpad4 => KeyCode::KEY_KP4, Numpad5 => KeyCode::KEY_KP5,
-        Numpad6 => KeyCode::KEY_KP6, Numpad7 => KeyCode::KEY_KP7, Numpad8 => KeyCode::KEY_KP8,
+        Shift => KeyCode::KEY_LEFTSHIFT,
+        Control => KeyCode::KEY_LEFTCTRL,
+        Alt => KeyCode::KEY_LEFTALT,
+        Meta => KeyCode::KEY_LEFTMETA,
+        Home => KeyCode::KEY_HOME,
+        End => KeyCode::KEY_END,
+        PageUp => KeyCode::KEY_PAGEUP,
+        PageDown => KeyCode::KEY_PAGEDOWN,
+        ArrowUp => KeyCode::KEY_UP,
+        ArrowDown => KeyCode::KEY_DOWN,
+        ArrowLeft => KeyCode::KEY_LEFT,
+        ArrowRight => KeyCode::KEY_RIGHT,
+        F13 => KeyCode::KEY_F13,
+        F14 => KeyCode::KEY_F14,
+        F15 => KeyCode::KEY_F15,
+        F16 => KeyCode::KEY_F16,
+        F17 => KeyCode::KEY_F17,
+        F18 => KeyCode::KEY_F18,
+        F19 => KeyCode::KEY_F19,
+        F20 => KeyCode::KEY_F20,
+        F21 => KeyCode::KEY_F21,
+        F22 => KeyCode::KEY_F22,
+        F23 => KeyCode::KEY_F23,
+        F24 => KeyCode::KEY_F24,
+        MediaPlayPause => KeyCode::KEY_PLAYPAUSE,
+        MediaPrev => KeyCode::KEY_PREVIOUSSONG,
+        MediaNext => KeyCode::KEY_NEXTSONG,
+        VolumeMute => KeyCode::KEY_MUTE,
+        VolumeDown => KeyCode::KEY_VOLUMEDOWN,
+        VolumeUp => KeyCode::KEY_VOLUMEUP,
+        Numpad0 => KeyCode::KEY_KP0,
+        Numpad1 => KeyCode::KEY_KP1,
+        Numpad2 => KeyCode::KEY_KP2,
+        Numpad3 => KeyCode::KEY_KP3,
+        Numpad4 => KeyCode::KEY_KP4,
+        Numpad5 => KeyCode::KEY_KP5,
+        Numpad6 => KeyCode::KEY_KP6,
+        Numpad7 => KeyCode::KEY_KP7,
+        Numpad8 => KeyCode::KEY_KP8,
         Numpad9 => KeyCode::KEY_KP9,
-        NumpadAdd => KeyCode::KEY_KPPLUS, NumpadSubtract => KeyCode::KEY_KPMINUS,
-        NumpadMultiply => KeyCode::KEY_KPASTERISK, NumpadDivide => KeyCode::KEY_KPSLASH,
-        NumpadDecimal => KeyCode::KEY_KPDOT, NumpadEnter => KeyCode::KEY_KPENTER,
+        NumpadAdd => KeyCode::KEY_KPPLUS,
+        NumpadSubtract => KeyCode::KEY_KPMINUS,
+        NumpadMultiply => KeyCode::KEY_KPASTERISK,
+        NumpadDivide => KeyCode::KEY_KPSLASH,
+        NumpadDecimal => KeyCode::KEY_KPDOT,
+        NumpadEnter => KeyCode::KEY_KPENTER,
         NumLock => KeyCode::KEY_NUMLOCK,
         // 鼠标键：BTN_* 是键事件类型（码位在 0x110..0x117 键码区），改键目标与
         // Keys 动作注入都走虚拟设备的键能力（7.3-㉔）。
@@ -1015,63 +1162,109 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::KEY_LEFTCTRL.0 || c == KeyCode::KEY_RIGHTCTRL.0 => Control,
         c if c == KeyCode::KEY_LEFTALT.0 || c == KeyCode::KEY_RIGHTALT.0 => Alt,
         c if c == KeyCode::KEY_LEFTMETA.0 || c == KeyCode::KEY_RIGHTMETA.0 => Meta,
-        c if c == KeyCode::KEY_A.0 => A, c if c == KeyCode::KEY_B.0 => B,
-        c if c == KeyCode::KEY_C.0 => C, c if c == KeyCode::KEY_D.0 => D,
-        c if c == KeyCode::KEY_E.0 => E, c if c == KeyCode::KEY_F.0 => F,
-        c if c == KeyCode::KEY_G.0 => G, c if c == KeyCode::KEY_H.0 => H,
-        c if c == KeyCode::KEY_I.0 => I, c if c == KeyCode::KEY_J.0 => J,
-        c if c == KeyCode::KEY_K.0 => K, c if c == KeyCode::KEY_L.0 => L,
-        c if c == KeyCode::KEY_M.0 => M, c if c == KeyCode::KEY_N.0 => N,
-        c if c == KeyCode::KEY_O.0 => O, c if c == KeyCode::KEY_P.0 => P,
-        c if c == KeyCode::KEY_Q.0 => Q, c if c == KeyCode::KEY_R.0 => R,
-        c if c == KeyCode::KEY_S.0 => S, c if c == KeyCode::KEY_T.0 => T,
-        c if c == KeyCode::KEY_U.0 => U, c if c == KeyCode::KEY_V.0 => V,
-        c if c == KeyCode::KEY_W.0 => W, c if c == KeyCode::KEY_X.0 => X,
-        c if c == KeyCode::KEY_Y.0 => Y, c if c == KeyCode::KEY_Z.0 => Z,
-        c if c == KeyCode::KEY_0.0 => Digit0, c if c == KeyCode::KEY_1.0 => Digit1,
-        c if c == KeyCode::KEY_2.0 => Digit2, c if c == KeyCode::KEY_3.0 => Digit3,
-        c if c == KeyCode::KEY_4.0 => Digit4, c if c == KeyCode::KEY_5.0 => Digit5,
-        c if c == KeyCode::KEY_6.0 => Digit6, c if c == KeyCode::KEY_7.0 => Digit7,
-        c if c == KeyCode::KEY_8.0 => Digit8, c if c == KeyCode::KEY_9.0 => Digit9,
-        c if c == KeyCode::KEY_F1.0 => F1, c if c == KeyCode::KEY_F2.0 => F2,
-        c if c == KeyCode::KEY_F3.0 => F3, c if c == KeyCode::KEY_F4.0 => F4,
-        c if c == KeyCode::KEY_F5.0 => F5, c if c == KeyCode::KEY_F6.0 => F6,
-        c if c == KeyCode::KEY_F7.0 => F7, c if c == KeyCode::KEY_F8.0 => F8,
-        c if c == KeyCode::KEY_F9.0 => F9, c if c == KeyCode::KEY_F10.0 => F10,
-        c if c == KeyCode::KEY_F11.0 => F11, c if c == KeyCode::KEY_F12.0 => F12,
-        c if c == KeyCode::KEY_COMMA.0 => Comma, c if c == KeyCode::KEY_DOT.0 => Period,
-        c if c == KeyCode::KEY_SLASH.0 => Slash, c if c == KeyCode::KEY_BACKSLASH.0 => Backslash,
+        c if c == KeyCode::KEY_A.0 => A,
+        c if c == KeyCode::KEY_B.0 => B,
+        c if c == KeyCode::KEY_C.0 => C,
+        c if c == KeyCode::KEY_D.0 => D,
+        c if c == KeyCode::KEY_E.0 => E,
+        c if c == KeyCode::KEY_F.0 => F,
+        c if c == KeyCode::KEY_G.0 => G,
+        c if c == KeyCode::KEY_H.0 => H,
+        c if c == KeyCode::KEY_I.0 => I,
+        c if c == KeyCode::KEY_J.0 => J,
+        c if c == KeyCode::KEY_K.0 => K,
+        c if c == KeyCode::KEY_L.0 => L,
+        c if c == KeyCode::KEY_M.0 => M,
+        c if c == KeyCode::KEY_N.0 => N,
+        c if c == KeyCode::KEY_O.0 => O,
+        c if c == KeyCode::KEY_P.0 => P,
+        c if c == KeyCode::KEY_Q.0 => Q,
+        c if c == KeyCode::KEY_R.0 => R,
+        c if c == KeyCode::KEY_S.0 => S,
+        c if c == KeyCode::KEY_T.0 => T,
+        c if c == KeyCode::KEY_U.0 => U,
+        c if c == KeyCode::KEY_V.0 => V,
+        c if c == KeyCode::KEY_W.0 => W,
+        c if c == KeyCode::KEY_X.0 => X,
+        c if c == KeyCode::KEY_Y.0 => Y,
+        c if c == KeyCode::KEY_Z.0 => Z,
+        c if c == KeyCode::KEY_0.0 => Digit0,
+        c if c == KeyCode::KEY_1.0 => Digit1,
+        c if c == KeyCode::KEY_2.0 => Digit2,
+        c if c == KeyCode::KEY_3.0 => Digit3,
+        c if c == KeyCode::KEY_4.0 => Digit4,
+        c if c == KeyCode::KEY_5.0 => Digit5,
+        c if c == KeyCode::KEY_6.0 => Digit6,
+        c if c == KeyCode::KEY_7.0 => Digit7,
+        c if c == KeyCode::KEY_8.0 => Digit8,
+        c if c == KeyCode::KEY_9.0 => Digit9,
+        c if c == KeyCode::KEY_F1.0 => F1,
+        c if c == KeyCode::KEY_F2.0 => F2,
+        c if c == KeyCode::KEY_F3.0 => F3,
+        c if c == KeyCode::KEY_F4.0 => F4,
+        c if c == KeyCode::KEY_F5.0 => F5,
+        c if c == KeyCode::KEY_F6.0 => F6,
+        c if c == KeyCode::KEY_F7.0 => F7,
+        c if c == KeyCode::KEY_F8.0 => F8,
+        c if c == KeyCode::KEY_F9.0 => F9,
+        c if c == KeyCode::KEY_F10.0 => F10,
+        c if c == KeyCode::KEY_F11.0 => F11,
+        c if c == KeyCode::KEY_F12.0 => F12,
+        c if c == KeyCode::KEY_COMMA.0 => Comma,
+        c if c == KeyCode::KEY_DOT.0 => Period,
+        c if c == KeyCode::KEY_SLASH.0 => Slash,
+        c if c == KeyCode::KEY_BACKSLASH.0 => Backslash,
         c if c == KeyCode::KEY_SEMICOLON.0 => Semicolon,
         c if c == KeyCode::KEY_APOSTROPHE.0 => Quote,
-        c if c == KeyCode::KEY_GRAVE.0 => Backquote, c if c == KeyCode::KEY_MINUS.0 => Minus,
-        c if c == KeyCode::KEY_EQUAL.0 => Equal, c if c == KeyCode::KEY_LEFTBRACE.0 => BracketLeft,
+        c if c == KeyCode::KEY_GRAVE.0 => Backquote,
+        c if c == KeyCode::KEY_MINUS.0 => Minus,
+        c if c == KeyCode::KEY_EQUAL.0 => Equal,
+        c if c == KeyCode::KEY_LEFTBRACE.0 => BracketLeft,
         c if c == KeyCode::KEY_RIGHTBRACE.0 => BracketRight,
-        c if c == KeyCode::KEY_ENTER.0 => Enter, c if c == KeyCode::KEY_ESC.0 => Escape,
-        c if c == KeyCode::KEY_TAB.0 => Tab, c if c == KeyCode::KEY_SPACE.0 => Space,
-        c if c == KeyCode::KEY_BACKSPACE.0 => Backspace, c if c == KeyCode::KEY_DELETE.0 => Delete,
+        c if c == KeyCode::KEY_ENTER.0 => Enter,
+        c if c == KeyCode::KEY_ESC.0 => Escape,
+        c if c == KeyCode::KEY_TAB.0 => Tab,
+        c if c == KeyCode::KEY_SPACE.0 => Space,
+        c if c == KeyCode::KEY_BACKSPACE.0 => Backspace,
+        c if c == KeyCode::KEY_DELETE.0 => Delete,
         c if c == KeyCode::KEY_INSERT.0 => Insert,
         c if c == KeyCode::KEY_CAPSLOCK.0 => CapsLock,
-        c if c == KeyCode::KEY_HOME.0 => Home, c if c == KeyCode::KEY_END.0 => End,
-        c if c == KeyCode::KEY_PAGEUP.0 => PageUp, c if c == KeyCode::KEY_PAGEDOWN.0 => PageDown,
-        c if c == KeyCode::KEY_UP.0 => ArrowUp, c if c == KeyCode::KEY_DOWN.0 => ArrowDown,
-        c if c == KeyCode::KEY_LEFT.0 => ArrowLeft, c if c == KeyCode::KEY_RIGHT.0 => ArrowRight,
-        c if c == KeyCode::KEY_F13.0 => F13, c if c == KeyCode::KEY_F14.0 => F14,
-        c if c == KeyCode::KEY_F15.0 => F15, c if c == KeyCode::KEY_F16.0 => F16,
-        c if c == KeyCode::KEY_F17.0 => F17, c if c == KeyCode::KEY_F18.0 => F18,
-        c if c == KeyCode::KEY_F19.0 => F19, c if c == KeyCode::KEY_F20.0 => F20,
-        c if c == KeyCode::KEY_F21.0 => F21, c if c == KeyCode::KEY_F22.0 => F22,
-        c if c == KeyCode::KEY_F23.0 => F23, c if c == KeyCode::KEY_F24.0 => F24,
+        c if c == KeyCode::KEY_HOME.0 => Home,
+        c if c == KeyCode::KEY_END.0 => End,
+        c if c == KeyCode::KEY_PAGEUP.0 => PageUp,
+        c if c == KeyCode::KEY_PAGEDOWN.0 => PageDown,
+        c if c == KeyCode::KEY_UP.0 => ArrowUp,
+        c if c == KeyCode::KEY_DOWN.0 => ArrowDown,
+        c if c == KeyCode::KEY_LEFT.0 => ArrowLeft,
+        c if c == KeyCode::KEY_RIGHT.0 => ArrowRight,
+        c if c == KeyCode::KEY_F13.0 => F13,
+        c if c == KeyCode::KEY_F14.0 => F14,
+        c if c == KeyCode::KEY_F15.0 => F15,
+        c if c == KeyCode::KEY_F16.0 => F16,
+        c if c == KeyCode::KEY_F17.0 => F17,
+        c if c == KeyCode::KEY_F18.0 => F18,
+        c if c == KeyCode::KEY_F19.0 => F19,
+        c if c == KeyCode::KEY_F20.0 => F20,
+        c if c == KeyCode::KEY_F21.0 => F21,
+        c if c == KeyCode::KEY_F22.0 => F22,
+        c if c == KeyCode::KEY_F23.0 => F23,
+        c if c == KeyCode::KEY_F24.0 => F24,
         c if c == KeyCode::KEY_PLAYPAUSE.0 => MediaPlayPause,
         c if c == KeyCode::KEY_PREVIOUSSONG.0 => MediaPrev,
         c if c == KeyCode::KEY_NEXTSONG.0 => MediaNext,
         c if c == KeyCode::KEY_MUTE.0 => VolumeMute,
         c if c == KeyCode::KEY_VOLUMEDOWN.0 => VolumeDown,
         c if c == KeyCode::KEY_VOLUMEUP.0 => VolumeUp,
-        c if c == KeyCode::KEY_KP0.0 => Numpad0, c if c == KeyCode::KEY_KP1.0 => Numpad1,
-        c if c == KeyCode::KEY_KP2.0 => Numpad2, c if c == KeyCode::KEY_KP3.0 => Numpad3,
-        c if c == KeyCode::KEY_KP4.0 => Numpad4, c if c == KeyCode::KEY_KP5.0 => Numpad5,
-        c if c == KeyCode::KEY_KP6.0 => Numpad6, c if c == KeyCode::KEY_KP7.0 => Numpad7,
-        c if c == KeyCode::KEY_KP8.0 => Numpad8, c if c == KeyCode::KEY_KP9.0 => Numpad9,
+        c if c == KeyCode::KEY_KP0.0 => Numpad0,
+        c if c == KeyCode::KEY_KP1.0 => Numpad1,
+        c if c == KeyCode::KEY_KP2.0 => Numpad2,
+        c if c == KeyCode::KEY_KP3.0 => Numpad3,
+        c if c == KeyCode::KEY_KP4.0 => Numpad4,
+        c if c == KeyCode::KEY_KP5.0 => Numpad5,
+        c if c == KeyCode::KEY_KP6.0 => Numpad6,
+        c if c == KeyCode::KEY_KP7.0 => Numpad7,
+        c if c == KeyCode::KEY_KP8.0 => Numpad8,
+        c if c == KeyCode::KEY_KP9.0 => Numpad9,
         c if c == KeyCode::KEY_KPPLUS.0 => NumpadAdd,
         c if c == KeyCode::KEY_KPMINUS.0 => NumpadSubtract,
         c if c == KeyCode::KEY_KPASTERISK.0 => NumpadMultiply,
@@ -1102,12 +1295,18 @@ pub fn frontmost_context() -> Option<FrontmostContext> {
 /// 会以「找不到窗口 / 命令失败」收场。最小化优先用 `xdotool`（`wmctrl` 的 hidden
 /// 标记很多 WM 不认），失败再退回 `wmctrl`。
 pub fn control_window(program: &str, op: crate::WindowOp) -> Result<(), String> {
-    let target = program.rsplit('/').next().unwrap_or(program).to_ascii_lowercase();
+    let target = program
+        .rsplit('/')
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
     let out = std::process::Command::new("wmctrl")
         .arg("-lp")
         .output()
         .map_err(|e| {
-            format!("窗口控制需要 wmctrl（Debian/Ubuntu：sudo apt install wmctrl；且仅支持 X11）：{e}")
+            format!(
+                "窗口控制需要 wmctrl（Debian/Ubuntu：sudo apt install wmctrl；且仅支持 X11）：{e}"
+            )
         })?;
     if !out.status.success() {
         return Err(run_error("wmctrl -lp", &out));
@@ -1118,8 +1317,12 @@ pub fn control_window(program: &str, op: crate::WindowOp) -> Result<(), String> 
         // 0x03a00007  0 12345 host title
         let mut fields = line.split_whitespace();
         let Some(id) = fields.next() else { continue };
-        let Some(_desktop) = fields.next() else { continue };
-        let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else { continue };
+        let Some(_desktop) = fields.next() else {
+            continue;
+        };
+        let Some(pid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
         if pid != 0 && process_matches(pid, &target) {
             window_id = Some(id.to_string());
             break;
@@ -1138,18 +1341,16 @@ pub fn control_window(program: &str, op: crate::WindowOp) -> Result<(), String> 
         crate::WindowOp::Minimize => {
             let xdotool = u32::from_str_radix(id.trim_start_matches("0x"), 16)
                 .map_err(|_| format!("无法解析窗口 id「{id}」"))
-                .and_then(|dec| {
-                    run_window_cmd("xdotool", &["windowminimize", &dec.to_string()])
-                });
+                .and_then(|dec| run_window_cmd("xdotool", &["windowminimize", &dec.to_string()]));
             match xdotool {
                 Ok(()) => Ok(()),
-                Err(xdotool_err) => run_window_cmd(
-                    "wmctrl",
-                    &["-i", "-r", &id, "-b", "add,hidden"],
-                )
-                .map_err(|wmctrl_err| {
-                    format!("最小化失败（xdotool：{xdotool_err}；wmctrl：{wmctrl_err}）")
-                }),
+                Err(xdotool_err) => {
+                    run_window_cmd("wmctrl", &["-i", "-r", &id, "-b", "add,hidden"]).map_err(
+                        |wmctrl_err| {
+                            format!("最小化失败（xdotool：{xdotool_err}；wmctrl：{wmctrl_err}）")
+                        },
+                    )
+                }
             }
         }
     }
@@ -1263,10 +1464,18 @@ pub mod simulate {
         match op {
             MouseOp::Move { dx, dy } => {
                 if *dx != 0 {
-                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_X.0, *dx));
+                    events.push(InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_X.0,
+                        *dx,
+                    ));
                 }
                 if *dy != 0 {
-                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_Y.0, *dy));
+                    events.push(InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_Y.0,
+                        *dy,
+                    ));
                 }
             }
             MouseOp::MoveTo { .. } | MouseOp::MoveToOrigin => {
@@ -1276,10 +1485,18 @@ pub mod simulate {
             }
             MouseOp::Scroll { dx, dy } => {
                 if *dy != 0 {
-                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_WHEEL.0, *dy));
+                    events.push(InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_WHEEL.0,
+                        *dy,
+                    ));
                 }
                 if *dx != 0 {
-                    events.push(InputEvent::new(EventType::RELATIVE.0, RelativeAxisCode::REL_HWHEEL.0, *dx));
+                    events.push(InputEvent::new(
+                        EventType::RELATIVE.0,
+                        RelativeAxisCode::REL_HWHEEL.0,
+                        *dx,
+                    ));
                 }
             }
             MouseOp::Click { button } => {
@@ -1365,14 +1582,43 @@ mod tests {
     #[test]
     fn mapping_roundtrip() {
         for k in [
-            Key::A, Key::K, Key::Digit9, Key::F12, Key::CapsLock, Key::Control,
-            Key::Alt, Key::Shift, Key::Meta, Key::Enter, Key::Escape, Key::Space,
-            Key::Backspace, Key::Comma, Key::Minus, Key::Slash, Key::BracketLeft,
-            Key::Quote, Key::ArrowUp, Key::PageDown,
-            Key::F13, Key::F24, Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext,
-            Key::VolumeMute, Key::VolumeDown, Key::VolumeUp, Key::NumLock,
-            Key::Numpad0, Key::Numpad9, Key::NumpadAdd, Key::NumpadSubtract,
-            Key::NumpadMultiply, Key::NumpadDivide, Key::NumpadDecimal, Key::NumpadEnter,
+            Key::A,
+            Key::K,
+            Key::Digit9,
+            Key::F12,
+            Key::CapsLock,
+            Key::Control,
+            Key::Alt,
+            Key::Shift,
+            Key::Meta,
+            Key::Enter,
+            Key::Escape,
+            Key::Space,
+            Key::Backspace,
+            Key::Comma,
+            Key::Minus,
+            Key::Slash,
+            Key::BracketLeft,
+            Key::Quote,
+            Key::ArrowUp,
+            Key::PageDown,
+            Key::F13,
+            Key::F24,
+            Key::MediaPlayPause,
+            Key::MediaPrev,
+            Key::MediaNext,
+            Key::VolumeMute,
+            Key::VolumeDown,
+            Key::VolumeUp,
+            Key::NumLock,
+            Key::Numpad0,
+            Key::Numpad9,
+            Key::NumpadAdd,
+            Key::NumpadSubtract,
+            Key::NumpadMultiply,
+            Key::NumpadDivide,
+            Key::NumpadDecimal,
+            Key::NumpadEnter,
         ] {
             let code = key_to_code(k).unwrap();
             assert_eq!(code_to_key(code), Some(k), "roundtrip {}", key_name(k));
@@ -1380,7 +1626,12 @@ mod tests {
         // 鼠标键注入与识别（7.3-㉔）：BTN_* 双向映射，左右键不进键模型。
         for k in [Key::MouseMiddle, Key::MouseBack, Key::MouseForward] {
             let code = key_to_code(k).unwrap();
-            assert_eq!(code_to_key(code), Some(k), "mouse roundtrip {}", key_name(k));
+            assert_eq!(
+                code_to_key(code),
+                Some(k),
+                "mouse roundtrip {}",
+                key_name(k)
+            );
         }
         assert_eq!(code_to_key(KeyCode::BTN_LEFT.0), None);
         assert_eq!(code_to_key(KeyCode::BTN_RIGHT.0), None);
@@ -1389,7 +1640,10 @@ mod tests {
     #[test]
     fn modifier_left_right_merge() {
         assert_eq!(code_modifier(KeyCode::KEY_LEFTCTRL.0), Some(Modifier::Ctrl));
-        assert_eq!(code_modifier(KeyCode::KEY_RIGHTCTRL.0), Some(Modifier::Ctrl));
+        assert_eq!(
+            code_modifier(KeyCode::KEY_RIGHTCTRL.0),
+            Some(Modifier::Ctrl)
+        );
         assert_eq!(code_modifier(KeyCode::KEY_RIGHTALT.0), Some(Modifier::Alt));
         assert_eq!(code_modifier(KeyCode::KEY_LEFTMETA.0), Some(Modifier::Meta));
         assert_eq!(code_modifier(KeyCode::KEY_BACKSPACE.0), None);
@@ -1417,10 +1671,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("kada-event-nodes-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        for name in ["event0", "event12", "mouse0", "event", "eventx", "event-1", "eventA"] {
+        for name in [
+            "event0", "event12", "mouse0", "event", "eventx", "event-1", "eventA",
+        ] {
             std::fs::write(dir.join(name), b"").unwrap();
         }
-        assert_eq!(event_nodes(&dir), vec!["event0".to_string(), "event12".to_string()]);
+        assert_eq!(
+            event_nodes(&dir),
+            vec!["event0".to_string(), "event12".to_string()]
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1448,7 +1707,10 @@ mod tests {
         assert!(SWALLOWED.lock().unwrap().contains(&Key::A));
 
         release(KeyCode::KEY_A.0, Key::A);
-        assert!(!SWALLOWED.lock().unwrap().contains(&Key::A), "抬起后移出登记表");
+        assert!(
+            !SWALLOWED.lock().unwrap().contains(&Key::A),
+            "抬起后移出登记表"
+        );
 
         // Ctrl 抬起 → MODS_DOWN 清空。
         release(KeyCode::KEY_LEFTCTRL.0, Key::Control);
@@ -1458,11 +1720,27 @@ mod tests {
         *HANDLER.lock().unwrap() = None;
         // 每个按下 / 抬起都要回调 handler（状态机靠抬起维护按住集合）。
         let seen = events.lock().unwrap();
-        assert_eq!(seen.len(), 4, "Ctrl↓ + A↓ + A↑ + Ctrl↑ 共 4 次回调，实际：{seen:?}");
-        assert!(matches!(seen[0], KeyEvent::Down { key: Key::Control, .. }));
+        assert_eq!(
+            seen.len(),
+            4,
+            "Ctrl↓ + A↓ + A↑ + Ctrl↑ 共 4 次回调，实际：{seen:?}"
+        );
+        assert!(matches!(
+            seen[0],
+            KeyEvent::Down {
+                key: Key::Control,
+                ..
+            }
+        ));
         assert!(matches!(seen[1], KeyEvent::Down { key: Key::A, .. }));
         assert!(matches!(seen[2], KeyEvent::Up { key: Key::A, .. }));
-        assert!(matches!(seen[3], KeyEvent::Up { key: Key::Control, .. }));
+        assert!(matches!(
+            seen[3],
+            KeyEvent::Up {
+                key: Key::Control,
+                ..
+            }
+        ));
     }
 
     /// MT 协议 B 报文 → 触摸板采集的点：单指滑动每个 SYN 出一个点（按 scale 折算），
@@ -1475,26 +1753,62 @@ mod tests {
         let feed = |st: &mut TouchState, ev: &InputEvent| touch_feed(st, ev, true, 1.0);
 
         // 第一指落下（slot 0，tracking_id 5）→ 滑动 → 每个 SYN 一个点。
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 5)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 100)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_Y.0, 200)), None);
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 5)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 100)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_Y.0, 200)),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), Some((100, 200)));
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 300)), None);
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 300)),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), Some((300, 200)));
 
         // 第二指落下 → 双指，flush 时作废（不产出点）。
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 6)), None);
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 6)),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), None, "双指这一拍不给点");
 
         // 第二指抬起回到单指 → 继续出点；第一指抬起（tracking_id -1）→ 槽位清空，无点。
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)), None);
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 500)), None);
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 500)),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), Some((500, 200)));
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)), None);
+        assert_eq!(
+            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), None, "手指全抬后不再出点");
     }
 
@@ -1511,12 +1825,28 @@ mod tests {
         assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_X.0, 400)), None);
         assert_eq!(feed(&mut st, &syn()), None);
 
-        assert_eq!(feed(&mut st, &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 1)), None);
-        assert_eq!(feed(&mut st, &syn()), Some((200, 0)), "按下后第一个 SYN 出点（scale 0.5）");
+        assert_eq!(
+            feed(
+                &mut st,
+                &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 1)
+            ),
+            None
+        );
+        assert_eq!(
+            feed(&mut st, &syn()),
+            Some((200, 0)),
+            "按下后第一个 SYN 出点（scale 0.5）"
+        );
         assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_Y.0, 80)), None);
         assert_eq!(feed(&mut st, &syn()), Some((200, 40)));
 
-        assert_eq!(feed(&mut st, &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 0)), None);
+        assert_eq!(
+            feed(
+                &mut st,
+                &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 0)
+            ),
+            None
+        );
         assert_eq!(feed(&mut st, &syn()), None, "抬起后不再出点");
     }
 }

@@ -104,7 +104,14 @@ fn send_key(k: Key, up: bool) {
             send_wheel(delta);
         }
     } else {
-        send_one(k, if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) });
+        send_one(
+            k,
+            if up {
+                KEYEVENTF_KEYUP
+            } else {
+                KEYBD_EVENT_FLAGS(0)
+            },
+        );
     }
 }
 
@@ -173,7 +180,12 @@ fn scan_for_key(k: Key, vk: u16) -> Option<(u16, bool)> {
     let packed = unsafe { MapVirtualKeyExW(vk as u32, MAPVK_VK_TO_VSC_EX, Some(target_layout())) };
     // 低字节 = 扫描码；扩展位 = API 给的高字节 `0xE0`，或对 API 漏标的键（方向/编辑）按
     // [`is_extended_key`] 补。`packed == 0` = 该 VK 在此布局未分配 → 无扫描码，退回 VK。
-    (packed != 0).then(|| ((packed & 0xFF) as u16, packed & 0xFF00 != 0 || is_extended_key(k)))
+    (packed != 0).then(|| {
+        (
+            (packed & 0xFF) as u16,
+            packed & 0xFF00 != 0 || is_extended_key(k),
+        )
+    })
 }
 
 /// 媒体 / 音量键：`MapVirtualKeyEx` 也能给出 ACPI 扫描码（如 `E0 22`），但这类键的
@@ -193,9 +205,19 @@ pub(crate) fn is_extended_key(k: Key) -> bool {
     use Key::*;
     matches!(
         k,
-        Insert | Delete | Home | End | PageUp | PageDown
-            | ArrowUp | ArrowDown | ArrowLeft | ArrowRight
-            | NumpadDivide | NumpadEnter | Meta
+        Insert
+            | Delete
+            | Home
+            | End
+            | PageUp
+            | PageDown
+            | ArrowUp
+            | ArrowDown
+            | ArrowLeft
+            | ArrowRight
+            | NumpadDivide
+            | NumpadEnter
+            | Meta
     )
 }
 
@@ -249,15 +271,27 @@ fn is_mouse_button(k: Key) -> bool {
 fn mouse_button(k: Key, up: bool) {
     let (flags, x_button) = match k {
         Key::MouseMiddle => (
-            if up { MOUSEEVENTF_MIDDLEUP } else { MOUSEEVENTF_MIDDLEDOWN },
+            if up {
+                MOUSEEVENTF_MIDDLEUP
+            } else {
+                MOUSEEVENTF_MIDDLEDOWN
+            },
             0u32,
         ),
         Key::MouseBack => (
-            if up { MOUSEEVENTF_XUP } else { MOUSEEVENTF_XDOWN },
+            if up {
+                MOUSEEVENTF_XUP
+            } else {
+                MOUSEEVENTF_XDOWN
+            },
             1u32,
         ),
         Key::MouseForward => (
-            if up { MOUSEEVENTF_XUP } else { MOUSEEVENTF_XDOWN },
+            if up {
+                MOUSEEVENTF_XUP
+            } else {
+                MOUSEEVENTF_XDOWN
+            },
             2u32,
         ),
         _ => return,
@@ -307,9 +341,7 @@ pub fn mouse(op: &MouseOp) -> io::Result<()> {
 fn mouse_local(op: &MouseOp) -> io::Result<()> {
     match op {
         MouseOp::Move { dx, dy } => send_mouse(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE))?,
-        MouseOp::MoveTo { x, y } => {
-            send_mouse(absolute_mouse_input(*x, *y, virtual_screen()))?
-        }
+        MouseOp::MoveTo { x, y } => send_mouse(absolute_mouse_input(*x, *y, virtual_screen()))?,
         MouseOp::MoveToOrigin => {
             return Err(io::Error::other(
                 "「移动到手势起点」需要在动作层解析出坐标，不能直接注入",
@@ -327,7 +359,11 @@ fn mouse_local(op: &MouseOp) -> io::Result<()> {
         MouseOp::Click { button } => {
             // 侧键走 XDOWN/XUP，`mouseData` 高 16 位承载 X 按钮号（1=后退、2=前进）。
             if let MouseButton::Back | MouseButton::Forward = button {
-                let data = if matches!(button, MouseButton::Back) { 1u32 } else { 2u32 } << 16;
+                let data = if matches!(button, MouseButton::Back) {
+                    1u32
+                } else {
+                    2u32
+                } << 16;
                 send_mouse(mouse_input(0, 0, data, MOUSEEVENTF_XDOWN))?;
                 send_mouse(mouse_input(0, 0, data, MOUSEEVENTF_XUP))?;
                 return Ok(());
@@ -393,7 +429,14 @@ fn mouse_input(dx: i32, dy: i32, data: u32, flags: MOUSE_EVENT_FLAGS) -> INPUT {
     INPUT {
         r#type: INPUT_MOUSE,
         Anonymous: INPUT_0 {
-            mi: MOUSEINPUT { dx, dy, mouseData: data, dwFlags: flags, time: 0, dwExtraInfo: 0 },
+            mi: MOUSEINPUT {
+                dx,
+                dy,
+                mouseData: data,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
         },
     }
 }
@@ -564,7 +607,10 @@ mod tests {
         let ev = unicode_key_events("a");
         assert_eq!(ev.len(), 2);
         assert_eq!(key_of(&ev[0]), (0, 'a' as u16, KEYEVENTF_UNICODE));
-        assert_eq!(key_of(&ev[1]), (0, 'a' as u16, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+        assert_eq!(
+            key_of(&ev[1]),
+            (0, 'a' as u16, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP)
+        );
 
         // BMP 外字符（emoji）：按两个代理码元连发，由目标程序拼回。
         let ev = unicode_key_events("\u{1F600}");
@@ -628,12 +674,24 @@ mod tests {
     /// （`MAPVK_VK_TO_VSC_EX` 不给方向键 `E0`，靠这里补，否则注入成小键盘数字。）
     #[test]
     fn extended_key_set_matches_scan_quirks() {
-        for k in
-            [Key::ArrowUp, Key::Insert, Key::Home, Key::PageDown, Key::NumpadDivide, Key::Meta]
-        {
+        for k in [
+            Key::ArrowUp,
+            Key::Insert,
+            Key::Home,
+            Key::PageDown,
+            Key::NumpadDivide,
+            Key::Meta,
+        ] {
             assert!(is_extended_key(k), "{k:?} 应判为扩展键");
         }
-        for k in [Key::A, Key::Digit0, Key::Semicolon, Key::Enter, Key::Numpad0, Key::Shift] {
+        for k in [
+            Key::A,
+            Key::Digit0,
+            Key::Semicolon,
+            Key::Enter,
+            Key::Numpad0,
+            Key::Shift,
+        ] {
             assert!(!is_extended_key(k), "{k:?} 不应判为扩展键");
         }
     }
@@ -644,8 +702,15 @@ mod tests {
     #[ignore = "诊断用：需在目标键盘布局下人工跑，观察扫描码换算"]
     fn probe_scan_codes() {
         for k in [
-            Key::Semicolon, Key::Slash, Key::Minus, Key::A, Key::Q,
-            Key::NumpadEnter, Key::NumpadDivide, Key::ArrowUp, Key::MediaPlayPause,
+            Key::Semicolon,
+            Key::Slash,
+            Key::Minus,
+            Key::A,
+            Key::Q,
+            Key::NumpadEnter,
+            Key::NumpadDivide,
+            Key::ArrowUp,
+            Key::MediaPlayPause,
         ] {
             let scan = key_to_vk(k).and_then(|vk| scan_for_key(k, vk));
             println!("{k:?} -> vk={:?} scan={scan:?}", key_to_vk(k));
@@ -668,7 +733,10 @@ mod tests {
     /// 单键点按是一对「按下 + 抬起」（提权通道上也是这两个 op）。
     #[test]
     fn tap_is_down_then_up() {
-        assert_eq!(format!("{:?}", [Op::Down(Key::F5), Op::Up(Key::F5)]), "[Down(F5), Up(F5)]");
+        assert_eq!(
+            format!("{:?}", [Op::Down(Key::F5), Op::Up(Key::F5)]),
+            "[Down(F5), Up(F5)]"
+        );
     }
 
     /// 鼠标事件构造（7.1-㊱）：移动带 `MOUSEEVENTF_MOVE` + 相对位移；滚轮 `mouseData`
@@ -693,7 +761,10 @@ mod tests {
         assert_eq!(absolute_axis(-1920, -1920, 3840), 0);
         assert_eq!(absolute_axis(1919, -1920, 3840), 65535);
         let center = absolute_axis(0, -1920, 3840);
-        assert!((center - 32768).abs() < 64, "主显示器左上角大致在正中：{center}");
+        assert!(
+            (center - 32768).abs() < 64,
+            "主显示器左上角大致在正中：{center}"
+        );
         assert_eq!(absolute_axis(-5000, -1920, 3840), 0, "越界夹到左边缘");
         assert_eq!(absolute_axis(9999, -1920, 3840), 65535, "越界夹到右边缘");
 

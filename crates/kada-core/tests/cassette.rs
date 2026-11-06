@@ -155,6 +155,12 @@ fn skill_demo_nav_layer_parses() {
         }"#,
     );
     assert_eq!(cfg.layers.len(), 1);
-    assert_eq!(cfg.remaps.iter().filter(|r| r.layer.as_deref() == Some("nav")).count(), 4);
+    assert_eq!(
+        cfg.remaps
+            .iter()
+            .filter(|r| r.layer.as_deref() == Some("nav"))
+            .count(),
+        4
+    );
     assert!(cfg.remaps[1].is_tap_hold());
 }

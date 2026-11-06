@@ -584,9 +584,7 @@ fn run_chain(
         }
         #[cfg(feature = "automation")]
         if let Action::If {
-            then,
-            otherwise,
-            ..
+            then, otherwise, ..
         } = action
         {
             let hit = step.branch.unwrap_or_default();
@@ -746,7 +744,9 @@ fn run_parallel(
     last_copied: &mut Option<String>,
     parent: u64,
 ) {
-    let serial = members.iter().any(|m| has_key_lifecycle(std::slice::from_ref(m)));
+    let serial = members
+        .iter()
+        .any(|m| has_key_lifecycle(std::slice::from_ref(m)));
     // 每个成员：私有 vars / last_copied 快照 + 本地结果表。
     let outs: Vec<(Vars, Option<String>, Vec<CommandResult>, Vec<ActionStep>)> = if serial {
         // 串行组共用一个按住作用域：`Press` 在成员 0、`Release` 在成员 2 也能跨成员保持。
@@ -1092,7 +1092,9 @@ fn action_summary(action: &Action, vars: &Vars) -> String {
 fn action_body(action: &Action, vars: &Vars) -> String {
     let sub = |s: &str| substitute_vars(s, vars);
     match action {
-        Action::Text { text, mode, masked, .. } => match mode {
+        Action::Text {
+            text, mode, masked, ..
+        } => match mode {
             // 标记了隐藏的文本连执行记录里也不露出（否则「消息」页一开就看到原文，
             // 界面上的隐藏等于白做）；代价是这条记录看不出注入了什么。
             TextMode::Input => {
@@ -1112,7 +1114,9 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             KeysMode::Press => format!("按住 {}", keys.join("+")),
             KeysMode::Release => format!("抬起 {}", keys.join("+")),
         },
-        Action::SendTo { target, payload, .. } => match payload {
+        Action::SendTo {
+            target, payload, ..
+        } => match payload {
             SendPayload::Keys { keys } => {
                 format!("后台发送按键 {} → {}", keys.join("+"), sub(target))
             }
@@ -1123,9 +1127,13 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::PauseMs { ms, .. } => format!("暂停 {ms} 毫秒"),
         Action::Mouse { op, .. } => mouse_body(op),
         Action::Clipboard { operation, .. } => clipboard_body(operation, vars),
-        Action::Transform { operation, input, var, inject, .. } => {
-            transform_body(*operation, input, var, *inject, vars)
-        }
+        Action::Transform {
+            operation,
+            input,
+            var,
+            inject,
+            ..
+        } => transform_body(*operation, input, var, *inject, vars),
         Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
         // 禁用的动作执行不到（`run_chain` 直接跳过），摘要只给预览 / 老记录用。
         Action::Disabled { action } => format!("已禁用：{}", action_body(action, vars)),
@@ -1175,15 +1183,21 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         #[cfg(feature = "automation")]
         Action::Parallel { actions, .. } => format!("并行执行 {} 个动作", actions.len()),
         #[cfg(feature = "automation")]
-        Action::WaitFor { target, timeout_ms, .. } => wait_body(target, *timeout_ms, vars),
+        Action::WaitFor {
+            target, timeout_ms, ..
+        } => wait_body(target, *timeout_ms, vars),
         #[cfg(feature = "automation")]
         Action::Window { operation, .. } => window_body(operation),
         #[cfg(feature = "automation")]
         Action::Capture { .. } => "截图（已移除，改用右键画圈截图）".into(),
         #[cfg(feature = "automation")]
-        Action::Tool { tool, capability, .. } => tool_body(tool, capability),
+        Action::Tool {
+            tool, capability, ..
+        } => tool_body(tool, capability),
         #[cfg(feature = "automation")]
-        Action::Brightness { operation, step, .. } => brightness_body(*operation, *step),
+        Action::Brightness {
+            operation, step, ..
+        } => brightness_body(*operation, *step),
     }
 }
 
@@ -1328,7 +1342,11 @@ fn url_decode(s: &str) -> Result<String, String> {
                         out.push(h * 16 + l);
                         i += 3;
                     }
-                    _ => return Err(format!("URL 解码失败：位置 {i} 的「%」后面不是两位十六进制")),
+                    _ => {
+                        return Err(format!(
+                            "URL 解码失败：位置 {i} 的「%」后面不是两位十六进制"
+                        ))
+                    }
                 }
             }
             b'+' => {
@@ -1424,9 +1442,7 @@ fn system_body(op: &SystemOperation, vars: &Vars) -> String {
         SystemOperation::EmptyRecycleBin => "清空回收站".into(),
         SystemOperation::MonitorOff => "关闭显示器".into(),
         SystemOperation::ToggleDesktopIcons => "切换桌面图标".into(),
-        SystemOperation::SendTo { target, payload } => {
-            send_to_body(target, payload, vars)
-        }
+        SystemOperation::SendTo { target, payload } => send_to_body(target, payload, vars),
         SystemOperation::Brightness { operation, step } => brightness_body(*operation, *step),
     }
 }
@@ -1617,7 +1633,9 @@ fn run_action(
                 }
             }
         }
-        Action::SendTo { target, payload, .. } => {
+        Action::SendTo {
+            target, payload, ..
+        } => {
             // 旧形态兜底（正常流程已在加载时迁移到 `System::SendTo`）。
             send_to_action(target, payload, ctx, vars)?;
         }
@@ -1628,7 +1646,8 @@ fn run_action(
             let resolved;
             let op = if matches!(op, MouseOp::MoveToOrigin) {
                 let (x, y) = ctx.t.origin.ok_or_else(|| {
-                    "「移动到手势起点」只适用于鼠标手势触发；快捷键 / 录制等路径没有起点".to_string()
+                    "「移动到手势起点」只适用于鼠标手势触发；快捷键 / 录制等路径没有起点"
+                        .to_string()
                 })?;
                 resolved = MouseOp::MoveTo { x, y };
                 &resolved
@@ -1640,33 +1659,46 @@ fn run_action(
         Action::Clipboard { operation, .. } => match operation {
             ClipboardOperation::SetClipboard { text } => {
                 let text = substitute_vars(text, vars);
-                simulate::set_clipboard_text(&text)
-                    .map_err(|e| format!("写入剪贴板失败：{e}"))?;
+                simulate::set_clipboard_text(&text).map_err(|e| format!("写入剪贴板失败：{e}"))?;
             }
             ClipboardOperation::GetClipboard { var } => {
                 let var = var.trim();
                 if var.is_empty() {
                     return Err("变量名不能为空".into());
                 }
-                let text = simulate::get_clipboard_text()
-                    .map_err(|e| format!("读取剪贴板失败：{e}"))?;
-                vars.insert(var.to_string(), Value::Text(TextValue { text, exit_code: None }));
+                let text =
+                    simulate::get_clipboard_text().map_err(|e| format!("读取剪贴板失败：{e}"))?;
+                vars.insert(
+                    var.to_string(),
+                    Value::Text(TextValue {
+                        text,
+                        exit_code: None,
+                    }),
+                );
             }
             ClipboardOperation::TempStr { text } => {
                 // 持链内注入锁：写剪贴板 → 粘贴 → 恢复必须原子，否则并行的另一成员会
                 // 覆盖剪贴板（或读到刚写进去的内容）。
                 let _inj = lock_inject(ctx);
                 let text = substitute_vars(text, vars);
-                simulate::type_text(&text)
-                    .map_err(|e| format!("临时文本粘贴失败：{e}"))?;
+                simulate::type_text(&text).map_err(|e| format!("临时文本粘贴失败：{e}"))?;
             }
         },
-        Action::Transform { operation, input, var, inject, .. } => {
+        Action::Transform {
+            operation,
+            input,
+            var,
+            inject,
+            ..
+        } => {
             let output = transform_text(*operation, &substitute_vars(input, vars))?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
-                    Value::Text(TextValue { text: output.clone(), exit_code: None }),
+                    Value::Text(TextValue {
+                        text: output.clone(),
+                        exit_code: None,
+                    }),
                 );
             }
             if *inject {
@@ -1756,7 +1788,19 @@ fn run_action(
         } => {
             let command = substitute_vars(command, vars);
             // 旧版动作没有 hide_window / working_dir 字段（加载时会迁移成 Command，见 Config::migrate）。
-            let out = run_cmd("CMD", false, &command, ctx, false, None, Some(vars), ctx.timeout, true, None, None)?;
+            let out = run_cmd(
+                "CMD",
+                false,
+                &command,
+                ctx,
+                false,
+                None,
+                Some(vars),
+                ctx.timeout,
+                true,
+                None,
+                None,
+            )?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1786,7 +1830,19 @@ fn run_action(
             }
             let command = substitute_vars(command, vars);
             // 同上：旧版动作无 hide_window / working_dir。
-            let out = run_cmd("PowerShell", true, &command, ctx, false, None, Some(vars), ctx.timeout, true, None, None)?;
+            let out = run_cmd(
+                "PowerShell",
+                true,
+                &command,
+                ctx,
+                false,
+                None,
+                Some(vars),
+                ctx.timeout,
+                true,
+                None,
+                None,
+            )?;
             if !var.trim().is_empty() {
                 vars.insert(
                     var.trim().to_string(),
@@ -1864,11 +1920,17 @@ fn run_action(
         }
         #[cfg(feature = "automation")]
         Action::Capture { .. } => {
-            return Err("截图动作已移除：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认".into());
+            return Err(
+                "截图动作已移除：现在改用鼠标手势——按住右键绕一圈，松开后左键点击确认".into(),
+            );
         }
         #[cfg(feature = "automation")]
-        Action::Tool { tool, capability, .. } => {
-            let name = kada_core::external_tool(tool).map(|t| t.name).unwrap_or(tool.as_str());
+        Action::Tool {
+            tool, capability, ..
+        } => {
+            let name = kada_core::external_tool(tool)
+                .map(|t| t.name)
+                .unwrap_or(tool.as_str());
             let cap = kada_core::external_tool(tool)
                 .and_then(|t| t.capabilities.iter().find(|c| c.id == capability))
                 .map(|c| c.name)
@@ -1878,7 +1940,9 @@ fn run_action(
             ));
         }
         #[cfg(feature = "automation")]
-        Action::Brightness { operation, step, .. } => {
+        Action::Brightness {
+            operation, step, ..
+        } => {
             // 旧形态兜底（正常流程已在加载时迁移到 `System::Brightness`）。
             return run_system(
                 &SystemOperation::Brightness {
@@ -1901,7 +1965,10 @@ fn run_action(
             let text = prompt_input(&prompt, &default, ctx)?;
             vars.insert(
                 var.trim().to_string(),
-                Value::Text(TextValue { text, exit_code: None }),
+                Value::Text(TextValue {
+                    text,
+                    exit_code: None,
+                }),
             );
             return Ok(None);
         }
@@ -2036,15 +2103,31 @@ fn run_action(
         } => {
             // 源码里的 `{...}` 不代入变量：脚本自己用 `get_var("名")` 读，
             // 否则用户文本里的花括号会被当成占位符改掉（脚本是代码，不是模板）。
-            let out = script::run(source, ctx.t.trigger, ctx.t.name, vars, ctx.timeout, ctx.gen)?;
+            let out = script::run(
+                source,
+                ctx.t.trigger,
+                ctx.t.name,
+                vars,
+                ctx.timeout,
+                ctx.gen,
+            )?;
             if !out.failed {
                 for (k, v) in &out.vars {
-                    vars.insert(k.clone(), Value::Text(TextValue { text: v.clone(), exit_code: None }));
+                    vars.insert(
+                        k.clone(),
+                        Value::Text(TextValue {
+                            text: v.clone(),
+                            exit_code: None,
+                        }),
+                    );
                 }
                 if !var.trim().is_empty() {
                     vars.insert(
                         var.trim().to_string(),
-                        Value::Text(TextValue { text: out.value(), exit_code: None }),
+                        Value::Text(TextValue {
+                            text: out.value(),
+                            exit_code: None,
+                        }),
                     );
                 }
             }
@@ -2106,8 +2189,7 @@ fn open_with_default(path: &str, what_failed: &str) -> Result<(), String> {
     } else {
         std::process::Command::new("xdg-open").arg(path).spawn()
     };
-    res.map(|_| ())
-        .map_err(|e| format!("{what_failed}: {e}"))
+    res.map(|_| ()).map_err(|e| format!("{what_failed}: {e}"))
 }
 
 /// 执行一个文件/目录动作（复制/剪切/粘贴/删除/新建/压缩/取属性）。
@@ -2546,7 +2628,10 @@ mod url_tests {
     #[test]
     fn normalize_url_adds_scheme_only_when_missing() {
         assert_eq!(normalize_url("example.com"), "https://example.com");
-        assert_eq!(normalize_url("  localhost:3000/a  "), "https://localhost:3000/a");
+        assert_eq!(
+            normalize_url("  localhost:3000/a  "),
+            "https://localhost:3000/a"
+        );
         assert_eq!(
             normalize_url("https://example.com/a?b=1&c=2"),
             "https://example.com/a?b=1&c=2"
@@ -2571,7 +2656,19 @@ fn close_program(program: &str, ctx: &Ctx) -> Result<CommandResult, String> {
         format!("pkill -f {image}")
     };
     // 内部命令（taskkill / pkill），恒不弹黑窗；不注入 KADA_*（不是用户脚本）。
-    let out = run_cmd("关闭程序", false, &cmd, ctx, true, None, None, ctx.timeout, true, None, None)?;
+    let out = run_cmd(
+        "关闭程序",
+        false,
+        &cmd,
+        ctx,
+        true,
+        None,
+        None,
+        ctx.timeout,
+        true,
+        None,
+        None,
+    )?;
     Ok(out.into_result("close_program", "关闭程序", cmd, ctx, false))
 }
 
@@ -2899,12 +2996,8 @@ impl CmdOutput {
             exit_code: self.exit_code,
             detached: self.detached,
             log_path: None,
-            stdout_file: self
-                .stdout_file
-                .map(|p| p.to_string_lossy().into_owned()),
-            stderr_file: self
-                .stderr_file
-                .map(|p| p.to_string_lossy().into_owned()),
+            stdout_file: self.stdout_file.map(|p| p.to_string_lossy().into_owned()),
+            stderr_file: self.stderr_file.map(|p| p.to_string_lossy().into_owned()),
             show_output,
             time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
             run_id: ctx.run_id,
@@ -3330,11 +3423,7 @@ fn exit_ok(codes: &[i32], code: Option<i32>) -> bool {
 fn result_file_path() -> PathBuf {
     static SERIAL: AtomicU64 = AtomicU64::new(0);
     let id = SERIAL.fetch_add(1, Ordering::Relaxed);
-    let path = std::env::temp_dir().join(format!(
-        "kada_result_{}_{}.json",
-        std::process::id(),
-        id
-    ));
+    let path = std::env::temp_dir().join(format!("kada_result_{}_{}.json", std::process::id(), id));
     let _ = std::fs::remove_file(&path);
     path
 }
@@ -3412,9 +3501,7 @@ struct RunningSlot {
 ))]
 impl Drop for RunningSlot {
     fn drop(&mut self) {
-        let mut list = RUNNING_ACTIONS
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut list = RUNNING_ACTIONS.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(i) = list.iter().position(|(k, _)| *k == self.key) {
             list[i].1 -= 1;
             if list[i].1 == 0 {
@@ -3467,9 +3554,7 @@ fn claim_running_slot(action: &Action, ctx: &Ctx) -> RunningDecision {
         _ => return RunningDecision::Proceed(None),
     };
     let key = running_key(action, ctx);
-    let mut list = RUNNING_ACTIONS
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
+    let mut list = RUNNING_ACTIONS.lock().unwrap_or_else(|e| e.into_inner());
     loop {
         if abort::aborted(ctx.gen) {
             return RunningDecision::Abort;
@@ -3514,10 +3599,7 @@ fn wait_body(target: &WaitTarget, timeout_ms: Option<u64>, vars: &Vars) -> Strin
     };
     match timeout_ms {
         Some(0) => format!("等待{what}（不限时）"),
-        Some(ms) => format!(
-            "等待{what}（最多 {}）",
-            fmt_secs(Duration::from_millis(ms))
-        ),
+        Some(ms) => format!("等待{what}（最多 {}）", fmt_secs(Duration::from_millis(ms))),
         None => format!("等待{what}"),
     }
 }
@@ -3586,10 +3668,7 @@ fn step_failed(action: &Action, result: &CommandResult) -> bool {
         Action::Command { ok_exit_codes, .. } | Action::Script { ok_exit_codes, .. } => {
             !exit_ok(ok_exit_codes, result.exit_code) || result.stderr.starts_with("〔咔哒〕")
         }
-        _ => {
-            result.exit_code.is_some_and(|c| c != 0)
-                || result.stderr.starts_with("〔咔哒〕")
-        }
+        _ => result.exit_code.is_some_and(|c| c != 0) || result.stderr.starts_with("〔咔哒〕"),
     }
 }
 
@@ -3810,8 +3889,7 @@ fn run_child(
     }
     pump(&rx, &mut live_buf);
     let join = |h: Option<std::thread::JoinHandle<(String, Option<PathBuf>)>>| {
-        h.map(|h| h.join().unwrap_or_default())
-            .unwrap_or_default()
+        h.map(|h| h.join().unwrap_or_default()).unwrap_or_default()
     };
     let (stdout, stdout_file) = join(stdout);
     let (stderr, stderr_file) = join(stderr);
@@ -3861,10 +3939,7 @@ fn kill_tree(child: &mut Child) {
         .stdout(Stdio::null())
         .stderr(Stdio::null());
     no_console_window(&mut c); // 内部杀进程，恒不弹黑窗
-    let ok = c
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false);
+    let ok = c.status().map(|s| s.success()).unwrap_or(false);
     if !ok {
         // taskkill 也可能失败（进程刚好自己退了）：退回只杀直接子进程，聊胜于无。
         let _ = child.kill();
@@ -3941,7 +4016,8 @@ fn run_cmd(
             // 改为写入临时批处理文件再执行，彻底绕开引号二次解析；chcp 单独一行保证中文输出不乱码。
             static SERIAL: AtomicU64 = AtomicU64::new(0);
             let id = SERIAL.fetch_add(1, Ordering::Relaxed);
-            let path = std::env::temp_dir().join(format!("kada_cmd_{}_{}.bat", std::process::id(), id));
+            let path =
+                std::env::temp_dir().join(format!("kada_cmd_{}_{}.bat", std::process::id(), id));
             let content = format!("@echo off\r\nchcp 65001>nul\r\n{command}\r\n");
             std::fs::write(&path, content.as_bytes())
                 .map_err(|e| format!("写入临时批处理失败: {e}"))?;
@@ -4252,7 +4328,8 @@ mod tests {
     #[test]
     fn hide_window_really_removes_the_console() {
         let _g = abort::test_lock();
-        let probe = std::env::temp_dir().join(format!("kada_console_probe_{}.ps1", std::process::id()));
+        let probe =
+            std::env::temp_dir().join(format!("kada_console_probe_{}.ps1", std::process::id()));
         std::fs::write(
             &probe,
             concat!(
@@ -4313,7 +4390,14 @@ mod tests {
     fn timeout_kills_hung_process_and_reports_reason() {
         let _g = abort::test_lock();
         let start = Instant::now();
-        let out = run_with_deadline(&mut sleeper(30), "测试", &ctx(800), Duration::from_millis(800), None).expect("进程应能启动");
+        let out = run_with_deadline(
+            &mut sleeper(30),
+            "测试",
+            &ctx(800),
+            Duration::from_millis(800),
+            None,
+        )
+        .expect("进程应能启动");
         assert!(
             matches!(&out.killed, Some(r) if r.contains("超时")),
             "超时必须标记为被强制终止且说明原因：{:?}",
@@ -4362,7 +4446,14 @@ mod tests {
             ]);
             c
         };
-        let out = run_with_deadline(&mut cmd, "测试", &ctx(1_200), Duration::from_millis(1_200), None).expect("进程应能启动");
+        let out = run_with_deadline(
+            &mut cmd,
+            "测试",
+            &ctx(1_200),
+            Duration::from_millis(1_200),
+            None,
+        )
+        .expect("进程应能启动");
         assert!(out.killed.is_some(), "1.2 秒还没结束就该判超时");
         std::thread::sleep(Duration::from_millis(3_500));
         assert!(
@@ -4383,7 +4474,8 @@ mod tests {
         let start = Instant::now();
         // 不限时（0）：能结束只可能是因为中止生效。
         let mut cmd = sleeper(30);
-        let out = run_with_deadline(&mut cmd, "测试", &ctx(0), Duration::ZERO, None).expect("进程应能启动");
+        let out = run_with_deadline(&mut cmd, "测试", &ctx(0), Duration::ZERO, None)
+            .expect("进程应能启动");
         requester.join().unwrap();
         assert_eq!(out.killed.as_deref(), Some("已中止"));
         assert!(start.elapsed() < Duration::from_secs(8), "中止后应立即返回");
@@ -4502,11 +4594,7 @@ mod tests {
         ];
         let (_results, steps, status) = run_all(&actions, &RunOptions::default());
         assert_eq!(status, RunStatus::Finished);
-        assert_eq!(
-            dedupe_steps(steps).len(),
-            1,
-            "禁用的那条不该留下执行记录"
-        );
+        assert_eq!(dedupe_steps(steps).len(), 1, "禁用的那条不该留下执行记录");
     }
 
     /// 分组只是组织结构：成员按顺序跑，执行记录挂在分组这一步下面（嵌套分组再挂一层）。
@@ -4637,9 +4725,9 @@ mod tests {
         let start = Instant::now();
         {
             let mut commit = |r: CommandResult| {
-            results.push(r);
-            None
-        };
+                results.push(r);
+                None
+            };
             let mut vars: Vars = BTreeMap::new();
             let mut last_copied = None;
             let mut on_step = |_s: ActionStep| {};
@@ -4697,9 +4785,9 @@ mod tests {
         let mut results: Vec<CommandResult> = Vec::new();
         {
             let mut commit = |r: CommandResult| {
-            results.push(r);
-            None
-        };
+                results.push(r);
+                None
+            };
             let mut on_step = |_s: ActionStep| {};
             let mut rep = Reporter {
                 commit: &mut commit,
@@ -4883,7 +4971,10 @@ mod tests {
                 exit_code: None,
             }),
         );
-        assert_eq!(resolve_working_dir("{d}", &vars).unwrap(), Some(dir.clone()));
+        assert_eq!(
+            resolve_working_dir("{d}", &vars).unwrap(),
+            Some(dir.clone())
+        );
         let _ = fs::remove_dir(&dir);
     }
 
@@ -4975,7 +5066,8 @@ mod tests {
         };
         assert!(out.stdout.contains(&format!("OS={os}")), "{}", out.stdout);
         assert!(
-            out.stdout.to_lowercase()
+            out.stdout
+                .to_lowercase()
                 .contains(&dir.display().to_string().to_lowercase()),
             "KADA_WORKDIR 应是实际工作目录：{}",
             out.stdout
@@ -5173,11 +5265,7 @@ mod tests {
         };
         let (results, steps, _) = run_all(&actions, &opts);
         assert_eq!(results[0].exit_code, Some(0), "不限时应正常跑完");
-        assert!(
-            !results[0].stderr.contains("超时"),
-            "{}",
-            results[0].stderr
-        );
+        assert!(!results[0].stderr.contains("超时"), "{}", results[0].stderr);
         assert_eq!(steps.last().unwrap().status, "ok");
     }
 
@@ -5240,7 +5328,10 @@ mod tests {
             if_running: Default::default(),
             description: None,
         };
-        let later = || Action::PauseMs { ms: 1, description: None };
+        let later = || Action::PauseMs {
+            ms: 1,
+            description: None,
+        };
 
         let stop = vec![failing(OnError::Stop), later()];
         let (_, steps, status) = run_all(&stop, &RunOptions::default());
@@ -5355,7 +5446,11 @@ mod tests {
         assert_eq!(results.len(), 2);
         assert_eq!(results[0].label, "内置脚本");
         assert!(results[0].exit_code.is_some_and(|c| c != 0));
-        assert!(results[0].stderr.contains("〔咔哒〕"), "{}", results[0].stderr);
+        assert!(
+            results[0].stderr.contains("〔咔哒〕"),
+            "{}",
+            results[0].stderr
+        );
         let steps = dedupe_steps(raw_steps);
         assert_eq!(steps[0].kind, "inline_script");
         assert_eq!(steps[0].status, "error", "失败要落在这一步的记录上");
@@ -5426,8 +5521,14 @@ mod tests {
             description: None,
         };
         let summary = super::action_summary(&hidden, &BTreeMap::new());
-        assert!(summary.contains("***"), "隐藏的文本要看得出被隐藏了：{summary}");
-        assert!(!summary.contains("hunter2"), "隐藏的文本不该出现在摘要里：{summary}");
+        assert!(
+            summary.contains("***"),
+            "隐藏的文本要看得出被隐藏了：{summary}"
+        );
+        assert!(
+            !summary.contains("hunter2"),
+            "隐藏的文本不该出现在摘要里：{summary}"
+        );
 
         // 没标记隐藏的照旧展示原文（隐藏是显式选择，不是默认）。
         let plain = Action::Text {
@@ -5449,14 +5550,18 @@ mod tests {
         vars.insert("who".into(), Value::Text("Kada".into()));
 
         let set = Action::Clipboard {
-            operation: ClipboardOperation::SetClipboard { text: "hi {who}".into() },
+            operation: ClipboardOperation::SetClipboard {
+                text: "hi {who}".into(),
+            },
             description: None,
         };
         let s = super::action_summary(&set, &vars);
         assert!(s.contains("写入剪贴板 hi Kada"), "{s}");
 
         let clear = Action::Clipboard {
-            operation: ClipboardOperation::SetClipboard { text: String::new() },
+            operation: ClipboardOperation::SetClipboard {
+                text: String::new(),
+            },
             description: None,
         };
         assert!(super::action_summary(&clear, &vars).contains("清空剪贴板"));
@@ -5540,7 +5645,10 @@ mod tests {
         };
         assert_eq!(super::action_kind(&tool), "tool");
         let s = super::action_summary(&tool, &vars);
-        assert!(s.contains("比特口袋") && s.contains("打开") && s.contains("未接入"), "{s}");
+        assert!(
+            s.contains("比特口袋") && s.contains("打开") && s.contains("未接入"),
+            "{s}"
+        );
 
         let bright = Action::Brightness {
             operation: BrightnessOperation::Down,
@@ -5579,7 +5687,9 @@ mod tests {
 
         // 文件动作仍归 os——两类不许混（用户点名的分类拆分）。
         let file = Action::Os {
-            operation: OsOperation::Delete { path: "C:\\tmp\\x".into() },
+            operation: OsOperation::Delete {
+                path: "C:\\tmp\\x".into(),
+            },
             description: None,
         };
         assert_eq!(super::action_kind(&file), "os");
@@ -5597,7 +5707,11 @@ mod tests {
             assert_eq!(next, [Key::Meta, Key::Control, Key::ArrowRight]);
             assert_eq!(prev, [Key::Meta, Key::Control, Key::ArrowLeft]);
         } else if cfg!(target_os = "macos") {
-            assert_eq!(next, [Key::Control, Key::ArrowRight], "macOS 是 ⌃←/→，不是 ⌘");
+            assert_eq!(
+                next,
+                [Key::Control, Key::ArrowRight],
+                "macOS 是 ⌃←/→，不是 ⌘"
+            );
             assert_eq!(prev, [Key::Control, Key::ArrowLeft]);
         } else {
             assert_eq!(next, [Key::Meta, Key::PageDown]);
@@ -5641,9 +5755,7 @@ mod tests {
             }],
         }]));
         assert!(has_key_lifecycle(&[Action::If {
-            condition: kada_core::Condition::Exists {
-                path: ".".into()
-            },
+            condition: kada_core::Condition::Exists { path: ".".into() },
             then: vec![press],
             otherwise: vec![],
             description: None,
@@ -5779,9 +5891,9 @@ mod tests {
         let mut results: Vec<CommandResult> = Vec::new();
         {
             let mut commit = |r: CommandResult| {
-            results.push(r);
-            None
-        };
+                results.push(r);
+                None
+            };
             let mut on_step = |_s: ActionStep| {};
             let mut rep = Reporter {
                 commit: &mut commit,
@@ -5945,7 +6057,10 @@ mod tests {
     fn result_file_writes_variables() {
         let _g = abort::test_lock();
         let mut vars: Vars = BTreeMap::new();
-        let results = run_collect(&[result_file_command(r#"{"name":"kada","n":42}"#)], &mut vars);
+        let results = run_collect(
+            &[result_file_command(r#"{"name":"kada","n":42}"#)],
+            &mut vars,
+        );
         assert_eq!(results.len(), 1, "命令本身应成功提交一条结果");
         assert_eq!(results[0].exit_code, Some(0));
         assert_eq!(text_var(&vars, "name"), "kada");
@@ -6146,8 +6261,7 @@ mod win_shell {
             let mut worker = FindWindowExW(None, None, w!("WorkerW"), PCWSTR::null()).ok();
             while defview.is_none() {
                 let Some(w) = worker else { break };
-                defview =
-                    FindWindowExW(Some(w), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok();
+                defview = FindWindowExW(Some(w), None, w!("SHELLDLL_DefView"), PCWSTR::null()).ok();
                 worker = FindWindowExW(None, Some(w), w!("WorkerW"), PCWSTR::null()).ok();
             }
             let Some(defview) = defview else {

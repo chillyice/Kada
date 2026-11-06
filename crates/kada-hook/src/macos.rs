@@ -87,8 +87,15 @@ use crate::{MouseRecord, MouseRecordKind};
 /// 一次键盘事件。
 #[derive(Clone, Debug)]
 pub enum KeyEvent {
-    Down { key: Key, mods: BTreeSet<Modifier>, repeat: bool },
-    Up { key: Key, mods: BTreeSet<Modifier> },
+    Down {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+        repeat: bool,
+    },
+    Up {
+        key: Key,
+        mods: BTreeSet<Modifier>,
+    },
 }
 
 /// 处理函数对事件的处置。
@@ -115,7 +122,8 @@ static LAST_TRIGGER_POS: LazyLock<Mutex<CGPoint>> =
 /// 已决定吞掉的键：后续 keyup 也要吞。
 static SWALLOWED: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// Replace 注入后仍按下的宿主原键 → 目标键。
-static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+static REPLACED_DOWN: LazyLock<Mutex<HashMap<Key, Key>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 /// 当前物理按下的键（down 且未 up），用于识别自动重复。
 static HELD_KEYS: LazyLock<Mutex<HashSet<Key>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 /// CapsLock 的「按下/抬起」翻转状态。
@@ -243,7 +251,12 @@ where
     let watchdog = thread::Builder::new()
         .name("kada-hook-watchdog".into())
         .spawn(move || watchdog_loop(watchdog_rx))?;
-    Ok(HookHandle { stop, join: Some(join), watchdog: Some(watchdog), watchdog_stop: Some(watchdog_stop) })
+    Ok(HookHandle {
+        stop,
+        join: Some(join),
+        watchdog: Some(watchdog),
+        watchdog_stop: Some(watchdog_stop),
+    })
 }
 
 /// 钩子线程主体：建 tap → 挂到本线程的 run loop → 循环跑到停机信号。
@@ -281,7 +294,10 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
     if let Some((_, media_source)) = &media {
         run_loop.add_source(media_source, unsafe { kCFRunLoopCommonModes });
     }
-    TAP.store(tap.mach_port().as_concrete_TypeRef() as i64, Ordering::Relaxed);
+    TAP.store(
+        tap.mach_port().as_concrete_TypeRef() as i64,
+        Ordering::Relaxed,
+    );
     HEARTBEAT_MS.store(now_ms(), Ordering::Relaxed);
     *RUN_LOOP.lock().unwrap() = Some(run_loop.clone());
     let _ = ready.send(Ok(()));
@@ -289,7 +305,11 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
     // run loop 里除了这个 tap 没有别的 source，没人处理事件时会按时返回 TimedOut，
     // 借此轮询停机位（`HookHandle::drop` 还会 `CFRunLoopStop` 立刻打断，双保险）。
     while !stop.load(Ordering::Relaxed) {
-        let _ = CFRunLoop::run_in_mode(unsafe { kCFRunLoopDefaultMode }, Duration::from_millis(100), false);
+        let _ = CFRunLoop::run_in_mode(
+            unsafe { kCFRunLoopDefaultMode },
+            Duration::from_millis(100),
+            false,
+        );
     }
 
     if let Some((_, media_source)) = &media {
@@ -394,8 +414,10 @@ fn tap_callback(_proxy: CGEventTapProxy, etype: CGEventType, event: &CGEvent) ->
             CallbackResult::Keep
         }
         CGEventType::ScrollWheel => {
-            let dy = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1) as i32;
-            let dx = event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2) as i32;
+            let dy =
+                event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_1) as i32;
+            let dx =
+                event.get_integer_value_field(EventField::SCROLL_WHEEL_EVENT_DELTA_AXIS_2) as i32;
             if dx != 0 || dy != 0 {
                 record_trigger(event, MouseRecordKind::Scroll { dx, dy });
             }
@@ -479,7 +501,10 @@ extern "C" fn media_tap_callback(
             return event;
         };
         let mods = flags_to_mods(CGEventGetFlags(event));
-        if matches!(dispatch(press.key, mods, press.down, press.repeat), CallbackResult::Keep) {
+        if matches!(
+            dispatch(press.key, mods, press.down, press.repeat),
+            CallbackResult::Keep
+        ) {
             event
         } else {
             ptr::null_mut()
@@ -510,7 +535,11 @@ fn parse_media(subtype: i64, data1: i64) -> Option<MediaPress> {
         NX_KEYUP => false,
         _ => return None,
     };
-    Some(MediaPress { key, down, repeat: flags & 1 != 0 })
+    Some(MediaPress {
+        key,
+        down,
+        repeat: flags & 1 != 0,
+    })
 }
 
 /// `NX_KEYTYPE_*` → [`Key`]（只收键模型里有的六个）。
@@ -551,7 +580,11 @@ fn record_trigger(event: &CGEvent, kind: MouseRecordKind) {
         d
     };
     if let Some(f) = MOUSE_RECORDER.lock().unwrap().as_mut() {
-        f(MouseRecord { kind, move_dx, move_dy });
+        f(MouseRecord {
+            kind,
+            move_dx,
+            move_dy,
+        });
     }
 }
 
@@ -563,8 +596,8 @@ fn handle_key(event: &CGEvent, down: bool) -> CallbackResult {
     };
     let mods = flags_to_mods(event.get_flags());
     // 自动重复：macOS 自己的字段 + 「仍按住」的本地判定（取或，理由见模块头）。
-    let repeat = down
-        && (event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0);
+    let repeat =
+        down && (event.get_integer_value_field(EventField::KEYBOARD_EVENT_AUTOREPEAT) != 0);
     dispatch(key, mods, down, repeat)
 }
 
@@ -661,7 +694,11 @@ fn dispatch(key: Key, mods: BTreeSet<Modifier>, down: bool, repeat: bool) -> Cal
         if let Some(f) = HANDLER.lock().unwrap().as_mut() {
             let _ = f(KeyEvent::Up { key, mods });
         }
-        return if swallowed { CallbackResult::Drop } else { CallbackResult::Keep };
+        return if swallowed {
+            CallbackResult::Drop
+        } else {
+            CallbackResult::Keep
+        };
     }
 
     let repeat = repeat || !HELD_KEYS.lock().unwrap().insert(key);
@@ -734,7 +771,12 @@ fn reset_runtime_state() {
 
 /// 取走所有待释放的替换目标键（宿主原键 → 已注入并按住的键），并清空登记表。
 fn take_replaced_down() -> Vec<Key> {
-    REPLACED_DOWN.lock().unwrap().drain().map(|(_, target)| target).collect()
+    REPLACED_DOWN
+        .lock()
+        .unwrap()
+        .drain()
+        .map(|(_, target)| target)
+        .collect()
 }
 
 /// 自愈重装累计次数（诊断 / 壳层「输入状态复位」用）。
@@ -826,8 +868,12 @@ pub fn idle_seconds() -> Option<u64> {
 /// 只能问一类事件，而我们的 tap 收到的正好是键盘 + 鼠标中/侧键。若把鼠标左键也算进「系统侧
 /// 的信号」，用户在纯鼠标操作时段就会被误判成失效（每次点击都触发一次重建）。
 fn tap_dead(now: u64) -> bool {
-    let since_system =
-        unsafe { CGEventSourceSecondsSinceLastEventType(CGEventSourceStateID::HIDSystemState, CGEventType::KeyDown) };
+    let since_system = unsafe {
+        CGEventSourceSecondsSinceLastEventType(
+            CGEventSourceStateID::HIDSystemState,
+            CGEventType::KeyDown,
+        )
+    };
     if (since_system * 1000.0) as u64 > HEARTBEAT_GRACE_MS {
         return false; // 系统侧也没有新输入：闲置不是失效
     }
@@ -851,7 +897,12 @@ fn modifier_flag(m: Modifier) -> CGEventFlags {
 /// 匹配不到任何快捷键。
 fn flags_to_mods(flags: CGEventFlags) -> BTreeSet<Modifier> {
     let mut mods = BTreeSet::new();
-    for m in [Modifier::Ctrl, Modifier::Alt, Modifier::Shift, Modifier::Meta] {
+    for m in [
+        Modifier::Ctrl,
+        Modifier::Alt,
+        Modifier::Shift,
+        Modifier::Meta,
+    ] {
         if flags.contains(modifier_flag(m)) {
             mods.insert(m);
         }
@@ -900,54 +951,113 @@ fn key_to_mouse_button(k: Key) -> Option<u32> {
 pub fn key_to_code(k: Key) -> Option<u16> {
     use Key::*;
     let code = match k {
-        A => KeyCode::ANSI_A, B => KeyCode::ANSI_B, C => KeyCode::ANSI_C,
-        D => KeyCode::ANSI_D, E => KeyCode::ANSI_E, F => KeyCode::ANSI_F,
-        G => KeyCode::ANSI_G, H => KeyCode::ANSI_H, I => KeyCode::ANSI_I,
-        J => KeyCode::ANSI_J, K => KeyCode::ANSI_K, L => KeyCode::ANSI_L,
-        M => KeyCode::ANSI_M, N => KeyCode::ANSI_N, O => KeyCode::ANSI_O,
-        P => KeyCode::ANSI_P, Q => KeyCode::ANSI_Q, R => KeyCode::ANSI_R,
-        S => KeyCode::ANSI_S, T => KeyCode::ANSI_T, U => KeyCode::ANSI_U,
-        V => KeyCode::ANSI_V, W => KeyCode::ANSI_W, X => KeyCode::ANSI_X,
-        Y => KeyCode::ANSI_Y, Z => KeyCode::ANSI_Z,
-        Digit0 => KeyCode::ANSI_0, Digit1 => KeyCode::ANSI_1, Digit2 => KeyCode::ANSI_2,
-        Digit3 => KeyCode::ANSI_3, Digit4 => KeyCode::ANSI_4, Digit5 => KeyCode::ANSI_5,
-        Digit6 => KeyCode::ANSI_6, Digit7 => KeyCode::ANSI_7, Digit8 => KeyCode::ANSI_8,
+        A => KeyCode::ANSI_A,
+        B => KeyCode::ANSI_B,
+        C => KeyCode::ANSI_C,
+        D => KeyCode::ANSI_D,
+        E => KeyCode::ANSI_E,
+        F => KeyCode::ANSI_F,
+        G => KeyCode::ANSI_G,
+        H => KeyCode::ANSI_H,
+        I => KeyCode::ANSI_I,
+        J => KeyCode::ANSI_J,
+        K => KeyCode::ANSI_K,
+        L => KeyCode::ANSI_L,
+        M => KeyCode::ANSI_M,
+        N => KeyCode::ANSI_N,
+        O => KeyCode::ANSI_O,
+        P => KeyCode::ANSI_P,
+        Q => KeyCode::ANSI_Q,
+        R => KeyCode::ANSI_R,
+        S => KeyCode::ANSI_S,
+        T => KeyCode::ANSI_T,
+        U => KeyCode::ANSI_U,
+        V => KeyCode::ANSI_V,
+        W => KeyCode::ANSI_W,
+        X => KeyCode::ANSI_X,
+        Y => KeyCode::ANSI_Y,
+        Z => KeyCode::ANSI_Z,
+        Digit0 => KeyCode::ANSI_0,
+        Digit1 => KeyCode::ANSI_1,
+        Digit2 => KeyCode::ANSI_2,
+        Digit3 => KeyCode::ANSI_3,
+        Digit4 => KeyCode::ANSI_4,
+        Digit5 => KeyCode::ANSI_5,
+        Digit6 => KeyCode::ANSI_6,
+        Digit7 => KeyCode::ANSI_7,
+        Digit8 => KeyCode::ANSI_8,
         Digit9 => KeyCode::ANSI_9,
-        F1 => KeyCode::F1, F2 => KeyCode::F2, F3 => KeyCode::F3, F4 => KeyCode::F4,
-        F5 => KeyCode::F5, F6 => KeyCode::F6, F7 => KeyCode::F7, F8 => KeyCode::F8,
-        F9 => KeyCode::F9, F10 => KeyCode::F10, F11 => KeyCode::F11, F12 => KeyCode::F12,
-        F13 => KeyCode::F13, F14 => KeyCode::F14, F15 => KeyCode::F15, F16 => KeyCode::F16,
-        F17 => KeyCode::F17, F18 => KeyCode::F18, F19 => KeyCode::F19, F20 => KeyCode::F20,
-        Comma => KeyCode::ANSI_COMMA, Period => KeyCode::ANSI_PERIOD,
-        Slash => KeyCode::ANSI_SLASH, Backslash => KeyCode::ANSI_BACKSLASH,
-        Semicolon => KeyCode::ANSI_SEMICOLON, Quote => KeyCode::ANSI_QUOTE,
-        Backquote => KeyCode::ANSI_GRAVE, Minus => KeyCode::ANSI_MINUS,
-        Equal => KeyCode::ANSI_EQUAL, BracketLeft => KeyCode::ANSI_LEFT_BRACKET,
+        F1 => KeyCode::F1,
+        F2 => KeyCode::F2,
+        F3 => KeyCode::F3,
+        F4 => KeyCode::F4,
+        F5 => KeyCode::F5,
+        F6 => KeyCode::F6,
+        F7 => KeyCode::F7,
+        F8 => KeyCode::F8,
+        F9 => KeyCode::F9,
+        F10 => KeyCode::F10,
+        F11 => KeyCode::F11,
+        F12 => KeyCode::F12,
+        F13 => KeyCode::F13,
+        F14 => KeyCode::F14,
+        F15 => KeyCode::F15,
+        F16 => KeyCode::F16,
+        F17 => KeyCode::F17,
+        F18 => KeyCode::F18,
+        F19 => KeyCode::F19,
+        F20 => KeyCode::F20,
+        Comma => KeyCode::ANSI_COMMA,
+        Period => KeyCode::ANSI_PERIOD,
+        Slash => KeyCode::ANSI_SLASH,
+        Backslash => KeyCode::ANSI_BACKSLASH,
+        Semicolon => KeyCode::ANSI_SEMICOLON,
+        Quote => KeyCode::ANSI_QUOTE,
+        Backquote => KeyCode::ANSI_GRAVE,
+        Minus => KeyCode::ANSI_MINUS,
+        Equal => KeyCode::ANSI_EQUAL,
+        BracketLeft => KeyCode::ANSI_LEFT_BRACKET,
         BracketRight => KeyCode::ANSI_RIGHT_BRACKET,
-        Enter => KeyCode::RETURN, Escape => KeyCode::ESCAPE, Tab => KeyCode::TAB,
+        Enter => KeyCode::RETURN,
+        Escape => KeyCode::ESCAPE,
+        Tab => KeyCode::TAB,
         Space => KeyCode::SPACE,
         // macOS 上退格与「向前删除」是两个键码（Windows 那边 `Delete` 才是向前删除）。
-        Backspace => KeyCode::DELETE, Delete => KeyCode::FORWARD_DELETE,
+        Backspace => KeyCode::DELETE,
+        Delete => KeyCode::FORWARD_DELETE,
         // macOS 没有 Insert 键：PC 键盘的 Insert 由 Help 键位（0x72）承载，故两者互映。
         Insert => KeyCode::HELP,
         CapsLock => KeyCode::CAPS_LOCK,
-        Shift => KeyCode::SHIFT, Control => KeyCode::CONTROL, Alt => KeyCode::OPTION,
+        Shift => KeyCode::SHIFT,
+        Control => KeyCode::CONTROL,
+        Alt => KeyCode::OPTION,
         Meta => KeyCode::COMMAND,
-        Home => KeyCode::HOME, End => KeyCode::END,
-        PageUp => KeyCode::PAGE_UP, PageDown => KeyCode::PAGE_DOWN,
-        ArrowUp => KeyCode::UP_ARROW, ArrowDown => KeyCode::DOWN_ARROW,
-        ArrowLeft => KeyCode::LEFT_ARROW, ArrowRight => KeyCode::RIGHT_ARROW,
+        Home => KeyCode::HOME,
+        End => KeyCode::END,
+        PageUp => KeyCode::PAGE_UP,
+        PageDown => KeyCode::PAGE_DOWN,
+        ArrowUp => KeyCode::UP_ARROW,
+        ArrowDown => KeyCode::DOWN_ARROW,
+        ArrowLeft => KeyCode::LEFT_ARROW,
+        ArrowRight => KeyCode::RIGHT_ARROW,
         // macOS 没有 NumLock 键；小键盘 Clear（0x47）是它唯一对应的键位。
         NumLock => KeyCode::ANSI_KEYPAD_CLEAR,
-        Numpad0 => KeyCode::ANSI_KEYPAD_0, Numpad1 => KeyCode::ANSI_KEYPAD_1,
-        Numpad2 => KeyCode::ANSI_KEYPAD_2, Numpad3 => KeyCode::ANSI_KEYPAD_3,
-        Numpad4 => KeyCode::ANSI_KEYPAD_4, Numpad5 => KeyCode::ANSI_KEYPAD_5,
-        Numpad6 => KeyCode::ANSI_KEYPAD_6, Numpad7 => KeyCode::ANSI_KEYPAD_7,
-        Numpad8 => KeyCode::ANSI_KEYPAD_8, Numpad9 => KeyCode::ANSI_KEYPAD_9,
-        NumpadAdd => KeyCode::ANSI_KEYPAD_PLUS, NumpadSubtract => KeyCode::ANSI_KEYPAD_MINUS,
+        Numpad0 => KeyCode::ANSI_KEYPAD_0,
+        Numpad1 => KeyCode::ANSI_KEYPAD_1,
+        Numpad2 => KeyCode::ANSI_KEYPAD_2,
+        Numpad3 => KeyCode::ANSI_KEYPAD_3,
+        Numpad4 => KeyCode::ANSI_KEYPAD_4,
+        Numpad5 => KeyCode::ANSI_KEYPAD_5,
+        Numpad6 => KeyCode::ANSI_KEYPAD_6,
+        Numpad7 => KeyCode::ANSI_KEYPAD_7,
+        Numpad8 => KeyCode::ANSI_KEYPAD_8,
+        Numpad9 => KeyCode::ANSI_KEYPAD_9,
+        NumpadAdd => KeyCode::ANSI_KEYPAD_PLUS,
+        NumpadSubtract => KeyCode::ANSI_KEYPAD_MINUS,
         NumpadMultiply => KeyCode::ANSI_KEYPAD_MULTIPLY,
         NumpadDivide => KeyCode::ANSI_KEYPAD_DIVIDE,
-        NumpadDecimal => KeyCode::ANSI_KEYPAD_DECIMAL, NumpadEnter => KeyCode::ANSI_KEYPAD_ENTER,
+        NumpadDecimal => KeyCode::ANSI_KEYPAD_DECIMAL,
+        NumpadEnter => KeyCode::ANSI_KEYPAD_ENTER,
         // 媒体键（NX_SYSDEFINED，非虚拟键码）、F21~F24（无此硬件）：见模块头「已知天花板」。
         MediaPlayPause | MediaPrev | MediaNext | VolumeMute | VolumeDown | VolumeUp => return None,
         F21 | F22 | F23 | F24 => return None,
@@ -967,35 +1077,64 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::CONTROL || c == KeyCode::RIGHT_CONTROL => Control,
         c if c == KeyCode::OPTION || c == KeyCode::RIGHT_OPTION => Alt,
         c if c == KeyCode::COMMAND || c == KeyCode::RIGHT_COMMAND => Meta,
-        c if c == KeyCode::ANSI_A => A, c if c == KeyCode::ANSI_B => B,
-        c if c == KeyCode::ANSI_C => C, c if c == KeyCode::ANSI_D => D,
-        c if c == KeyCode::ANSI_E => E, c if c == KeyCode::ANSI_F => F,
-        c if c == KeyCode::ANSI_G => G, c if c == KeyCode::ANSI_H => H,
-        c if c == KeyCode::ANSI_I => I, c if c == KeyCode::ANSI_J => J,
-        c if c == KeyCode::ANSI_K => K, c if c == KeyCode::ANSI_L => L,
-        c if c == KeyCode::ANSI_M => M, c if c == KeyCode::ANSI_N => N,
-        c if c == KeyCode::ANSI_O => O, c if c == KeyCode::ANSI_P => P,
-        c if c == KeyCode::ANSI_Q => Q, c if c == KeyCode::ANSI_R => R,
-        c if c == KeyCode::ANSI_S => S, c if c == KeyCode::ANSI_T => T,
-        c if c == KeyCode::ANSI_U => U, c if c == KeyCode::ANSI_V => V,
-        c if c == KeyCode::ANSI_W => W, c if c == KeyCode::ANSI_X => X,
-        c if c == KeyCode::ANSI_Y => Y, c if c == KeyCode::ANSI_Z => Z,
-        c if c == KeyCode::ANSI_0 => Digit0, c if c == KeyCode::ANSI_1 => Digit1,
-        c if c == KeyCode::ANSI_2 => Digit2, c if c == KeyCode::ANSI_3 => Digit3,
-        c if c == KeyCode::ANSI_4 => Digit4, c if c == KeyCode::ANSI_5 => Digit5,
-        c if c == KeyCode::ANSI_6 => Digit6, c if c == KeyCode::ANSI_7 => Digit7,
-        c if c == KeyCode::ANSI_8 => Digit8, c if c == KeyCode::ANSI_9 => Digit9,
-        c if c == KeyCode::F1 => F1, c if c == KeyCode::F2 => F2,
-        c if c == KeyCode::F3 => F3, c if c == KeyCode::F4 => F4,
-        c if c == KeyCode::F5 => F5, c if c == KeyCode::F6 => F6,
-        c if c == KeyCode::F7 => F7, c if c == KeyCode::F8 => F8,
-        c if c == KeyCode::F9 => F9, c if c == KeyCode::F10 => F10,
-        c if c == KeyCode::F11 => F11, c if c == KeyCode::F12 => F12,
-        c if c == KeyCode::F13 => F13, c if c == KeyCode::F14 => F14,
-        c if c == KeyCode::F15 => F15, c if c == KeyCode::F16 => F16,
-        c if c == KeyCode::F17 => F17, c if c == KeyCode::F18 => F18,
-        c if c == KeyCode::F19 => F19, c if c == KeyCode::F20 => F20,
-        c if c == KeyCode::ANSI_COMMA => Comma, c if c == KeyCode::ANSI_PERIOD => Period,
+        c if c == KeyCode::ANSI_A => A,
+        c if c == KeyCode::ANSI_B => B,
+        c if c == KeyCode::ANSI_C => C,
+        c if c == KeyCode::ANSI_D => D,
+        c if c == KeyCode::ANSI_E => E,
+        c if c == KeyCode::ANSI_F => F,
+        c if c == KeyCode::ANSI_G => G,
+        c if c == KeyCode::ANSI_H => H,
+        c if c == KeyCode::ANSI_I => I,
+        c if c == KeyCode::ANSI_J => J,
+        c if c == KeyCode::ANSI_K => K,
+        c if c == KeyCode::ANSI_L => L,
+        c if c == KeyCode::ANSI_M => M,
+        c if c == KeyCode::ANSI_N => N,
+        c if c == KeyCode::ANSI_O => O,
+        c if c == KeyCode::ANSI_P => P,
+        c if c == KeyCode::ANSI_Q => Q,
+        c if c == KeyCode::ANSI_R => R,
+        c if c == KeyCode::ANSI_S => S,
+        c if c == KeyCode::ANSI_T => T,
+        c if c == KeyCode::ANSI_U => U,
+        c if c == KeyCode::ANSI_V => V,
+        c if c == KeyCode::ANSI_W => W,
+        c if c == KeyCode::ANSI_X => X,
+        c if c == KeyCode::ANSI_Y => Y,
+        c if c == KeyCode::ANSI_Z => Z,
+        c if c == KeyCode::ANSI_0 => Digit0,
+        c if c == KeyCode::ANSI_1 => Digit1,
+        c if c == KeyCode::ANSI_2 => Digit2,
+        c if c == KeyCode::ANSI_3 => Digit3,
+        c if c == KeyCode::ANSI_4 => Digit4,
+        c if c == KeyCode::ANSI_5 => Digit5,
+        c if c == KeyCode::ANSI_6 => Digit6,
+        c if c == KeyCode::ANSI_7 => Digit7,
+        c if c == KeyCode::ANSI_8 => Digit8,
+        c if c == KeyCode::ANSI_9 => Digit9,
+        c if c == KeyCode::F1 => F1,
+        c if c == KeyCode::F2 => F2,
+        c if c == KeyCode::F3 => F3,
+        c if c == KeyCode::F4 => F4,
+        c if c == KeyCode::F5 => F5,
+        c if c == KeyCode::F6 => F6,
+        c if c == KeyCode::F7 => F7,
+        c if c == KeyCode::F8 => F8,
+        c if c == KeyCode::F9 => F9,
+        c if c == KeyCode::F10 => F10,
+        c if c == KeyCode::F11 => F11,
+        c if c == KeyCode::F12 => F12,
+        c if c == KeyCode::F13 => F13,
+        c if c == KeyCode::F14 => F14,
+        c if c == KeyCode::F15 => F15,
+        c if c == KeyCode::F16 => F16,
+        c if c == KeyCode::F17 => F17,
+        c if c == KeyCode::F18 => F18,
+        c if c == KeyCode::F19 => F19,
+        c if c == KeyCode::F20 => F20,
+        c if c == KeyCode::ANSI_COMMA => Comma,
+        c if c == KeyCode::ANSI_PERIOD => Period,
         c if c == KeyCode::ANSI_SLASH => Slash,
         c if c == KeyCode::ANSI_BACKSLASH => Backslash,
         c if c == KeyCode::ANSI_SEMICOLON => Semicolon,
@@ -1005,15 +1144,20 @@ fn code_to_key(code: u16) -> Option<Key> {
         c if c == KeyCode::ANSI_EQUAL => Equal,
         c if c == KeyCode::ANSI_LEFT_BRACKET => BracketLeft,
         c if c == KeyCode::ANSI_RIGHT_BRACKET => BracketRight,
-        c if c == KeyCode::RETURN => Enter, c if c == KeyCode::ESCAPE => Escape,
-        c if c == KeyCode::TAB => Tab, c if c == KeyCode::SPACE => Space,
+        c if c == KeyCode::RETURN => Enter,
+        c if c == KeyCode::ESCAPE => Escape,
+        c if c == KeyCode::TAB => Tab,
+        c if c == KeyCode::SPACE => Space,
         c if c == KeyCode::DELETE => Backspace,
         c if c == KeyCode::FORWARD_DELETE => Delete,
         c if c == KeyCode::HELP => Insert,
         c if c == KeyCode::CAPS_LOCK => CapsLock,
-        c if c == KeyCode::HOME => Home, c if c == KeyCode::END => End,
-        c if c == KeyCode::PAGE_UP => PageUp, c if c == KeyCode::PAGE_DOWN => PageDown,
-        c if c == KeyCode::UP_ARROW => ArrowUp, c if c == KeyCode::DOWN_ARROW => ArrowDown,
+        c if c == KeyCode::HOME => Home,
+        c if c == KeyCode::END => End,
+        c if c == KeyCode::PAGE_UP => PageUp,
+        c if c == KeyCode::PAGE_DOWN => PageDown,
+        c if c == KeyCode::UP_ARROW => ArrowUp,
+        c if c == KeyCode::DOWN_ARROW => ArrowDown,
         c if c == KeyCode::LEFT_ARROW => ArrowLeft,
         c if c == KeyCode::RIGHT_ARROW => ArrowRight,
         c if c == KeyCode::ANSI_KEYPAD_CLEAR => NumLock,
@@ -1107,7 +1251,10 @@ fn process_name_of(pid: i32) -> Option<String> {
         return None;
     }
     let path = String::from_utf8_lossy(&buf[..len as usize]).into_owned();
-    path.rsplit('/').next().filter(|s| !s.is_empty()).map(str::to_string)
+    path.rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// 窗口控制（应用动作）：通过 System Events 操作目标应用的主窗口。
@@ -1173,7 +1320,11 @@ end run
         return Ok(());
     }
     let msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    Err(if msg.is_empty() { format!("操作「{name}」的窗口失败") } else { msg })
+    Err(if msg.is_empty() {
+        format!("操作「{name}」的窗口失败")
+    } else {
+        msg
+    })
 }
 
 /// 取当前前台应用上下文（进程名 + 焦点窗口标题），供「按前台应用/窗口」类条件求值。
@@ -1241,7 +1392,11 @@ fn running_diverters() -> Vec<String> {
     let names = process_names();
     kada_core::DIVERTERS
         .iter()
-        .filter(|d| d.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|d| {
+            d.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|d| d.id.to_string())
         .collect()
 }
@@ -1251,7 +1406,11 @@ pub fn running_tools() -> Vec<String> {
     let names = process_names();
     kada_core::EXTERNAL_TOOLS
         .iter()
-        .filter(|t| t.processes.iter().any(|p| names.iter().any(|n| n.contains(p))))
+        .filter(|t| {
+            t.processes
+                .iter()
+                .any(|p| names.iter().any(|n| n.contains(p)))
+        })
         .map(|t| t.id.to_string())
         .collect()
 }
@@ -1281,15 +1440,23 @@ fn process_names() -> Vec<String> {
         let mut path_buf = [0 as libc::c_char; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
         let mut name_buf = [0 as libc::c_char; 64];
         for pid in &pids[..got as usize] {
-            let name = if libc::proc_pidpath(*pid, path_buf.as_mut_ptr().cast(), path_buf.len() as u32) > 0 {
+            let name = if libc::proc_pidpath(
+                *pid,
+                path_buf.as_mut_ptr().cast(),
+                path_buf.len() as u32,
+            ) > 0
+            {
                 CStr::from_ptr(path_buf.as_ptr())
                     .to_string_lossy()
                     .rsplit('/')
                     .next()
                     .unwrap_or("")
                     .to_lowercase()
-            } else if libc::proc_name(*pid, name_buf.as_mut_ptr().cast(), name_buf.len() as u32) > 0 {
-                CStr::from_ptr(name_buf.as_ptr()).to_string_lossy().to_lowercase()
+            } else if libc::proc_name(*pid, name_buf.as_mut_ptr().cast(), name_buf.len() as u32) > 0
+            {
+                CStr::from_ptr(name_buf.as_ptr())
+                    .to_string_lossy()
+                    .to_lowercase()
             } else {
                 continue;
             };
@@ -1483,8 +1650,8 @@ pub mod simulate {
     use super::{
         key_to_code, key_to_mouse_button, key_to_nx, modifier_flag, CFRelease, CGEventCreate,
         CGEventCreateMouseEvent, CGEventGetLocation, CGEventPost, CGEventSetFlags,
-        CGEventSetIntegerValueField, CGEventSetType, CGEventSourceCreate,
-        CGEventSourceFlagsState, CGWarpMouseCursorPosition,
+        CGEventSetIntegerValueField, CGEventSetType, CGEventSourceCreate, CGEventSourceFlagsState,
+        CGWarpMouseCursorPosition,
     };
 
     pub fn down(k: Key) {
@@ -1571,7 +1738,11 @@ pub mod simulate {
             }
             let event = CGEventCreate(source);
             if !event.is_null() {
-                let state = if down { super::NX_KEYDOWN } else { super::NX_KEYUP };
+                let state = if down {
+                    super::NX_KEYDOWN
+                } else {
+                    super::NX_KEYUP
+                };
                 let flags: u64 = (state as u64) << 8;
                 CGEventSetType(event, super::NX_SYSDEFINED);
                 CGEventSetFlags(event, CGEventFlags::from_bits_truncate(flags));
@@ -1596,7 +1767,11 @@ pub mod simulate {
     /// 坐标必须给：`OtherMouse*` 事件不自带位置，用当前光标位置（`CGEventCreate(NULL)`
     /// 生成的事件带的就是当前鼠标位置，这是 CoreGraphics 里读光标的常规做法）。
     fn post_mouse(button: u32, down: bool) {
-        let ty = if down { CGEventType::OtherMouseDown } else { CGEventType::OtherMouseUp };
+        let ty = if down {
+            CGEventType::OtherMouseDown
+        } else {
+            CGEventType::OtherMouseUp
+        };
         let pos = unsafe {
             let probe = CGEventCreate(std::ptr::null_mut());
             if probe.is_null() {
@@ -1668,8 +1843,9 @@ pub mod simulate {
                 let Ok(source) = CGEventSource::new(CGEventSourceStateID::Private) else {
                     return Err(io::Error::other("CGEventSource 创建失败"));
                 };
-                let event = CGEvent::new_scroll_event(source, ScrollEventUnit::LINE, 2, *dy, *dx, 0)
-                    .map_err(|_| io::Error::other("滚动事件创建失败"))?;
+                let event =
+                    CGEvent::new_scroll_event(source, ScrollEventUnit::LINE, 2, *dy, *dx, 0)
+                        .map_err(|_| io::Error::other("滚动事件创建失败"))?;
                 event.post(CGEventTapLocation::HID);
             }
         }
@@ -1696,7 +1872,6 @@ pub mod simulate {
             let _ = CGWarpMouseCursorPosition(CGPoint::new(f64::from(pt.0), f64::from(pt.1)));
         }
     }
-
 
     /// 在指定坐标投递一个鼠标事件（`button`：0 左 / 1 右 / 2 中）。
     fn post_mouse_at(ty: CGEventType, pos: CGPoint, button: u32) -> io::Result<()> {
@@ -1871,12 +2046,39 @@ mod tests {
     #[test]
     fn mapping_roundtrip() {
         for k in [
-            Key::A, Key::K, Key::Digit9, Key::F12, Key::CapsLock, Key::Control, Key::Alt,
-            Key::Shift, Key::Meta, Key::Enter, Key::Escape, Key::Space, Key::Backspace,
-            Key::Delete, Key::Comma, Key::Minus, Key::Slash, Key::BracketLeft, Key::Quote,
-            Key::ArrowUp, Key::PageDown, Key::F13, Key::F20, Key::NumLock, Key::Numpad0,
-            Key::Numpad9, Key::NumpadAdd, Key::NumpadSubtract, Key::NumpadMultiply,
-            Key::NumpadDivide, Key::NumpadDecimal, Key::NumpadEnter, Key::Insert,
+            Key::A,
+            Key::K,
+            Key::Digit9,
+            Key::F12,
+            Key::CapsLock,
+            Key::Control,
+            Key::Alt,
+            Key::Shift,
+            Key::Meta,
+            Key::Enter,
+            Key::Escape,
+            Key::Space,
+            Key::Backspace,
+            Key::Delete,
+            Key::Comma,
+            Key::Minus,
+            Key::Slash,
+            Key::BracketLeft,
+            Key::Quote,
+            Key::ArrowUp,
+            Key::PageDown,
+            Key::F13,
+            Key::F20,
+            Key::NumLock,
+            Key::Numpad0,
+            Key::Numpad9,
+            Key::NumpadAdd,
+            Key::NumpadSubtract,
+            Key::NumpadMultiply,
+            Key::NumpadDivide,
+            Key::NumpadDecimal,
+            Key::NumpadEnter,
+            Key::Insert,
         ] {
             let code = key_to_code(k).unwrap();
             assert_eq!(code_to_key(code), Some(k), "roundtrip {}", key_name(k));
@@ -1885,8 +2087,16 @@ mod tests {
         assert_ne!(key_to_code(Key::Enter), key_to_code(Key::NumpadEnter));
         // 媒体键走独立的 NX_SYSDEFINED tap（不是键码）；F21~F24 无此硬件。
         for k in [
-            Key::MediaPlayPause, Key::MediaPrev, Key::MediaNext, Key::VolumeMute,
-            Key::VolumeDown, Key::VolumeUp, Key::F21, Key::F22, Key::F23, Key::F24,
+            Key::MediaPlayPause,
+            Key::MediaPrev,
+            Key::MediaNext,
+            Key::VolumeMute,
+            Key::VolumeDown,
+            Key::VolumeUp,
+            Key::F21,
+            Key::F22,
+            Key::F23,
+            Key::F24,
         ] {
             assert_eq!(key_to_code(k), None, "{} 不该有键码", key_name(k));
         }
@@ -1920,9 +2130,30 @@ mod tests {
         let up = (i64::from(16u16) << 16) | (NX_KEYUP << 8);
         let repeat = down | 1;
         let press = |d| parse_media(NX_MEDIA_SUBTYPE, d);
-        assert_eq!(press(down), Some(MediaPress { key: Key::MediaPlayPause, down: true, repeat: false }));
-        assert_eq!(press(repeat), Some(MediaPress { key: Key::MediaPlayPause, down: true, repeat: true }));
-        assert_eq!(press(up), Some(MediaPress { key: Key::MediaPlayPause, down: false, repeat: false }));
+        assert_eq!(
+            press(down),
+            Some(MediaPress {
+                key: Key::MediaPlayPause,
+                down: true,
+                repeat: false
+            })
+        );
+        assert_eq!(
+            press(repeat),
+            Some(MediaPress {
+                key: Key::MediaPlayPause,
+                down: true,
+                repeat: true
+            })
+        );
+        assert_eq!(
+            press(up),
+            Some(MediaPress {
+                key: Key::MediaPlayPause,
+                down: false,
+                repeat: false
+            })
+        );
         // 非媒体子类型、未知键码、状态位不认识：一律 None（原样放行）。
         assert_eq!(parse_media(7, down), None);
         assert_eq!(press((99i64 << 16) | (NX_KEYDOWN << 8)), None);
@@ -1944,7 +2175,11 @@ mod tests {
             assert_eq!(code_to_key(code), Some(want));
         }
         assert_eq!(code_to_key(KeyCode::CAPS_LOCK), Some(Key::CapsLock));
-        assert_eq!(code_to_key(KeyCode::FUNCTION), None, "Fn 不进键模型，要原样放行");
+        assert_eq!(
+            code_to_key(KeyCode::FUNCTION),
+            None,
+            "Fn 不进键模型，要原样放行"
+        );
     }
 
     #[test]
@@ -1983,7 +2218,10 @@ mod tests {
             panic!("Private 事件源创建失败");
         };
         let own = CGEvent::new_keyboard_event(private, KeyCode::ANSI_V, true).unwrap();
-        assert!(is_injected(&own), "本进程从 Private 事件源造出的事件必须被认出");
+        assert!(
+            is_injected(&own),
+            "本进程从 Private 事件源造出的事件必须被认出"
+        );
     }
 
     #[test]
@@ -1994,7 +2232,11 @@ mod tests {
         assert!(looks_injected(0, 999, 999));
         // 硬件事件：窗口服务器创建（pid 不是我们）且事件源不是 Private → 必须放行，
         // 否则用户按下的每个键都会被当成自己的注入吞掉。
-        assert!(!looks_injected(CGEventSourceStateID::HIDSystemState as i64, 1234, 999));
+        assert!(!looks_injected(
+            CGEventSourceStateID::HIDSystemState as i64,
+            1234,
+            999
+        ));
         assert!(!looks_injected(0, 1234, 999));
     }
 
@@ -2003,9 +2245,18 @@ mod tests {
         // CapsLock 只有 FlagsChanged、且事件里的 AlphaShift 位反映开关而非物理按下，
         // 方向只能靠翻转记录：一按一放要得到一对 down/up。
         CAPS_DOWN.store(false, Ordering::Relaxed);
-        assert!(!CAPS_DOWN.fetch_xor(true, Ordering::Relaxed), "第一次事件 = 按下");
-        assert!(CAPS_DOWN.fetch_xor(true, Ordering::Relaxed), "第二次 = 抬起");
-        assert!(!CAPS_DOWN.fetch_xor(true, Ordering::Relaxed), "第三次 = 再次按下");
+        assert!(
+            !CAPS_DOWN.fetch_xor(true, Ordering::Relaxed),
+            "第一次事件 = 按下"
+        );
+        assert!(
+            CAPS_DOWN.fetch_xor(true, Ordering::Relaxed),
+            "第二次 = 抬起"
+        );
+        assert!(
+            !CAPS_DOWN.fetch_xor(true, Ordering::Relaxed),
+            "第三次 = 再次按下"
+        );
         reset_runtime_state();
         assert!(!CAPS_DOWN.load(Ordering::Relaxed), "复位后回到未按下");
     }
@@ -2016,9 +2267,16 @@ mod tests {
         SWALLOWED.lock().unwrap().insert(Key::K);
         HELD_KEYS.lock().unwrap().insert(Key::K);
         REPLACED_DOWN.lock().unwrap().insert(Key::K, Key::Control);
-        assert_eq!(take_replaced_down(), vec![Key::Control], "先取出待释放的目标键补 up");
+        assert_eq!(
+            take_replaced_down(),
+            vec![Key::Control],
+            "先取出待释放的目标键补 up"
+        );
         reset_runtime_state();
-        assert!(SWALLOWED.lock().unwrap().is_empty(), "被吞的键必须清空，否则永远等不到抬起");
+        assert!(
+            SWALLOWED.lock().unwrap().is_empty(),
+            "被吞的键必须清空，否则永远等不到抬起"
+        );
         assert!(
             HELD_KEYS.lock().unwrap().is_empty(),
             "按住集合必须清空，否则该键后续按下全被判成自动重复（键变哑）"
@@ -2031,9 +2289,15 @@ mod tests {
         note_key_up(Key::K);
         assert!(!HELD_KEYS.lock().unwrap().contains(&Key::K));
         assert!(HELD_KEYS.lock().unwrap().insert(Key::K), "首次 down");
-        assert!(!HELD_KEYS.lock().unwrap().insert(Key::K), "仍按住 → 自动重复");
+        assert!(
+            !HELD_KEYS.lock().unwrap().insert(Key::K),
+            "仍按住 → 自动重复"
+        );
         note_key_up(Key::K);
-        assert!(HELD_KEYS.lock().unwrap().insert(Key::K), "抬起后再按 = 新的按下");
+        assert!(
+            HELD_KEYS.lock().unwrap().insert(Key::K),
+            "抬起后再按 = 新的按下"
+        );
         note_key_up(Key::K);
     }
 }

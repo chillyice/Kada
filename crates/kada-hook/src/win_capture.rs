@@ -1,4 +1,4 @@
-﻿//! Windows 圈选截图 / 显示器亮度（EXT-22）。
+//! Windows 圈选截图 / 显示器亮度（EXT-22）。
 //!
 //! 抓图只用 GDI：`BitBlt` 见屏幕；图片剪贴板用 `arboard`。圈选截图只负责**按选区裁剪**——
 //! 选区由钩子层的「右键画圈 + 点左键」确认（`kada_hook::gesture`），裁剪完写剪贴板，
@@ -30,7 +30,6 @@ use crate::{BrightnessOp, CapturedImage};
 
 /// 一张抓到的图（RGBA8，行序从上到下）。
 pub type Image = CapturedImage;
-
 
 /// 抓指定屏幕区域（虚拟屏坐标，可为负）。
 
@@ -90,7 +89,11 @@ fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Image, String> {
         let Some(rgba) = rgba else {
             return Err("截图缓冲区为空".into());
         };
-        Ok(Image { width: w as u32, height: h as u32, rgba })
+        Ok(Image {
+            width: w as u32,
+            height: h as u32,
+            rgba,
+        })
     }
 }
 
@@ -128,7 +131,6 @@ pub fn capture_rect(rect: (i32, i32, i32, i32)) -> Result<Image, String> {
     Ok(crop(&full, l - vx, t - vy, r - vx, b - vy))
 }
 
-
 fn crop(img: &Image, l: i32, t: i32, r: i32, b: i32) -> Image {
     let l = l.max(0) as u32;
     let t = t.max(0) as u32;
@@ -141,7 +143,11 @@ fn crop(img: &Image, l: i32, t: i32, r: i32, b: i32) -> Image {
         let start = ((row * img.width + l) * 4) as usize;
         rgba.extend_from_slice(&img.rgba[start..start + (w * 4) as usize]);
     }
-    Image { width: w, height: h, rgba }
+    Image {
+        width: w,
+        height: h,
+        rgba,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +229,9 @@ pub fn brightness(op: BrightnessOp, step: i64) -> Result<String, String> {
 
     let (monitors, count, current, max) = read_primary()?;
     let original = {
-        let mut cache = ORIGINAL_BRIGHTNESS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cache = ORIGINAL_BRIGHTNESS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         *cache.get_or_insert(current)
     };
     let delta = step.unsigned_abs() as i64;
@@ -265,6 +273,3 @@ pub fn set_clipboard_image(img: &Image) -> Result<(), String> {
     })
     .map_err(|e| format!("写入图片剪贴板失败：{e}"))
 }
-
-
-

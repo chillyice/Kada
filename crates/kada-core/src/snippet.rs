@@ -28,8 +28,7 @@ pub const SNIPPET_INDEX_VERSION: u32 = 1;
 /// （`https://ihomy.top/files/kada/snippets/index.json`，与更新清单同一个站内目录），
 /// 国内可直连；GitHub 上的 `snippets/index.json` 仍由 `scripts/build-snippet-index.mjs`
 /// 生成、作为公开备份。**没有任何服务端**：索引就是一份能 GET 到的静态 JSON。
-pub const DEFAULT_SNIPPET_INDEX_URL: &str =
-    "https://ihomy.top/files/kada/snippets/index.json";
+pub const DEFAULT_SNIPPET_INDEX_URL: &str = "https://ihomy.top/files/kada/snippets/index.json";
 
 /// 社区发布卡的索引（人工审核通过后由 ihomy 生成）。默认与官方索引分开：镜像每天覆盖
 /// 官方索引，社区卡不能写进那份文件，否则会被下一次同步抹掉。
@@ -37,8 +36,7 @@ pub const DEFAULT_SNIPPET_COMMUNITY_INDEX_URL: &str =
     "https://ihomy.top/files/kada/snippets/community/index.json";
 
 /// 卡带发布提交地址（只由官方市场使用；自定义索引不发到官方）。
-pub const DEFAULT_SNIPPET_PUBLISH_URL: &str =
-    "https://ihomy.top/api/public/kada/snippets/submit";
+pub const DEFAULT_SNIPPET_PUBLISH_URL: &str = "https://ihomy.top/api/public/kada/snippets/submit";
 
 /// 发布内容的体积 / 条目 / 嵌套上限（本机机审与服务端机审同一口径）。
 pub const SNIPPET_MAX_BYTES: usize = 256 * 1024;
@@ -83,8 +81,7 @@ pub fn default_snippet_index_version() -> u32 {
 
 /// 解析索引文本：结构不对 / 版本过新报错；缺名字或地址的条目丢掉（半个条目在列表里没法点）。
 pub fn parse_snippet_index(text: &str) -> Result<Vec<IndexEntry>, String> {
-    let idx: SnippetIndex =
-        serde_json::from_str(text).map_err(|e| format!("索引解析失败：{e}"))?;
+    let idx: SnippetIndex = serde_json::from_str(text).map_err(|e| format!("索引解析失败：{e}"))?;
     if idx.version > SNIPPET_INDEX_VERSION {
         return Err(format!(
             "索引格式版本 v{} 过新（当前支持到 v{}），请更新 Kada",
@@ -127,13 +124,17 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
     for p in picks {
         match p.kind {
             PickKind::Shortcut => {
-                let Some(mut s) = cfg.shortcuts.get(p.idx).cloned() else { continue };
+                let Some(mut s) = cfg.shortcuts.get(p.idx).cloned() else {
+                    continue;
+                };
                 s.folder = None;
                 layer_ids.extend(s.layer.clone());
                 out.shortcuts.push(s);
             }
             PickKind::Remap => {
-                let Some(mut r) = cfg.remaps.get(p.idx).cloned() else { continue };
+                let Some(mut r) = cfg.remaps.get(p.idx).cloned() else {
+                    continue;
+                };
                 r.folder = None;
                 layer_ids.extend(r.layer.clone());
                 layer_ids.extend(r.hold_layer.clone());
@@ -141,36 +142,51 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
                 out.remaps.push(r);
             }
             PickKind::Expansion => {
-                let Some(mut e) = cfg.expansions.get(p.idx).cloned() else { continue };
+                let Some(mut e) = cfg.expansions.get(p.idx).cloned() else {
+                    continue;
+                };
                 e.folder = None;
                 out.expansions.push(e);
             }
             PickKind::Gesture => {
                 // 手势没有层引用；目录归属在导出时剥掉（与快捷键同一口径）。
-                let Some(mut g) = cfg.gestures.get(p.idx).cloned() else { continue };
+                let Some(mut g) = cfg.gestures.get(p.idx).cloned() else {
+                    continue;
+                };
                 g.folder = None;
                 out.gestures.push(g);
             }
             PickKind::Touchpad => {
                 // 触摸板手势与鼠标手势分属两个数组（分类分开），摘取同样剥目录。
-                let Some(mut g) = cfg.touchpad_gestures.get(p.idx).cloned() else { continue };
+                let Some(mut g) = cfg.touchpad_gestures.get(p.idx).cloned() else {
+                    continue;
+                };
                 g.folder = None;
                 out.touchpad_gestures.push(g);
             }
             PickKind::Hotcorner => {
-                let Some(mut r) = cfg.hot_corners.get(p.idx).cloned() else { continue };
+                let Some(mut r) = cfg.hot_corners.get(p.idx).cloned() else {
+                    continue;
+                };
                 r.folder = None;
                 out.hot_corners.push(r);
             }
             PickKind::Wheeledge => {
-                let Some(mut r) = cfg.wheel_edges.get(p.idx).cloned() else { continue };
+                let Some(mut r) = cfg.wheel_edges.get(p.idx).cloned() else {
+                    continue;
+                };
                 r.folder = None;
                 out.wheel_edges.push(r);
             }
         }
     }
 
-    out.layers = cfg.layers.iter().filter(|l| layer_ids.contains(&l.id)).cloned().collect();
+    out.layers = cfg
+        .layers
+        .iter()
+        .filter(|l| layer_ids.contains(&l.id))
+        .cloned()
+        .collect();
     out
 }
 
@@ -178,7 +194,10 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
 /// 多条报条数，空卡带空串。
 pub fn snippet_title(part: &Config) -> String {
     let one = if let Some(s) = part.shortcuts.first() {
-        s.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| s.triggers.join(" / "))
+        s.name
+            .clone()
+            .filter(|n| !n.trim().is_empty())
+            .unwrap_or_else(|| s.triggers.join(" / "))
     } else if let Some(r) = part.remaps.first() {
         r.from.clone()
     } else if let Some(e) = part.expansions.first() {
@@ -264,12 +283,37 @@ fn action_risk(kind: &str) -> Option<(u8, &'static str)> {
 const LEGAL_RULES: &[(&str, &[&str])] = &[
     (
         "分裂国家 / 颠覆",
-        &["分裂国家", "颠覆国家", "台独", "藏独", "疆独", "港独", "东突", "法轮功", "六四事件"],
+        &[
+            "分裂国家",
+            "颠覆国家",
+            "台独",
+            "藏独",
+            "疆独",
+            "港独",
+            "东突",
+            "法轮功",
+            "六四事件",
+        ],
     ),
-    ("侮辱 / 人身攻击", &["傻逼", "操你妈", "去死", "贱人", "杂种", "狗东西"]),
+    (
+        "侮辱 / 人身攻击",
+        &["傻逼", "操你妈", "去死", "贱人", "杂种", "狗东西"],
+    ),
     (
         "违法 / 违禁",
-        &["毒品", "冰毒", "K粉", "买枪", "枪支弹药", "赌博", "代开发票", "洗钱", "诈骗", "裸聊", "成人视频"],
+        &[
+            "毒品",
+            "冰毒",
+            "K粉",
+            "买枪",
+            "枪支弹药",
+            "赌博",
+            "代开发票",
+            "洗钱",
+            "诈骗",
+            "裸聊",
+            "成人视频",
+        ],
     ),
 ];
 
@@ -306,7 +350,9 @@ fn scan_walk(
 ) {
     if depth > SNIPPET_MAX_DEPTH {
         *level = 3;
-        *findings.entry("结构嵌套过深（超过 16 层）".into()).or_insert(0) += 1;
+        *findings
+            .entry("结构嵌套过深（超过 16 层）".into())
+            .or_insert(0) += 1;
         return;
     }
     match value {
@@ -324,7 +370,9 @@ fn scan_walk(
                     None => {
                         *level = 3;
                         *findings
-                            .entry(format!("未知动作类型「{kind}」（可能来自更新版本，需人工确认）"))
+                            .entry(format!(
+                                "未知动作类型「{kind}」（可能来自更新版本，需人工确认）"
+                            ))
                             .or_insert(0) += 1;
                     }
                 }
@@ -373,7 +421,11 @@ fn scan_walk(
 /// 客户端算出来的结果只用于发布前提示，不作为上架依据。
 pub fn scan_snippet(text: &str) -> Result<SnippetScan, String> {
     if text.len() > SNIPPET_MAX_BYTES {
-        return Err(format!("卡带太大（{} KB），上限 {} KB", text.len() / 1024, SNIPPET_MAX_BYTES / 1024));
+        return Err(format!(
+            "卡带太大（{} KB），上限 {} KB",
+            text.len() / 1024,
+            SNIPPET_MAX_BYTES / 1024
+        ));
     }
     let root: Value = serde_json::from_str(text).map_err(|e| format!("卡带解析失败：{e}"))?;
     let obj = root.as_object().ok_or("卡带顶层必须是 JSON 对象")?;
@@ -392,7 +444,9 @@ pub fn scan_snippet(text: &str) -> Result<SnippetScan, String> {
         }
     }
     if entries > SNIPPET_MAX_ENTRIES {
-        return Err(format!("卡带条目过多（{entries} 条），上限 {SNIPPET_MAX_ENTRIES} 条"));
+        return Err(format!(
+            "卡带条目过多（{entries} 条），上限 {SNIPPET_MAX_ENTRIES} 条"
+        ));
     }
 
     let mut level = 0u8;
@@ -402,16 +456,32 @@ pub fn scan_snippet(text: &str) -> Result<SnippetScan, String> {
 
     let mut finding_list: Vec<String> = findings
         .into_iter()
-        .map(|(desc, n)| if n > 1 { format!("{desc} × {n}") } else { desc })
+        .map(|(desc, n)| {
+            if n > 1 {
+                format!("{desc} × {n}")
+            } else {
+                desc
+            }
+        })
         .collect();
     let legal_flags: Vec<String> = legal
         .into_iter()
-        .map(|(category, hits)| format!("{category}（{}）", hits.into_iter().collect::<Vec<_>>().join("、")))
+        .map(|(category, hits)| {
+            format!(
+                "{category}（{}）",
+                hits.into_iter().collect::<Vec<_>>().join("、")
+            )
+        })
         .collect();
     for flag in &legal_flags {
         finding_list.push(format!("法务关键词：{flag}"));
     }
-    Ok(SnippetScan { level, entries, findings: finding_list, legal_flags })
+    Ok(SnippetScan {
+        level,
+        entries,
+        findings: finding_list,
+        legal_flags,
+    })
 }
 
 /// 生成**可发布**的卡带文本：只带被点名的条目、剥掉目录与设置、写入元信息，并跑一次机审。
@@ -425,7 +495,11 @@ pub fn publish_payload(
 ) -> Result<(String, SnippetScan), String> {
     let mut part = snippet(cfg, picks);
     let name = meta.name.trim();
-    let name = if name.is_empty() { snippet_title(&part) } else { name.to_string() };
+    let name = if name.is_empty() {
+        snippet_title(&part)
+    } else {
+        name.to_string()
+    };
     let description = meta.description.trim().to_string();
     let author = meta.author.trim().to_string();
     let mut tags: Vec<String> = Vec::new();
@@ -487,17 +561,39 @@ mod tests {
 
     fn base() -> Config {
         Config {
-            folders: vec![Folder { id: "f1".into(), name: "本机目录".into(), parent: None }],
-            layers: vec![Layer { id: "l-nav".into(), name: "导航层".into(), ..Default::default() }],
+            folders: vec![Folder {
+                id: "f1".into(),
+                name: "本机目录".into(),
+                parent: None,
+            }],
+            layers: vec![Layer {
+                id: "l-nav".into(),
+                name: "导航层".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![ShortcutItem {
                 name: Some("备份".into()),
                 triggers: vec!["Ctrl+Alt+B".into()],
-                actions: vec![Action::Text { text: "x".into(), mode: TextMode::Input, masked: false, description: None }],
+                actions: vec![Action::Text {
+                    text: "x".into(),
+                    mode: TextMode::Input,
+                    masked: false,
+                    description: None,
+                }],
                 enabled: true,
                 ..Default::default()
             }],
-            remaps: vec![Remap { from: "CapsLock".into(), to: "Ctrl".into(), ..Default::default() }],
-            expansions: vec![TextExpansion { trigger: ";a".into(), replace: "甲".into(), enabled: true, ..Default::default() }],
+            remaps: vec![Remap {
+                from: "CapsLock".into(),
+                to: "Ctrl".into(),
+                ..Default::default()
+            }],
+            expansions: vec![TextExpansion {
+                trigger: ";a".into(),
+                replace: "甲".into(),
+                enabled: true,
+                ..Default::default()
+            }],
             ..Default::default()
         }
     }
@@ -520,7 +616,11 @@ mod tests {
         let mut cfg = base();
         cfg.shortcuts[0].layer = Some("l-nav".into());
         cfg.remaps[0].lock_layer = Some("l-nav".into());
-        cfg.layers.push(Layer { id: "l-unused".into(), name: "没人引用的层".into(), ..Default::default() });
+        cfg.layers.push(Layer {
+            id: "l-unused".into(),
+            name: "没人引用的层".into(),
+            ..Default::default()
+        });
 
         let part = snippet(
             &cfg,
@@ -536,15 +636,24 @@ mod tests {
     fn snippet_strips_folder_and_skips_bad_index() {
         let mut cfg = base();
         cfg.shortcuts[0].folder = Some("f1".into());
-        let part = snippet(&cfg, &[pick(PickKind::Shortcut, 0), pick(PickKind::Remap, 99)]);
+        let part = snippet(
+            &cfg,
+            &[pick(PickKind::Shortcut, 0), pick(PickKind::Remap, 99)],
+        );
         assert_eq!(part.shortcuts[0].folder, None, "目录引用剥掉");
         assert!(part.remaps.is_empty(), "下标越界的点名要跳过而不是崩");
     }
 
     #[test]
     fn snippet_title_names_single_entry_or_counts() {
-        assert_eq!(snippet_title(&snippet(&base(), &[pick(PickKind::Shortcut, 0)])), "备份");
-        assert_eq!(snippet_title(&snippet(&base(), &[pick(PickKind::Remap, 0)])), "CapsLock");
+        assert_eq!(
+            snippet_title(&snippet(&base(), &[pick(PickKind::Shortcut, 0)])),
+            "备份"
+        );
+        assert_eq!(
+            snippet_title(&snippet(&base(), &[pick(PickKind::Remap, 0)])),
+            "CapsLock"
+        );
         assert_eq!(
             snippet_title(&snippet(
                 &base(),
@@ -563,7 +672,10 @@ mod tests {
         let mut val = serde_json::to_value(&part).unwrap();
         let obj = val.as_object_mut().unwrap();
         obj.remove("settings");
-        obj.insert("kada_snippet".into(), serde_json::json!({ "version": 1, "name": "备份" }));
+        obj.insert(
+            "kada_snippet".into(),
+            serde_json::json!({ "version": 1, "name": "备份" }),
+        );
         let text = serde_json::to_string_pretty(&val).unwrap();
 
         let back: Config = serde_json::from_str(&text).unwrap();
@@ -594,11 +706,18 @@ mod tests {
         );
         assert_eq!(part.gestures.len(), 1, "鼠标手势要能进卡带");
         assert_eq!(part.touchpad_gestures.len(), 1, "触摸板手势要能进卡带");
-        assert_eq!(part.touchpad_gestures[0].trigger, Some(crate::Key::CapsLock));
+        assert_eq!(
+            part.touchpad_gestures[0].trigger,
+            Some(crate::Key::CapsLock)
+        );
         assert_eq!(snippet_title(&part), "卡带（2 项）");
         // 越界下标照旧跳过。
-        assert!(snippet(&cfg, &[pick(PickKind::Gesture, 9)]).gestures.is_empty());
-        assert!(snippet(&cfg, &[pick(PickKind::Touchpad, 9)]).touchpad_gestures.is_empty());
+        assert!(snippet(&cfg, &[pick(PickKind::Gesture, 9)])
+            .gestures
+            .is_empty());
+        assert!(snippet(&cfg, &[pick(PickKind::Touchpad, 9)])
+            .touchpad_gestures
+            .is_empty());
     }
 
     #[test]
@@ -622,7 +741,9 @@ mod tests {
     #[test]
     fn index_rejects_future_version_and_garbage() {
         let future = serde_json::json!({ "version": SNIPPET_INDEX_VERSION + 1, "snippets": [] });
-        assert!(parse_snippet_index(&future.to_string()).unwrap_err().contains("过新"));
+        assert!(parse_snippet_index(&future.to_string())
+            .unwrap_err()
+            .contains("过新"));
         assert!(parse_snippet_index("not json").is_err());
         // 缺 version 的索引按 v1 读（默认走 default_snippet_index_version）。
         assert!(parse_snippet_index(r#"{"snippets":[]}"#).is_ok());
@@ -723,7 +844,10 @@ mod tests {
         assert_eq!(meta["name"], "测试卡带");
         assert_eq!(meta["author"], "小明");
         assert_eq!(meta["tags"], serde_json::json!(["测试"]), "标签去空去重");
-        assert!(v["shortcuts"][0]["folder"].is_null(), "条目的目录引用也要剥掉");
+        assert!(
+            v["shortcuts"][0]["folder"].is_null(),
+            "条目的目录引用也要剥掉"
+        );
     }
 
     #[test]
@@ -734,7 +858,10 @@ mod tests {
         assert!(publish_payload(
             &base(),
             &[pick(PickKind::Shortcut, 0)],
-            &SnippetMeta { name: long, ..Default::default() }
+            &SnippetMeta {
+                name: long,
+                ..Default::default()
+            }
         )
         .unwrap_err()
         .contains("名称"));

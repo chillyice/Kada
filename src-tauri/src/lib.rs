@@ -27,13 +27,11 @@ use kada_actions::{
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
     is_touchpad_trigger, matches, parse_snippet_index, publish_payload, sanitize_config,
-    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action,
-    ClipboardMenu,
-    ClipboardOperation, Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent,
-    Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan,
-    TextExpansion, TextInjectMode,
-    TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL,
-    DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
+    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardMenu,
+    ClipboardOperation, Config, Conflict, IndexEntry, Key, MenuEntry, Modifier, RawEvent, Remap,
+    Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan,
+    TextExpansion, TextInjectMode, TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL,
+    DEFAULT_SNIPPET_INDEX_URL, DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -75,8 +73,8 @@ mod input {
     pub use kada_hook::win::{
         current_device, current_pointer_device, focus_window, foreground_fullscreen,
         foreground_window, frontmost_context, hotkey_occupied, input_devices, process_running,
-        reinstall_count, set_mouse_enabled, set_mouse_recorder, set_wheel_enabled, simulate,
-        start, Action as HookAction, HookHandle, KeyEvent,
+        reinstall_count, set_mouse_enabled, set_mouse_recorder, set_wheel_enabled, simulate, start,
+        Action as HookAction, HookHandle, KeyEvent,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -753,8 +751,8 @@ fn spawn_hotstring(
                     exit_code: None,
                     detached: false,
                     log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                    stdout_file: None,
+                    stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1117,16 +1115,8 @@ fn spawn_engine_ticker(
             hot_corner_tick = hot_corner_tick.wrapping_add(1);
             let (hot_on, hot_flags, wheel_on, wheel_flags) = {
                 let g = cfg.read().unwrap();
-                let any_corner = |spot| {
-                    g.hot_corners
-                        .iter()
-                        .any(|r| r.enabled && r.spot == spot)
-                };
-                let any_edge = |edge| {
-                    g.wheel_edges
-                        .iter()
-                        .any(|r| r.enabled && r.edge == edge)
-                };
+                let any_corner = |spot| g.hot_corners.iter().any(|r| r.enabled && r.spot == spot);
+                let any_edge = |edge| g.wheel_edges.iter().any(|r| r.enabled && r.edge == edge);
                 (
                     g.settings.experimental && g.hot_corners.iter().any(|r| r.enabled),
                     [
@@ -1145,8 +1135,8 @@ fn spawn_engine_ticker(
                 )
             };
             let any_edge = hot_on || wheel_on;
-            let refetch =
-                any_edge && (hot_corner_tick % 50 == 0 || !last_edge_on || last_monitors.is_empty());
+            let refetch = any_edge
+                && (hot_corner_tick % 50 == 0 || !last_edge_on || last_monitors.is_empty());
             let monitors = if refetch {
                 app.available_monitors()
                     .unwrap_or_default()
@@ -1276,7 +1266,11 @@ struct ElevatedStatus {
 #[tauri::command]
 fn elevated_status() -> ElevatedStatus {
     let s = input::elevated::status();
-    ElevatedStatus { supported: s.supported, enabled: s.enabled, connected: s.connected }
+    ElevatedStatus {
+        supported: s.supported,
+        enabled: s.enabled,
+        connected: s.connected,
+    }
 }
 
 /// 拉起提权进程并连上通道（**唯一会弹 UAC 的地方**，只由设置页的按钮触发；连接有超时，
@@ -1403,8 +1397,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                     exit_code: None,
                     detached: false,
                     log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                    stdout_file: None,
+                    stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: None,
@@ -1443,8 +1437,8 @@ fn spawn_config_watcher(app: tauri::AppHandle) {
                 exit_code: None,
                 detached: false,
                 log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                stdout_file: None,
+                stderr_file: None,
                 show_output: false,
                 time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                 run_id: None,
@@ -1521,8 +1515,8 @@ fn reload_config_now(app: &tauri::AppHandle) {
                     exit_code: None,
                     detached: false,
                     log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                    stdout_file: None,
+                    stderr_file: None,
                     show_output: false,
                     time: now.clone(),
                     run_id: None,
@@ -1635,8 +1629,8 @@ fn fire(
                     exit_code: None,
                     detached: false,
                     log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                    stdout_file: None,
+                    stderr_file: None,
                     show_output: false,
                     time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
                     run_id: Some(id),
@@ -2231,7 +2225,14 @@ fn handle_trackpad_stroke(
         // 轨迹 + 失败色 + 方向串留在浮层上（约 900ms 自动收），另弹气泡说明怎么用。
         // 关掉「显示轨迹浮层」时只剩气泡（方向串照样报出来）。
         if overlay {
-            show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+            show_gesture_result(
+                &app,
+                &cfg,
+                &stroke.points,
+                false,
+                String::new(),
+                pattern.clone(),
+            );
         } else {
             hide_gesture_overlay(&app);
         }
@@ -2244,7 +2245,14 @@ fn handle_trackpad_stroke(
     };
     if actions.is_empty() {
         if overlay {
-            show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
+            show_gesture_result(
+                &app,
+                &cfg,
+                &stroke.points,
+                false,
+                name.clone(),
+                pattern.clone(),
+            );
         } else {
             hide_gesture_overlay(&app);
         }
@@ -2256,7 +2264,14 @@ fn handle_trackpad_stroke(
         return;
     }
     if overlay {
-        show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
+        show_gesture_result(
+            &app,
+            &cfg,
+            &stroke.points,
+            true,
+            name.clone(),
+            pattern.clone(),
+        );
     } else {
         hide_gesture_overlay(&app);
     }
@@ -2371,7 +2386,14 @@ fn handle_gesture(
         // 按「没命中」处理、把右键补回去。
         if actions.is_empty() {
             eprintln!("kada: 手势 {pattern}（{name}）没有配置动作（右键已补回）");
-            show_gesture_result(&app, &cfg, &stroke.points, false, name.clone(), pattern.clone());
+            show_gesture_result(
+                &app,
+                &cfg,
+                &stroke.points,
+                false,
+                name.clone(),
+                pattern.clone(),
+            );
             show_toast_note(
                 &app,
                 &format!("手势 {pattern} 没有动作"),
@@ -2380,7 +2402,14 @@ fn handle_gesture(
             replay_stroke(&stroke);
             return;
         }
-        show_gesture_result(&app, &cfg, &stroke.points, true, name.clone(), pattern.clone());
+        show_gesture_result(
+            &app,
+            &cfg,
+            &stroke.points,
+            true,
+            name.clone(),
+            pattern.clone(),
+        );
         fire(
             app,
             results,
@@ -2399,8 +2428,19 @@ fn handle_gesture(
     }
     // 只画了个圈但没点左键：不截图，告诉用户怎么确认（旧版是右键一松就截图，容易误截）。
     if screenshot && kada_core::lasso_bbox(&stroke.points).is_some() {
-        show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
-        show_toast_note(&app, "圈选截图未确认", "按住右键画圈后再点一下左键；只画圈不截图。");
+        show_gesture_result(
+            &app,
+            &cfg,
+            &stroke.points,
+            false,
+            String::new(),
+            pattern.clone(),
+        );
+        show_toast_note(
+            &app,
+            "圈选截图未确认",
+            "按住右键画圈后再点一下左键；只画圈不截图。",
+        );
         replay_stroke(&stroke);
         return;
     }
@@ -2413,7 +2453,14 @@ fn handle_gesture(
     // **看得见的反馈**：没匹配上时除了把右键补回去，还要告诉用户「你画的这个方向串
     // 叫 DRUR」——否则界面毫无反应，用户只会以为功能坏了（试验台也是这么提示的：
     // 照抄方向串进配置就能用）。弹气泡，不进消息中心（避免每次误拖都留一条）。
-    show_gesture_result(&app, &cfg, &stroke.points, false, String::new(), pattern.clone());
+    show_gesture_result(
+        &app,
+        &cfg,
+        &stroke.points,
+        false,
+        String::new(),
+        pattern.clone(),
+    );
     show_toast_note(
         &app,
         &format!("手势未匹配：{pattern}"),
@@ -2538,16 +2585,13 @@ fn handle_hot_corner(
     let pick = |want: Option<&str>| -> Option<(Vec<Action>, String, u64)> {
         rules
             .iter()
-            .find(|r| {
-                r.enabled
-                    && r.spot == spot
-                    && r.layer_matches(want)
-                    && r.when_matches(&ctx)
-            })
+            .find(|r| r.enabled && r.spot == spot && r.layer_matches(want) && r.when_matches(&ctx))
             .map(|r| (r.actions.clone(), r.label(), u64::from(r.dwell_ms)))
     };
-    let Some((actions, name, dwell_ms)) =
-        active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
+    let Some((actions, name, dwell_ms)) = active
+        .as_deref()
+        .and_then(|id| pick(Some(id)))
+        .or_else(|| pick(None))
     else {
         return;
     };
@@ -2657,15 +2701,13 @@ fn handle_wheel_edge(
     let pick = |want: Option<&str>| -> Option<(Vec<Action>, String)> {
         rules
             .iter()
-            .find(|r| {
-                r.enabled
-                    && r.edge == spot
-                    && r.layer_matches(want)
-                    && r.when_matches(&ctx)
-            })
+            .find(|r| r.enabled && r.edge == spot && r.layer_matches(want) && r.when_matches(&ctx))
             .map(|r| (r.actions.clone(), r.label()))
     };
-    let Some((actions, name)) = active.as_deref().and_then(|id| pick(Some(id))).or_else(|| pick(None))
+    let Some((actions, name)) = active
+        .as_deref()
+        .and_then(|id| pick(Some(id)))
+        .or_else(|| pick(None))
     else {
         return;
     };
@@ -3379,7 +3421,10 @@ fn spawn_tray_menu(app: &tauri::AppHandle, cursor: (i32, i32)) {
     st.tray_menu_serial.fetch_add(1, Ordering::Relaxed);
     st.tray_menu_showing.store(true, Ordering::Relaxed);
     *st.tray_menu_anchor.lock().unwrap() = Some(cursor);
-    st.tray_menu_payload.lock().unwrap().replace(payload.clone());
+    st.tray_menu_payload
+        .lock()
+        .unwrap()
+        .replace(payload.clone());
     let app = app.clone();
     std::thread::spawn(move || {
         let Some(w) = ensure_tray_menu(&app) else {
@@ -3443,7 +3488,10 @@ fn tray_menu_ready(app: tauri::AppHandle, width: f64, height: f64) {
         (wy + wh - hp - gap + margin).max(wy + gap - margin),
     );
     let _ = w.set_size(tauri::PhysicalSize::new(wp as u32, hp as u32));
-    let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    let _ = w.set_position(tauri::PhysicalPosition::new(
+        x.round() as i32,
+        y.round() as i32,
+    ));
     let _ = w.show();
     spawn_tray_menu_watch(&app, &st);
 }
@@ -3523,14 +3571,8 @@ fn build_tray_native_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::W
         (cfg.settings.paused, cfg.settings.hints.visible)
     };
     let show_i = MenuItem::with_id(app, "show", "打开咔哒", true, None::<&str>)?;
-    let pause_i = CheckMenuItem::with_id(
-        app,
-        "pause",
-        "暂停快捷键触发",
-        true,
-        paused,
-        None::<&str>,
-    )?;
+    let pause_i =
+        CheckMenuItem::with_id(app, "pause", "暂停快捷键触发", true, paused, None::<&str>)?;
     let hints_i = CheckMenuItem::with_id(app, "hints", "快捷键提示", true, hints, None::<&str>)?;
     let reload_i = MenuItem::with_id(app, "reload", "重载配置", true, None::<&str>)?;
     let update_i = MenuItem::with_id(app, "update", "检查更新", true, None::<&str>)?;
@@ -3595,7 +3637,11 @@ fn menu_node_views(items: &[MenuEntry], prefix: &[usize]) -> Vec<MenuNodeView> {
                     enabled: *enabled,
                     path,
                 },
-                MenuEntry::Submenu { label, enabled, items } => MenuNodeView::Submenu {
+                MenuEntry::Submenu {
+                    label,
+                    enabled,
+                    items,
+                } => MenuNodeView::Submenu {
                     label: label.clone(),
                     enabled: *enabled,
                     items: menu_node_views(items, &path),
@@ -3629,9 +3675,11 @@ fn menu_action_at<'a>(items: &'a [MenuEntry], path: &[usize]) -> Option<(&'a str
     for (depth, idx) in path.iter().enumerate() {
         let last = depth + 1 == path.len();
         match level.get(*idx)? {
-            MenuEntry::Action { label, enabled, action } if last && *enabled => {
-                return Some((label.as_str(), action))
-            }
+            MenuEntry::Action {
+                label,
+                enabled,
+                action,
+            } if last && *enabled => return Some((label.as_str(), action)),
             MenuEntry::Submenu { enabled, items, .. } if !last && *enabled => level = items,
             _ => return None,
         }
@@ -3730,7 +3778,11 @@ fn spawn_clipboard_menu(
     state.clipboard_menu_hide.store(false, Ordering::Relaxed);
     *state.clipboard_menu_anchor.lock().unwrap() = anchor;
     *state.clipboard_menu_foreground.lock().unwrap() = foreground;
-    state.clipboard_menu_payload.lock().unwrap().replace(payload.clone());
+    state
+        .clipboard_menu_payload
+        .lock()
+        .unwrap()
+        .replace(payload.clone());
     std::thread::spawn(move || {
         if !menu_clipboard_has_text() {
             if let Some(state) = app.try_state::<KadaState>() {
@@ -3795,7 +3847,10 @@ fn clipboard_menu_ready(app: tauri::AppHandle, width: f64, height: f64) {
     x = x.max(wx);
     y = y.max(wy);
     let _ = w.set_size(tauri::PhysicalSize::new(wp as u32, hp as u32));
-    let _ = w.set_position(tauri::PhysicalPosition::new(x.round() as i32, y.round() as i32));
+    let _ = w.set_position(tauri::PhysicalPosition::new(
+        x.round() as i32,
+        y.round() as i32,
+    ));
     let _ = w.show();
     let serial = state.clipboard_menu_serial.load(Ordering::Relaxed);
     let foreground = *state.clipboard_menu_foreground.lock().unwrap();
@@ -3834,10 +3889,8 @@ fn clipboard_menu_ready(app: tauri::AppHandle, width: f64, height: f64) {
             if let (Ok(cursor), Ok(pos), Ok(size)) =
                 (w.cursor_position(), w.outer_position(), w.outer_size())
             {
-                let (left, top) =
-                    (pos.x as f64, pos.y as f64);
-                let (right, bottom) =
-                    (left + size.width as f64, top + size.height as f64);
+                let (left, top) = (pos.x as f64, pos.y as f64);
+                let (right, bottom) = (left + size.width as f64, top + size.height as f64);
                 let inside =
                     cursor.x >= left && cursor.x <= right && cursor.y >= top && cursor.y <= bottom;
                 if inside {
@@ -3900,9 +3953,7 @@ fn clipboard_menu_exec(
 
 /// 读取最近一次菜单载荷（菜单窗懒创建后，前端加载时调用兜底渲染）。
 #[tauri::command]
-fn get_clipboard_menu_payload(
-    state: tauri::State<'_, KadaState>,
-) -> Option<ClipboardMenuPayload> {
+fn get_clipboard_menu_payload(state: tauri::State<'_, KadaState>) -> Option<ClipboardMenuPayload> {
     state.clipboard_menu_payload.lock().unwrap().clone()
 }
 
@@ -4355,14 +4406,15 @@ fn show_main_window(app: &tauri::AppHandle) {
         raise_main_window(&w);
         return;
     }
-    let mut builder = tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
-        .title("咔哒 Kada")
-        .inner_size(860.0, 560.0)
-        // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
-        // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
-        .min_inner_size(900.0, 480.0)
-        .resizable(true)
-        .center();
+    let mut builder =
+        tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::App("index.html".into()))
+            .title("咔哒 Kada")
+            .inner_size(860.0, 560.0)
+            // 下限 = 导航栏 64 + 列表栏 300 + 详情区最小可用 540。再窄详情区会挤爆
+            // 「模式下拉 + 按键胶囊 + 三个录入图标」那一行（CSS 里没有断点可退）。
+            .min_inner_size(900.0, 480.0)
+            .resizable(true)
+            .center();
     // 标题栏分平台，界面里那条是自绘的（见 `ui/src/main.ts` 的 `mountTitlebar`）：
     // - Windows / Linux 无边框 + **开投影**：tao 对「无边框 + 有投影」的窗保留整套 DWM 帧，
     //   缩放边、圆角、最大化到工作区都还是系统行为，只有标题区交给界面画；
@@ -4526,7 +4578,6 @@ fn write_log_stream(
     }
     file.write_all(fallback.as_bytes())
 }
-
 
 /// 只保留最近 [`MAX_COMMAND_LOGS`] 份日志：按修改时间排序，删最旧的。
 fn prune_command_logs(app: &tauri::AppHandle) {
@@ -4842,7 +4893,10 @@ mod tests {
         use kada_core::{DeviceKind, InputDevice};
         let hid = r"\\?\HID#VID_046D&PID_C52B&MI_00#7&b3c8a2e&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
         let acpi = r"\\?\ACPI#MSI0007#4&1cc9388&0#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
-        let mk = |name: &str, kind| InputDevice { name: name.to_string(), kind };
+        let mk = |name: &str, kind| InputDevice {
+            name: name.to_string(),
+            kind,
+        };
         let list = device_choices(vec![
             mk(hid, DeviceKind::Keyboard),
             mk(acpi, DeviceKind::Keyboard),
@@ -4854,8 +4908,10 @@ mod tests {
         assert_eq!(list[1].kind, "keyboard");
         // 存的片段要真能命中原路径（否则选了也不生效）。`Condition` 随 automation 门控。
         #[cfg(feature = "automation")]
-        assert!(kada_core::Condition::DeviceIs { id: list[1].id.clone() }
-            .matches(&kada_core::Vars::new(), None, Some(hid)));
+        assert!(kada_core::Condition::DeviceIs {
+            id: list[1].id.clone()
+        }
+        .matches(&kada_core::Vars::new(), None, Some(hid)));
 
         // 同型号两台：片段相同 → 都退回完整路径（去掉接口类 GUID），仍互不相同。
         let twin = r"\\?\HID#VID_046D&PID_C52B&MI_00#7&22cd7391&0&0000#{884b96c3-56ef-11d1-bc8c-00a0c91405dd}";
@@ -4865,7 +4921,10 @@ mod tests {
         ]);
         assert_eq!(list.len(), 2);
         assert_ne!(list[0].id, list[1].id);
-        assert!(list.iter().all(|d| !d.id.contains("884b96c3")), "接口类 GUID 不该写进配置");
+        assert!(
+            list.iter().all(|d| !d.id.contains("884b96c3")),
+            "接口类 GUID 不该写进配置"
+        );
 
         // 同一块触摸板的两个口（触摸口 + 鼠标口）：片段相同但类别不同——只留更具体的
         // 「触摸板」，别在下拉里多出一条同名同值的「鼠标」。
@@ -4890,11 +4949,17 @@ mod tests {
         assert_eq!(list.len(), 2, "键盘与鼠标是两台设备，都要在");
         let kinds: Vec<&str> = list.iter().map(|d| d.kind).collect();
         assert_eq!(kinds, vec!["keyboard", "mouse"]);
-        assert!(list.iter().all(|d| d.id.contains("MI_0")), "同片段不同硬件 → 退回完整路径");
+        assert!(
+            list.iter().all(|d| d.id.contains("MI_0")),
+            "同片段不同硬件 → 退回完整路径"
+        );
 
         // 分组顺序：键盘 → 鼠标 → 数位板。
         let list = device_choices(vec![
-            mk(r"\\?\HID#VID_056A&PID_0374&MI_02&Col01#7&cc&0&0000#{4d1e55b2}", DeviceKind::Tablet),
+            mk(
+                r"\\?\HID#VID_056A&PID_0374&MI_02&Col01#7&cc&0&0000#{4d1e55b2}",
+                DeviceKind::Tablet,
+            ),
             mk("VID_046D&PID_C52B mouse", DeviceKind::Mouse),
             mk(acpi, DeviceKind::Keyboard),
         ]);
@@ -4910,7 +4975,8 @@ mod tests {
         let dir = format!("{}/../snippets", env!("CARGO_MANIFEST_DIR"));
         let (base, stop) = serve_dir(&dir);
 
-        let index = tauri::async_runtime::block_on(http_get_text(&format!("{base}/index.json"))).unwrap();
+        let index =
+            tauri::async_runtime::block_on(http_get_text(&format!("{base}/index.json"))).unwrap();
         let entries = parse_snippet_index(&index).unwrap();
         assert!(!entries.is_empty(), "仓库里的索引没有条目");
 
@@ -4921,12 +4987,15 @@ mod tests {
             let file = e.url.rsplit('/').next().unwrap();
             let got = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/{file}")))
                 .unwrap_or_else(|err| panic!("卡带 {file} 下载/解析失败：{err}"));
-            let n = got.preview.shortcuts.len() + got.preview.remaps.len() + got.preview.expansions.len();
+            let n = got.preview.shortcuts.len()
+                + got.preview.remaps.len()
+                + got.preview.expansions.len();
             assert!(n > 0, "卡带 {file} 清洗后一条条目都不剩");
         }
 
         let fetched =
-            tauri::async_runtime::block_on(fetch_snippet(format!("{base}/caps-esc-ctrl.json"))).unwrap();
+            tauri::async_runtime::block_on(fetch_snippet(format!("{base}/caps-esc-ctrl.json")))
+                .unwrap();
         let remap = &fetched.preview.remaps[0];
         assert_eq!(remap.from, "CapsLock");
         assert_eq!(remap.tap.as_deref(), Some("Escape"));
@@ -4934,7 +5003,8 @@ mod tests {
         assert!(fetched.preview.shortcuts.is_empty());
 
         // 带层的卡带：被引用的层必须一起带过来（否则装进去层引用被清成基础层 = 静默改行为）。
-        let vim = tauri::async_runtime::block_on(fetch_snippet(format!("{base}/vim-keys.json"))).unwrap();
+        let vim =
+            tauri::async_runtime::block_on(fetch_snippet(format!("{base}/vim-keys.json"))).unwrap();
         assert_eq!(vim.preview.remaps.len(), 6);
         assert!(fetched.text.len() > 0 && !vim.text.is_empty());
         stop.store(true, Ordering::Relaxed);
@@ -4954,7 +5024,11 @@ mod tests {
             assert!(n > 0, "内置示例卡带一条条目也没有");
             let (clean, notes) = sanitize_config(&part);
             assert!(notes.is_empty(), "内置示例卡带清洗报了问题：{notes:?}");
-            assert_eq!(clean.shortcuts.len(), part.shortcuts.len(), "内置示例条目被清洗掉");
+            assert_eq!(
+                clean.shortcuts.len(),
+                part.shortcuts.len(),
+                "内置示例条目被清洗掉"
+            );
         }
         let cfg = bundled_examples().expect("内置示例合并失败");
         assert!(
@@ -4979,19 +5053,27 @@ mod tests {
             let mut tmp = [0u8; 1024];
             while !buf.windows(4).any(|w| w == b"\r\n\r\n") {
                 let n = s.read(&mut tmp).unwrap_or(0);
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 buf.extend_from_slice(&tmp[..n]);
             }
             let head = String::from_utf8_lossy(&buf).to_string();
             let len = head
                 .lines()
-                .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse::<usize>().unwrap_or(0)))
+                .find_map(|l| {
+                    l.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().parse::<usize>().unwrap_or(0))
+                })
                 .unwrap_or(0);
             let already = buf.len() - (head.find("\r\n\r\n").unwrap_or(0) + 4);
             let mut body = buf[buf.len() - already..].to_vec();
             while body.len() < len {
                 let n = s.read(&mut tmp).unwrap_or(0);
-                if n == 0 { break; }
+                if n == 0 {
+                    break;
+                }
                 body.extend_from_slice(&tmp[..n]);
             }
             let _ = tx.send(format!("{head}\n---\n{}", String::from_utf8_lossy(&body)));
@@ -5009,7 +5091,9 @@ mod tests {
         ))
         .unwrap();
         let seen = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-        assert!(seen.to_ascii_lowercase().contains("content-type: application/json"));
+        assert!(seen
+            .to_ascii_lowercase()
+            .contains("content-type: application/json"));
         assert!(seen.contains(r#"{"name":"测试","content":"{}"}"#));
         let env: PublishEnvelope = serde_json::from_str(&text).unwrap();
         assert_eq!(env.code, 0);
@@ -5030,7 +5114,10 @@ mod tests {
             tags: vec![],
             level,
         };
-        let official = vec![entry("官方 A", "https://x/a.json", None), entry("官方 B", "https://x/b.json", None)];
+        let official = vec![
+            entry("官方 A", "https://x/a.json", None),
+            entry("官方 B", "https://x/b.json", None),
+        ];
         let community = vec![
             entry("社区 C", "https://x/c.json", Some(2)),
             entry("重复 B", "https://x/b.json", Some(3)),
@@ -5065,7 +5152,9 @@ mod tests {
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     body.len()
                 );
-                let _ = s.write_all(head.as_bytes()).and_then(|_| s.write_all(&body));
+                let _ = s
+                    .write_all(head.as_bytes())
+                    .and_then(|_| s.write_all(&body));
             }
         });
         (base, stop)
@@ -6035,8 +6124,14 @@ mod tests {
             repeat: false,
         };
         let mut last = None;
-        assert!(!double_copy_hit(&menu, &ctrl_c, &mut last), "第一击只是单击");
-        assert!(double_copy_hit(&menu, &ctrl_c, &mut last), "窗口内第二击命中");
+        assert!(
+            !double_copy_hit(&menu, &ctrl_c, &mut last),
+            "第一击只是单击"
+        );
+        assert!(
+            double_copy_hit(&menu, &ctrl_c, &mut last),
+            "窗口内第二击命中"
+        );
         assert!(
             !double_copy_hit(&menu, &ctrl_c, &mut last),
             "命中后归零，第三击重新算单击"
@@ -6044,10 +6139,26 @@ mod tests {
 
         // 修饰键不精确 / repeat / 别的键 / 抬起事件都不算，也不该开始计时。
         for ev in [
-            Ev::Down { key: Key::C, mods: BTreeSet::from([Modifier::Ctrl, Modifier::Shift]), repeat: false },
-            Ev::Down { key: Key::C, mods: BTreeSet::new(), repeat: false },
-            Ev::Down { key: Key::C, mods: BTreeSet::from([Modifier::Ctrl]), repeat: true },
-            Ev::Down { key: Key::V, mods: BTreeSet::from([Modifier::Ctrl]), repeat: false },
+            Ev::Down {
+                key: Key::C,
+                mods: BTreeSet::from([Modifier::Ctrl, Modifier::Shift]),
+                repeat: false,
+            },
+            Ev::Down {
+                key: Key::C,
+                mods: BTreeSet::new(),
+                repeat: false,
+            },
+            Ev::Down {
+                key: Key::C,
+                mods: BTreeSet::from([Modifier::Ctrl]),
+                repeat: true,
+            },
+            Ev::Down {
+                key: Key::V,
+                mods: BTreeSet::from([Modifier::Ctrl]),
+                repeat: false,
+            },
             Ev::Up { key: Key::C },
         ] {
             let mut last = None;
@@ -6232,7 +6343,10 @@ mod tests {
     #[test]
     fn sync_archive_writes_config_to_dir() {
         let mut cfg = Config::default();
-        assert!(sync_file(&cfg).is_none(), "未配置同步目录时不该有任何同步文件");
+        assert!(
+            sync_file(&cfg).is_none(),
+            "未配置同步目录时不该有任何同步文件"
+        );
         cfg.settings.sync_dir = Some("   ".into());
         assert!(sync_file(&cfg).is_none(), "空白目录视为未配置");
 
@@ -6247,7 +6361,10 @@ mod tests {
 
         let text = std::fs::read_to_string(dir.join(SYNC_FILE_NAME)).unwrap();
         let back: Config = serde_json::from_str(&text).unwrap();
-        assert_eq!(back.settings.action_timeout_ms, 1234, "同步出去的是整份配置");
+        assert_eq!(
+            back.settings.action_timeout_ms, 1234,
+            "同步出去的是整份配置"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -6592,16 +6709,30 @@ fn device_choices(raw: Vec<kada_core::InputDevice>) -> Vec<DeviceChoice> {
         .into_iter()
         .map(|d| {
             let stable = kada_core::device_pattern(&d.name);
-            let id = if stable.is_empty() { d.name.clone() } else { stable };
+            let id = if stable.is_empty() {
+                d.name.clone()
+            } else {
+                stable
+            };
             let hardware = kada_core::device_hardware_key(&d.name);
-            Pending { id, detail: d.name, hardware, kind: d.kind }
+            Pending {
+                id,
+                detail: d.name,
+                hardware,
+                kind: d.kind,
+            }
         })
         .collect();
     // 同一块硬件里，触摸板 / 数位板的鼠标口让位给更具体的那条（否则下拉多一条同名同值的
     // 「鼠标」，选它反而匹配不到笔迹 / 触摸事件）。
     let surface: std::collections::HashSet<(String, String)> = items
         .iter()
-        .filter(|it| matches!(it.kind, kada_core::DeviceKind::Touchpad | kada_core::DeviceKind::Tablet))
+        .filter(|it| {
+            matches!(
+                it.kind,
+                kada_core::DeviceKind::Touchpad | kada_core::DeviceKind::Tablet
+            )
+        })
         .map(|it| (it.hardware.clone(), it.id.clone()))
         .collect();
     items.retain(|it| {
@@ -6622,11 +6753,20 @@ fn device_choices(raw: Vec<kada_core::InputDevice>) -> Vec<DeviceChoice> {
         .into_iter()
         .map(|it| {
             let id = if counts.get(&it.id).copied().unwrap_or(0) > 1 {
-                it.detail.split("#{").next().unwrap_or(&it.detail).to_string()
+                it.detail
+                    .split("#{")
+                    .next()
+                    .unwrap_or(&it.detail)
+                    .to_string()
             } else {
                 it.id
             };
-            DeviceChoice { label: id.clone(), id, detail: it.detail, kind: it.kind.id() }
+            DeviceChoice {
+                label: id.clone(),
+                id,
+                detail: it.detail,
+                kind: it.kind.id(),
+            }
         })
         .collect();
     out.sort_by(|a, b| {
@@ -6638,7 +6778,9 @@ fn device_choices(raw: Vec<kada_core::InputDevice>) -> Vec<DeviceChoice> {
             "tablet" => 3,
             _ => 4,
         };
-        order(a.kind).cmp(&order(b.kind)).then_with(|| a.id.cmp(&b.id))
+        order(a.kind)
+            .cmp(&order(b.kind))
+            .then_with(|| a.id.cmp(&b.id))
     });
     out
 }
@@ -6659,7 +6801,11 @@ fn input_env_report(config: Config) -> InputEnvReport {
             id: d.id.to_string(),
             name: d.name.to_string(),
             advice: d.advice.to_string(),
-            ignored: config.settings.input_env_ignored.iter().any(|id| id == d.id),
+            ignored: config
+                .settings
+                .input_env_ignored
+                .iter()
+                .any(|id| id == d.id),
         })
         .collect();
     InputEnvReport {
@@ -6945,7 +7091,12 @@ fn merge_into_config(
         let _ = app.emit("config-updated", &*snapshot);
         push_sync(&snapshot);
     }
-    Ok(ImportOutcome { mode: "merge".into(), added, notes, backup: None })
+    Ok(ImportOutcome {
+        mode: "merge".into(),
+        added,
+        notes,
+        backup: None,
+    })
 }
 
 /// 从指定路径导入配置。
@@ -7028,9 +7179,7 @@ fn import_config(
 ///
 /// 基础版（`--no-default-features`）里窗口 / 搜索 / 文件三份含 automation 专属动作，整份
 /// 解析会失败，所以只在完整版编进来；剪贴板与延时用的都是基础版动作，始终可用。
-const BASIC_EXAMPLE_SNIPPETS: &[&str] = &[
-    include_str!("../../snippets/delay-actions.json"),
-];
+const BASIC_EXAMPLE_SNIPPETS: &[&str] = &[include_str!("../../snippets/delay-actions.json")];
 #[cfg(feature = "automation")]
 const AUTOMATION_EXAMPLE_SNIPPETS: &[&str] = &[
     include_str!("../../snippets/window-actions.json"),
@@ -7160,9 +7309,15 @@ async fn http_get_text(url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("下载失败：HTTP {}", resp.status()));
     }
-    let body = resp.bytes().await.map_err(|e| strip_urls(&format!("下载中断：{e}")))?;
+    let body = resp
+        .bytes()
+        .await
+        .map_err(|e| strip_urls(&format!("下载中断：{e}")))?;
     if body.len() > SNIPPET_MAX_BYTES {
-        return Err(format!("内容太大（{} MB），不像是索引或卡带", body.len() / 1024 / 1024));
+        return Err(format!(
+            "内容太大（{} MB），不像是索引或卡带",
+            body.len() / 1024 / 1024
+        ));
     }
     String::from_utf8(body.to_vec()).map_err(|_| "下载内容不是 UTF-8 文本".to_string())
 }
@@ -7180,11 +7335,15 @@ async fn http_post_json(url: &str, body: &str) -> Result<String, String> {
         .await
         .map_err(|e| strip_urls(&format!("发布失败：{e}")))?;
     let status = resp.status();
-    let bytes = resp.bytes().await.map_err(|e| format!("发布响应中断：{e}"))?;
+    let bytes = resp
+        .bytes()
+        .await
+        .map_err(|e| format!("发布响应中断：{e}"))?;
     if bytes.len() > 1024 * 1024 {
         return Err("发布接口返回内容过大".into());
     }
-    let text = String::from_utf8(bytes.to_vec()).map_err(|_| "发布接口返回的不是 UTF-8".to_string())?;
+    let text =
+        String::from_utf8(bytes.to_vec()).map_err(|_| "发布接口返回的不是 UTF-8".to_string())?;
     if !status.is_success() {
         let brief: String = text.chars().take(200).collect();
         return Err(format!("发布失败：HTTP {status} {brief}"));
@@ -7207,7 +7366,14 @@ fn http_client(timeout: Duration) -> Result<reqwest::Client, String> {
 
 /// 索引地址：设置里留空等价于「用内置默认」（见 `Settings::snippet_index_url`）。
 fn snippet_index_url(state: &KadaState) -> String {
-    let url = state.config.read().unwrap().settings.snippet_index_url.trim().to_string();
+    let url = state
+        .config
+        .read()
+        .unwrap()
+        .settings
+        .snippet_index_url
+        .trim()
+        .to_string();
     if url.is_empty() {
         DEFAULT_SNIPPET_INDEX_URL.to_string()
     } else {
@@ -7336,7 +7502,14 @@ struct PreparedPublish {
 /// 社区发布只对官方市场开放：用自定义索引的人看到的是另一份市场，把卡带发到 ihomy
 /// 既不在他眼前、也没经过他同意。
 fn snippet_market_is_official(state: &KadaState) -> bool {
-    let url = state.config.read().unwrap().settings.snippet_index_url.trim().to_string();
+    let url = state
+        .config
+        .read()
+        .unwrap()
+        .settings
+        .snippet_index_url
+        .trim()
+        .to_string();
     url.is_empty() || url == DEFAULT_SNIPPET_INDEX_URL
 }
 
@@ -7553,9 +7726,7 @@ fn stop_mouse_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, 
 /// 录制期间 `TRACKPAD_RECORD` 同时充当闸门覆盖（见定时器线程里的 `trackpad_on`）。
 #[tauri::command]
 fn start_trackpad_record(key: String) -> Result<(), String> {
-    let k: Key = key
-        .parse()
-        .map_err(|_| format!("无法识别的键名：{key}"))?;
+    let k: Key = key.parse().map_err(|_| format!("无法识别的键名：{key}"))?;
     if k.is_mouse() {
         return Err("触发键只能是键盘键：鼠标键已经是右键手势那条路了".into());
     }
@@ -7733,11 +7904,11 @@ pub fn run() {
             sync_import_path,
             default_sync_dir,
             export_fragment,
-                fetch_snippet_index,
-                fetch_snippet,
-                install_snippet,
-                prepare_publish,
-                submit_publish,
+            fetch_snippet_index,
+            fetch_snippet,
+            install_snippet,
+            prepare_publish,
+            submit_publish,
             import_config,
             load_sample_config,
             set_paused,
@@ -7753,8 +7924,8 @@ pub fn run() {
             get_run_records,
             get_unread,
             get_toast_payload,
-              get_status_payload,
-                  get_clipboard_menu_payload,
+            get_status_payload,
+            get_clipboard_menu_payload,
             clipboard_menu_ready,
             clipboard_menu_exec,
             get_tray_menu_payload,
@@ -7764,7 +7935,7 @@ pub fn run() {
             prompt_ready,
             prompt_done,
             get_prompt_payload,
-                gesture_overlay_ready,
+            gesture_overlay_ready,
             get_hints_state,
             hints_ready,
             hints_move,
@@ -7853,7 +8024,13 @@ pub fn run() {
                     }
                     // 复制快捷菜单开着时按 Esc：只置旗标（收回由菜单轮询线程做），按键本身照常放行。
                     if menu_showing.load(Ordering::Relaxed)
-                        && matches!(&raw, input::KeyEvent::Down { key: Key::Escape, .. })
+                        && matches!(
+                            &raw,
+                            input::KeyEvent::Down {
+                                key: Key::Escape,
+                                ..
+                            }
+                        )
                     {
                         menu_hide.store(true, Ordering::Relaxed);
                     }
@@ -7911,7 +8088,10 @@ pub fn run() {
                         && !kada_hook::trackpad::armed_with(Key::Escape)
                         && matches!(
                             &ev,
-                            Ev::Down { key: Key::Escape, .. } | Ev::Up { key: Key::Escape }
+                            Ev::Down {
+                                key: Key::Escape,
+                                ..
+                            } | Ev::Up { key: Key::Escape }
                         )
                     {
                         if matches!(&ev, Ev::Down { .. }) {
@@ -7936,19 +8116,19 @@ pub fn run() {
                         }
                     }
                     if let Ev::Up { key } = &ev {
-                            if kada_hook::trackpad::armed_with(*key) {
-                                let anchor = kada_hook::trackpad::anchor();
-                                kada_hook::trackpad::finish(*key);
-                                // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
-                                // 用户可以关掉（`touchpad_restore_cursor`）；平台做不到（Linux 没有
-                                // 客户端 warp）也直接跳过（`restores_cursor`），不假装复位。
-                                if guard.settings.touchpad_restore_cursor
-                                    && kada_hook::trackpad::restores_cursor()
-                                {
-                                    if let Some(pt) = anchor {
-                                        kada_hook::set_cursor_pos(pt);
-                                    }
+                        if kada_hook::trackpad::armed_with(*key) {
+                            let anchor = kada_hook::trackpad::anchor();
+                            kada_hook::trackpad::finish(*key);
+                            // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
+                            // 用户可以关掉（`touchpad_restore_cursor`）；平台做不到（Linux 没有
+                            // 客户端 warp）也直接跳过（`restores_cursor`），不假装复位。
+                            if guard.settings.touchpad_restore_cursor
+                                && kada_hook::trackpad::restores_cursor()
+                            {
+                                if let Some(pt) = anchor {
+                                    kada_hook::set_cursor_pos(pt);
                                 }
+                            }
                             return input::HookAction::Block;
                         }
                     }
@@ -8128,8 +8308,8 @@ pub fn run() {
                 tray: Mutex::new(None),
                 tray_base: base_icon.clone(),
                 tray_unread: unread_icon,
-                  toast: Arc::new(Mutex::new(None)),
-                  status: Arc::new(Mutex::new(None)),
+                toast: Arc::new(Mutex::new(None)),
+                status: Arc::new(Mutex::new(None)),
                 clipboard_menu_showing,
                 clipboard_menu_hide,
                 clipboard_menu_serial,
@@ -8276,8 +8456,8 @@ pub fn run() {
                             exit_code: None,
                             detached: false,
                             log_path: None,
-            stdout_file: None,
-            stderr_file: None,
+                            stdout_file: None,
+                            stderr_file: None,
                             show_output: false,
                             time: time.clone(),
                             run_id: None,

@@ -47,9 +47,7 @@ impl ScriptOutput {
     /// 输出。`print("debug"); 42` 得到 `42` 而不是 `debug\n42`——调试信息看消息中心，
     /// 变量只装结果。
     pub fn value(&self) -> String {
-        self.ret
-            .clone()
-            .unwrap_or_else(|| self.stdout.clone())
+        self.ret.clone().unwrap_or_else(|| self.stdout.clone())
     }
 }
 

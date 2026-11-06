@@ -226,7 +226,9 @@ impl Engine {
     /// （回删触发词 / 注入替换文本 / 补回后缀键）。注入会阻塞上百毫秒，**必须由调用方放到
     /// 后台线程**执行——钩子回调里跑这么久的活会被系统摘掉钩子。
     pub fn hotstring(&mut self, ev: &Ev, expansions: &[TextExpansion]) -> Option<HotstringHit> {
-        let Ev::Down { key, mods, repeat } = ev else { return None };
+        let Ev::Down { key, mods, repeat } = ev else {
+            return None;
+        };
         if *repeat {
             return None;
         }
@@ -341,12 +343,20 @@ struct ModsState {
 
 impl ModsState {
     fn new() -> Self {
-        Self { hold: BTreeSet::new(), sticky: BTreeSet::new(), oneshot: BTreeSet::new() }
+        Self {
+            hold: BTreeSet::new(),
+            sticky: BTreeSet::new(),
+            oneshot: BTreeSet::new(),
+        }
     }
 
     /// 全部当前注入的键（供状态快照与释放；任意键）。
     fn keys(&self) -> impl Iterator<Item = Key> + '_ {
-        self.hold.iter().chain(&self.sticky).chain(&self.oneshot).copied()
+        self.hold
+            .iter()
+            .chain(&self.sticky)
+            .chain(&self.oneshot)
+            .copied()
     }
 
     /// 其中的修饰键（供后续键的 mods 补全：非修饰键补不进 `Shortcut.mods`）。
@@ -434,13 +444,21 @@ impl Engine {
         ctx: &TriggerContext,
         inj: &mut dyn Inject,
     ) -> Option<Ev> {
-        let (taphold, dance, mods, layers) =
-            (&mut self.taphold, &mut self.dance, &mut self.mods, &mut self.layer);
+        let (taphold, dance, mods, layers) = (
+            &mut self.taphold,
+            &mut self.dance,
+            &mut self.mods,
+            &mut self.layer,
+        );
         // 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
         commit_expired_dance(dance, inj);
 
         match ev {
-            Ev::Down { key, mods: ev_mods, repeat } => {
+            Ev::Down {
+                key,
+                mods: ev_mods,
+                repeat,
+            } => {
                 // 连击等待中：同键 down → 累计击数并吞掉；异键 down → 提交连击后照常处理。
                 if let Some(d) = dance.as_ref() {
                     if d.from == *key {
@@ -467,7 +485,11 @@ impl Engine {
                 }
                 let mut m = ev_mods.clone();
                 m.extend(mods.mods());
-                Some(Ev::Down { key: *key, mods: m, repeat: *repeat })
+                Some(Ev::Down {
+                    key: *key,
+                    mods: m,
+                    repeat: *repeat,
+                })
             }
             Ev::Up { key } => {
                 // 连击等待中的同键 up：吞掉并解除「按住中」。
@@ -636,7 +658,9 @@ fn finish_taphold(
 
 /// 连击等待窗已过期且无按住中的连击键 → 懒提交（输出当前击数对应的键）。
 fn commit_expired_dance(tap_dance: &mut Option<TapDanceState>, inj: &mut dyn Inject) {
-    let expired = tap_dance.as_ref().is_some_and(|d| !d.holding && Instant::now() >= d.deadline);
+    let expired = tap_dance
+        .as_ref()
+        .is_some_and(|d| !d.holding && Instant::now() >= d.deadline);
     if expired {
         commit_dance(tap_dance, inj);
     }
@@ -805,7 +829,8 @@ impl Engine {
 
                 if is_member {
                     // 同一键的重复 down（按住连发）或已触发/已回放的键：吞掉，不重复登记。
-                    if self.chord.tracker.held().contains(key) || self.chord.settling.contains(key) {
+                    if self.chord.tracker.held().contains(key) || self.chord.settling.contains(key)
+                    {
                         return None;
                     }
                     if *repeat {
@@ -816,8 +841,10 @@ impl Engine {
                         ChordAdvance::Complete(i) => {
                             // 命中：成员键就是触发键，不回放；但待定期间被吞掉的其它键
                             // （以及不属于本和弦的残留成员键）要补发，别吞掉用户的输入。
-                            let fired: BTreeSet<Key> =
-                                chords.get(i).map(|m| m.iter().map(|s| s.key).collect()).unwrap_or_default();
+                            let fired: BTreeSet<Key> = chords
+                                .get(i)
+                                .map(|m| m.iter().map(|s| s.key).collect())
+                                .unwrap_or_default();
                             let leftovers: Vec<Key> = std::mem::take(&mut self.chord.pending)
                                 .into_iter()
                                 .filter(|p| !(p.member && fired.contains(&p.key)))
@@ -835,7 +862,10 @@ impl Engine {
                             None
                         }
                         ChordAdvance::Await => {
-                            self.chord.pending.push(PendingKey { key: *key, member: true });
+                            self.chord.pending.push(PendingKey {
+                                key: *key,
+                                member: true,
+                            });
                             self.chord.last_activity = Instant::now();
                             None
                         }
@@ -852,7 +882,10 @@ impl Engine {
                     // 修饰键放行（不产生字符，吞掉会破坏 Ctrl+X 之类的组合）。
                     return Some(ev.clone());
                 }
-                self.chord.pending.push(PendingKey { key: *key, member: false });
+                self.chord.pending.push(PendingKey {
+                    key: *key,
+                    member: false,
+                });
                 if self.chord.pending.len() >= MAX_PENDING_BUFFER {
                     self.chord.replay_pending(inj);
                 }
@@ -881,7 +914,9 @@ impl Engine {
     /// 到点后的定论是**回放**，不是旧实现的「丢弃」——吞键铁律不允许把按键吞掉不还
     /// （见 `docs/架构说明`「吞键铁律」）。
     fn chord_expire(&mut self, cfg: &Config, inj: &mut dyn Inject) -> bool {
-        let Some(window) = wait_window(cfg.settings.chord_timeout_ms) else { return false };
+        let Some(window) = wait_window(cfg.settings.chord_timeout_ms) else {
+            return false;
+        };
         if self.chord.is_waiting() && self.chord.last_activity.elapsed() >= window {
             self.chord.replay_pending(inj);
             return true;
@@ -904,7 +939,12 @@ fn collect_chord_items(
         }
         for t in &s.triggers {
             if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
-                out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                out.push((
+                    members,
+                    s.actions.clone(),
+                    t.clone(),
+                    s.name.clone().unwrap_or_default(),
+                ));
             }
         }
     }
@@ -915,7 +955,12 @@ fn collect_chord_items(
             }
             for t in &s.triggers {
                 if let Ok(Trigger::Chord(members)) = Trigger::parse(t) {
-                    out.push((members, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                    out.push((
+                        members,
+                        s.actions.clone(),
+                        t.clone(),
+                        s.name.clone().unwrap_or_default(),
+                    ));
                 }
             }
         }
@@ -973,7 +1018,9 @@ impl Engine {
         inj: &mut dyn Inject,
         fire: &mut dyn FnMut(Vec<Action>, String, String),
     ) -> Option<Ev> {
-        let Ev::Down { key, mods, repeat } = ev else { return Some(ev.clone()) };
+        let Ev::Down { key, mods, repeat } = ev else {
+            return Some(ev.clone());
+        };
 
         // 懒超时：等待超时后第一次事件到来时回放已吞掉的键。必须在「修饰键放行」之前判，
         // 否则用户下一个动作是按下 Ctrl/Shift（放行、早返回）时回放又被推迟。
@@ -985,12 +1032,20 @@ impl Engine {
 
         if *repeat {
             // 已吞掉的键保持按住：重复按下吞掉、不推进序列；其余照常放行。
-            return if self.seq.pending.contains(key) { None } else { Some(ev.clone()) };
+            return if self.seq.pending.contains(key) {
+                None
+            } else {
+                Some(ev.clone())
+            };
         }
 
         let items = collect_sequence_items(cfg, self.layer.active(), ctx);
         let steps: Vec<Vec<Shortcut>> = items.iter().map(|(s, ..)| s.clone()).collect();
-        let raw = RawEvent { key: *key, mods: mods.clone(), pressed: true };
+        let raw = RawEvent {
+            key: *key,
+            mods: mods.clone(),
+            pressed: true,
+        };
 
         if self.seq.tracker.is_active() {
             return match self.seq.tracker.advance(&raw, &steps) {
@@ -1033,7 +1088,9 @@ impl Engine {
     /// 键序列等待窗过期（`Settings.sequence_timeout_ms`，`0` = 不限时）→ 把已吞掉的 leader
     /// 与中间步按输入顺序原样回放。返回是否过期回放了。
     fn seq_expire(&mut self, cfg: &Config, inj: &mut dyn Inject) -> bool {
-        let Some(window) = wait_window(cfg.settings.sequence_timeout_ms) else { return false };
+        let Some(window) = wait_window(cfg.settings.sequence_timeout_ms) else {
+            return false;
+        };
         if self.seq.tracker.is_active() && self.seq.last_activity.elapsed() >= window {
             self.seq.replay(inj);
             return true;
@@ -1056,7 +1113,12 @@ fn collect_sequence_items(
         }
         for t in &s.triggers {
             if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
-                out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                out.push((
+                    steps,
+                    s.actions.clone(),
+                    t.clone(),
+                    s.name.clone().unwrap_or_default(),
+                ));
             }
         }
     }
@@ -1067,7 +1129,12 @@ fn collect_sequence_items(
             }
             for t in &s.triggers {
                 if let Ok(Trigger::Sequence(steps)) = Trigger::parse(t) {
-                    out.push((steps, s.actions.clone(), t.clone(), s.name.clone().unwrap_or_default()));
+                    out.push((
+                        steps,
+                        s.actions.clone(),
+                        t.clone(),
+                        s.name.clone().unwrap_or_default(),
+                    ));
                 }
             }
         }
@@ -1108,7 +1175,11 @@ mod tests {
     }
 
     fn down(key: Key) -> Ev {
-        Ev::Down { key, mods: BTreeSet::new(), repeat: false }
+        Ev::Down {
+            key,
+            mods: BTreeSet::new(),
+            repeat: false,
+        }
     }
 
     fn up(key: Key) -> Ev {
@@ -1138,11 +1209,19 @@ mod tests {
     }
 
     fn cfg_with_remap(r: Remap) -> Config {
-        Config { remaps: vec![r], ..Default::default() }
+        Config {
+            remaps: vec![r],
+            ..Default::default()
+        }
     }
 
     fn remap(from: &str, to: &str) -> Remap {
-        Remap { from: from.into(), to: to.into(), enabled: true, ..Default::default() }
+        Remap {
+            from: from.into(),
+            to: to.into(),
+            enabled: true,
+            ..Default::default()
+        }
     }
 
     /// 走一遍引擎并把注入与触发结果收集出来。
@@ -1181,7 +1260,11 @@ mod tests {
         // 后续步照常推进（等待窗不是「卡死」的意思）。
         assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
         assert!(step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired).is_none());
-        assert_eq!(fired.log, vec!["F9 J K"], "不限时只影响回放时机，不影响命中");
+        assert_eq!(
+            fired.log,
+            vec!["F9 J K"],
+            "不限时只影响回放时机，不影响命中"
+        );
         assert!(inj.log.is_empty());
     }
 
@@ -1197,7 +1280,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(10));
         engine.tick(&cfg, &mut inj);
         assert!(inj.take().is_empty(), "窗口 5 秒，10ms 时不该回放");
-        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(), "还在等第二步");
+        assert!(
+            step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(),
+            "还在等第二步"
+        );
     }
 
     #[test]
@@ -1213,12 +1299,20 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(5));
         engine.tick(&cfg, &mut inj);
-        assert_eq!(inj.take(), vec!["down F", "up F", "down A", "up A"], "到点按输入顺序回放");
+        assert_eq!(
+            inj.take(),
+            vec!["down F", "up F", "down A", "up A"],
+            "到点按输入顺序回放"
+        );
 
         // 过期后 F 已定论成普通按键：再按 J（同在和弦里）不再凑成和弦。
         assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none());
         step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down J", "up J"], "过期后成员键各自回放，不再触发");
+        assert_eq!(
+            inj.take(),
+            vec!["down J", "up J"],
+            "过期后成员键各自回放，不再触发"
+        );
         assert!(fired.log.is_empty(), "过期 = 不是和弦");
     }
 
@@ -1237,7 +1331,11 @@ mod tests {
         assert_eq!(inj.take(), vec!["down F", "up F"], "先回放已定论的 F");
 
         step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down J", "up J"], "J 单独按下 → 回放成普通 j");
+        assert_eq!(
+            inj.take(),
+            vec!["down J", "up J"],
+            "J 单独按下 → 回放成普通 j"
+        );
         assert!(fired.log.is_empty(), "晚了 5ms 的两个键不再是和弦");
     }
 
@@ -1319,7 +1417,11 @@ mod tests {
         step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired);
         assert_eq!(fired.log, vec!["F&J"]);
         for _ in 0..3 {
-            let repeat = Ev::Down { key: Key::J, mods: BTreeSet::new(), repeat: true };
+            let repeat = Ev::Down {
+                key: Key::J,
+                mods: BTreeSet::new(),
+                repeat: true,
+            };
             assert!(step(&mut engine, &repeat, &cfg, &mut inj, &mut fired).is_none());
         }
         // 抬起后恢复正常：再按仍被吞（等下一个成员），松开时回放。
@@ -1327,7 +1429,11 @@ mod tests {
         step(&mut engine, &up(Key::F), &cfg, &mut inj, &mut fired);
         step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired);
         step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down J", "up J"], "抬起后该键恢复成普通按键");
+        assert_eq!(
+            inj.take(),
+            vec!["down J", "up J"],
+            "抬起后该键恢复成普通按键"
+        );
     }
 
     #[test]
@@ -1354,7 +1460,11 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired);
-        let repeat = Ev::Down { key: Key::F, mods: BTreeSet::new(), repeat: true };
+        let repeat = Ev::Down {
+            key: Key::F,
+            mods: BTreeSet::new(),
+            repeat: true,
+        };
         assert!(step(&mut engine, &repeat, &cfg, &mut inj, &mut fired).is_none());
         step(&mut engine, &up(Key::F), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down F", "up F"]);
@@ -1451,7 +1561,11 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(5));
         engine.tick(&cfg, &mut inj);
-        assert_eq!(inj.take(), vec!["down F9", "up F9"], "超时后由 tick 回放 leader");
+        assert_eq!(
+            inj.take(),
+            vec!["down F9", "up F9"],
+            "超时后由 tick 回放 leader"
+        );
         assert!(fired.log.is_empty(), "回放不等于触发");
     }
 
@@ -1466,7 +1580,13 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert!(inj.take().is_empty(), "进入连击等待窗，先不输出");
 
@@ -1536,7 +1656,9 @@ mod tests {
         let mut hits = Vec::new();
         type_str(&mut engine, "addr", &mut hits);
         assert!(hits.is_empty(), "还没按后缀不展开");
-        let hit = engine.hotstring(&down(Key::Space), &expansions()).expect("空格应命中展开");
+        let hit = engine
+            .hotstring(&down(Key::Space), &expansions())
+            .expect("空格应命中展开");
         assert_eq!(
             hit,
             HotstringHit {
@@ -1577,7 +1699,14 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down Esc", "up Esc"]);
     }
@@ -1594,7 +1723,13 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         assert!(engine.status().idle(), "起始无层、无修饰键");
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 进层
         let st = engine.status();
         assert_eq!(st.layer.as_deref(), Some("layer-1"));
@@ -1615,11 +1750,25 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         let st = engine.status();
-        assert_eq!(st.layer.as_deref(), Some("layer-1"), "按下切层键就亮层（不等第二个键）");
+        assert_eq!(
+            st.layer.as_deref(),
+            Some("layer-1"),
+            "按下切层键就亮层（不等第二个键）"
+        );
         assert!(!st.layer_locked, "按住式切层不是锁定层");
-        assert_eq!(engine.active_layer(), None, "指示是预览：判定仍等 roll，不提前进层");
+        assert_eq!(
+            engine.active_layer(),
+            None,
+            "指示是预览：判定仍等 roll，不提前进层"
+        );
         assert!(inj.take().is_empty(), "预览不注入任何键");
 
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
@@ -1643,7 +1792,13 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         assert_eq!(engine.status().layer, None, "刚按下可能只是轻点，先不亮");
         std::thread::sleep(Duration::from_millis(30));
         assert_eq!(
@@ -1679,25 +1834,40 @@ mod tests {
         sticky.sticky = Some("Shift".into());
         let mut oneshot = remap("F2", "");
         oneshot.oneshot = Some("Alt".into());
-        let cfg = Config { remaps: vec![hold, sticky, oneshot], ..Default::default() };
+        let cfg = Config {
+            remaps: vec![hold, sticky, oneshot],
+            ..Default::default()
+        };
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         // hold：按住 from 期间按别的键 → roll 判定为长按，Ctrl 注入。
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.status().hold, vec![Key::Control]);
         // 松开 from 就释放，快照跟着清掉（这条同时验证「同一时刻只可能有一个待定改键」：
         // 按住 from 不放期间按 F1 不会进入 F1 的待定，故先收尾再点下一颗键）。
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert!(engine.status().hold.is_empty());
-        assert!(engine.status().sticky.is_empty(), "还没点 F1，粘滞当然是空的");
+        assert!(
+            engine.status().sticky.is_empty(),
+            "还没点 F1，粘滞当然是空的"
+        );
 
         // sticky：点一下 F1 锁定 Shift。
         step(&mut engine, &down(Key::F1), &cfg, &mut inj, &mut fired);
         step(&mut engine, &up(Key::F1), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.status().sticky, vec![Key::Shift]);
-        assert!(engine.status().hold.is_empty(), "粘滞与按住是两套集合，互不串味");
+        assert!(
+            engine.status().hold.is_empty(),
+            "粘滞与按住是两套集合，互不串味"
+        );
 
         // oneshot：点一下 F2 武装 Alt。
         step(&mut engine, &down(Key::F2), &cfg, &mut inj, &mut fired);
@@ -1723,7 +1893,13 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert!(!engine.status().idle());
 
@@ -1757,10 +1933,18 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         // 按住 CapsLock 期间按下 A：roll 判定为 hold → Ctrl 注入，A 带 Ctrl 修饰继续走。
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         let ev = step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired).expect("A 应放行");
         match ev {
-            Ev::Down { mods, .. } => assert!(mods.contains(&Modifier::Ctrl), "A 要带上 hold 的 Ctrl"),
+            Ev::Down { mods, .. } => {
+                assert!(mods.contains(&Modifier::Ctrl), "A 要带上 hold 的 Ctrl")
+            }
             _ => panic!("应为 Down"),
         }
         assert_eq!(inj.take(), vec!["down Ctrl"]);
@@ -1776,7 +1960,13 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down Ctrl"], "短按武装单次修饰");
 
@@ -1797,10 +1987,22 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down Shift"], "单击锁定");
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["up Shift"], "再击解锁");
     }
@@ -1814,7 +2016,13 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         assert_eq!(engine.active_layer(), None);
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 进层
         assert_eq!(engine.active_layer(), Some("layer-1"));
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
@@ -1830,9 +2038,19 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down CapsLock", "up CapsLock"], "短按回放原键");
+        assert_eq!(
+            inj.take(),
+            vec!["down CapsLock", "up CapsLock"],
+            "短按回放原键"
+        );
     }
 
     #[test]
@@ -1846,10 +2064,20 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         std::thread::sleep(Duration::from_millis(30));
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down CapsLock", "up CapsLock"], "长按无输出时回放原键");
+        assert_eq!(
+            inj.take(),
+            vec!["down CapsLock", "up CapsLock"],
+            "长按无输出时回放原键"
+        );
     }
 
     #[test]
@@ -1864,7 +2092,13 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         for hold_ms in [0u64, 30] {
-            step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+            step(
+                &mut engine,
+                &down(Key::CapsLock),
+                &cfg,
+                &mut inj,
+                &mut fired,
+            );
             if hold_ms > 0 {
                 std::thread::sleep(Duration::from_millis(hold_ms));
             }
@@ -1888,13 +2122,23 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert!(inj.take().is_empty(), "进入连击等待窗，先不输出");
 
         std::thread::sleep(Duration::from_millis(30));
         engine.tick(&cfg, &mut inj);
-        assert_eq!(inj.take(), vec!["down CapsLock", "up CapsLock"], "单击缺省回放原键");
+        assert_eq!(
+            inj.take(),
+            vec!["down CapsLock", "up CapsLock"],
+            "单击缺省回放原键"
+        );
     }
 
     #[test]
@@ -1908,9 +2152,21 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         // 两次快击 → 第二击累计后超时提交 tap2 的键。
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         std::thread::sleep(Duration::from_millis(5));
         step(&mut engine, &down(Key::Z), &cfg, &mut inj, &mut fired); // 下一次事件触发懒提交
@@ -1933,7 +2189,11 @@ mod tests {
     /// 阈值压到 20ms，免得测试真等 200ms。
     fn cfg_with_locked_layer(trigger: &str) -> Config {
         let mut cfg = cfg_with(&[trigger]);
-        cfg.layers = vec![kada_core::Layer { id: "L1".into(), name: "层1".into(), ..Default::default() }];
+        cfg.layers = vec![kada_core::Layer {
+            id: "L1".into(),
+            name: "层1".into(),
+            ..Default::default()
+        }];
         cfg.shortcuts[0].layer = Some("L1".into());
         cfg.remaps = vec![Remap {
             from: "Tab".into(),
@@ -2003,9 +2263,19 @@ mod tests {
         hold.hold_layer = Some("L2".into());
         let cfg = cfg_with_remap(hold);
         let mut engine = Engine::new();
-        step(&mut engine, &down(Key::NumpadAdd), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::NumpadAdd),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 进层
-        assert_eq!(engine.active_layer(), Some("L2"), "按住 NumpadAdd 期间进入 momentary 层");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L2"),
+            "按住 NumpadAdd 期间进入 momentary 层"
+        );
         step(&mut engine, &up(Key::NumpadAdd), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.active_layer(), None, "松开退回基础层");
     }
@@ -2024,7 +2294,11 @@ mod tests {
         step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired);
         assert_eq!(fired.log, vec!["F&J"], "同一个按键就吃到新层的和弦");
         step(&mut engine, &up(Key::Tab), &cfg, &mut inj, &mut fired);
-        assert_eq!(engine.active_layer(), Some("L1"), "松开切层键不退层（切换式）");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L1"),
+            "松开切层键不退层（切换式）"
+        );
     }
 
     #[test]
@@ -2075,8 +2349,16 @@ mod tests {
         // 松开后退回 L1（而不是掉回基础层）。
         let cfg = Config {
             layers: vec![
-                kada_core::Layer { id: "L1".into(), name: "层1".into(), ..Default::default() },
-                kada_core::Layer { id: "L2".into(), name: "层2".into(), ..Default::default() },
+                kada_core::Layer {
+                    id: "L1".into(),
+                    name: "层1".into(),
+                    ..Default::default()
+                },
+                kada_core::Layer {
+                    id: "L2".into(),
+                    name: "层2".into(),
+                    ..Default::default()
+                },
             ],
             remaps: vec![
                 Remap {
@@ -2105,11 +2387,21 @@ mod tests {
         step(&mut engine, &up(Key::Tab), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.active_layer(), Some("L1"));
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired); // roll → 临时进 L2
         assert_eq!(engine.active_layer(), Some("L2"), "momentary 临时接管");
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
-        assert_eq!(engine.active_layer(), Some("L1"), "松开 momentary 键退回锁定层");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L1"),
+            "松开 momentary 键退回锁定层"
+        );
 
         // 再长按一次切层键 → 退出锁定层，回到基础层。
         step(&mut engine, &down(Key::Tab), &cfg, &mut inj, &mut fired);
@@ -2131,14 +2423,26 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired); // roll → 注入 Ctrl down
         assert_eq!(inj.take(), vec!["down Ctrl"]);
 
         assert!(engine.reset(&mut inj), "有待定态就该被判为「脏」");
         assert_eq!(inj.take(), vec!["up Ctrl"], "注入的修饰键必须补一个 up");
         // 复位后再按住同一个键：能重新判 hold（没被卡在「已按住」里）。
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::K), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down Ctrl"], "复位后该键恢复正常");
     }
@@ -2151,12 +2455,22 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired); // 单击 → 锁定粘滞
         assert_eq!(inj.take(), vec!["down Ctrl"]);
 
         assert!(engine.reset(&mut inj));
-        assert_eq!(inj.take(), vec!["up Ctrl"], "粘滞修饰也要收回（否则永远粘住）");
+        assert_eq!(
+            inj.take(),
+            vec!["up Ctrl"],
+            "粘滞修饰也要收回（否则永远粘住）"
+        );
     }
 
     #[test]
@@ -2169,7 +2483,10 @@ mod tests {
 
         assert!(step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired).is_none());
         assert!(engine.reset(&mut inj));
-        assert!(inj.take().is_empty(), "复位不回放缓冲里的键（避免打进新窗口）");
+        assert!(
+            inj.take().is_empty(),
+            "复位不回放缓冲里的键（避免打进新窗口）"
+        );
 
         // 复位后 F 是干净的：重新按 F、J 仍能凑成和弦。
         assert!(step(&mut engine, &down(Key::F), &cfg, &mut inj, &mut fired).is_none());
@@ -2189,7 +2506,10 @@ mod tests {
         // 超时线程之后也不会再回放（tracker 与 pending 都已清空）。
         engine.tick(&cfg, &mut inj);
         assert!(inj.take().is_empty());
-        assert!(step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired).is_some(), "普通键照常放行");
+        assert!(
+            step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired).is_some(),
+            "普通键照常放行"
+        );
     }
 
     #[test]
@@ -2207,11 +2527,19 @@ mod tests {
         assert_eq!(engine.active_layer(), Some("L1"));
         // 纯锁定层没有「会变脏的等待态」，复位报告 false（调用方据此不刷日志）。
         assert!(!engine.reset(&mut inj), "锁定层不算待复位的脏状态");
-        assert_eq!(engine.active_layer(), Some("L1"), "锁定层跨前台切换继续生效");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L1"),
+            "锁定层跨前台切换继续生效"
+        );
 
         // 锁定层之上按住 CapsLock 临时进 L2（momentary 接管）→ 复位后回到锁定层。
         let mut cfg2 = cfg.clone();
-        cfg2.layers.push(kada_core::Layer { id: "L2".into(), name: "层2".into(), ..Default::default() });
+        cfg2.layers.push(kada_core::Layer {
+            id: "L2".into(),
+            name: "层2".into(),
+            ..Default::default()
+        });
         cfg2.remaps.push(Remap {
             from: "CapsLock".into(),
             to: String::new(),
@@ -2220,11 +2548,21 @@ mod tests {
             enabled: true,
             ..Default::default()
         });
-        step(&mut engine, &down(Key::CapsLock), &cfg2, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg2,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &down(Key::A), &cfg2, &mut inj, &mut fired); // roll → 进 L2
         assert_eq!(engine.active_layer(), Some("L2"));
         assert!(engine.reset(&mut inj));
-        assert_eq!(engine.active_layer(), Some("L1"), "momentary 层退出，锁定层恢复");
+        assert_eq!(
+            engine.active_layer(),
+            Some("L1"),
+            "momentary 层退出，锁定层恢复"
+        );
     }
 
     #[test]
@@ -2237,14 +2575,20 @@ mod tests {
 
         assert!(engine.reset(&mut inj), "缓冲里有内容就算「脏」");
         assert!(inj.log.is_empty(), "热串缓冲只是壳层状态，不涉及注入");
-        assert!(engine.hotstring(&down(Key::Space), &expansions()).is_none(), "复位后不该再展开");
+        assert!(
+            engine.hotstring(&down(Key::Space), &expansions()).is_none(),
+            "复位后不该再展开"
+        );
     }
 
     #[test]
     fn reset_is_noop_when_idle() {
         let mut engine = Engine::new();
         let (mut inj, _fired) = (FakeInject::default(), Fired::default());
-        assert!(!engine.reset(&mut inj), "干净状态不该被报告成「脏」（否则白白刷日志）");
+        assert!(
+            !engine.reset(&mut inj),
+            "干净状态不该被报告成「脏」（否则白白刷日志）"
+        );
         assert!(inj.log.is_empty());
     }
 
@@ -2252,7 +2596,11 @@ mod tests {
 
     /// 带修饰键按下一个键（和弦成员的修饰要求按它判定）。
     fn down_mods(key: Key, mods: &[Modifier]) -> Ev {
-        Ev::Down { key, mods: mods.iter().copied().collect(), repeat: false }
+        Ev::Down {
+            key,
+            mods: mods.iter().copied().collect(),
+            repeat: false,
+        }
     }
 
     #[test]
@@ -2265,10 +2613,20 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down A"], "短按武装：物理按住 A");
-        assert_eq!(engine.status().oneshot, vec![Key::A], "指示要如实说「单次 A」");
+        assert_eq!(
+            engine.status().oneshot,
+            vec![Key::A],
+            "指示要如实说「单次 A」"
+        );
 
         // 下一个键照常放行且不带修饰（A 不是修饰键，补不进 mods）。
         let ev = step(&mut engine, &down(Key::B), &cfg, &mut inj, &mut fired).expect("B 应放行");
@@ -2291,12 +2649,22 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired,
+        );
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(inj.take(), vec!["down A"]);
         step(&mut engine, &down(Key::A), &cfg, &mut inj, &mut fired);
         step(&mut engine, &up(Key::A), &cfg, &mut inj, &mut fired);
-        assert_eq!(engine.status().oneshot, vec![Key::A], "武装的键自己抬起不算消费");
+        assert_eq!(
+            engine.status().oneshot,
+            vec![Key::A],
+            "武装的键自己抬起不算消费"
+        );
         assert!(inj.log.is_empty(), "不重复注入");
     }
 
@@ -2310,10 +2678,20 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         for _ in 0..2 {
-            step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired);
+            step(
+                &mut engine,
+                &down(Key::CapsLock),
+                &cfg,
+                &mut inj,
+                &mut fired,
+            );
             step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         }
-        assert_eq!(inj.take(), vec!["down MouseBack", "up MouseBack"], "第一次锁定、第二次解锁");
+        assert_eq!(
+            inj.take(),
+            vec!["down MouseBack", "up MouseBack"],
+            "第一次锁定、第二次解锁"
+        );
         assert!(engine.status().sticky.is_empty());
     }
 
@@ -2332,11 +2710,21 @@ mod tests {
 
         // 按住 Ctrl 再凑 F、J → 触发。
         step(&mut engine, &down(Key::Control), &cfg, &mut inj, &mut fired);
-        step(&mut engine, &down_mods(Key::F, &[Modifier::Ctrl]), &cfg, &mut inj, &mut fired);
-        assert!(
-            step(&mut engine, &down_mods(Key::J, &[Modifier::Ctrl]), &cfg, &mut inj, &mut fired)
-                .is_none()
+        step(
+            &mut engine,
+            &down_mods(Key::F, &[Modifier::Ctrl]),
+            &cfg,
+            &mut inj,
+            &mut fired,
         );
+        assert!(step(
+            &mut engine,
+            &down_mods(Key::J, &[Modifier::Ctrl]),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         assert_eq!(fired.log, vec!["Ctrl+F&J"], "修饰键按住时凑齐");
         assert!(inj.log.is_empty(), "成员键就是触发键，不回放");
     }
@@ -2349,14 +2737,21 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        assert!(step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(), "J 待定");
+        assert!(
+            step(&mut engine, &down(Key::J), &cfg, &mut inj, &mut fired).is_none(),
+            "J 待定"
+        );
         assert!(
             step(&mut engine, &down(Key::Alt), &cfg, &mut inj, &mut fired).is_some(),
             "修饰键成员要放行"
         );
         assert!(step(&mut engine, &up(Key::Alt), &cfg, &mut inj, &mut fired).is_some());
         step(&mut engine, &up(Key::J), &cfg, &mut inj, &mut fired);
-        assert_eq!(inj.take(), vec!["down J", "up J"], "只回放成员键，修饰键不参与回放");
+        assert_eq!(
+            inj.take(),
+            vec!["down J", "up J"],
+            "只回放成员键，修饰键不参与回放"
+        );
 
         // 两个修饰键都按住 → 凑齐触发。
         step(
@@ -2374,26 +2769,40 @@ mod tests {
     fn when_gate_skips_chord_when_condition_false() {
         use kada_core::{Condition, FrontmostContext, TriggerContext};
         let mut cfg = cfg_with(&["F&J"]);
-        cfg.shortcuts[0].when = Some(Condition::FrontmostApp { app: "chrome".into() });
+        cfg.shortcuts[0].when = Some(Condition::FrontmostApp {
+            app: "chrome".into(),
+        });
 
         // 条件不成立（空上下文）：F 不是可吞的成员，原样放行、不成和弦。
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
         let mut fire = |_a: Vec<Action>, trigger: String, _n: String| fired.log.push(trigger);
-        let out = engine.step(&down(Key::F), &cfg, &TriggerContext::empty(), &mut inj, &mut fire);
+        let out = engine.step(
+            &down(Key::F),
+            &cfg,
+            &TriggerContext::empty(),
+            &mut inj,
+            &mut fire,
+        );
         assert!(out.is_some(), "门控不成立时成员键应放行");
         assert!(fired.log.is_empty());
         assert!(inj.log.is_empty());
 
         // 条件成立：正常凑齐和弦触发。
-        let chrome =
-            FrontmostContext { process_name: "chrome.exe".into(), window_title: String::new() };
+        let chrome = FrontmostContext {
+            process_name: "chrome.exe".into(),
+            window_title: String::new(),
+        };
         let ctx = TriggerContext::fixed(Some(&chrome), None);
         let mut engine2 = Engine::new();
         let (mut inj2, mut fired2) = (FakeInject::default(), Fired::default());
         let mut fire2 = |_a: Vec<Action>, trigger: String, _n: String| fired2.log.push(trigger);
-        assert!(engine2.step(&down(Key::F), &cfg, &ctx, &mut inj2, &mut fire2).is_none());
-        assert!(engine2.step(&down(Key::J), &cfg, &ctx, &mut inj2, &mut fire2).is_none());
+        assert!(engine2
+            .step(&down(Key::F), &cfg, &ctx, &mut inj2, &mut fire2)
+            .is_none());
+        assert!(engine2
+            .step(&down(Key::J), &cfg, &ctx, &mut inj2, &mut fire2)
+            .is_none());
         assert_eq!(fired2.log, vec!["F&J"]);
     }
 
@@ -2401,14 +2810,22 @@ mod tests {
 
     /// 层 `sym` 里放一条和弦 `U&Y`，切层键为 `CapsLock`。
     fn cfg_layer_chord(layer_field: &str) -> Config {
-        let mut remap = Remap { from: "CapsLock".into(), enabled: true, ..Default::default() };
+        let mut remap = Remap {
+            from: "CapsLock".into(),
+            enabled: true,
+            ..Default::default()
+        };
         if layer_field == "hold" {
             remap.hold_layer = Some("sym".into());
         } else {
             remap.lock_layer = Some("sym".into());
         }
         Config {
-            layers: vec![kada_core::Layer { id: "sym".into(), name: "符号".into(), ..Default::default() }],
+            layers: vec![kada_core::Layer {
+                id: "sym".into(),
+                name: "符号".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![kada_core::ShortcutItem {
                 triggers: vec!["U&Y".into()],
                 actions: vec![Action::Text {
@@ -2433,13 +2850,24 @@ mod tests {
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
         // 按住切层键（待定）。
-        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         // 第一个成员键：应 roll 进入 momentary 层并被吞掉。
         assert!(
             step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none(),
             "U 应被当成层内和弦成员吞掉，而不是放行"
         );
-        assert_eq!(engine.active_layer(), Some("sym"), "按住切层键 + 按别的键应进入层");
+        assert_eq!(
+            engine.active_layer(),
+            Some("sym"),
+            "按住切层键 + 按别的键应进入层"
+        );
         // 第二个成员键：应凑齐触发。
         assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
         assert_eq!(fired.log, vec!["U&Y"], "层内和弦应触发");
@@ -2455,9 +2883,22 @@ mod tests {
         // 长按切层键（超过 tap 阈值）后松开 → 锁定进入层。
         let mut cfg_slow = cfg.clone();
         cfg_slow.remaps[0].tap_timeout_ms = 10; // 确保阈值短
-        assert!(step(&mut engine, &down(Key::CapsLock), &cfg_slow, &mut inj, &mut fired).is_none());
+        assert!(step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg_slow,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         std::thread::sleep(Duration::from_millis(20));
-        step(&mut engine, &up(Key::CapsLock), &cfg_slow, &mut inj, &mut fired);
+        step(
+            &mut engine,
+            &up(Key::CapsLock),
+            &cfg_slow,
+            &mut inj,
+            &mut fired,
+        );
         assert_eq!(engine.active_layer(), Some("sym"), "长按锁定后层应生效");
 
         // 腾出手来按和弦成员。
@@ -2471,7 +2912,11 @@ mod tests {
     fn user_config_layer_chord() {
         const LID: &str = "20d08484-41a4-48ab-90cf-bb8633f779df";
         let cfg = Config {
-            layers: vec![kada_core::Layer { id: LID.into(), name: "和弦层".into(), ..Default::default() }],
+            layers: vec![kada_core::Layer {
+                id: LID.into(),
+                name: "和弦层".into(),
+                ..Default::default()
+            }],
             shortcuts: vec![kada_core::ShortcutItem {
                 name: Some("输入密码".into()),
                 layer: Some(LID.into()),
@@ -2498,8 +2943,18 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        assert!(cfg.remaps[0].needs_timing_state(), "hold_layer 必须走 tap-hold 状态机");
-        assert!(step(&mut engine, &down(Key::Backquote), &cfg, &mut inj, &mut fired).is_none());
+        assert!(
+            cfg.remaps[0].needs_timing_state(),
+            "hold_layer 必须走 tap-hold 状态机"
+        );
+        assert!(step(
+            &mut engine,
+            &down(Key::Backquote),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         assert!(
             step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none(),
             "U 应在层内被吞成和弦成员"
@@ -2558,7 +3013,11 @@ mod tests {
                 let ev = if down {
                     let repeat = !phys.insert(k);
                     fresh = !repeat;
-                    Ev::Down { key: k, mods: BTreeSet::new(), repeat }
+                    Ev::Down {
+                        key: k,
+                        mods: BTreeSet::new(),
+                        repeat,
+                    }
                 } else {
                     if !phys.remove(&k) {
                         continue; // 物理上不成立：没按着就抬起
@@ -2573,7 +3032,9 @@ mod tests {
                 }
                 // 不变量：层激活 + 两个成员都在层内被吞成成员 + 都还按着 → 必须已触发。
                 if layer_after
-                    && members.iter().all(|m| phys.contains(m) && member_in_layer.contains(m))
+                    && members
+                        .iter()
+                        .all(|m| phys.contains(m) && member_in_layer.contains(m))
                 {
                     let trace: Vec<String> = seq
                         .iter()
@@ -2610,15 +3071,29 @@ mod tests {
         // ① U 先落：没进层，它是一次普通按键（放行给目标程序，字符会打出来）。
         assert!(step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_some());
         // ② 切层键落下 → 待定；③ Y 落下 → roll 进层，Y 被吞成成员。
-        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         assert!(step(&mut engine, &down(Key::Y), &cfg, &mut inj, &mut fired).is_none());
         assert_eq!(engine.active_layer(), Some("sym"), "roll 进层");
         assert!(fired.log.is_empty(), "此时只有一个成员，不该触发");
 
         // ④ U 还按着（自动重复）：被当成 repeat 吞掉，**不会补登记成成员** → 永远凑不齐。
-        let repeat_u = Ev::Down { key: Key::U, mods: BTreeSet::new(), repeat: true };
+        let repeat_u = Ev::Down {
+            key: Key::U,
+            mods: BTreeSet::new(),
+            repeat: true,
+        };
         assert!(step(&mut engine, &repeat_u, &cfg, &mut inj, &mut fired).is_none());
-        assert!(fired.log.is_empty(), "层已生效、U 与 Y 都按着，但 U 早于层生效 → 凑不成");
+        assert!(
+            fired.log.is_empty(),
+            "层已生效、U 与 Y 都按着，但 U 早于层生效 → 凑不成"
+        );
 
         // ⑤ 抬起照吞键铁律回放（用户看到的就是「打了 u、y，没触发」）。
         step(&mut engine, &up(Key::Y), &cfg, &mut inj, &mut fired);
@@ -2638,9 +3113,20 @@ mod tests {
         let mut engine = Engine::new();
         let (mut inj, mut fired) = (FakeInject::default(), Fired::default());
 
-        assert!(step(&mut engine, &down(Key::CapsLock), &cfg, &mut inj, &mut fired).is_none());
+        assert!(step(
+            &mut engine,
+            &down(Key::CapsLock),
+            &cfg,
+            &mut inj,
+            &mut fired
+        )
+        .is_none());
         assert!(step(&mut engine, &down(Key::U), &cfg, &mut inj, &mut fired).is_none());
-        assert_eq!(engine.active_layer(), Some("sym"), "按住切层键 + 按 U → 进层，U 被吞");
+        assert_eq!(
+            engine.active_layer(),
+            Some("sym"),
+            "按住切层键 + 按 U → 进层，U 被吞"
+        );
         // 切层键中途抬起（没凑齐）：层立刻退出。
         step(&mut engine, &up(Key::CapsLock), &cfg, &mut inj, &mut fired);
         assert_eq!(engine.active_layer(), None, "松开切层键即退层");

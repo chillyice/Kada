@@ -37,7 +37,9 @@ mod tests {
     // 一条用例跑完全部断言：注册是进程级全局，拆成两条并行跑会互相踩。
     #[test]
     fn installed_handler_answers_and_errors_pass_through() {
-        install(Box::new(|prompt, default| Ok(format!("{prompt}|{default}"))));
+        install(Box::new(|prompt, default| {
+            Ok(format!("{prompt}|{default}"))
+        }));
         assert_eq!(ask("名字", "Kada"), Some(Ok("名字|Kada".to_string())));
         // 注册的实现说了算：取消 / 中止的文案由它给，这里原样透传。
         install(Box::new(|_, _| Err("已中止".into())));

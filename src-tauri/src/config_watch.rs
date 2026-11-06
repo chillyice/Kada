@@ -48,7 +48,10 @@ pub struct ConfigWatcher {
 impl ConfigWatcher {
     /// 建立基线：把**当前**磁盘内容认成「已知状态」。启动时调用——那份内容加载时已经读过。
     pub fn new(file: &Path) -> Self {
-        Self { seen: fingerprint(file), reported: None }
+        Self {
+            seen: fingerprint(file),
+            reported: None,
+        }
     }
 
     /// 本进程自己刚写完盘（保存 / 导入）：把新内容认成「已知」，否则下一秒就会把自己的写入
@@ -162,7 +165,12 @@ mod tests {
     }
 
     /// 外部写一份有效配置：返回巡检到的结论。
-    fn write_and_poll(w: &mut ConfigWatcher, file: &Path, current: &Config, cfg: &Config) -> Option<Change> {
+    fn write_and_poll(
+        w: &mut ConfigWatcher,
+        file: &Path,
+        current: &Config,
+        cfg: &Config,
+    ) -> Option<Change> {
         fs::write(file, serde_json::to_string_pretty(cfg).unwrap()).unwrap();
         w.poll(file, current)
     }
@@ -192,7 +200,10 @@ mod tests {
             other => panic!("应检出外部改动：{other:?}"),
         }
         // 采纳之后内存里的那份就是 v2，再来一轮不该重复报。
-        assert!(w.poll(&file, &cfg_named("v2")).is_none(), "同一份内容不该报第二遍");
+        assert!(
+            w.poll(&file, &cfg_named("v2")).is_none(),
+            "同一份内容不该报第二遍"
+        );
     }
 
     /// 本进程自己写的盘不该被当成外部修改（保存 / 导入后的销账）。
@@ -236,7 +247,10 @@ mod tests {
         let mut w = ConfigWatcher::new(&file);
 
         fs::write(&file, serde_json::to_string_pretty(&cur).unwrap()).unwrap();
-        assert!(w.poll(&file, &cur).is_none(), "排版不同、配置相同 → 不算改动");
+        assert!(
+            w.poll(&file, &cur).is_none(),
+            "排版不同、配置相同 → 不算改动"
+        );
 
         // 基线已推进到新指纹：之后的真改动仍能检出。
         match write_and_poll(&mut w, &file, &cur, &cfg_named("v2")) {
@@ -256,9 +270,16 @@ mod tests {
 
         let broken = "{ \"shortcuts\": [ 这不是 JSON";
         fs::write(&file, broken).unwrap();
-        assert!(matches!(w.poll(&file, &cur), Some(Change::Unreadable(_))), "坏内容要提示");
+        assert!(
+            matches!(w.poll(&file, &cur), Some(Change::Unreadable(_))),
+            "坏内容要提示"
+        );
         assert!(w.poll(&file, &cur).is_none(), "同一份坏内容只提示一次");
-        assert_eq!(fs::read_to_string(&file).unwrap(), broken, "监听路径绝不改磁盘");
+        assert_eq!(
+            fs::read_to_string(&file).unwrap(),
+            broken,
+            "监听路径绝不改磁盘"
+        );
 
         match write_and_poll(&mut w, &file, &cur, &cfg_named("v2")) {
             Some(Change::Reloaded(cfg)) => assert_eq!(name_of(&cfg), "v2"),

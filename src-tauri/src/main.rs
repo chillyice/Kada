@@ -6,7 +6,10 @@ fn main() {
     // 「不建窗口、不初始化套壳、不碰配置」，它只做一件事：在命名管道上按请求重放注入
     // （见 `kada_hook::elevated`）。同一个可执行文件 = 零打包改动、零卸载残留。
     let args: Vec<String> = std::env::args().collect();
-    if let Some(i) = args.iter().position(|a| a == kada_hook::elevated::AGENT_ARG) {
+    if let Some(i) = args
+        .iter()
+        .position(|a| a == kada_hook::elevated::AGENT_ARG)
+    {
         let parent = args.get(i + 1).and_then(|s| s.parse::<u32>().ok());
         std::process::exit(kada_hook::elevated::serve(parent));
     }

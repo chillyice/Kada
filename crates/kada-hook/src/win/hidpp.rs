@@ -74,11 +74,7 @@ const RECONNECT_INTERVAL: Duration = Duration::from_secs(30);
 const RECONNECT_ATTEMPTS: u32 = 20;
 
 /// Kada 键模型里的三个鼠标键（CID 与 Solaar `special_keys.CONTROL` 一致）。
-const MOUSE_CIDS: [(u16, &str); 3] = [
-    (0x0052, "中键"),
-    (0x0053, "后退侧键"),
-    (0x0056, "前进侧键"),
-];
+const MOUSE_CIDS: [(u16, &str); 3] = [(0x0052, "中键"), (0x0053, "后退侧键"), (0x0056, "前进侧键")];
 
 // ---- HID++ 低层 ----
 
@@ -297,7 +293,10 @@ fn open_link(api: &HidApi, cand: &Candidate, index: Option<u8>) -> Result<Link, 
             feat: 0,
             long,
             product_id: cand.product_id,
-            name: cand.product.clone().unwrap_or_else(|| "罗技设备".to_string()),
+            name: cand
+                .product
+                .clone()
+                .unwrap_or_else(|| "罗技设备".to_string()),
         };
         match probe_link(&mut link, index) {
             Ok(()) => return Ok(link),
@@ -435,7 +434,8 @@ fn install_keeper(links: Vec<Link>) {
                 if attempts >= RECONNECT_ATTEMPTS {
                     KEEPER_ACTIVE.store(false, Ordering::SeqCst);
                     set_keeper_error(Some(
-                        "设备已断开较久，保持解锁已停止；重新接上后请再点一次「解锁侧键」".to_string(),
+                        "设备已断开较久，保持解锁已停止；重新接上后请再点一次「解锁侧键」"
+                            .to_string(),
                     ));
                     return;
                 }

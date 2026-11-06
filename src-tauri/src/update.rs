@@ -66,12 +66,21 @@ pub enum UpdatePhase {
     /// 已是最新版本。
     UpToDate,
     /// 发现新版本，尚未下载。
-    Available { version: String, notes: Option<String> },
+    Available {
+        version: String,
+        notes: Option<String>,
+    },
     /// 正在下载。
-    Downloading { version: String, percent: Option<f64> },
+    Downloading {
+        version: String,
+        percent: Option<f64>,
+    },
     /// 已下载、等安装（手动等用户点「安装」；自动更新等空闲 / 下次启动）。
     /// `notes` 随包存进 `pending.json`：下载完 / 重启后仍能点「更新日志」看说明。
-    Ready { version: String, notes: Option<String> },
+    Ready {
+        version: String,
+        notes: Option<String>,
+    },
     /// 正在安装（安装版随后应用会退出并由安装器重启；免安装版换完 exe 立刻重启）。
     Installing { version: String },
     /// 出错（网络不通、签名校验失败等）。
@@ -83,7 +92,9 @@ impl UpdatePhase {
     fn busy(&self) -> bool {
         matches!(
             self,
-            UpdatePhase::Checking | UpdatePhase::Downloading { .. } | UpdatePhase::Installing { .. }
+            UpdatePhase::Checking
+                | UpdatePhase::Downloading { .. }
+                | UpdatePhase::Installing { .. }
         )
     }
 }
@@ -129,7 +140,9 @@ fn registered_install_dir() -> Option<PathBuf> {
     const KEY: &str = r"Software\kada\Kada";
     for root in [CURRENT_USER, LOCAL_MACHINE] {
         let Ok(key) = root.open(KEY) else { continue };
-        let Ok(dir) = key.get_string("") else { continue };
+        let Ok(dir) = key.get_string("") else {
+            continue;
+        };
         // 防御：卸载项的 `InstallLocation` 是带引号的，个别安装器来源也可能照搬过来。
         let dir = dir.trim().trim_matches('"');
         if !dir.is_empty() {
@@ -247,11 +260,18 @@ impl UpdateState {
         let kind = install_kind();
         let pending = load_pending(&dir, &current, kind);
         let phase = match &pending {
-            Some(p) => UpdatePhase::Ready { version: p.version.clone(), notes: p.notes.clone() },
+            Some(p) => UpdatePhase::Ready {
+                version: p.version.clone(),
+                notes: p.notes.clone(),
+            },
             None => UpdatePhase::Idle,
         };
         Self {
-            status: Mutex::new(UpdateStatus { current, kind, phase }),
+            status: Mutex::new(UpdateStatus {
+                current,
+                kind,
+                phase,
+            }),
             dir,
             pending: Mutex::new(pending),
             last_auto_error: Mutex::new(None),
@@ -362,9 +382,11 @@ fn check_error_text(err: &UpdateError, source: UpdateSource) -> String {
 /// 下载/校验更新包时的错误翻译（签名不符、清单与包的版本对不上都属于「更新数据出错」）。
 fn download_error_text(err: &UpdateError) -> String {
     match err {
-        UpdateError::Minisign(_) => "更新包校验失败：签名与包内容不匹配（可能下载损坏，或更新源被篡改）。\
+        UpdateError::Minisign(_) => {
+            "更新包校验失败：签名与包内容不匹配（可能下载损坏，或更新源被篡改）。\
              已丢弃这个包，请重试；若反复失败请换一个更新源。"
-            .to_string(),
+                .to_string()
+        }
         UpdateError::SignatureUtf8(_) | UpdateError::Base64(_) => {
             "更新清单里的签名数据格式不正确，无法校验更新包。请稍后重试或换一个更新源。".to_string()
         }
@@ -375,9 +397,9 @@ fn download_error_text(err: &UpdateError) -> String {
             "更新包签名的版本（v{signed}）与清单声明的版本（v{announced}）不一致，已阻止安装。\
              请换一个更新源或稍后重试。"
         ),
-        UpdateError::Network(msg) => format!(
-            "下载更新包失败：{msg}。更新源上的文件可能还没同步好，请稍后重试。"
-        ),
+        UpdateError::Network(msg) => {
+            format!("下载更新包失败：{msg}。更新源上的文件可能还没同步好，请稍后重试。")
+        }
         UpdateError::Reqwest(e) if e.is_timeout() => {
             "下载更新包超时：网络太慢或更新源不可用，请检查网络后重试。".to_string()
         }
@@ -400,7 +422,9 @@ fn record_auto_failure(app: &tauri::AppHandle, message: &str) {
         }
         *last = Some(message.to_string());
     }
-    let Some(state) = app.try_state::<crate::KadaState>() else { return };
+    let Some(state) = app.try_state::<crate::KadaState>() else {
+        return;
+    };
     crate::commit_result(
         app,
         &state.results,
@@ -439,7 +463,12 @@ fn show_dialog(
     text: String,
     action: Option<&'static str>,
 ) {
-    let dialog = UpdateDialog { tone, title: title.to_string(), text, action };
+    let dialog = UpdateDialog {
+        tone,
+        title: title.to_string(),
+        text,
+        action,
+    };
     if app.get_webview_window("main").is_none() {
         if let Some(state) = app.try_state::<UpdateState>() {
             state.dialog.lock().unwrap().replace(dialog.clone());
@@ -458,7 +487,12 @@ pub fn take_update_dialog(state: tauri::State<'_, UpdateState>) -> Option<Update
 /// 记失败：写状态；手动模式弹窗，自动模式记进消息中心（不打扰使用，但留得下痕迹）。
 fn fail(app: &tauri::AppHandle, mode: Mode, message: String) {
     let message = crate::strip_urls(&message);
-    set_phase(app, UpdatePhase::Error { message: message.clone() });
+    set_phase(
+        app,
+        UpdatePhase::Error {
+            message: message.clone(),
+        },
+    );
     match mode {
         Mode::Manual => show_dialog(app, "error", "更新失败", message, None),
         Mode::Auto => record_auto_failure(app, &message),
@@ -478,7 +512,13 @@ pub fn spawn(app: &tauri::AppHandle, mode: Mode) {
 /// 当前选择的更新源。拿不到状态（极早的定时器线程）时按默认源（ihomy）走。
 fn current_source(app: &tauri::AppHandle) -> UpdateSource {
     app.try_state::<crate::KadaState>()
-        .and_then(|state| state.config.read().ok().map(|cfg| cfg.settings.update_source))
+        .and_then(|state| {
+            state
+                .config
+                .read()
+                .ok()
+                .map(|cfg| cfg.settings.update_source)
+        })
         .unwrap_or_default()
 }
 
@@ -513,7 +553,9 @@ fn build_updater(
     }
     // 只限清单请求（见 [`CHECK_TIMEOUT_SECS`]）：不设时限时连不上更新源会一直转圈。
     builder = builder.timeout(Duration::from_secs(CHECK_TIMEOUT_SECS));
-    builder.build().map_err(|e| format!("更新器初始化失败：{e}"))
+    builder
+        .build()
+        .map_err(|e| format!("更新器初始化失败：{e}"))
 }
 
 /// 启动后台检查 + 每日复查：延迟 [`STARTUP_CHECK_DELAY_SECS`] 秒先查一次，之后每
@@ -551,7 +593,9 @@ pub fn spawn_auto_installer(app: &tauri::AppHandle) {
         loop {
             std::thread::sleep(Duration::from_secs(AUTO_INSTALL_POLL_SECS));
             let startup_pass = std::mem::replace(&mut first_pass, false);
-            let Some(pending) = app.state::<UpdateState>().pending() else { continue };
+            let Some(pending) = app.state::<UpdateState>().pending() else {
+                continue;
+            };
             if !auto_update_enabled(&app) {
                 continue;
             }
@@ -564,7 +608,9 @@ pub fn spawn_auto_installer(app: &tauri::AppHandle) {
             if !startup_due && !idle_due {
                 continue;
             }
-            if last_attempt.is_some_and(|t| t.elapsed() < Duration::from_secs(AUTO_INSTALL_RETRY_SECS)) {
+            if last_attempt
+                .is_some_and(|t| t.elapsed() < Duration::from_secs(AUTO_INSTALL_RETRY_SECS))
+            {
                 continue;
             }
             last_attempt = Some(std::time::Instant::now());
@@ -595,7 +641,10 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
                 &app,
                 "info",
                 "检查更新",
-                format!("当前版本 v{current}，已是最新版本。\n\n更新源：{}", source_label(source)),
+                format!(
+                    "当前版本 v{current}，已是最新版本。\n\n更新源：{}",
+                    source_label(source)
+                ),
                 None,
             );
         }
@@ -603,11 +652,27 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
     };
 
     let version = update.version.clone();
-    set_phase(&app, UpdatePhase::Available { version: version.clone(), notes: update.body.clone() });
+    set_phase(
+        &app,
+        UpdatePhase::Available {
+            version: version.clone(),
+            notes: update.body.clone(),
+        },
+    );
 
     // 这个版本已经下过了（可能还是上一次运行里下的）：不重复下载，直接回到「待安装」。
-    if app.state::<UpdateState>().pending().is_some_and(|p| p.version == version) {
-        set_phase(&app, UpdatePhase::Ready { version, notes: update.body.clone() });
+    if app
+        .state::<UpdateState>()
+        .pending()
+        .is_some_and(|p| p.version == version)
+    {
+        set_phase(
+            &app,
+            UpdatePhase::Ready {
+                version,
+                notes: update.body.clone(),
+            },
+        );
         return;
     }
 
@@ -617,7 +682,11 @@ async fn run(app: tauri::AppHandle, mode: Mode) {
             Ok(()) => crate::show_toast_note(
                 &app,
                 &format!("更新 v{version} 已下载"),
-                if mode == Mode::Manual { "空闲时会自动安装" } else { "电脑空闲时会自动安装" },
+                if mode == Mode::Manual {
+                    "空闲时会自动安装"
+                } else {
+                    "电脑空闲时会自动安装"
+                },
             ),
             Err(e) => fail(&app, mode, e),
         }
@@ -676,14 +745,21 @@ pub fn spawn_download(app: tauri::AppHandle) {
                     &app,
                     "info",
                     "检查更新",
-                    format!("已是最新版本（更新源：{}），无需下载。", source_label(source)),
+                    format!(
+                        "已是最新版本（更新源：{}），无需下载。",
+                        source_label(source)
+                    ),
                     None,
                 );
                 return;
             }
             Err(e) => return fail(&app, Mode::Manual, check_error_text(&e, source)),
         };
-        if app.state::<UpdateState>().pending().is_some_and(|p| p.version == update.version) {
+        if app
+            .state::<UpdateState>()
+            .pending()
+            .is_some_and(|p| p.version == update.version)
+        {
             set_phase(
                 &app,
                 UpdatePhase::Ready {
@@ -703,7 +779,13 @@ pub fn spawn_download(app: tauri::AppHandle) {
 async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), String> {
     let version = update.version.clone();
     let notes = update.body.clone();
-    set_phase(app, UpdatePhase::Downloading { version: version.clone(), percent: None });
+    set_phase(
+        app,
+        UpdatePhase::Downloading {
+            version: version.clone(),
+            percent: None,
+        },
+    );
 
     // 进度回调按「整数百分比变化」才推一次事件：下载分片回调极密集，
     // 每片都 emit 会把 IPC 与前端渲染刷爆。
@@ -715,7 +797,9 @@ async fn download_into(app: &tauri::AppHandle, update: Update) -> Result<(), Str
         .download(
             move |chunk: usize, total: Option<u64>| {
                 let got = downloaded.fetch_add(chunk as u64, Ordering::Relaxed) + chunk as u64;
-                let Some(percent) = progress_percent(got, total) else { return };
+                let Some(percent) = progress_percent(got, total) else {
+                    return;
+                };
                 if !should_emit_progress(&last_percent, percent) {
                     return;
                 }
@@ -751,7 +835,12 @@ fn persist(
     let tmp = dir.join(format!("{file}.tmp"));
     std::fs::write(&tmp, bytes).map_err(|e| format!("写入更新包失败：{e}"))?;
     std::fs::rename(&tmp, dir.join(&file)).map_err(|e| format!("写入更新包失败：{e}"))?;
-    let pending = PendingUpdate { version: version.to_string(), file, kind: install_kind(), notes };
+    let pending = PendingUpdate {
+        version: version.to_string(),
+        file,
+        kind: install_kind(),
+        notes,
+    };
     write_pending(&dir, &pending)?;
     cleanup_packages(&dir, version);
     state.pending.lock().unwrap().replace(pending);
@@ -760,7 +849,8 @@ fn persist(
 
 /// `pending.json` 的原子写（临时文件 → rename）。
 fn write_pending(dir: &Path, pending: &PendingUpdate) -> Result<(), String> {
-    let json = serde_json::to_vec_pretty(pending).map_err(|e| format!("序列化更新状态失败：{e}"))?;
+    let json =
+        serde_json::to_vec_pretty(pending).map_err(|e| format!("序列化更新状态失败：{e}"))?;
     let tmp = dir.join("pending.json.tmp");
     std::fs::write(&tmp, json).map_err(|e| format!("写入更新状态失败：{e}"))?;
     std::fs::rename(&tmp, dir.join("pending.json")).map_err(|e| format!("写入更新状态失败：{e}"))
@@ -800,7 +890,9 @@ fn clear_pending(app: &tauri::AppHandle) {
 
 /// 删掉旧版本留下的包，别让 `updates/` 越积越多（只留当前待装的那个）。
 fn cleanup_packages(dir: &Path, keep_version: &str) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with("update-") && name != format!("update-{keep_version}.pkg") {
@@ -813,9 +905,13 @@ fn cleanup_packages(dir: &Path, keep_version: &str) {
 /// 忽略错误，下次启动再清）。
 #[cfg(windows)]
 fn cleanup_stale_binaries() {
-    let Ok(exe) = std::env::current_exe() else { return };
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
     let Some(dir) = exe.parent() else { return };
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with("kada.exe.old-") || name == "kada.exe.new" {
@@ -849,7 +945,12 @@ fn install_pending(app: &tauri::AppHandle, pending: &PendingUpdate, quiet: bool)
         }
         return;
     }
-    set_phase(app, UpdatePhase::Installing { version: pending.version.clone() });
+    set_phase(
+        app,
+        UpdatePhase::Installing {
+            version: pending.version.clone(),
+        },
+    );
     match kind {
         InstallKind::Portable => {
             if let Err(e) = apply_portable_update(app, pending) {
@@ -859,7 +960,9 @@ fn install_pending(app: &tauri::AppHandle, pending: &PendingUpdate, quiet: bool)
         InstallKind::Installed => {
             let app = app.clone();
             let pending = pending.clone();
-            tauri::async_runtime::spawn(async move { install_via_updater(app, pending, quiet).await });
+            tauri::async_runtime::spawn(
+                async move { install_via_updater(app, pending, quiet).await },
+            );
         }
     }
 }
@@ -900,7 +1003,10 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
         clear_pending(&app);
         set_phase(
             &app,
-            UpdatePhase::Available { version: update.version.clone(), notes: update.body.clone() },
+            UpdatePhase::Available {
+                version: update.version.clone(),
+                notes: update.body.clone(),
+            },
         );
         if !quiet {
             show_dialog(
@@ -942,7 +1048,9 @@ async fn install_via_updater(app: tauri::AppHandle, pending: PendingUpdate, quie
 fn apply_portable_update(app: &tauri::AppHandle, pending: &PendingUpdate) -> Result<(), String> {
     let package = app.state::<UpdateState>().dir.join(&pending.file);
     let exe = std::env::current_exe().map_err(|e| format!("取不到当前程序路径：{e}"))?;
-    let dir = exe.parent().ok_or_else(|| "取不到程序所在文件夹".to_string())?;
+    let dir = exe
+        .parent()
+        .ok_or_else(|| "取不到程序所在文件夹".to_string())?;
     let staged = dir.join("kada.exe.new");
     std::fs::copy(&package, &staged).map_err(|e| format!("准备更新文件失败：{e}"))?;
     let backup = dir.join(format!("kada.exe.old-{}", env!("CARGO_PKG_VERSION")));
@@ -1011,12 +1119,30 @@ mod tests {
     fn busy_only_while_in_flight() {
         assert!(!UpdatePhase::Idle.busy());
         assert!(!UpdatePhase::UpToDate.busy());
-        assert!(!UpdatePhase::Available { version: "1".into(), notes: None }.busy());
-        assert!(!UpdatePhase::Ready { version: "1".into(), notes: None }.busy());
-        assert!(!UpdatePhase::Error { message: "x".into() }.busy());
+        assert!(!UpdatePhase::Available {
+            version: "1".into(),
+            notes: None
+        }
+        .busy());
+        assert!(!UpdatePhase::Ready {
+            version: "1".into(),
+            notes: None
+        }
+        .busy());
+        assert!(!UpdatePhase::Error {
+            message: "x".into()
+        }
+        .busy());
         assert!(UpdatePhase::Checking.busy());
-        assert!(UpdatePhase::Downloading { version: "1".into(), percent: None }.busy());
-        assert!(UpdatePhase::Installing { version: "1".into() }.busy());
+        assert!(UpdatePhase::Downloading {
+            version: "1".into(),
+            percent: None
+        }
+        .busy());
+        assert!(UpdatePhase::Installing {
+            version: "1".into()
+        }
+        .busy());
     }
 
     /// 前端按 `phase` 字段分支渲染，序列化形状是前后端契约：改这里就要同步改 UI。
@@ -1025,7 +1151,10 @@ mod tests {
         let status = UpdateStatus {
             current: "0.1.0".into(),
             kind: InstallKind::Portable,
-            phase: UpdatePhase::Available { version: "0.2.0".into(), notes: Some("修了些东西".into()) },
+            phase: UpdatePhase::Available {
+                version: "0.2.0".into(),
+                notes: Some("修了些东西".into()),
+            },
         };
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["phase"], "available");
@@ -1037,7 +1166,10 @@ mod tests {
         let ready = serde_json::to_value(UpdateStatus {
             current: "0.1.0".into(),
             kind: InstallKind::Installed,
-            phase: UpdatePhase::Ready { version: "0.2.0".into(), notes: Some("修了些东西".into()) },
+            phase: UpdatePhase::Ready {
+                version: "0.2.0".into(),
+                notes: Some("修了些东西".into()),
+            },
         })
         .unwrap();
         assert_eq!(ready["phase"], "ready");
@@ -1070,15 +1202,24 @@ mod tests {
             InstallKind::Portable
         );
         // 没有注册表记录 / 取不到自身目录 → 按免安装处理（不擅自跑安装器）。
-        assert_eq!(classify_install(Some(installed), None), InstallKind::Portable);
-        assert_eq!(classify_install(None, Some(installed)), InstallKind::Portable);
+        assert_eq!(
+            classify_install(Some(installed), None),
+            InstallKind::Portable
+        );
+        assert_eq!(
+            classify_install(None, Some(installed)),
+            InstallKind::Portable
+        );
     }
 
     /// 形态决定读清单里哪个条目：只有 Windows 的免安装版有单独条目。
     #[test]
     fn manifest_target_only_portable_on_windows() {
         if cfg!(windows) {
-            assert_eq!(manifest_target(InstallKind::Portable), Some("windows-x86_64-portable"));
+            assert_eq!(
+                manifest_target(InstallKind::Portable),
+                Some("windows-x86_64-portable")
+            );
         } else {
             assert_eq!(manifest_target(InstallKind::Portable), None);
         }
@@ -1101,15 +1242,24 @@ mod tests {
         };
         write_pending(&dir, &pending).unwrap();
         assert!(load_pending(&dir, "1.0.0", InstallKind::Portable).is_some());
-        assert!(load_pending(&dir, "1.0.0", InstallKind::Installed).is_none(), "形态不符要丢弃");
+        assert!(
+            load_pending(&dir, "1.0.0", InstallKind::Installed).is_none(),
+            "形态不符要丢弃"
+        );
 
         write_pending(&dir, &pending).unwrap();
         std::fs::write(dir.join("update-2.0.0.pkg"), b"bytes").unwrap();
-        assert!(load_pending(&dir, "2.0.0", InstallKind::Portable).is_none(), "已是当前版本要丢弃");
+        assert!(
+            load_pending(&dir, "2.0.0", InstallKind::Portable).is_none(),
+            "已是当前版本要丢弃"
+        );
 
         write_pending(&dir, &pending).unwrap();
         let _ = std::fs::remove_file(dir.join("update-2.0.0.pkg"));
-        assert!(load_pending(&dir, "1.0.0", InstallKind::Portable).is_none(), "包丢了要丢弃");
+        assert!(
+            load_pending(&dir, "1.0.0", InstallKind::Portable).is_none(),
+            "包丢了要丢弃"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1165,7 +1315,10 @@ mod tests {
         assert!(msg.contains("更新清单格式不正确"), "{msg}");
 
         let msg = check_error_text(
-            &UpdateError::TargetsNotFound(vec!["windows-x86_64".into(), "windows-x86_64-portable".into()]),
+            &UpdateError::TargetsNotFound(vec![
+                "windows-x86_64".into(),
+                "windows-x86_64-portable".into(),
+            ]),
             UpdateSource::Ihomy,
         );
         assert!(msg.contains("windows-x86_64-portable"), "{msg}");

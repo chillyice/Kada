@@ -31,5 +31,8 @@ fn main() {
         Some(false) => println!("内存完整性（HVCI）：已关闭"),
         None => println!("内存完整性（HVCI）：读不到（非 Windows，或键不可读）"),
     }
-    println!("\n目录共 {} 类；要认的别的接管者往 `kada_core::DIVERTERS` 里加。", kada_core::DIVERTERS.len());
+    println!(
+        "\n目录共 {} 类；要认的别的接管者往 `kada_core::DIVERTERS` 里加。",
+        kada_core::DIVERTERS.len()
+    );
 }
