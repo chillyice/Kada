@@ -926,7 +926,7 @@ impl Engine {
 }
 
 /// 收集「当前层生效」的和弦触发条目：(成员键, 动作, 触发键文本, 名称)。
-/// 层语义与 [`crate::match_shortcut`] 一致：激活层条目优先、基础层条目兜底。
+/// 层语义与 [`crate::decide::match_shortcut`] 一致：激活层条目优先、基础层条目兜底。
 fn collect_chord_items(
     cfg: &Config,
     active_layer: Option<&str>,
@@ -1100,7 +1100,7 @@ impl Engine {
 }
 
 /// 收集「当前层生效」的键序列触发条目：(步骤, 动作, 触发键文本, 名称)。
-/// 层语义与 [`crate::match_shortcut`] 一致：激活层条目优先、基础层条目兜底。
+/// 层语义与 [`crate::decide::match_shortcut`] 一致：激活层条目优先、基础层条目兜底。
 fn collect_sequence_items(
     cfg: &Config,
     active_layer: Option<&str>,

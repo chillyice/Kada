@@ -4,7 +4,7 @@
 use crate::*;
 
 /// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
-/// 暂停是限时租约（[`PAUSE_LEASE_MS`]），前端若被中断来不及解除也不会永久卡死。
+/// 暂停是限时租约（[`crate::decide::PAUSE_LEASE_MS`]），前端若被中断来不及解除也不会永久卡死。
 #[tauri::command]
 pub(crate) fn set_paused(state: tauri::State<'_, KadaState>, paused: bool) {
     set_pause_lease(&state.paused_until, paused);
