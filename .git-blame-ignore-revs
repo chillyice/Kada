@@ -1,0 +1,12 @@
+# git blame 忽略列表（格式化 / 重命名等纯噪声提交）
+#
+# 用法（每个克隆配一次，本地生效）：
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+#
+# GitHub 网页端的 blame 会自动读这个文件；VS Code / GitLens 也认。
+# IDE 里如果仍看到格式化提交的作者，检查上面那条 config 是否配到了当前仓库。
+#
+# 只放「不改变行为」的提交：格式化、文件搬家。功能改动不许进来。
+
+# style: cargo fmt 全仓一次性格式化（不改逻辑）
+bfa92070b99fd50b167c5811675e6fd609bb272f

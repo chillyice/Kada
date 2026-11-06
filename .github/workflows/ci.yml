@@ -24,6 +24,11 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
 
+      # 格式闸门（quality plan Q-01）：行尾统一 LF（.gitattributes），
+      # 不通过就说明提交里有没格式化的代码——这种 diff 会把真正的逻辑改动淹掉。
+      - name: Rust formatting
+        run: cargo fmt --all -- --check
+
       - name: Node.js
         uses: actions/setup-node@v4
         with:
