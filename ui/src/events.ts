@@ -48,14 +48,16 @@ import {
   currentDraft,
   isConfirmPending,
   isListSection,
-  numpadKeyFromEvent,
   resolveConfirm,
   startBrandLogoLoop,
+  switchSection,
+} from "./main";
+import {
+  numpadKeyFromEvent,
   startCapture,
   startChordCapture,
   startSequenceCapture,
-  switchSection,
-} from "./main";
+} from "./input";
 import type { EntryTab, ListKind, Section } from "./types";
 
 // 事件绑定（U-03 从 main.ts 搬出）：所有 addEventListener 注册集中在这里——

@@ -25,16 +25,14 @@ import {
   askConfirm,
   currentDraft,
   currentKind,
-  endCapture,
   isListSection,
   render,
   save,
-  setCaptureCleanup,
-  stopCapture,
   stopRecIfAny,
   syncRailTab,
   switchSectionNow,
 } from "./main";
+import { endCapture, setCaptureCleanup, stopCapture } from "./input";
 import {
   collapseAllActions,
   expansionTriggerError,

@@ -4850,12 +4850,12 @@ mod tests {
     /// 前端这两处必须是**显式字面量**（不能 spread / 循环拼），否则解析不到——这是有意的约束。
     #[test]
     fn frontend_key_table_matches_core() {
-        // 拆包后键表跟着选项表去了 options.ts；录入映射（CODE_TABLE）仍在 main.ts。
+        // 拆包后键表跟着选项表去了 options.ts；录入映射（CODE_TABLE）跟着录入模块去了 input.ts。
         let read_src = |name: &str| {
             let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/");
             std::fs::read_to_string(format!("{dir}{name}")).expect("读取前端源码失败")
         };
-        let src = read_src("main.ts");
+        let input = read_src("input.ts");
         let names: std::collections::BTreeSet<&str> =
             Key::ALL.iter().map(|k| key_name(*k)).collect();
 
@@ -4876,7 +4876,7 @@ mod tests {
 
         // ② 录入时 KeyboardEvent.code → 键名的映射：每个显示名都必须是合法键名。
         for table in ["const CODE_TABLE", "const CODE_PUNCT"] {
-            for lit in quoted_literals(region(&src, table)) {
+            for lit in quoted_literals(region(&input, table)) {
                 assert!(
                     names.contains(lit.as_str()),
                     "{table} 里的「{lit}」不是合法键名"

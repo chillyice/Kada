@@ -39,7 +39,8 @@ import {
 } from "./options";
 import { refreshDirty, requestOpenDetail, runActions } from "./editor";
 import { syncMouseOpts, syncTouchpadOpts } from "./settings";
-import { isListSection, save, splitConflicts, startCapture, switchSection } from "./main";
+import { isListSection, save, splitConflicts, switchSection } from "./main";
+import { startCapture } from "./input";
 import type {
   Action,
   ActionBase,
