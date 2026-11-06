@@ -69,7 +69,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面入口：load/save/render 编排 + 组合键录入 + 提示框 / 标题栏 / 独立窗口（U-03 收尾中）
+  src/main.ts               # 配置界面入口：load/save/render 编排 + 组合键录入 + 启动分发（#toast/#hud/…）+ bind() 调用
   src/runs.ts               # 执行记录 / 时间线 / 流水线：一条 RunRecord 怎么画（含步骤详情与状态）
   src/messages.ts           # 消息中心 + 结果卡深链：记录列表 / 结果卡 / 定位到动作
   src/market.ts             # 卡带市场 + 卡带发布 + 导出卡带：索引缓存 / 搜索标签筛选 / 安装预览 / 机审块 / 发布页
@@ -78,6 +78,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   src/editor.ts             # 条目编辑页：草稿填充与保存 / 未保存守卫 / 模式与页签 / 改键下拉 / 键位层 / 触摸板与鼠标手势录入
   src/form.ts               # 动作列表（流程管线）：动作类型与字段 / 嵌套 / 拖拽排序 / 内联校验 / 命令脚本字段 / 冲突气泡与列表
   src/events.ts             # 事件绑定：左栏切页 / 搜索筛选 / 新增与行菜单 / 编辑页录入与页签 / 动作字段 / 全局快捷键与确认框 / 鸣谢墙
+  src/windows.ts            # 独立窗口：触发气泡 / HUD / 提示框 / 手势轨迹 / 设置变量输入框 / 复制菜单 / 托盘菜单 + 自绘标题栏
   src/state.ts              # 全局可变状态（`state` 对象）+ 未保存守卫的草稿签名 / 脏判定
   src/api.ts                # Tauri IPC 薄封装（fetch* / saveConfig）+ 只改 state 的刷新（runningTools / 设备 / 冲突）
   src/dom.ts                # 无状态 DOM 小工具：el / onClickAsync / deepClone / toast / domValue / intIn / fmtMs
