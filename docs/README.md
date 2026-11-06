@@ -69,7 +69,12 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/update.rs             # 软件更新：检查/下载/安装状态机 + 进度节流，Tauri 无关部分可单测
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
-  src/main.ts               # 配置界面：快捷键（动作流程图编排）/改键/文本扩展/宏录制/消息中心/设置页/卡带市场；草稿隔离 + 未保存守卫
+  src/main.ts               # 配置界面入口：列表 / 详情 / 编辑页 / 事件绑定 / 各独立窗口（island 越小越好，U-03 起按屏继续拆）
+  src/state.ts              # 全局可变状态（`state` 对象）+ 未保存守卫的草稿签名 / 脏判定
+  src/api.ts                # Tauri IPC 薄封装（fetch* / saveConfig）+ 只改 state 的刷新（runningTools / 设备 / 冲突）
+  src/dom.ts                # 无状态 DOM 小工具：el / onClickAsync / deepClone / toast / domValue / intIn / fmtMs
+  src/types.ts              # 全部 type / interface（配置、动作、运行记录、各类 payload）
+  src/options.ts            # 动作类型预设、各子操作、键名选项（Key::ALL 镜像）、摘要函数
   src/i18n.ts               # 界面文案：tr()/trt() 查表 + 静态 DOM 整块翻译；语言记 localStorage["kada.locale"]
   src/i18n.en.json          # 英文词典（中文原文 → English，key 与源码逐字一致；check-i18n 守门）
   src/mock.ts               # 纯浏览器演示模式：无 Tauri 壳时注入模拟 IPC + 演示配置（含各类事件桩，可直开浏览器调试）
