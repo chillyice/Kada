@@ -60,12 +60,6 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   examples/elevated_probe.rs    # 提权通道探针（Windows）：验 DACL / 双向身份校验 / 行协议往返 / 分片 / 坏 op 整批拒 / 断开即退（UAC 那段见 人工验证清单.md §31）
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）
-kada-prime/                 # Kada' 试验台（独立 crate，自带 [workspace]，Windows only，**不进主 workspace**）：鼠标手势 / 滚轮快捷键原型
-  src/main.rs               # 运行时状态机 + 鼠标钩子（右键吞/回放）+ 托盘菜单 + 轨迹浮层 + 配置读写
-  src/gesture.rs            # 方向量化 / 归一化 / 精确匹配 + 手势状态机（纯逻辑，带单测）
-  src/config.rs             # 配置模型（手势 / 滚轮 / 边缘 / 触发角）+ 原子写 + 默认手势
-  src/actions.rs            # 迷你动作执行器（组合键 / 启动 / 音量 / 通知 / 鼠标 …）+ 右键回放
-  README.md                 # 用法 / 配置格式 / 动作类型 / 已知限制（方案与取舍见 docs/鼠标手势与功能扩展规划.md）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
