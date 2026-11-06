@@ -4,7 +4,20 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { open as openFile, save as saveFile } from "@tauri-apps/plugin-dialog";
 import { installBrowserMock } from "./mock";
 import { applyLocale, localizeStaticDom, savedLocale, tr, trt } from "./i18n";
-import { runningTools } from "./state";
+import {
+  fetchCommandResults,
+  fetchConfig,
+  fetchRunRecords,
+  fetchUnread,
+  fetchUpdateStatus,
+  normalizeCommandScriptFields,
+  refreshConflicts,
+  refreshInputDevices,
+  refreshRunningTools,
+  saveConfig,
+} from "./api";
+import { deepClone, domValue, el, fmtMs, helpIcon, intIn, onClickAsync, toast } from "./dom";
+import { draftSignature, isDraftDirty, state } from "./state";
 import {
   ACTION_ICONS,
   ACTION_TYPE_LABELS,
@@ -46,6 +59,7 @@ import type {
   Action,
   ActionBase,
   ActionStep,
+  AnyEntry,
   AppOperation,
   BrightnessOperation,
   CaptureOperation,
@@ -55,10 +69,12 @@ import type {
   Config,
   Conflict,
   DesktopDirection,
+  DragPayload,
+  DropZone,
   ElevatedStatus,
   EntryTab,
-  ExternalTool,
   Folder,
+  FolderEntry,
   Gesture,
   HidppStatusView,
   HidppUnlockView,
@@ -88,6 +104,7 @@ import type {
   TextMode,
   TouchpadGesture,
   TransformOperation,
+  UpdateStatus,
   WaitTarget,
   WheelEdgeRule,
   WheelEdgeSpot,
@@ -127,17 +144,17 @@ function isListSection(s: Section): boolean {
 }
 // 当前编辑页的条目类型 / 草稿（仅列表分区有效，别在设置/消息页调）。
 function currentKind(): ListKind {
-  return section === "remaps"
+  return state.section === "remaps"
     ? "remap"
-    : section === "expansions"
+    : state.section === "expansions"
       ? "expansion"
-      : section === "gestures"
+      : state.section === "gestures"
         ? "gesture"
-        : section === "touchpads"
+        : state.section === "touchpads"
           ? "touchpad"
-          : section === "hotcorners"
+          : state.section === "hotcorners"
             ? "hotcorner"
-            : section === "wheeledges"
+            : state.section === "wheeledges"
               ? "wheeledge"
               : "shortcut";
 }
@@ -150,13 +167,13 @@ function currentDraft():
   | HotCornerRule
   | WheelEdgeRule
   | null {
-  if (section === "shortcuts") return draft;
-  if (section === "remaps") return remapDraft;
-  if (section === "expansions") return expansionDraft;
-  if (section === "gestures") return gestureDraft;
-  if (section === "touchpads") return touchpadDraft;
-  if (section === "hotcorners") return hotcornerDraft;
-  if (section === "wheeledges") return wheeledgeDraft;
+  if (state.section === "shortcuts") return state.draft;
+  if (state.section === "remaps") return state.remapDraft;
+  if (state.section === "expansions") return state.expansionDraft;
+  if (state.section === "gestures") return state.gestureDraft;
+  if (state.section === "touchpads") return state.touchpadDraft;
+  if (state.section === "hotcorners") return state.hotcornerDraft;
+  if (state.section === "wheeledges") return state.wheeledgeDraft;
   return null;
 }
 
@@ -170,84 +187,9 @@ if who == "" {
 set_var("greeting", "Hello, " + who);
 "Hello, " + who`;
 
-// ---- 状态 ----
-let cfg: Config = {
-  folders: [],
-  layers: [],
-  shortcuts: [],
-  remaps: [],
-  expansions: [],
-  settings: {
-    autostart: false,
-    paused: false,
-    action_timeout_ms: 30_000,
-    sequence_timeout_ms: 1000,
-    chord_timeout_ms: 1000,
-    show_status_hud: true,
-    trigger_toast: true,
-    hints: { visible: false, scale: 100, opacity: 92 },
-  },
-};
-let section: Section = "shortcuts";
-let selected: number | null = null; // 当前列表中的选中下标
-let draftNew = false; // 当前编辑是否为“新增”未保存项
-let draft: ShortcutItem | null = null; // 快捷键编辑草稿（隔离，保存才写回 cfg）
-let remapDraft: Remap | null = null; // 改键编辑草稿
-let expansionDraft: TextExpansion | null = null; // 文本扩展编辑草稿
-let gestureDraft: Gesture | null = null; // 鼠标操作（右键手势）编辑草稿
-let touchpadDraft: TouchpadGesture | null = null; // 触摸板手势编辑草稿
-let hotcornerDraft: HotCornerRule | null = null; // 角动作编辑草稿
-let wheeledgeDraft: WheelEdgeRule | null = null; // 边缘滚动编辑草稿
-// 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
-// 见「未保存改动守卫」一节。
-let draftBaseline: string | null = null;
-// 当前停留的页签（三类条目共用一份：打开条目时回到「动作/操作/展开文本」，打开后手动切换沿用；
-// 类型没有该页签时回落「详情」）。
-let entryTab: EntryTab = "work";
-let recording = false;
-let mouseRecording = false;
-let conflicts: Conflict[] = [];
-/** 本机键盘列表（「设备是」下拉的缓存，`null` = 还没拉过）。 */
-let inputDeviceList: InputDeviceList | null = null;
-let search = "";
-let messages: CommandResult[] = []; // 消息中心的普通消息（配置变更、热串失败等；执行记录另有表）
-let runs: RunRecord[] = []; // 执行记录（最新在前）：一次触发一条
-let msgIndex = 0; // 当前选中的记录 tab（在 msgEntries() 的合成列表里）
-let msgSelId = ""; // 当前选中的记录 id（跟着 tab 走，重绘不丢选中）
-let msgMode: "timeline" | "pipeline" = "pipeline"; // 记录卡片的两种展示方式（默认流水线：按执行顺序自上而下，最贴近「一次触发走了哪几步」）
-let msgSelStep = -1; // 时间线上选中的动作块（详情显示在下方）
-let unread = false; // 未读红点
-let conflictBubbleDismissed = false; // 快捷键列表里的冲突气泡是否已被用户消除
-let msgView: "results" | "conflicts" = "results"; // 消息页标签：执行记录 / 冲突
-// 复制/剪切板：存对象引用而非下标（增删/重排后仍指对那条），多选整批进同一份。
-// ponytail: 条目在编辑页「保存」时整条换新对象，这里的旧引用会失效（剪切粘贴到的是旧内容）——
-// 需要跨编辑保真时改成 kind + 下标并按内容重定位。
-let clipboard: { items: { kind: ListKind; obj: AnyEntry }[]; cut: boolean } | null = null;
-// 列表筛选（7.3-⑳）：与 search 叠加生效，从搜索栏右侧「筛选」菜单开关。
-let listFilter = { enabled: false, conflicted: false };
-// 多选集（Ctrl / Shift 点行，右键菜单作用于它）：存对象引用而非下标；切分区清空。
-let picked = new Set<object>();
-let pickAnchor: object | null = null; // Shift 范围选的锚点（上次单击 / Ctrl 点的那条）
-let menuAnchor: HTMLElement | null = null; // 当前打开的下拉菜单锚点（再点同一按钮 = 收起）
-let editingFolderId: string | null = null; // 正在行内改名的目录 id
-let editingLayerId: string | null = null; // 正在行内改名的层 id
+// 可变状态集中在 ./state（模块顶层不互相 import 对方的 let，避免 TDZ / 循环依赖）。
 
-// ---- 拖拽排序/移动 ----
-type DragPayload =
-  | { kind: "shortcut"; idx: number }
-  | { kind: "folder"; id: string }
-  | { kind: "remap"; idx: number }
-  | { kind: "expansion"; idx: number }
-  | { kind: "gesture"; idx: number }
-  | { kind: "touchpad"; idx: number }
-  | { kind: "hotcorner"; idx: number }
-  | { kind: "wheeledge"; idx: number };
-type DropZone =
-  | { kind: "root" }
-  | { kind: "folder"; folderId: string; pos: "before" | "into" | "after" }
-  | { kind: "row"; idx: number; pos: "before" | "after"; targetKind?: ListKind };
-let dragPayload: DragPayload | null = null; // 拖拽源
-let dragOverEl: HTMLElement | null = null; // 当前高亮目标（用于清 class）
+// ---- 列表折叠（属于列表渲染，U-03 再搬） ----
 const COLLAPSED_KEY = "kada.collapsedFolders";
 function loadCollapsed(): Set<string> {
   try {
@@ -264,61 +206,14 @@ function saveCollapsed() {
 const collapsedFolders = loadCollapsed(); // 折叠的目录 id（localStorage 持久化，重启保持）
 const collapsedActions = new WeakSet<Action>(); // 收起态的动作（按对象引用，重绘/重排后仍保持）
 
-// pointer events 拖拽状态（不依赖 WebView2 的 HTML5 DnD，避免其兼容性抖动）。
-interface DragState {
-  payload: DragPayload;
-  startX: number;
-  startY: number;
-  active: boolean; // 越过启动阈值后才算真正在拖拽
-  sourceEl: HTMLElement;
-}
-let dragState: DragState | null = null;
-let suppressClick = false; // 拖拽结束后抑制一次 click，避免误触「打开详情/折叠」
-
-// 动作拖拽（详情编辑器内）：改变动作顺序或逻辑纵深（拖进/拖出条件分支）。
-interface ActionDragState {
-  list: Action[]; // 源动作所在列表（数组引用）
-  index: number; // 源动作在列表中的下标
-  startX: number;
-  startY: number;
-  active: boolean; // 越过启动阈值后才算真正在拖拽
-  sourceEl: HTMLElement;
-}
-let actionDrag: ActionDragState | null = null;
-
 // ---- IPC ----
-async function refreshRunningTools(): Promise<void> {
-  try {
-    const tools = await invoke<ExternalTool[]>("running_tools");
-    runningTools.length = 0;
-    runningTools.push(...tools);
-  } catch {
-    runningTools.length = 0;
-  }
-}
-
-/**
- * 本机键盘列表（「设备是」下拉）。**按需拉、带缓存**：枚举设备要一个个开句柄（Linux 还要
- * 读 /dev/input），不该每次重绘都来一遍；「重新检测」传 `force` 才真的重扫。
- * 拉失败当作「没有可选项」（`supported` 仍按平台能力报）——手写标识的路一直开着。
- */
-async function refreshInputDevices(force = false): Promise<InputDeviceList> {
-  if (!force && inputDeviceList) return inputDeviceList;
-  try {
-    inputDeviceList = await invoke<InputDeviceList>("input_devices");
-  } catch {
-    inputDeviceList = { supported: false, devices: [] };
-  }
-  return inputDeviceList;
-}
-
 async function load() {
-  cfg = await invoke<Config>("get_config");
+  state.cfg = await fetchConfig();
   await refreshRunningTools();
-  messages = await invoke<CommandResult[]>("get_command_results");
-  runs = await invoke<RunRecord[]>("get_run_records");
-  unread = await invoke<boolean>("get_unread");
-  updateStatus = await invoke<UpdateStatus>("get_update_status");
+  state.messages = await fetchCommandResults();
+  state.runs = await fetchRunRecords();
+  state.unread = await fetchUnread();
+  updateStatus = await fetchUpdateStatus();
   await refreshConflicts();
   render();
   syncSettings();
@@ -327,87 +222,37 @@ async function load() {
 
 // 落盘整份配置。返回 true = 真的写进去了——未保存守卫靠它决定「保存并离开」要不要放行，
 // 失败还放行等于把用户的改动悄悄丢掉。
-// 保存前把命令 / 脚本新字段的空值归一成缺省（不落一堆空键；后端 serde 缺字段 = 默认值）。
-// 递归处理容器动作（禁用 / 分组 / 并行 / 条件判断）里的成员。
-function normalizeCommandScriptFields(actions: Action[]): Action[] {
-  return actions.map((a): Action => {
-    switch (a.type) {
-      case "disabled":
-        return {
-          type: "disabled",
-          action: normalizeCommandScriptFields([a.action])[0] as ActionBase,
-        };
-      case "group":
-        return { ...a, actions: normalizeCommandScriptFields(a.actions) };
-      case "parallel":
-        return { ...a, actions: normalizeCommandScriptFields(a.actions) };
-      case "if":
-        return {
-          ...a,
-          then: normalizeCommandScriptFields(a.then),
-          otherwise: normalizeCommandScriptFields(a.otherwise),
-        };
-      case "command":
-      case "script": {
-        const out: Record<string, unknown> = { ...a };
-        const wd = typeof out.working_dir === "string" ? out.working_dir.trim() : "";
-        if (wd) out.working_dir = wd;
-        else delete out.working_dir;
-        if (out.timeout_ms == null) delete out.timeout_ms;
-        if (!Array.isArray(out.ok_exit_codes) || out.ok_exit_codes.length === 0)
-          delete out.ok_exit_codes;
-        if (a.type === "script") {
-          if (!Array.isArray(out.interpreter_args) || out.interpreter_args.length === 0)
-            delete out.interpreter_args;
-          if (!Array.isArray(out.args) || out.args.length === 0) delete out.args;
-        }
-        // CS-17：默认的「照常再起一份」不落盘，老配置读进来就是它。
-        if (out.if_running === "run" || out.if_running == null) delete out.if_running;
-        return out as unknown as Action;
-      }
-      case "wait_for": {
-        const out: Record<string, unknown> = { ...a };
-        if (out.timeout_ms == null) delete out.timeout_ms;
-        if (out.interval_ms == null || out.interval_ms === 200) delete out.interval_ms;
-        return out as unknown as Action;
-      }
-      default:
-        return a;
-    }
-  });
-}
-
 async function save(): Promise<boolean> {
   // 命令 / 脚本的空执行字段归一成缺省（空串 / 空数组 / null 不落盘）。
   for (const key of ["shortcuts", "gestures", "touchpad_gestures", "hot_corners", "wheel_edges"] as const) {
-    const list = cfg[key] as unknown as { actions: Action[] }[] | undefined;
+    const list = state.cfg[key] as unknown as { actions: Action[] }[] | undefined;
     if (Array.isArray(list)) {
       for (const item of list) {
         if (Array.isArray(item.actions)) item.actions = normalizeCommandScriptFields(item.actions);
       }
     }
   }
-  cfg.shortcuts = cfg.shortcuts.filter(
+  state.cfg.shortcuts = state.cfg.shortcuts.filter(
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
-  cfg.expansions = cfg.expansions.filter((e) => e.trigger.trim().length > 0);
+  state.cfg.expansions = state.cfg.expansions.filter((e) => e.trigger.trim().length > 0);
   // 鼠标操作 / 触摸板手势：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
   // 触摸板手势例外：方向串可以留空（纯形状条目，靠 `template` 兜底），两者都空才剔。
-  if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => g.pattern.trim().length > 0);
-  if (cfg.touchpad_gestures)
-    cfg.touchpad_gestures = cfg.touchpad_gestures.filter(
+  if (state.cfg.gestures) state.cfg.gestures = state.cfg.gestures.filter((g) => g.pattern.trim().length > 0);
+  if (state.cfg.touchpad_gestures)
+    state.cfg.touchpad_gestures = state.cfg.touchpad_gestures.filter(
       (g) => g.pattern.trim().length > 0 || (g.template?.length ?? 0) > 0,
     );
   let ignored: string[] = [];
   try {
-    ignored = await invoke<string[]>("set_config", { config: cfg });
+    ignored = await saveConfig(state.cfg);
   } catch (e) {
     toast(trt`保存失败: ${e}`);
     render();
     return false;
   }
   await refreshConflicts();
-  const { errors: errs, warns, caps } = splitConflicts(conflicts);
+  const { errors: errs, warns, caps } = splitConflicts(state.conflicts);
   const notes: string[] = [];
   if (ignored.length) {
     // 只报数量的话，被丢掉的条目（比如「长按进入层」指向的层已不存在，整条改键作废）用户
@@ -429,38 +274,6 @@ async function save(): Promise<boolean> {
   else toast(tr("已保存"));
   render();
   return true;
-}
-
-// 冲突检测用到的配置：编辑时把草稿合并进 cfg，让冲突在录入触发键的当下就实时显示，
-// 而不是等保存后才知道。
-function currentConfigForConflicts(): Config {
-  if (section === "shortcuts" && draft) {
-    const d = draft;
-    const shortcuts = draftNew
-      ? [d, ...cfg.shortcuts]
-      : cfg.shortcuts.map((s, i) => (i === selected ? d : s));
-    return { ...cfg, shortcuts };
-  }
-  return cfg;
-}
-
-async function refreshConflicts() {
-  try {
-    const next = await invoke<Conflict[]>("get_conflicts", {
-      config: currentConfigForConflicts(),
-    });
-    // 冲突集合变化时，重新弹出气泡（用户消除过旧冲突、又出现新冲突时能再次被提醒）。
-    if (JSON.stringify(next) !== JSON.stringify(conflicts)) conflictBubbleDismissed = false;
-    conflicts = next;
-  } catch {
-    conflicts = [];
-  }
-}
-
-function toast(msg: string) {
-  const el = document.getElementById("save-status")!;
-  el.textContent = msg;
-  setTimeout(() => (el.textContent = ""), 2000);
 }
 
 // ---- 组合键录入 ----
@@ -749,24 +562,6 @@ function currentMods(e: KeyboardEvent | MouseEvent): string {
 }
 
 // ---- 渲染 ----
-function el(tag: string, cls?: string, text?: string): HTMLElement {
-  const n = document.createElement(tag);
-  if (cls) n.className = cls;
-  if (text !== undefined) n.textContent = text;
-  return n;
-}
-
-// 异步点击处理器：`addEventListener` 的回调必须返回 void，直接塞 async 函数会把 Promise
-// 丢在没人处理的地方（钩不到失败）。这里显式 void 掉；处理器内部仍要自己 try/catch 提示。
-function onClickAsync(target: HTMLElement, fn: () => Promise<void>): void {
-  target.addEventListener("click", () => void fn());
-}
-
-// 深拷贝（配置是纯 JSON 数据，用结构化克隆隔离编辑草稿，避免误写回原配置）。
-function deepClone<T>(x: T): T {
-  return structuredClone(x);
-}
-
 // 主题：纯 UI 偏好，不进 config.json（那份是跨机同步的，主题跟机器走而不是跟配置走），
 // 跟折叠目录一样存 localStorage。四个窗口加载的是同一个 index.html，所以在 <html> 上打
 // data-theme 就都跟着变（含气泡 / HUD / 提示框）。
@@ -795,26 +590,18 @@ function applyTheme(t: string) {
   }
 }
 
-// 圆圈问号：hover / 键盘聚焦显示说明（用于解释「会写入变量」的动作，如取文件属性/查询应用状态）。
-function helpIcon(tip: string): HTMLElement {
-  const s = el("span", "help", "?");
-  s.setAttribute("data-tip", tip);
-  s.tabIndex = 0;
-  return s;
-}
-
 function render() {
   renderListPane();
   renderConflictBubble();
   renderDetail();
   renderMessages();
-  if (section === "layers") renderLayers();
-  if (section === "market") renderMarketPage();
+  if (state.section === "layers") renderLayers();
+  if (state.section === "market") renderMarketPage();
 }
 
 function renderListPane() {
   // 重绘会整棵重建列表行：锚点被拆掉的菜单没地方可依附，先收掉。
-  if (menuAnchor && !menuAnchor.isConnected) hideRowMenu();
+  if (state.menuAnchor && !state.menuAnchor.isConnected) hideRowMenu();
   // 重绘会整棵重建列表行，焦点所在行先记下来、画完还回去——否则键盘用户
   // 一按回车，焦点就掉回 body，Tab 又得从头数（行内按钮失焦后统一还给行本身，
   // 够用且不用记行内哪个子元素）。合并列表里同一下标可能分属三类条目，选择器带上 kind。
@@ -828,28 +615,28 @@ function renderListPane() {
         : null;
   document.getElementById("list-pane")!.classList.toggle(
     "hidden",
-    section === "settings" ||
-      section === "layers" ||
-      section === "market" ||
-      section === "messages" ||
-      section === "help",
+    state.section === "settings" ||
+      state.section === "layers" ||
+      state.section === "market" ||
+      state.section === "messages" ||
+      state.section === "help",
   );
   // 多选集按各份条目数组剔除陈旧引用：条目被删后不该还留在集合里被批量操作。
   const all: object[] = [
-    ...cfg.shortcuts,
-    ...cfg.remaps,
-    ...cfg.expansions,
-    ...(cfg.gestures ?? []),
-    ...(cfg.touchpad_gestures ?? []),
-    ...(cfg.hot_corners ?? []),
-    ...(cfg.wheel_edges ?? []),
+    ...state.cfg.shortcuts,
+    ...state.cfg.remaps,
+    ...state.cfg.expansions,
+    ...(state.cfg.gestures ?? []),
+    ...(state.cfg.touchpad_gestures ?? []),
+    ...(state.cfg.hot_corners ?? []),
+    ...(state.cfg.wheel_edges ?? []),
   ];
-  for (const o of [...picked]) if (!all.includes(o)) picked.delete(o);
-  if (pickAnchor && !all.includes(pickAnchor)) pickAnchor = null;
+  for (const o of [...state.picked]) if (!all.includes(o)) state.picked.delete(o);
+  if (state.pickAnchor && !all.includes(state.pickAnchor)) state.pickAnchor = null;
   // 筛选按钮亮起来 = 有筛选在生效。
   document
     .getElementById("filter-btn")!
-    .classList.toggle("on", listFilter.enabled || listFilter.conflicted);
+    .classList.toggle("on", state.listFilter.enabled || state.listFilter.conflicted);
   renderEntries();
   if (actRow && actSel) {
     document.querySelector<HTMLElement>(`#list-pane ${actSel}`)?.focus();
@@ -859,8 +646,8 @@ function renderListPane() {
 // 条目是否卷入冲突：冲突文案把涉及的触发键/来源/层名都用「」引起来，拿条目的键去文案里找
 // （后端 Conflict 只带名称，无名条目靠不上 name；UI 与后端同包发布，文案格式一体演化）。
 function entryConflicted(keys: (string | null | undefined)[]): boolean {
-  if (!conflicts.length) return false;
-  return conflicts.some((c) =>
+  if (!state.conflicts.length) return false;
+  return state.conflicts.some((c) =>
     keys.some(
       (k) =>
         k &&
@@ -872,37 +659,37 @@ function entryConflicted(keys: (string | null | undefined)[]): boolean {
 
 // 三个分区各自的「当前是否可见」= 搜索 ∧ 筛选。渲染循环与「全选」共用，避免两份口径漂移。
 function shortcutVisible(s: ShortcutItem): boolean {
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${s.triggers.join(" ")} ${s.name ?? ""} ${s.description ?? ""} ${s.actions
       .map(actionSummary)
       .join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !s.enabled) return false;
-  if (listFilter.conflicted && !entryConflicted([...s.triggers, s.layer ? layerName(s.layer) : null]))
+  if (state.listFilter.enabled && !s.enabled) return false;
+  if (state.listFilter.conflicted && !entryConflicted([...s.triggers, s.layer ? layerName(s.layer) : null]))
     return false;
   return true;
 }
 
 function remapVisible(r: Remap): boolean {
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${r.from} ${remapSummary(r)} ${r.name ?? ""} ${r.description ?? ""} ${layerName(r.hold_layer)} ${layerName(r.lock_layer)}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !r.enabled) return false;
-  if (listFilter.conflicted && !entryConflicted([r.from, r.layer ? layerName(r.layer) : null]))
+  if (state.listFilter.enabled && !r.enabled) return false;
+  if (state.listFilter.conflicted && !entryConflicted([r.from, r.layer ? layerName(r.layer) : null]))
     return false;
   return true;
 }
 
 function expansionVisible(e: TextExpansion): boolean {
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q && !`${e.name ?? ""} ${e.description ?? ""} ${e.trigger} ${e.replace}`.toLowerCase().includes(q)) return false;
-  if (listFilter.enabled && !e.enabled) return false;
+  if (state.listFilter.enabled && !e.enabled) return false;
   // 文本扩展不参与冲突检测：「有冲突」筛选开着时它必然不命中（与另两类保持同一口径）。
-  if (listFilter.conflicted) return false;
+  if (state.listFilter.conflicted) return false;
   return true;
 }
 
@@ -941,7 +728,7 @@ function kindIcon(kind: ListKind): HTMLElement {
 
 // 「正在编辑页里打开的那条」——合并列表后三类共用一个下标变量，得连类型一起比。
 function isSel(kind: ListKind, idx: number): boolean {
-  return section === KIND_SECTION[kind] && selected === idx;
+  return state.section === KIND_SECTION[kind] && state.selected === idx;
 }
 
 // 合并列表：每层先条目（快捷键 → 改键 → 文本扩展）后子目录，根级同样排在目录树之前。
@@ -950,27 +737,27 @@ function renderEntries() {
   list.replaceChildren();
 
   const renderIn = (folderId: string | null, depth: number) => {
-    cfg.shortcuts.forEach((s, i) => {
+    state.cfg.shortcuts.forEach((s, i) => {
       if ((s.folder ?? null) === folderId && shortcutVisible(s)) list.append(shortcutRow(s, i, depth));
     });
     // 改键/文本扩展与快捷键同规则归目录：换目录、换位置都靠拖拽（落点见 nearestDropZone）。
-    cfg.remaps.forEach((r, i) => {
+    state.cfg.remaps.forEach((r, i) => {
       if ((r.folder ?? null) === folderId && remapVisible(r)) list.append(remapRow(r, i, depth));
     });
-    cfg.expansions.forEach((e, i) => {
+    state.cfg.expansions.forEach((e, i) => {
       if ((e.folder ?? null) === folderId && expansionVisible(e)) list.append(expansionRow(e, i, depth));
     });
     // 鼠标类三类（手势 / 角动作 / 边缘滚动）共用 `order`，可互相换位并放进任意目录。
     const mouseRows: { kind: "gesture" | "hotcorner" | "wheeledge"; idx: number; order: number; rank: number; row: () => HTMLElement }[] = [];
-    (cfg.gestures ?? []).forEach((g, i) => {
+    (state.cfg.gestures ?? []).forEach((g, i) => {
       if ((g.folder ?? null) === folderId && gestureVisible(g))
         mouseRows.push({ kind: "gesture", idx: i, order: g.order ?? 0, rank: 0, row: () => gestureRow(g, i, depth) });
     });
-    (cfg.hot_corners ?? []).forEach((r, i) => {
+    (state.cfg.hot_corners ?? []).forEach((r, i) => {
       if ((r.folder ?? null) === folderId && hotCornerVisible(r))
         mouseRows.push({ kind: "hotcorner", idx: i, order: r.order ?? 0, rank: 1, row: () => hotCornerRow(r, i, depth) });
     });
-    (cfg.wheel_edges ?? []).forEach((r, i) => {
+    (state.cfg.wheel_edges ?? []).forEach((r, i) => {
       if ((r.folder ?? null) === folderId && wheelEdgeVisible(r))
         mouseRows.push({ kind: "wheeledge", idx: i, order: r.order ?? 0, rank: 2, row: () => wheelEdgeRow(r, i, depth) });
     });
@@ -979,7 +766,7 @@ function renderEntries() {
       .forEach((m) => list.append(m.row()));
     // 触摸板手势**自成一组**：自己的 `order` 序列、排在鼠标操作之后，不与它们跨类型换位。
     const padRows: { idx: number; order: number; row: () => HTMLElement }[] = [];
-    (cfg.touchpad_gestures ?? []).forEach((g, i) => {
+    (state.cfg.touchpad_gestures ?? []).forEach((g, i) => {
       if ((g.folder ?? null) === folderId && touchpadVisible(g))
         padRows.push({ idx: i, order: g.order ?? 0, row: () => touchpadRow(g, i, depth) });
     });
@@ -989,9 +776,9 @@ function renderEntries() {
   };
 
   // 搜索或筛选期间强制展开目录：收着的目录会把命中的条目藏起来（筛选形同没生效）。
-  const searching = search.trim() !== "" || listFilter.enabled || listFilter.conflicted;
+  const searching = state.search.trim() !== "" || state.listFilter.enabled || state.listFilter.conflicted;
   const renderFolders = (parentId: string | null, depth: number) => {
-    for (const f of cfg.folders.filter((x) => (x.parent ?? null) === parentId)) {
+    for (const f of state.cfg.folders.filter((x) => (x.parent ?? null) === parentId)) {
       const collapsed = !searching && collapsedFolders.has(f.id);
       list.append(folderRow(f, depth, collapsed));
       if (collapsed) continue;
@@ -1031,23 +818,23 @@ function listRow(li: HTMLElement, obj: object, kind: ListKind, idx: number) {
   li.dataset.idx = String(idx);
   makeRow(li, () => void requestOpenDetail(idx, false, kind), { selected: isSel(kind, idx) });
   li.addEventListener("click", (e) => {
-    if (suppressClick) return;
+    if (state.suppressClick) return;
     if ((e.target as HTMLElement).closest("input, button")) return; // 菜单/按钮不打开详情
     if (e.shiftKey) {
       pickRange(obj);
       return;
     }
     if (e.ctrlKey || e.metaKey) {
-      pickAnchor = obj;
+      state.pickAnchor = obj;
       togglePicked(obj);
       return;
     }
-    pickAnchor = obj; // 记录锚点，之后的 Shift 点击从这条开始范围选
+    state.pickAnchor = obj; // 记录锚点，之后的 Shift 点击从这条开始范围选
     void requestOpenDetail(idx, false, kind);
   });
   li.addEventListener("contextmenu", (e) => {
     e.preventDefault();
-    if (!picked.has(obj)) selectOnly(obj, li);
+    if (!state.picked.has(obj)) selectOnly(obj, li);
     showMenu(li, selectionMenuItems(), { x: e.clientX, y: e.clientY });
   });
 }
@@ -1060,10 +847,10 @@ function pickRange(target: object) {
     .filter((o): o is object => o !== null);
   const folder = (target as { folder?: string | null }).folder ?? null;
   const inSame = (o: object) => ((o as { folder?: string | null }).folder ?? null) === folder;
-  const a = pickAnchor ? objs.indexOf(pickAnchor) : -1;
+  const a = state.pickAnchor ? objs.indexOf(state.pickAnchor) : -1;
   const b = objs.indexOf(target);
-  if (a < 0 || b < 0 || !inSame(pickAnchor as object)) picked.add(target);
-  else for (const o of objs.slice(Math.min(a, b), Math.max(a, b) + 1)) if (inSame(o)) picked.add(o);
+  if (a < 0 || b < 0 || !inSame(state.pickAnchor as object)) state.picked.add(target);
+  else for (const o of objs.slice(Math.min(a, b), Math.max(a, b) + 1)) if (inSame(o)) state.picked.add(o);
   renderListPane();
 }
 
@@ -1072,21 +859,21 @@ function rowObject(li: HTMLElement): object | null {
   const idx = Number(li.dataset.idx);
   const kind = li.dataset.kind as ListKind;
   return kind === "shortcut"
-    ? (cfg.shortcuts[idx] ?? null)
+    ? (state.cfg.shortcuts[idx] ?? null)
     : kind === "remap"
-      ? (cfg.remaps[idx] ?? null)
+      ? (state.cfg.remaps[idx] ?? null)
       : kind === "expansion"
-        ? (cfg.expansions[idx] ?? null)
+        ? (state.cfg.expansions[idx] ?? null)
         : kind === "gesture"
-          ? ((cfg.gestures ?? [])[idx] ?? null)
+          ? ((state.cfg.gestures ?? [])[idx] ?? null)
           : kind === "touchpad"
-            ? ((cfg.touchpad_gestures ?? [])[idx] ?? null)
+            ? ((state.cfg.touchpad_gestures ?? [])[idx] ?? null)
             : null;
 }
 
 // 只选中这一行（右键/⋯菜单用）：不整棵重绘，菜单锚点还挂在按钮上，重绘会把它拆掉。
 function selectOnly(obj: object, li: HTMLElement) {
-  picked = new Set([obj]);
+  state.picked = new Set([obj]);
   document.querySelectorAll("#shortcut-list .picked").forEach((n) => n.classList.remove("picked"));
   li.classList.add("picked");
 }
@@ -1096,7 +883,7 @@ function shortcutRow(s: ShortcutItem, idx: number, depth: number): HTMLElement {
     "li",
     "row" +
       (isSel("shortcut", idx) ? " selected" : "") +
-      (picked.has(s) ? " picked" : "") +
+      (state.picked.has(s) ? " picked" : "") +
       (s.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1127,7 +914,7 @@ function remapRow(r: Remap, idx: number, depth: number): HTMLElement {
     "li",
     "row" +
       (isSel("remap", idx) ? " selected" : "") +
-      (picked.has(r) ? " picked" : "") +
+      (state.picked.has(r) ? " picked" : "") +
       (r.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1153,7 +940,7 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
     "li",
     "row" +
       (isSel("expansion", idx) ? " selected" : "") +
-      (picked.has(e) ? " picked" : "") +
+      (state.picked.has(e) ? " picked" : "") +
       (e.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1174,13 +961,13 @@ function expansionRow(e: TextExpansion, idx: number, depth: number): HTMLElement
 // 鼠标操作（手势 / 角动作 / 边缘滚动）这类新功能是否已由用户显式打开（设置页「鼠标操作」
 // 总开关，默认关）。关着 = 列表里不出现这几类、新增菜单里没有它们、钩子也不拦右键。
 function mouseFeaturesEnabled(): boolean {
-  return cfg.settings.experimental === true;
+  return state.cfg.settings.experimental === true;
 }
 
 // 触摸板手势是否已打开（它**有自己的开关**，与鼠标操作互不影响；默认关）。
 // 关着 = 列表 / 模式菜单里不出现，也不采集（触发键照常输出）。
 function touchpadFeaturesEnabled(): boolean {
-  return cfg.settings.touchpad === true;
+  return state.cfg.settings.touchpad === true;
 }
 
 /** 角动作 / 边缘滚动：位置 + 动作（详情 / 层 / 条件与其它条目同口径）。 */
@@ -1191,7 +978,7 @@ function gestureRow(g: Gesture, idx: number, depth: number): HTMLElement {
     "li",
     "row" +
       (isSel("gesture", idx) ? " selected" : "") +
-      (picked.has(g) ? " picked" : "") +
+      (state.picked.has(g) ? " picked" : "") +
       (g.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1216,7 +1003,7 @@ function touchpadRow(g: TouchpadGesture, idx: number, depth: number): HTMLElemen
     "li",
     "row" +
       (isSel("touchpad", idx) ? " selected" : "") +
-      (picked.has(g) ? " picked" : "") +
+      (state.picked.has(g) ? " picked" : "") +
       (g.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1241,24 +1028,24 @@ function touchpadRow(g: TouchpadGesture, idx: number, depth: number): HTMLElemen
 // 鼠标操作条目的可见性：搜索命中名称 / 方向串 / 动作摘要；筛选只认「启用的」。
 function gestureVisible(g: Gesture): boolean {
   if (!mouseFeaturesEnabled()) return false; // 总闸关着 = 这一类不出现
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${g.pattern} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !g.enabled) return false;
+  if (state.listFilter.enabled && !g.enabled) return false;
   return true;
 }
 
 // 触摸板手势的可见性：额外认触发键（用户常按「CapsLock」搜）。
 function touchpadVisible(g: TouchpadGesture): boolean {
   if (!touchpadFeaturesEnabled()) return false;
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${g.pattern} ${g.trigger ?? ""} ${g.name ?? ""} ${g.description ?? ""} ${g.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !g.enabled) return false;
+  if (state.listFilter.enabled && !g.enabled) return false;
   return true;
 }
 
@@ -1289,7 +1076,7 @@ function hotCornerRow(r: HotCornerRule, idx: number, depth: number): HTMLElement
     "li",
     "row" +
       (isSel("hotcorner", idx) ? " selected" : "") +
-      (picked.has(r) ? " picked" : "") +
+      (state.picked.has(r) ? " picked" : "") +
       (r.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1313,7 +1100,7 @@ function wheelEdgeRow(r: WheelEdgeRule, idx: number, depth: number): HTMLElement
     "li",
     "row" +
       (isSel("wheeledge", idx) ? " selected" : "") +
-      (picked.has(r) ? " picked" : "") +
+      (state.picked.has(r) ? " picked" : "") +
       (r.enabled ? "" : " off"),
   );
   li.style.marginLeft = `${depth * TREE_STEP + ITEM_OFF}px`;
@@ -1334,23 +1121,23 @@ function wheelEdgeRow(r: WheelEdgeRule, idx: number, depth: number): HTMLElement
 
 function hotCornerVisible(r: HotCornerRule): boolean {
   if (!mouseFeaturesEnabled()) return false;
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${spotLabel(r.spot)} ${r.name ?? ""} ${r.description ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !r.enabled) return false;
+  if (state.listFilter.enabled && !r.enabled) return false;
   return true;
 }
 
 function wheelEdgeVisible(r: WheelEdgeRule): boolean {
   if (!mouseFeaturesEnabled()) return false;
-  const q = search.trim().toLowerCase();
+  const q = state.search.trim().toLowerCase();
   if (q) {
     const hay = `${spotLabel(r.edge)} ${r.name ?? ""} ${r.description ?? ""} ${r.actions.map(actionSummary).join(" ")}`.toLowerCase();
     if (!hay.includes(q)) return false;
   }
-  if (listFilter.enabled && !r.enabled) return false;
+  if (state.listFilter.enabled && !r.enabled) return false;
   return true;
 }
 
@@ -1361,17 +1148,17 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
     li,
     () => {
       // 与点击同一路径：无子内容或重命名中不切换（没东西可展开）。
-      if (folderHasChildren(f.id) && editingFolderId !== f.id) toggleFolder(f.id);
+      if (folderHasChildren(f.id) && state.editingFolderId !== f.id) toggleFolder(f.id);
     },
     { expanded: !collapsed },
   );
-  if (editingFolderId !== f.id) {
+  if (state.editingFolderId !== f.id) {
     attachDragStart(li, { kind: "folder", id: f.id });
   }
   const hasChildren = folderHasChildren(f.id);
   li.append(el("span", "folder-arrow", hasChildren ? (collapsed ? "▸" : "▾") : ""));
   li.append(el("span", "folder-ico", "📁"));
-  if (editingFolderId === f.id) {
+  if (state.editingFolderId === f.id) {
     const inp = el("input", "folder-input") as HTMLInputElement;
     inp.value = f.name;
     inp.placeholder = tr("文件夹名");
@@ -1386,7 +1173,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
         dropFolderTree(f.id);
         saveCollapsed();
       }
-      editingFolderId = null;
+      state.editingFolderId = null;
       void save();
       render();
     };
@@ -1397,7 +1184,7 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
         commit();
       } else if (e.key === "Escape") {
         done = true;
-        editingFolderId = null;
+        state.editingFolderId = null;
         render();
       }
     });
@@ -1422,9 +1209,9 @@ function folderRow(f: Folder, depth: number, collapsed: boolean): HTMLElement { 
   });
 
   // 点击目录行切换展开/收缩（重命名态与三点菜单/输入框除外）。
-  if (hasChildren && editingFolderId !== f.id) {
+  if (hasChildren && state.editingFolderId !== f.id) {
     li.addEventListener("click", (e) => {
-      if (suppressClick) return;
+      if (state.suppressClick) return;
       if ((e.target as HTMLElement).closest("button, input")) return;
       toggleFolder(f.id);
     });
@@ -1441,7 +1228,7 @@ function folderMenuItems(f: Folder): MenuItem[] {
     { label: tr("重命名"), run: () => renameFolder(f.id) },
   ];
   // 目录只装快捷键：剪贴板里没有快捷键时，粘到目录里没有意义。
-  if (clipboard?.items.some((i) => i.kind === "shortcut"))
+  if (state.clipboard?.items.some((i) => i.kind === "shortcut"))
     items.push({ label: tr("粘贴到该文件夹"), run: () => pasteIntoFolder(f.id) });
   const inFolder = picksInFolder(f.id);
   if (inFolder.length)
@@ -1467,7 +1254,7 @@ type SnippetPick = { kind: ListKind; idx: number };
 // 当前选中集的点名表（对象引用 → 各自数组里的下标；不在任何数组里的略过）。
 function picksOfSelection(): SnippetPick[] {
   const picks: SnippetPick[] = [];
-  for (const o of picked) {
+  for (const o of state.picked) {
     const kind = kindOf(o);
     if (!kind) continue;
     const idx = arrOf(kind).indexOf(o as AnyEntry);
@@ -1482,7 +1269,7 @@ function picksInFolder(rootId: string): SnippetPick[] {
   // 目录树可嵌套，扫到不再新增为止（目录数量级很小，一趟轮询足够）。
   for (let grew = true; grew; ) {
     grew = false;
-    for (const f of cfg.folders) {
+    for (const f of state.cfg.folders) {
       if (f.parent && ids.has(f.parent) && !ids.has(f.id)) {
         ids.add(f.id);
         grew = true;
@@ -1494,9 +1281,9 @@ function picksInFolder(rootId: string): SnippetPick[] {
     arr.forEach((e, idx) => {
       if (e.folder && ids.has(e.folder)) picks.push({ kind, idx });
     });
-  scan(cfg.shortcuts, "shortcut");
-  scan(cfg.remaps, "remap");
-  scan(cfg.expansions, "expansion");
+  scan(state.cfg.shortcuts, "shortcut");
+  scan(state.cfg.remaps, "remap");
+  scan(state.cfg.expansions, "expansion");
   return picks;
 }
 
@@ -1731,7 +1518,7 @@ function renderScanBox(box: HTMLElement, scan: SnippetScan | null, error = "") {
 const DEFAULT_SNIPPET_INDEX_URL = "https://ihomy.top/files/kada/snippets/index.json";
 
 function marketIsOfficial(): boolean {
-  const url = cfg.settings.snippet_index_url?.trim();
+  const url = state.cfg.settings.snippet_index_url?.trim();
   return !url || url === DEFAULT_SNIPPET_INDEX_URL;
 }
 
@@ -2130,7 +1917,7 @@ type MenuItem = { label: string; run: () => void; on?: boolean };
 
 // 选中集上的操作（行内 ⋯ 与右键菜单同一套，作用对象都是 picked）。
 function selectionMenuItems(): MenuItem[] {
-  const n = picked.size;
+  const n = state.picked.size;
   return [
     { label: n > 1 ? trt`各复制一份（${n} 项）` : tr("复制一份"), run: duplicateSelection },
     { label: tr("复制"), run: () => copySelection(false) },
@@ -2145,7 +1932,7 @@ function selectionMenuItems(): MenuItem[] {
 
 // 行内 ⋯：这行不在选中集里就先只选它，然后出选中集菜单（与右键一致）。
 function openRowMenu(anchor: HTMLElement, li: HTMLElement, obj: object) {
-  if (!picked.has(obj)) selectOnly(obj, li);
+  if (!state.picked.has(obj)) selectOnly(obj, li);
   showMenu(anchor, selectionMenuItems());
 }
 
@@ -2153,7 +1940,7 @@ function openRowMenu(anchor: HTMLElement, li: HTMLElement, obj: object) {
 // 同一个锚点再点一次 = 收起（不重复弹出）。
 function showMenu(anchor: HTMLElement, items: MenuItem[], at?: { x: number; y: number }) {
   const menu = document.getElementById("row-menu")!;
-  if (menuAnchor === anchor && !menu.classList.contains("hidden")) {
+  if (state.menuAnchor === anchor && !menu.classList.contains("hidden")) {
     hideRowMenu();
     return;
   }
@@ -2192,28 +1979,28 @@ function showMenu(anchor: HTMLElement, items: MenuItem[], at?: { x: number; y: n
       hideRowMenu();
     }
   };
-  menuAnchor = anchor;
+  state.menuAnchor = anchor;
 }
 
 function hideRowMenu() {
   document.getElementById("row-menu")!.classList.add("hidden");
-  menuAnchor = null;
+  state.menuAnchor = null;
 }
 
 // 点到菜单/它的锚点外面 = 关菜单（锚点自己的 click 先跑，这里要能分辨）。
 function closeMenuUnlessIn(t: HTMLElement) {
-  if (!menuAnchor) return;
-  if (menuAnchor.contains(t) || t.closest("#row-menu")) return;
+  if (!state.menuAnchor) return;
+  if (state.menuAnchor.contains(t) || t.closest("#row-menu")) return;
   hideRowMenu();
 }
 
 // 目录是否有子内容（子目录或条目），用于决定是否显示展开箭头。
 function folderHasChildren(id: string): boolean {
   return (
-    cfg.folders.some((f) => f.parent === id) ||
-    cfg.shortcuts.some((s) => s.folder === id) ||
-    cfg.remaps.some((r) => r.folder === id) ||
-    cfg.expansions.some((e) => e.folder === id)
+    state.cfg.folders.some((f) => f.parent === id) ||
+    state.cfg.shortcuts.some((s) => s.folder === id) ||
+    state.cfg.remaps.some((r) => r.folder === id) ||
+    state.cfg.expansions.some((e) => e.folder === id)
   );
 }
 
@@ -2233,13 +2020,13 @@ function newFolderId(): string {
 
 function addFolder(parentId: string | null) {
   const f: Folder = { id: newFolderId(), name: "", parent: parentId };
-  cfg.folders.push(f);
-  editingFolderId = f.id;
+  state.cfg.folders.push(f);
+  state.editingFolderId = f.id;
   renderListPane();
 }
 
 function renameFolder(id: string) {
-  editingFolderId = id;
+  state.editingFolderId = id;
   renderListPane();
 }
 
@@ -2299,13 +2086,13 @@ function shortcutLabel(s: ShortcutItem): string {
 }
 
 const FOLDER_ENTRY_KINDS: [string, () => FolderEntry[]][] = [
-  [tr("快捷键"), () => cfg.shortcuts],
-  [tr("改键"), () => cfg.remaps],
-  [tr("文本扩展"), () => cfg.expansions],
-  [tr("鼠标操作"), () => (cfg.gestures ?? []) as unknown as FolderEntry[]],
-  [tr("触摸板手势"), () => (cfg.touchpad_gestures ?? []) as unknown as FolderEntry[]],
-  [tr("角动作"), () => (cfg.hot_corners ?? []) as unknown as FolderEntry[]],
-  [tr("边缘滚动"), () => (cfg.wheel_edges ?? []) as unknown as FolderEntry[]],
+  [tr("快捷键"), () => state.cfg.shortcuts],
+  [tr("改键"), () => state.cfg.remaps],
+  [tr("文本扩展"), () => state.cfg.expansions],
+  [tr("鼠标操作"), () => (state.cfg.gestures ?? []) as unknown as FolderEntry[]],
+  [tr("触摸板手势"), () => (state.cfg.touchpad_gestures ?? []) as unknown as FolderEntry[]],
+  [tr("角动作"), () => (state.cfg.hot_corners ?? []) as unknown as FolderEntry[]],
+  [tr("边缘滚动"), () => (state.cfg.wheel_edges ?? []) as unknown as FolderEntry[]],
 ];
 
 // 这批目录（含子目录）里各类条目各有多少条，0 条的不报。
@@ -2326,12 +2113,12 @@ function dropFolderTree(id: string) {
       if (f && ids.has(f)) arr.splice(i, 1);
     }
   }
-  cfg.folders = cfg.folders.filter((f) => !ids.has(f.id));
+  state.cfg.folders = state.cfg.folders.filter((f) => !ids.has(f.id));
   for (const fid of ids) collapsedFolders.delete(fid);
 }
 
 async function deleteFolder(id: string) {
-  const target = cfg.folders.find((f) => f.id === id);
+  const target = state.cfg.folders.find((f) => f.id === id);
   if (!target) return;
   const detail = folderEntryCounts(collectDescendantIds(id))
     .map(([label, n]) => trt`${n} 条${label}`)
@@ -2346,8 +2133,8 @@ async function deleteFolder(id: string) {
   dropFolderTree(id);
   saveCollapsed();
   discardDraft();
-  draftNew = false;
-  selected = null;
+  state.draftNew = false;
+  state.selected = null;
   void save();
 }
 
@@ -2356,7 +2143,7 @@ function collectDescendantIds(id: string): Set<string> {
   let changed = true;
   while (changed) {
     changed = false;
-    for (const f of cfg.folders) {
+    for (const f of state.cfg.folders) {
       if (f.parent && ids.has(f.parent) && !ids.has(f.id)) {
         ids.add(f.id);
         changed = true;
@@ -2367,42 +2154,32 @@ function collectDescendantIds(id: string): Set<string> {
 }
 
 // 选中集操作（合并列表里各类条目共存，靠内容定位而不是下标）。
-type AnyEntry =
-  | ShortcutItem
-  | Remap
-  | TextExpansion
-  | Gesture
-  | TouchpadGesture
-  | HotCornerRule
-  | WheelEdgeRule;
-// **有目录归属的**条目（鼠标类触发源没有目录：它们是全局触发源，不参与目录树）。
-type FolderEntry = ShortcutItem | Remap | TextExpansion;
-
+// AnyEntry / FolderEntry 定义在 ./types。
 function kindOf(o: object): ListKind | null {
-  if ((cfg.shortcuts as object[]).includes(o)) return "shortcut";
-  if ((cfg.remaps as object[]).includes(o)) return "remap";
-  if ((cfg.expansions as object[]).includes(o)) return "expansion";
-  if ((cfg.gestures as object[]).includes(o)) return "gesture";
-  if ((cfg.touchpad_gestures as object[]).includes(o)) return "touchpad";
-  if ((cfg.hot_corners as object[]).includes(o)) return "hotcorner";
-  if ((cfg.wheel_edges as object[]).includes(o)) return "wheeledge";
+  if ((state.cfg.shortcuts as object[]).includes(o)) return "shortcut";
+  if ((state.cfg.remaps as object[]).includes(o)) return "remap";
+  if ((state.cfg.expansions as object[]).includes(o)) return "expansion";
+  if ((state.cfg.gestures as object[]).includes(o)) return "gesture";
+  if ((state.cfg.touchpad_gestures as object[]).includes(o)) return "touchpad";
+  if ((state.cfg.hot_corners as object[]).includes(o)) return "hotcorner";
+  if ((state.cfg.wheel_edges as object[]).includes(o)) return "wheeledge";
   return null;
 }
 
 function arrOf(kind: ListKind): AnyEntry[] {
   return kind === "shortcut"
-    ? cfg.shortcuts
+    ? state.cfg.shortcuts
     : kind === "remap"
-      ? cfg.remaps
+      ? state.cfg.remaps
       : kind === "expansion"
-        ? cfg.expansions
+        ? state.cfg.expansions
         : kind === "gesture"
-          ? (cfg.gestures ?? [])
+          ? (state.cfg.gestures ?? [])
           : kind === "touchpad"
-            ? (cfg.touchpad_gestures ?? [])
+            ? (state.cfg.touchpad_gestures ?? [])
             : kind === "hotcorner"
-              ? (cfg.hot_corners ?? [])
-              : (cfg.wheel_edges ?? []);
+              ? (state.cfg.hot_corners ?? [])
+              : (state.cfg.wheel_edges ?? []);
 }
 
 function kindLabel(kind: ListKind | null): string {
@@ -2456,28 +2233,28 @@ function labelOf(o: object): string {
 
 // 当前编辑页打开的那条（没有打开 / 不在列表分区时为 null）。
 function selectedObject(): AnyEntry | null {
-  if (selected === null) return null;
-  if (section === "shortcuts") return cfg.shortcuts[selected] ?? null;
-  if (section === "remaps") return cfg.remaps[selected] ?? null;
-  if (section === "expansions") return cfg.expansions[selected] ?? null;
-  if (section === "gestures") return (cfg.gestures ?? [])[selected] ?? null;
-  if (section === "touchpads") return (cfg.touchpad_gestures ?? [])[selected] ?? null;
-  if (section === "hotcorners") return (cfg.hot_corners ?? [])[selected] ?? null;
-  if (section === "wheeledges") return (cfg.wheel_edges ?? [])[selected] ?? null;
+  if (state.selected === null) return null;
+  if (state.section === "shortcuts") return state.cfg.shortcuts[state.selected] ?? null;
+  if (state.section === "remaps") return state.cfg.remaps[state.selected] ?? null;
+  if (state.section === "expansions") return state.cfg.expansions[state.selected] ?? null;
+  if (state.section === "gestures") return (state.cfg.gestures ?? [])[state.selected] ?? null;
+  if (state.section === "touchpads") return (state.cfg.touchpad_gestures ?? [])[state.selected] ?? null;
+  if (state.section === "hotcorners") return (state.cfg.hot_corners ?? [])[state.selected] ?? null;
+  if (state.section === "wheeledges") return (state.cfg.wheel_edges ?? [])[state.selected] ?? null;
   return null;
 }
 
 // 复制 / 剪切选中集：整批进剪贴板，粘贴时逐条落位（剪切的粘贴完才摘掉原条目）。
 function copySelection(cut: boolean) {
-  const items: NonNullable<typeof clipboard>["items"] = [];
-  for (const o of picked) {
+  const items: NonNullable<typeof state.clipboard>["items"] = [];
+  for (const o of state.picked) {
     const kind = kindOf(o);
     if (kind) items.push({ kind, obj: o as AnyEntry });
   }
   if (!items.length) return;
-  clipboard = { items, cut };
-  picked.clear();
-  pickAnchor = null;
+  state.clipboard = { items, cut };
+  state.picked.clear();
+  state.pickAnchor = null;
   renderListPane();
   const n = items.length;
   toast(cut ? trt`已剪切 ${n} 项，「＋ 新增 → 粘贴」移动过去` : trt`已复制 ${n} 项，「＋ 新增 → 粘贴」插进去`);
@@ -2485,7 +2262,7 @@ function copySelection(cut: boolean) {
 
 // 原位复制一份（不走剪贴板，省去「先复制再找地方粘」两步）：插在源条目后一条。
 function duplicateSelection() {
-  for (const o of picked) {
+  for (const o of state.picked) {
     const kind = kindOf(o);
     if (!kind) continue;
     const arr = arrOf(kind);
@@ -2497,7 +2274,7 @@ function duplicateSelection() {
 
 // 删除选中集（一次确认）。正在编辑的那条也在其中 → 连草稿一起丢。
 async function deleteSelection() {
-  const objs = [...picked];
+  const objs = [...state.picked];
   if (!objs.length) return;
   const n = objs.length;
   const editing = selectedObject();
@@ -2516,61 +2293,61 @@ async function deleteSelection() {
     return;
   }
   const set = new Set(objs);
-  cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
-  cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
-  cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
-  if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
-  if (cfg.touchpad_gestures)
-    cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => !set.has(g));
-  if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
-  if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
-  picked.clear();
-  pickAnchor = null;
+  state.cfg.shortcuts = state.cfg.shortcuts.filter((s) => !set.has(s));
+  state.cfg.remaps = state.cfg.remaps.filter((r) => !set.has(r));
+  state.cfg.expansions = state.cfg.expansions.filter((e) => !set.has(e));
+  if (state.cfg.gestures) state.cfg.gestures = state.cfg.gestures.filter((g) => !set.has(g));
+  if (state.cfg.touchpad_gestures)
+    state.cfg.touchpad_gestures = state.cfg.touchpad_gestures.filter((g) => !set.has(g));
+  if (state.cfg.hot_corners) state.cfg.hot_corners = state.cfg.hot_corners.filter((r) => !set.has(r));
+  if (state.cfg.wheel_edges) state.cfg.wheel_edges = state.cfg.wheel_edges.filter((r) => !set.has(r));
+  state.picked.clear();
+  state.pickAnchor = null;
   if (editing) {
     if (hitEdit) {
       discardDraft();
-      draftNew = false;
-      selected = null;
+      state.draftNew = false;
+      state.selected = null;
     } else {
-      selected = arrOf(kindOf(editing)!).indexOf(editing);
+      state.selected = arrOf(kindOf(editing)!).indexOf(editing);
     }
   }
   void save();
 }
 
 function pasteIntoFolder(folderId: string | null) {
-  if (!clipboard) return toast(tr("剪贴板为空"));
-  const { items, cut } = clipboard;
+  if (!state.clipboard) return toast(tr("剪贴板为空"));
+  const { items, cut } = state.clipboard;
   for (const it of items) {
     const copy = deepClone(it.obj);
     if (it.kind === "shortcut") {
       (copy as ShortcutItem).folder = folderId;
-      cfg.shortcuts.push(copy as ShortcutItem);
+      state.cfg.shortcuts.push(copy as ShortcutItem);
     } else if (it.kind === "remap") {
-      cfg.remaps.push(copy as Remap);
+      state.cfg.remaps.push(copy as Remap);
     } else if (it.kind === "gesture") {
-      (cfg.gestures ?? (cfg.gestures = [])).push(copy as Gesture);
+      (state.cfg.gestures ?? (state.cfg.gestures = [])).push(copy as Gesture);
     } else if (it.kind === "touchpad") {
-      (cfg.touchpad_gestures ?? (cfg.touchpad_gestures = [])).push(copy as TouchpadGesture);
+      (state.cfg.touchpad_gestures ?? (state.cfg.touchpad_gestures = [])).push(copy as TouchpadGesture);
     } else if (it.kind === "hotcorner") {
-      (cfg.hot_corners ?? (cfg.hot_corners = [])).push(copy as HotCornerRule);
+      (state.cfg.hot_corners ?? (state.cfg.hot_corners = [])).push(copy as HotCornerRule);
     } else if (it.kind === "wheeledge") {
-      (cfg.wheel_edges ?? (cfg.wheel_edges = [])).push(copy as WheelEdgeRule);
+      (state.cfg.wheel_edges ?? (state.cfg.wheel_edges = [])).push(copy as WheelEdgeRule);
     } else {
-      cfg.expansions.push(copy as TextExpansion);
+      state.cfg.expansions.push(copy as TextExpansion);
     }
   }
   if (cut) {
     const set = new Set(items.map((i) => i.obj));
-    cfg.shortcuts = cfg.shortcuts.filter((s) => !set.has(s));
-    cfg.remaps = cfg.remaps.filter((r) => !set.has(r));
-    cfg.expansions = cfg.expansions.filter((e) => !set.has(e));
-    if (cfg.gestures) cfg.gestures = cfg.gestures.filter((g) => !set.has(g));
-    if (cfg.touchpad_gestures)
-      cfg.touchpad_gestures = cfg.touchpad_gestures.filter((g) => !set.has(g));
-    if (cfg.hot_corners) cfg.hot_corners = cfg.hot_corners.filter((r) => !set.has(r));
-    if (cfg.wheel_edges) cfg.wheel_edges = cfg.wheel_edges.filter((r) => !set.has(r));
-    clipboard = null;
+    state.cfg.shortcuts = state.cfg.shortcuts.filter((s) => !set.has(s));
+    state.cfg.remaps = state.cfg.remaps.filter((r) => !set.has(r));
+    state.cfg.expansions = state.cfg.expansions.filter((e) => !set.has(e));
+    if (state.cfg.gestures) state.cfg.gestures = state.cfg.gestures.filter((g) => !set.has(g));
+    if (state.cfg.touchpad_gestures)
+      state.cfg.touchpad_gestures = state.cfg.touchpad_gestures.filter((g) => !set.has(g));
+    if (state.cfg.hot_corners) state.cfg.hot_corners = state.cfg.hot_corners.filter((r) => !set.has(r));
+    if (state.cfg.wheel_edges) state.cfg.wheel_edges = state.cfg.wheel_edges.filter((r) => !set.has(r));
+    state.clipboard = null;
   }
   void save();
 }
@@ -2580,16 +2357,16 @@ async function deleteDetailEntry(kind: string, label: string, remove: () => void
   if (!(await confirmDelete(kind, label, isDraftDirty()))) return;
   remove();
   discardDraft();
-  draftNew = false;
-  selected = null;
+  state.draftNew = false;
+  state.selected = null;
   void save();
 }
 
 // 新增项尚未落盘，删除 = 直接丢弃草稿：没有已保存的内容会丢，不必再弹一次确认。
 function discardNewDraft() {
   discardDraft();
-  draftNew = false;
-  selected = null;
+  state.draftNew = false;
+  state.selected = null;
   render();
 }
 
@@ -2606,27 +2383,27 @@ function clearDropIndicators() {
       n.classList.remove("drop-before", "drop-after", "drop-into", "drop-forbidden"),
     );
   document.querySelectorAll(".list").forEach((n) => n.classList.remove("drop-root"));
-  dragOverEl = null;
+  state.dragOverEl = null;
 }
 
 function setDropIndicator(el: HTMLElement, cls: string) {
   // 同一行也要比 class：光标在行内越过中线时落点 before/after 得跟着翻，否则线钉死半行。
-  if (dragOverEl === el && el.classList.contains(cls)) return;
+  if (state.dragOverEl === el && el.classList.contains(cls)) return;
   clearDropIndicators();
   el.classList.add(cls);
-  dragOverEl = el;
+  state.dragOverEl = el;
 }
 
 // 目录移动后是否成环：新父目录不能是自身或其子孙。
 function wouldCycle(zone: DropZone): boolean {
-  if (!dragPayload || dragPayload.kind !== "folder") return false;
-  const selfId = dragPayload.id;
+  if (!state.dragPayload || state.dragPayload.kind !== "folder") return false;
+  const selfId = state.dragPayload.id;
   let newParent: string | null = null;
   if (zone.kind === "folder") {
     if (zone.pos === "into") newParent = zone.folderId;
-    else newParent = cfg.folders.find((f) => f.id === zone.folderId)?.parent ?? null;
+    else newParent = state.cfg.folders.find((f) => f.id === zone.folderId)?.parent ?? null;
   } else if (zone.kind === "row") {
-    newParent = cfg.shortcuts[zone.idx]?.folder ?? null;
+    newParent = state.cfg.shortcuts[zone.idx]?.folder ?? null;
   }
   return newParent !== null && collectDescendantIds(selfId).has(newParent);
 }
@@ -2640,22 +2417,22 @@ function isMouseKind(kind: string | null | undefined): boolean {
 function mouseSequence(): { kind: "gesture" | "hotcorner" | "wheeledge"; item: Gesture | HotCornerRule | WheelEdgeRule; rank: number; idx: number }[] {
   const rank = { gesture: 0, hotcorner: 1, wheeledge: 2 } as const;
   const out: { kind: "gesture" | "hotcorner" | "wheeledge"; item: Gesture | HotCornerRule | WheelEdgeRule; rank: number; idx: number }[] = [];
-  (cfg.gestures ?? []).forEach((g, i) => out.push({ kind: "gesture", item: g, rank: rank.gesture, idx: i }));
-  (cfg.hot_corners ?? []).forEach((r, i) => out.push({ kind: "hotcorner", item: r, rank: rank.hotcorner, idx: i }));
-  (cfg.wheel_edges ?? []).forEach((r, i) => out.push({ kind: "wheeledge", item: r, rank: rank.wheeledge, idx: i }));
+  (state.cfg.gestures ?? []).forEach((g, i) => out.push({ kind: "gesture", item: g, rank: rank.gesture, idx: i }));
+  (state.cfg.hot_corners ?? []).forEach((r, i) => out.push({ kind: "hotcorner", item: r, rank: rank.hotcorner, idx: i }));
+  (state.cfg.wheel_edges ?? []).forEach((r, i) => out.push({ kind: "wheeledge", item: r, rank: rank.wheeledge, idx: i }));
   return out.sort((a, b) => (a.item.order ?? 0) - (b.item.order ?? 0) || a.rank - b.rank || a.idx - b.idx);
 }
 
 /** 触摸板手势自己的展示序列（自成一组，序列与鼠标操作互不干扰）。 */
 function touchpadSequence(): { item: TouchpadGesture; idx: number }[] {
-  return (cfg.touchpad_gestures ?? [])
+  return (state.cfg.touchpad_gestures ?? [])
     .map((item, idx) => ({ item, idx }))
     .sort((a, b) => (a.item.order ?? 0) - (b.item.order ?? 0) || a.idx - b.idx);
 }
 
 /** 新建触摸板手势排到本组最前：重排本组 `order`（新条目拿 0，其余顺延）。 */
 function touchpadOrderFront(item: TouchpadGesture) {
-  const seq = (cfg.touchpad_gestures ?? []).filter((g) => g !== item);
+  const seq = (state.cfg.touchpad_gestures ?? []).filter((g) => g !== item);
   seq.unshift(item);
   seq.forEach((g, i) => {
     g.order = i;
@@ -2672,19 +2449,19 @@ function mouseOrderFront(item: Gesture | HotCornerRule | WheelEdgeRule) {
 }
 
 function mouseItemOf(kind: ListKind, idx: number): (Gesture & HotCornerRule & WheelEdgeRule) | null {
-  if (kind === "gesture") return ((cfg.gestures ?? [])[idx] as never) ?? null;
-  if (kind === "hotcorner") return ((cfg.hot_corners ?? [])[idx] as never) ?? null;
-  if (kind === "wheeledge") return ((cfg.wheel_edges ?? [])[idx] as never) ?? null;
+  if (kind === "gesture") return ((state.cfg.gestures ?? [])[idx] as never) ?? null;
+  if (kind === "hotcorner") return ((state.cfg.hot_corners ?? [])[idx] as never) ?? null;
+  if (kind === "wheeledge") return ((state.cfg.wheel_edges ?? [])[idx] as never) ?? null;
   return null;
 }
 
 function touchpadItemOf(idx: number): TouchpadGesture | null {
-  return (cfg.touchpad_gestures ?? [])[idx] ?? null;
+  return (state.cfg.touchpad_gestures ?? [])[idx] ?? null;
 }
 
 function dragRowKind(): ListKind {
-  if (!dragPayload) return "shortcut";
-  return dragPayload.kind === "folder" ? "shortcut" : dragPayload.kind;
+  if (!state.dragPayload) return "shortcut";
+  return state.dragPayload.kind === "folder" ? "shortcut" : state.dragPayload.kind;
 }
 
 // 落点 → 承载它的行元素（指示与成环禁用共用，避免两处各查一遍选择器）。
@@ -2710,9 +2487,9 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
   const r = el.getBoundingClientRect();
   if (el.classList.contains("folder-row")) {
     const folderId = el.dataset.folderId!;
-    if (dragPayload?.kind !== "folder") return { kind: "folder", folderId, pos: "into" };
+    if (state.dragPayload?.kind !== "folder") return { kind: "folder", folderId, pos: "into" };
     const ratio = (y - r.top) / r.height;
-    const isSelf = el === dragState?.sourceEl;
+    const isSelf = el === state.dragState?.sourceEl;
     return {
       kind: "folder",
       folderId,
@@ -2733,7 +2510,7 @@ function zoneOfEl(el: HTMLElement, y: number): DropZone {
 // 上一行是目录行（缝在目录行正下方 = 该目录子树顶部）时改看下一行：下一行是条目就落它前面，
 // 下一行是目录或没有就放进上面这个目录；列表顶端的缝落第一行之前。没有候选才回根。
 function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
-  const kind = dragPayload?.kind;
+  const kind = state.dragPayload?.kind;
   // 鼠标类三类共用一条展示序列；触摸板手势自成一组，只与本组行 + 目录行互为落点。
   const grouped = isMouseKind(kind) || kind === "touchpad";
   if (grouped) {
@@ -2763,12 +2540,12 @@ function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
     return only ? asZone(only) : { kind: "root" };
   }
   // 快捷键/改键/扩展与目录互为落点；own = 拖目录时的成环黑名单（含源目录自己）。
-  const own = kind === "folder" ? collectDescendantIds(dragPayload!.id) : null;
+  const own = kind === "folder" ? collectDescendantIds(state.dragPayload!.id) : null;
   const sel = `.folder-row, .row[data-kind="${dragRowKind()}"]`;
   const els = Array.from(list.querySelectorAll<HTMLElement>(sel)).filter((el) => {
     // 源目录子树里的条目：落它等于把目录塞回自己（成环），不算候选（源目录行本身算）。
     if (own && el.dataset.idx != null) {
-      const f = cfg.shortcuts[Number(el.dataset.idx)]?.folder ?? null;
+      const f = state.cfg.shortcuts[Number(el.dataset.idx)]?.folder ?? null;
       if (f && own.has(f)) return false;
     }
     return true;
@@ -2783,7 +2560,7 @@ function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
   // 放进该目录；候选是源目录自己时只给「前/后」——放进自己放下后原地不动（applyDrop 早退），
   // 却在源行上亮「放进」的框，看着像真会动。
   const intoZone = (el: HTMLElement): DropZone =>
-    el === dragState?.sourceEl ? zoneOfEl(el, y) : folderZone(el, "into");
+    el === state.dragState?.sourceEl ? zoneOfEl(el, y) : folderZone(el, "into");
   const inside = els.find((el) => {
     const r = el.getBoundingClientRect();
     return y >= r.top && y <= r.bottom;
@@ -2794,11 +2571,11 @@ function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
   // 好几行——那种情况改看别的候选。目录拖目录 = 同级换位，始终落在那儿，不受此限。
   const beforeFolderZone = (el: HTMLElement): DropZone | null => {
     const folderId = el.dataset.folderId!;
-    if (dragPayload?.kind === "folder") return { kind: "folder", folderId, pos: "before" };
-    const i = cfg.folders.findIndex((x) => x.id === folderId);
+    if (state.dragPayload?.kind === "folder") return { kind: "folder", folderId, pos: "before" };
+    const i = state.cfg.folders.findIndex((x) => x.id === folderId);
     if (i < 0) return null;
-    const parent = cfg.folders[i].parent ?? null;
-    const first = !cfg.folders.slice(0, i).some((x) => (x.parent ?? null) === parent);
+    const parent = state.cfg.folders[i].parent ?? null;
+    const first = !state.cfg.folders.slice(0, i).some((x) => (x.parent ?? null) === parent);
     return first ? { kind: "folder", folderId, pos: "before" } : null;
   };
   const up = els.filter((el) => el.getBoundingClientRect().bottom < y).pop();
@@ -2833,7 +2610,7 @@ function computeDropZoneAt(x: number, y: number): DropZone | null {
   const folderEl = hit.closest(".folder-row") as HTMLElement | null;
   if (folderEl) {
     const folderId = folderEl.dataset.folderId!;
-    if (dragPayload?.kind === "folder") {
+    if (state.dragPayload?.kind === "folder") {
       const r = folderEl.getBoundingClientRect();
       const ratio = (y - r.top) / r.height;
       if (ratio < 0.25) return { kind: "folder", folderId, pos: "before" };
@@ -2869,7 +2646,7 @@ function showDropIndicator(zone: DropZone) {
   if (zone.kind === "root") {
     clearDropIndicators();
     activeListEl().classList.add("drop-root");
-    dragOverEl = activeListEl();
+    state.dragOverEl = activeListEl();
     return;
   }
   const el = zoneEl(zone);
@@ -2896,14 +2673,14 @@ function moveWithin<T>(arr: T[], srcIdx: number, insertIdx: number) {
 }
 
 function moveShortcut(srcIdx: number, targetFolder: string | null, insertIdx?: number) {
-  const moved = cfg.shortcuts[srcIdx];
+  const moved = state.cfg.shortcuts[srcIdx];
   if (!moved) return;
   moved.folder = targetFolder;
   if (insertIdx === undefined) {
-    cfg.shortcuts.splice(srcIdx, 1);
-    cfg.shortcuts.push(moved);
+    state.cfg.shortcuts.splice(srcIdx, 1);
+    state.cfg.shortcuts.push(moved);
   } else {
-    moveWithin(cfg.shortcuts, srcIdx, insertIdx);
+    moveWithin(state.cfg.shortcuts, srcIdx, insertIdx);
   }
 }
 
@@ -2913,31 +2690,31 @@ function moveFolder(
   beforeFolderId?: string,
   pos?: "before" | "after",
 ) {
-  const src = cfg.folders.find((f) => f.id === srcId);
+  const src = state.cfg.folders.find((f) => f.id === srcId);
   if (!src) return;
   src.parent = targetParent;
-  cfg.folders = cfg.folders.filter((f) => f.id !== srcId);
-  let at = cfg.folders.length;
+  state.cfg.folders = state.cfg.folders.filter((f) => f.id !== srcId);
+  let at = state.cfg.folders.length;
   if (beforeFolderId) {
-    const targetIdx = cfg.folders.findIndex((f) => f.id === beforeFolderId);
+    const targetIdx = state.cfg.folders.findIndex((f) => f.id === beforeFolderId);
     if (targetIdx >= 0) at = pos === "before" ? targetIdx : targetIdx + 1;
   }
-  cfg.folders.splice(at, 0, src);
+  state.cfg.folders.splice(at, 0, src);
 }
 
 // 目录行的「上/下沿」= 该目录所在层级的条目区（同级条目渲染在目录行之前，根级就是根）。
 function folderParentOf(folderId: string): string | null {
-  return cfg.folders.find((f) => f.id === folderId)?.parent ?? null;
+  return state.cfg.folders.find((f) => f.id === folderId)?.parent ?? null;
 }
 
 function applyDrop(zone: DropZone) {
-  if (!dragPayload) return;
+  if (!state.dragPayload) return;
   // 落回源行自己 = 原地不动（源行 pointer-events 让位，光标常就停在它身上）：不落盘、
   // 不重绘，免得「拿起又放下」白弹一次保存提示。
-  if (zoneEl(zone) === dragState?.sourceEl) return;
+  if (zoneEl(zone) === state.dragState?.sourceEl) return;
 
   // 鼠标类：三类共用一条展示序列，可互相换位、放进目录或拖回根级。
-  const payload = dragPayload;
+  const payload = state.dragPayload;
   if (payload.kind === "gesture" || payload.kind === "hotcorner" || payload.kind === "wheeledge") {
     const srcKind = payload.kind;
     const moved = mouseItemOf(srcKind, payload.idx);
@@ -2981,7 +2758,7 @@ function applyDrop(zone: DropZone) {
       e.item.order = i;
     });
     const movedIdx = arrOf(srcKind).indexOf(moved);
-    if (section === KIND_SECTION[srcKind] && movedIdx >= 0) selected = movedIdx;
+    if (state.section === KIND_SECTION[srcKind] && movedIdx >= 0) state.selected = movedIdx;
     void save();
     return;
   }
@@ -2999,7 +2776,7 @@ function applyDrop(zone: DropZone) {
       destFolder = target.folder ?? null;
     } else if (zone.kind !== "root") return;
 
-    const arr = cfg.touchpad_gestures ?? (cfg.touchpad_gestures = []);
+    const arr = state.cfg.touchpad_gestures ?? (state.cfg.touchpad_gestures = []);
     if (zone.kind === "row") {
       const target = touchpadItemOf(zone.idx);
       const from = arr.indexOf(moved);
@@ -3029,16 +2806,16 @@ function applyDrop(zone: DropZone) {
       e.item.order = i;
     });
     const movedIdx = arr.indexOf(moved);
-    if (section === KIND_SECTION.touchpad && movedIdx >= 0) selected = movedIdx;
+    if (state.section === KIND_SECTION.touchpad && movedIdx >= 0) state.selected = movedIdx;
     void save();
     return;
   }
 
   // 改键/文本扩展：平铺换位 + 归目录（目录行上算「放进」，缝隙按 nearestDropZone 落位）。
-  if (dragPayload.kind === "remap" || dragPayload.kind === "expansion") {
+  if (state.dragPayload.kind === "remap" || state.dragPayload.kind === "expansion") {
     const arr: (Remap | TextExpansion)[] =
-      dragPayload.kind === "remap" ? cfg.remaps : cfg.expansions;
-    const srcIdx = dragPayload.idx;
+      state.dragPayload.kind === "remap" ? state.cfg.remaps : state.cfg.expansions;
+    const srcIdx = state.dragPayload.idx;
     const moved = arr[srcIdx];
     if (!moved) return;
     const targetFolder =
@@ -3060,49 +2837,49 @@ function applyDrop(zone: DropZone) {
       return; // 已是该层级最后一条 = 没动
     }
     // selected 是三类共用的下标变量：只有编辑页开着的就是这一类时才有意义去修。
-    const secMatch = section === KIND_SECTION[dragPayload.kind];
-    const selObj = secMatch && selected !== null ? arr[selected] : null;
+    const secMatch = state.section === KIND_SECTION[state.dragPayload.kind];
+    const selObj = secMatch && state.selected !== null ? arr[state.selected] : null;
     moved.folder = targetFolder;
     // 换目录时插到条目末尾（同目录内顺序只看数组相对次序，插末尾即该目录最后一条）。
     moveWithin(arr, srcIdx, zone.kind === "row" ? (zone.pos === "before" ? zone.idx : zone.idx + 1) : arr.length);
-    if (secMatch) selected = selObj ? arr.indexOf(selObj) : null;
+    if (secMatch) state.selected = selObj ? arr.indexOf(selObj) : null;
     void save();
     return;
   }
 
-  const secMatch = section === "shortcuts";
-  const selObj = secMatch && selected !== null ? cfg.shortcuts[selected] : null;
+  const secMatch = state.section === "shortcuts";
+  const selObj = secMatch && state.selected !== null ? state.cfg.shortcuts[state.selected] : null;
 
-  if (dragPayload.kind === "shortcut") {
-    const srcIdx = dragPayload.idx;
-    if (!cfg.shortcuts[srcIdx]) return;
+  if (state.dragPayload.kind === "shortcut") {
+    const srcIdx = state.dragPayload.idx;
+    if (!state.cfg.shortcuts[srcIdx]) return;
     if (zone.kind === "root") {
       moveShortcut(srcIdx, null);
     } else if (zone.kind === "folder") {
       // 放进 = 归该目录；上/下沿 = 该目录所在层级的条目区（根级目录的上/下沿就是根）。
       moveShortcut(srcIdx, zone.pos === "into" ? zone.folderId : folderParentOf(zone.folderId));
     } else if (zone.kind === "row") {
-      const targetFolder = cfg.shortcuts[zone.idx]?.folder ?? null;
+      const targetFolder = state.cfg.shortcuts[zone.idx]?.folder ?? null;
       moveShortcut(srcIdx, targetFolder, zone.pos === "before" ? zone.idx : zone.idx + 1);
     }
   } else {
-    const srcId = (dragPayload as { kind: "folder"; id: string }).id;
+    const srcId = (state.dragPayload as { kind: "folder"; id: string }).id;
     if (zone.kind === "root") {
       moveFolder(srcId, null);
     } else if (zone.kind === "folder") {
       if (zone.pos === "into") {
         moveFolder(srcId, zone.folderId);
       } else {
-        const target = cfg.folders.find((f) => f.id === zone.folderId);
+        const target = state.cfg.folders.find((f) => f.id === zone.folderId);
         moveFolder(srcId, target?.parent ?? null, zone.folderId, zone.pos);
       }
     } else if (zone.kind === "row") {
-      const targetFolder = cfg.shortcuts[zone.idx]?.folder ?? null;
+      const targetFolder = state.cfg.shortcuts[zone.idx]?.folder ?? null;
       moveFolder(srcId, targetFolder);
     }
   }
 
-  if (secMatch) selected = selObj ? cfg.shortcuts.indexOf(selObj) : null;
+  if (secMatch) state.selected = selObj ? state.cfg.shortcuts.indexOf(selObj) : null;
   void save();
 }
 
@@ -3112,8 +2889,8 @@ function attachDragStart(li: HTMLElement, payload: DragPayload) {
     if (e.button !== 0) return; // 仅左键
     if ((e.target as HTMLElement).closest("input, button")) return;
     // 搜索/筛选会隐藏条目，可见顺序 ≠ 配置顺序，换位落点算不准（与搜索同一处理：禁拖）。
-    if (search.trim() || listFilter.enabled || listFilter.conflicted) return;
-    dragState = {
+    if (state.search.trim() || state.listFilter.enabled || state.listFilter.conflicted) return;
+    state.dragState = {
       payload,
       startX: e.clientX,
       startY: e.clientY,
@@ -3139,30 +2916,30 @@ function updateDropTarget(x: number, y: number) {
 }
 
 function onPointerMove(e: PointerEvent) {
-  if (actionDrag) {
-    if (!actionDrag.active) {
-      if (Math.hypot(e.clientX - actionDrag.startX, e.clientY - actionDrag.startY) < 6) return;
-      actionDrag.active = true;
-      actionDrag.sourceEl.classList.add("dragging");
-      actionDrag.sourceEl.style.pointerEvents = "none"; // 让 elementFromPoint 穿透源行
+  if (state.actionDrag) {
+    if (!state.actionDrag.active) {
+      if (Math.hypot(e.clientX - state.actionDrag.startX, e.clientY - state.actionDrag.startY) < 6) return;
+      state.actionDrag.active = true;
+      state.actionDrag.sourceEl.classList.add("dragging");
+      state.actionDrag.sourceEl.style.pointerEvents = "none"; // 让 elementFromPoint 穿透源行
     }
     updateActionDropTarget(e.clientX, e.clientY);
     return;
   }
-  if (!dragState) return;
-  if (!dragState.active) {
-    if (Math.hypot(e.clientX - dragState.startX, e.clientY - dragState.startY) < 6) return;
-    dragState.active = true;
-    dragPayload = dragState.payload;
-    dragState.sourceEl.classList.add("dragging");
-    dragState.sourceEl.style.pointerEvents = "none"; // 让 elementFromPoint 穿透源行
+  if (!state.dragState) return;
+  if (!state.dragState.active) {
+    if (Math.hypot(e.clientX - state.dragState.startX, e.clientY - state.dragState.startY) < 6) return;
+    state.dragState.active = true;
+    state.dragPayload = state.dragState.payload;
+    state.dragState.sourceEl.classList.add("dragging");
+    state.dragState.sourceEl.style.pointerEvents = "none"; // 让 elementFromPoint 穿透源行
   }
   updateDropTarget(e.clientX, e.clientY);
 }
 
 function onPointerUp(e: PointerEvent) {
-  if (actionDrag) {
-    const { active, sourceEl, list, index } = actionDrag;
+  if (state.actionDrag) {
+    const { active, sourceEl, list, index } = state.actionDrag;
     if (active) {
       const res = actionDropAt(e.clientX, e.clientY);
       clearActionDropIndicators();
@@ -3175,14 +2952,14 @@ function onPointerUp(e: PointerEvent) {
     }
     sourceEl.classList.remove("dragging");
     sourceEl.style.pointerEvents = "";
-    actionDrag = null;
-    if (draft) renderActions(draft);
+    state.actionDrag = null;
+    if (state.draft) renderActions(state.draft);
     return;
   }
-  if (!dragState) return;
-  const { active, sourceEl } = dragState;
+  if (!state.dragState) return;
+  const { active, sourceEl } = state.dragState;
   if (active) {
-    suppressClick = true; // 拖拽结束，抑制随后的一次 click
+    state.suppressClick = true; // 拖拽结束，抑制随后的一次 click
     const zone = computeDropZoneAt(e.clientX, e.clientY);
     clearDropIndicators();
     if (zone !== null && !wouldCycle(zone)) applyDrop(zone);
@@ -3190,30 +2967,30 @@ function onPointerUp(e: PointerEvent) {
   sourceEl.classList.remove("dragging");
   sourceEl.style.pointerEvents = "";
   clearDropIndicators();
-  dragPayload = null;
-  dragState = null;
-  setTimeout(() => (suppressClick = false), 0);
+  state.dragPayload = null;
+  state.dragState = null;
+  setTimeout(() => (state.suppressClick = false), 0);
 }
 
 // ---- 多选（Ctrl 加减 / Shift 范围）与批量启停 ----
 function togglePicked(o: object) {
-  if (picked.has(o)) picked.delete(o);
-  else picked.add(o);
+  if (state.picked.has(o)) state.picked.delete(o);
+  else state.picked.add(o);
   renderListPane();
 }
 
 async function setPickedEnabled(v: boolean) {
-  if (!picked.size) return;
+  if (!state.picked.size) return;
   let n = 0;
-  for (const s of cfg.shortcuts) if (picked.has(s)) { s.enabled = v; n++; }
-  for (const r of cfg.remaps) if (picked.has(r)) { r.enabled = v; n++; }
-  for (const e of cfg.expansions) if (picked.has(e)) { e.enabled = v; n++; }
-  for (const g of cfg.gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
-  for (const g of cfg.touchpad_gestures ?? []) if (picked.has(g)) { g.enabled = v; n++; }
-  for (const r of cfg.hot_corners ?? []) if (picked.has(r)) { r.enabled = v; n++; }
-  for (const r of cfg.wheel_edges ?? []) if (picked.has(r)) { r.enabled = v; n++; }
-  picked.clear();
-  pickAnchor = null;
+  for (const s of state.cfg.shortcuts) if (state.picked.has(s)) { s.enabled = v; n++; }
+  for (const r of state.cfg.remaps) if (state.picked.has(r)) { r.enabled = v; n++; }
+  for (const e of state.cfg.expansions) if (state.picked.has(e)) { e.enabled = v; n++; }
+  for (const g of state.cfg.gestures ?? []) if (state.picked.has(g)) { g.enabled = v; n++; }
+  for (const g of state.cfg.touchpad_gestures ?? []) if (state.picked.has(g)) { g.enabled = v; n++; }
+  for (const r of state.cfg.hot_corners ?? []) if (state.picked.has(r)) { r.enabled = v; n++; }
+  for (const r of state.cfg.wheel_edges ?? []) if (state.picked.has(r)) { r.enabled = v; n++; }
+  state.picked.clear();
+  state.pickAnchor = null;
   const ok = await save(); // save 自带「已保存」提示；成功后盖上条数，失败保留错误提示
   if (ok) toast(trt`已${v ? tr("启用") : tr("停用")} ${n} 项`);
 }
@@ -3234,13 +3011,13 @@ async function setFolderEnabled(rootId: string, v: boolean) {
 }
 
 function renderDetail() {
-  const entry = isListSection(section);
+  const entry = isListSection(state.section);
   document.getElementById("detail-entry")!.classList.toggle("hidden", !entry);
-  document.getElementById("detail-layers")!.classList.toggle("hidden", section !== "layers");
-  document.getElementById("detail-market")!.classList.toggle("hidden", section !== "market");
-  document.getElementById("detail-settings")!.classList.toggle("hidden", section !== "settings");
-  document.getElementById("detail-messages")!.classList.toggle("hidden", section !== "messages");
-  document.getElementById("detail-help")!.classList.toggle("hidden", section !== "help");
+  document.getElementById("detail-layers")!.classList.toggle("hidden", state.section !== "layers");
+  document.getElementById("detail-market")!.classList.toggle("hidden", state.section !== "market");
+  document.getElementById("detail-settings")!.classList.toggle("hidden", state.section !== "settings");
+  document.getElementById("detail-messages")!.classList.toggle("hidden", state.section !== "messages");
+  document.getElementById("detail-help")!.classList.toggle("hidden", state.section !== "help");
 
   if (entry) {
     const has = currentDraft() !== null;
@@ -3300,54 +3077,54 @@ function setEntryTitle() {
 // 动作编排区（`#action-list`）的操作对象：**快捷键 → 快捷键草稿，鼠标操作 → 手势草稿**。
 // 改键 / 文本扩展没有动作区，返回 null。
 function currentActionsHost(): { actions: Action[] } | null {
-  if (section === "shortcuts") return draft;
-  if (section === "gestures") return gestureDraft;
-  if (section === "touchpads") return touchpadDraft;
-  if (section === "hotcorners") return hotcornerDraft;
-  if (section === "wheeledges") return wheeledgeDraft;
+  if (state.section === "shortcuts") return state.draft;
+  if (state.section === "gestures") return state.gestureDraft;
+  if (state.section === "touchpads") return state.touchpadDraft;
+  if (state.section === "hotcorners") return state.hotcornerDraft;
+  if (state.section === "wheeledges") return state.wheeledgeDraft;
   return null;
 }
 
 function fillShortcutEditor() {
-  if (!draft) return;
-  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = draft.description ?? "";
-  fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, draft.layer ?? null, "assign");
-  renderTriggers(draft);
+  if (!state.draft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = state.draft.description ?? "";
+  fillLayerSelect(document.getElementById("edit-layer") as HTMLSelectElement, state.draft.layer ?? null, "assign");
+  renderTriggers(state.draft);
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => draft?.when,
+    () => state.draft?.when,
     (c) => {
-      if (draft) draft.when = c;
+      if (state.draft) state.draft.when = c;
     },
     refreshDirty,
   );
-  renderActions(draft);
+  renderActions(state.draft);
   setEntryTitle();
 }
 
 function fillRemapEditor() {
-  if (!remapDraft) return;
-  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = remapDraft.description ?? "";
-  (document.getElementById("remap-from") as HTMLInputElement).value = remapDraft.from;
+  if (!state.remapDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = state.remapDraft.description ?? "";
+  (document.getElementById("remap-from") as HTMLInputElement).value = state.remapDraft.from;
   closeKeyMenu();
-  (document.getElementById("remap-to") as HTMLSelectElement).value = remapDraft.to;
-  (document.getElementById("remap-tap") as HTMLSelectElement).value = remapDraft.tap ?? "";
-  (document.getElementById("remap-hold") as HTMLSelectElement).value = remapDraft.hold ?? "";
-  (document.getElementById("remap-oneshot") as HTMLSelectElement).value = remapDraft.oneshot ?? "";
-  (document.getElementById("remap-sticky") as HTMLSelectElement).value = remapDraft.sticky ?? "";
-  (document.getElementById("remap-tap2") as HTMLSelectElement).value = remapDraft.tap2 ?? "";
-  (document.getElementById("remap-tap3") as HTMLSelectElement).value = remapDraft.tap3 ?? "";
-  fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, remapDraft.layer, "assign");
-  fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, remapDraft.hold_layer, "hold");
-  fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, remapDraft.lock_layer, "hold");
+  (document.getElementById("remap-to") as HTMLSelectElement).value = state.remapDraft.to;
+  (document.getElementById("remap-tap") as HTMLSelectElement).value = state.remapDraft.tap ?? "";
+  (document.getElementById("remap-hold") as HTMLSelectElement).value = state.remapDraft.hold ?? "";
+  (document.getElementById("remap-oneshot") as HTMLSelectElement).value = state.remapDraft.oneshot ?? "";
+  (document.getElementById("remap-sticky") as HTMLSelectElement).value = state.remapDraft.sticky ?? "";
+  (document.getElementById("remap-tap2") as HTMLSelectElement).value = state.remapDraft.tap2 ?? "";
+  (document.getElementById("remap-tap3") as HTMLSelectElement).value = state.remapDraft.tap3 ?? "";
+  fillLayerSelect(document.getElementById("remap-layer") as HTMLSelectElement, state.remapDraft.layer, "assign");
+  fillLayerSelect(document.getElementById("remap-hold-layer") as HTMLSelectElement, state.remapDraft.hold_layer, "hold");
+  fillLayerSelect(document.getElementById("remap-lock-layer") as HTMLSelectElement, state.remapDraft.lock_layer, "hold");
   (document.getElementById("remap-timeout") as HTMLInputElement).value = String(
-    remapDraft.tap_timeout_ms || 200,
+    state.remapDraft.tap_timeout_ms || 200,
   );
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => remapDraft?.when,
+    () => state.remapDraft?.when,
     (c) => {
-      if (remapDraft) remapDraft.when = c;
+      if (state.remapDraft) state.remapDraft.when = c;
     },
     refreshDirty,
   );
@@ -3356,12 +3133,12 @@ function fillRemapEditor() {
 }
 
 function fillExpansionEditor() {
-  if (!expansionDraft) return;
-  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = expansionDraft.description ?? "";
+  if (!state.expansionDraft) return;
+  (document.getElementById("edit-desc") as HTMLTextAreaElement).value = state.expansionDraft.description ?? "";
   (document.getElementById("edit-exp-trigger") as HTMLInputElement).value =
-    expansionDraft.trigger;
+    state.expansionDraft.trigger;
   (document.getElementById("edit-exp-replace") as HTMLTextAreaElement).value =
-    expansionDraft.replace;
+    state.expansionDraft.replace;
   setEntryTitle();
 }
 
@@ -3429,7 +3206,7 @@ function simplifyGesture(
  */
 function patternFromPoints(
   points: [number, number][],
-  minSegment = cfg.settings.gesture_min_segment ?? 16,
+  minSegment = state.cfg.settings.gesture_min_segment ?? 16,
 ): string {
   if (points.length < 2) return "";
   const min = Math.max(1, minSegment);
@@ -3589,11 +3366,11 @@ function fillTouchpadTriggerSelect() {
 
 /** 触发键 / 模板变了之后，把「录入」「清除模板」与提示对齐。 */
 function syncTouchpadUi() {
-  const key = touchpadDraft?.trigger ?? "";
+  const key = state.touchpadDraft?.trigger ?? "";
   document.getElementById("edit-touchpad-capture")?.classList.toggle("hidden", !key);
   document
     .getElementById("edit-touchpad-drop-template")
-    ?.classList.toggle("hidden", !touchpadDraft?.template);
+    ?.classList.toggle("hidden", !state.touchpadDraft?.template);
   const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
   if (sel) {
     sel.title = key
@@ -3636,16 +3413,16 @@ function openTrackpadRecord(key: string) {
   // 而面板已经看不见了（与录入暂停同一口径，见 `stopCapture`）。
   activeCaptureCleanup = stop;
   trackpadRecordSink = (p) => {
-    if (!touchpadDraft) return;
+    if (!state.touchpadDraft) return;
     if (!p.pattern) {
       status.textContent = tr("这一笔没识别出来（太短 / 涂鸦 / 已作废），再画一笔");
       return;
     }
-    touchpadDraft.pattern = p.pattern;
-    touchpadDraft.template = p.template ?? null;
-    touchpadDraft.trigger = key;
+    state.touchpadDraft.pattern = p.pattern;
+    state.touchpadDraft.template = p.template ?? null;
+    state.touchpadDraft.trigger = key;
     (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value = p.pattern;
-    renderActions(touchpadDraft, p.pattern);
+    renderActions(state.touchpadDraft, p.pattern);
     syncTouchpadUi();
     refreshDirty();
     status.textContent = trt`已录入 ${p.pattern}（${p.points} 个点）`;
@@ -3666,47 +3443,47 @@ function openTrackpadRecord(key: string) {
 }
 
 function fillGestureEditor() {
-  if (!gestureDraft) return;
+  if (!state.gestureDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
-    gestureDraft.description ?? "";
+    state.gestureDraft.description ?? "";
   (document.getElementById("edit-gesture-pattern") as HTMLInputElement).value =
-    gestureDraft.pattern;
+    state.gestureDraft.pattern;
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => gestureDraft?.when,
+    () => state.gestureDraft?.when,
     (c) => {
-      if (gestureDraft) gestureDraft.when = c;
+      if (state.gestureDraft) state.gestureDraft.when = c;
     },
     refreshDirty,
   );
-  renderActions(gestureDraft, gestureDraft.pattern || tr("未设方向串"));
+  renderActions(state.gestureDraft, state.gestureDraft.pattern || tr("未设方向串"));
   setEntryTitle();
 }
 
 function fillTouchpadEditor() {
-  if (!touchpadDraft) return;
+  if (!state.touchpadDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
-    touchpadDraft.description ?? "";
+    state.touchpadDraft.description ?? "";
   (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value =
-    touchpadDraft.pattern;
+    state.touchpadDraft.pattern;
   const triggerSel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
   if (triggerSel) {
     // 手改配置里塞了鼠标键 / 未知键名时，下拉没有这一项 → 回落到空值（显示「选择触发键…」），
     // 但**不动草稿**：保存时后端清洗会照原样报错，别在界面上悄悄改用户配置。
-    triggerSel.value = touchpadDraft.trigger ?? "";
+    triggerSel.value = state.touchpadDraft.trigger ?? "";
   }
   syncTouchpadUi();
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => touchpadDraft?.when,
+    () => state.touchpadDraft?.when,
     (c) => {
-      if (touchpadDraft) touchpadDraft.when = c;
+      if (state.touchpadDraft) state.touchpadDraft.when = c;
     },
     refreshDirty,
   );
   renderActions(
-    touchpadDraft,
-    touchpadDraft.pattern || (touchpadDraft.template ? tr("仅形状") : tr("未设方向串")),
+    state.touchpadDraft,
+    state.touchpadDraft.pattern || (state.touchpadDraft.template ? tr("仅形状") : tr("未设方向串")),
   );
   setEntryTitle();
 }
@@ -3757,75 +3534,75 @@ function spotField(
 }
 
 function fillHotCornerEditor() {
-  if (!hotcornerDraft) return;
+  if (!state.hotcornerDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
-    hotcornerDraft.description ?? "";
+    state.hotcornerDraft.description ?? "";
   fillLayerSelect(
     document.getElementById("hotcorner-layer") as HTMLSelectElement,
-    hotcornerDraft.layer ?? null,
+    state.hotcornerDraft.layer ?? null,
     "assign",
   );
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => hotcornerDraft?.when,
+    () => state.hotcornerDraft?.when,
     (c) => {
-      if (hotcornerDraft) hotcornerDraft.when = c;
+      if (state.hotcornerDraft) state.hotcornerDraft.when = c;
     },
     refreshDirty,
   );
   // 防误触停留：0 = 碰角立即触发；越界值钳进 0~3000（与壳层同一上限）。
   const dwell = document.getElementById("hotcorner-dwell") as HTMLInputElement;
-  dwell.value = String(hotcornerDraft.dwell_ms ?? 0);
+  dwell.value = String(state.hotcornerDraft.dwell_ms ?? 0);
   dwell.oninput = () => {
-    if (!hotcornerDraft) return;
+    if (!state.hotcornerDraft) return;
     const n = Math.round(Number(dwell.value) || 0);
-    hotcornerDraft.dwell_ms = Math.min(3000, Math.max(0, n));
+    state.hotcornerDraft.dwell_ms = Math.min(3000, Math.max(0, n));
     refreshDirty();
   };
   dwell.onblur = () => {
-    if (!hotcornerDraft) return;
-    dwell.value = String(hotcornerDraft.dwell_ms ?? 0);
+    if (!state.hotcornerDraft) return;
+    dwell.value = String(state.hotcornerDraft.dwell_ms ?? 0);
   };
   const host = document.getElementById("key-hotcorner")!;
   host.replaceChildren(
-    spotField("hotcorner", hotcornerDraft.spot, (spot) => {
-      if (!hotcornerDraft) return;
-      hotcornerDraft.spot = spot as HotCornerSpot;
+    spotField("hotcorner", state.hotcornerDraft.spot, (spot) => {
+      if (!state.hotcornerDraft) return;
+      state.hotcornerDraft.spot = spot as HotCornerSpot;
       fillHotCornerEditor();
       refreshDirty();
     }),
   );
-  renderActions(hotcornerDraft, spotLabel(hotcornerDraft.spot));
+  renderActions(state.hotcornerDraft, spotLabel(state.hotcornerDraft.spot));
   setEntryTitle();
 }
 
 function fillWheelEdgeEditor() {
-  if (!wheeledgeDraft) return;
+  if (!state.wheeledgeDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
-    wheeledgeDraft.description ?? "";
+    state.wheeledgeDraft.description ?? "";
   fillLayerSelect(
     document.getElementById("wheeledge-layer") as HTMLSelectElement,
-    wheeledgeDraft.layer ?? null,
+    state.wheeledgeDraft.layer ?? null,
     "assign",
   );
   renderWhenEditor(
     document.getElementById("edit-when")!,
-    () => wheeledgeDraft?.when,
+    () => state.wheeledgeDraft?.when,
     (c) => {
-      if (wheeledgeDraft) wheeledgeDraft.when = c;
+      if (state.wheeledgeDraft) state.wheeledgeDraft.when = c;
     },
     refreshDirty,
   );
   const host = document.getElementById("key-wheeledge")!;
   host.replaceChildren(
-    spotField("wheeledge", wheeledgeDraft.edge, (edge) => {
-      if (!wheeledgeDraft) return;
-      wheeledgeDraft.edge = edge as WheelEdgeSpot;
+    spotField("wheeledge", state.wheeledgeDraft.edge, (edge) => {
+      if (!state.wheeledgeDraft) return;
+      state.wheeledgeDraft.edge = edge as WheelEdgeSpot;
       fillWheelEdgeEditor();
       refreshDirty();
     }),
   );
-  renderActions(wheeledgeDraft, spotLabel(wheeledgeDraft.edge));
+  renderActions(state.wheeledgeDraft, spotLabel(state.wheeledgeDraft.edge));
   setEntryTitle();
 }
 
@@ -3857,11 +3634,11 @@ function syncEntry() {
         item.classList.toggle("hidden", !touchpadFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
-      item.classList.toggle("disabled", k !== kind && !draftNew);
+      item.classList.toggle("disabled", k !== kind && !state.draftNew);
       item.title =
         k === kind
           ? trt`${kindLabel(k)}（当前模式）`
-          : draftNew
+          : state.draftNew
             ? trt`切到${kindLabel(k)}`
             : trt`${kindLabel(k)}（已保存的条目不能改类型）`;
     }
@@ -3896,17 +3673,17 @@ function syncEntry() {
     kind === "remap" ? tr("操作") : kind === "expansion" ? tr("展开文本") : tr("动作");
   // 防误触的停留输入只属于触发角，别的类型在「条件」页签里不出现。
   document.getElementById("hotcorner-dwell-row")!.classList.toggle("hidden", kind !== "hotcorner");
-  if ((entryTab === "layer" && !hasLayer) || (entryTab === "when" && !hasWhen)) entryTab = "detail";
-  if (entryTab === "detail" && !hasDetail) entryTab = "work";
+  if ((state.entryTab === "layer" && !hasLayer) || (state.entryTab === "when" && !hasWhen)) state.entryTab = "detail";
+  if (state.entryTab === "detail" && !hasDetail) state.entryTab = "work";
   applyEntryTab();
 }
 
 function applyEntryTab() {
   document.querySelectorAll<HTMLElement>("#entry-tabs .entry-tab").forEach((b) =>
-    b.classList.toggle("active", b.dataset.tab === entryTab),
+    b.classList.toggle("active", b.dataset.tab === state.entryTab),
   );
   document.querySelectorAll<HTMLElement>("#detail-editor .entry-pane").forEach((p) =>
-    p.classList.toggle("hidden", p.dataset.pane !== entryTab),
+    p.classList.toggle("hidden", p.dataset.pane !== state.entryTab),
   );
 }
 
@@ -3914,7 +3691,7 @@ function applyEntryTab() {
 // 已保存的条目切不动（syncEntry 里按钮是 disabled 的，这里再兜一道）。
 function switchDraftKind(kind: ListKind) {
   if (kind === currentKind()) return;
-  if (!draftNew) {
+  if (!state.draftNew) {
     toast(tr("已保存的条目不能改类型"));
     return;
   }
@@ -3929,9 +3706,9 @@ function switchDraftKind(kind: ListKind) {
     : undefined;
   const folderId = (prev as { folder?: string | null } | null)?.folder ?? null;
   discardDraft();
-  selected = null;
-  section = KIND_SECTION[kind];
-  syncRailTab(section);
+  state.selected = null;
+  state.section = KIND_SECTION[kind];
+  syncRailTab(state.section);
   openDetail(-1, true, folderId, seed);
   void refreshConflicts().then(renderConflictBubble);
 }
@@ -3939,8 +3716,8 @@ function switchDraftKind(kind: ListKind) {
 // 标题行的执行按钮（只有快捷键会出现）：把当前草稿的动作串当一次触发跑掉（跑草稿 =
 // 保存前就能验证）。改键 / 文本扩展没有动作串，按钮本身不出现（syncEntry 里隐藏）。
 async function runCurrentEntry() {
-  if (!draft) return;
-  await runActions(draft.actions, draft.name?.trim() || shortcutLabel(draft));
+  if (!state.draft) return;
+  await runActions(state.draft.actions, state.draft.name?.trim() || shortcutLabel(state.draft));
 }
 
 // 行内「执行」按钮与编辑页的「执行」共用这一支：直接把动作串丢给壳层跑一遍。
@@ -3961,53 +3738,53 @@ async function runActions(actions: Action[], name: string) {
 function deleteCurrentEntry() {
   const kind = currentKind();
   if (kind === "shortcut") {
-    if (!draft) return;
-    if (draftNew) return discardNewDraft();
-    const d = draft;
+    if (!state.draft) return;
+    if (state.draftNew) return discardNewDraft();
+    const d = state.draft;
     void deleteDetailEntry(tr("快捷键"), shortcutLabel(d), () => {
-      if (selected !== null) cfg.shortcuts.splice(selected, 1);
+      if (state.selected !== null) state.cfg.shortcuts.splice(state.selected, 1);
     });
   } else if (kind === "remap") {
-    if (!remapDraft) return;
-    if (draftNew) return discardNewDraft();
-    const r = remapDraft;
+    if (!state.remapDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const r = state.remapDraft;
     void deleteDetailEntry(tr("改键"), r.name?.trim() || `${r.from} → ${remapSummary(r)}`, () => {
-      if (selected !== null) cfg.remaps.splice(selected, 1);
+      if (state.selected !== null) state.cfg.remaps.splice(state.selected, 1);
     });
   } else if (kind === "expansion") {
-    if (!expansionDraft) return;
-    if (draftNew) return discardNewDraft();
-    const e = expansionDraft;
+    if (!state.expansionDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const e = state.expansionDraft;
     void deleteDetailEntry(tr("文本扩展"), e.name?.trim() || e.trigger || tr("未命名"), () => {
-      if (selected !== null) cfg.expansions.splice(selected, 1);
+      if (state.selected !== null) state.cfg.expansions.splice(state.selected, 1);
     });
   } else if (kind === "gesture") {
-    if (!gestureDraft) return;
-    if (draftNew) return discardNewDraft();
-    const g = gestureDraft;
+    if (!state.gestureDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const g = state.gestureDraft;
     void deleteDetailEntry(tr("鼠标操作"), g.name?.trim() || g.pattern || tr("未命名"), () => {
-      if (selected !== null) (cfg.gestures ?? []).splice(selected, 1);
+      if (state.selected !== null) (state.cfg.gestures ?? []).splice(state.selected, 1);
     });
   } else if (kind === "touchpad") {
-    if (!touchpadDraft) return;
-    if (draftNew) return discardNewDraft();
-    const g = touchpadDraft;
+    if (!state.touchpadDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const g = state.touchpadDraft;
     void deleteDetailEntry(tr("触摸板手势"), g.name?.trim() || g.pattern || tr("未命名"), () => {
-      if (selected !== null) (cfg.touchpad_gestures ?? []).splice(selected, 1);
+      if (state.selected !== null) (state.cfg.touchpad_gestures ?? []).splice(state.selected, 1);
     });
   } else if (kind === "hotcorner") {
-    if (!hotcornerDraft) return;
-    if (draftNew) return discardNewDraft();
-    const r = hotcornerDraft;
+    if (!state.hotcornerDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const r = state.hotcornerDraft;
     void deleteDetailEntry(tr("角动作"), r.name?.trim() || spotLabel(r.spot), () => {
-      if (selected !== null) (cfg.hot_corners ?? []).splice(selected, 1);
+      if (state.selected !== null) (state.cfg.hot_corners ?? []).splice(state.selected, 1);
     });
   } else {
-    if (!wheeledgeDraft) return;
-    if (draftNew) return discardNewDraft();
-    const r = wheeledgeDraft;
+    if (!state.wheeledgeDraft) return;
+    if (state.draftNew) return discardNewDraft();
+    const r = state.wheeledgeDraft;
     void deleteDetailEntry(tr("边缘滚动"), r.name?.trim() || spotLabel(r.edge), () => {
-      if (selected !== null) (cfg.wheel_edges ?? []).splice(selected, 1);
+      if (state.selected !== null) (state.cfg.wheel_edges ?? []).splice(state.selected, 1);
     });
   }
 }
@@ -4034,7 +3811,7 @@ function pickRemapKey(k: string) {
   const input = document.getElementById("remap-from") as HTMLInputElement;
   input.value = k;
   showFieldError(input, "");
-  if (remapDraft) remapDraft.from = k;
+  if (state.remapDraft) state.remapDraft.from = k;
   closeKeyMenu();
   refreshDirty();
 }
@@ -4056,48 +3833,48 @@ function openDetail(
   folderId: string | null = null,
   seed?: { name?: string | null; description?: string | null; pattern?: string | null },
 ) {
-  draft = null;
-  remapDraft = null;
-  expansionDraft = null;
-  gestureDraft = null;
-  touchpadDraft = null;
-  hotcornerDraft = null;
-  wheeledgeDraft = null;
-  selected = i;
-  draftNew = isNew;
-  draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
-  entryTab = "work"; // 打开条目默认停在「动作 / 操作 / 展开文本」页签
-  if (section === "shortcuts") {
-    draft = isNew
+  state.draft = null;
+  state.remapDraft = null;
+  state.expansionDraft = null;
+  state.gestureDraft = null;
+  state.touchpadDraft = null;
+  state.hotcornerDraft = null;
+  state.wheeledgeDraft = null;
+  state.selected = i;
+  state.draftNew = isNew;
+  state.draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
+  state.entryTab = "work"; // 打开条目默认停在「动作 / 操作 / 展开文本」页签
+  if (state.section === "shortcuts") {
+    state.draft = isNew
       ? { name: "", description: "", folder: folderId, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
-      : deepClone(cfg.shortcuts[i]);
+      : deepClone(state.cfg.shortcuts[i]);
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
-    if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
+    if (!isNew && state.draft.actions.length > 1) collapseAllActions(state.draft.actions);
     if (isNew && seed) {
-      draft.name = seed.name ?? "";
-      draft.description = seed.description ?? "";
+      state.draft.name = seed.name ?? "";
+      state.draft.description = seed.description ?? "";
     }
     fillShortcutEditor();
-  } else if (section === "remaps") {
-    remapDraft = isNew
+  } else if (state.section === "remaps") {
+    state.remapDraft = isNew
       ? { name: null, description: null, folder: folderId, from: "", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
-      : deepClone(cfg.remaps[i]);
+      : deepClone(state.cfg.remaps[i]);
     if (isNew && seed) {
-      remapDraft.name = seed.name ?? null;
-      remapDraft.description = seed.description ?? null;
+      state.remapDraft.name = seed.name ?? null;
+      state.remapDraft.description = seed.description ?? null;
     }
     fillRemapEditor();
-  } else if (section === "expansions") {
-    expansionDraft = isNew
+  } else if (state.section === "expansions") {
+    state.expansionDraft = isNew
       ? { name: null, description: null, folder: folderId, trigger: "", replace: "", enabled: true }
-      : deepClone(cfg.expansions[i]);
+      : deepClone(state.cfg.expansions[i]);
     if (isNew && seed) {
-      expansionDraft.name = seed.name ?? null;
-      expansionDraft.description = seed.description ?? null;
+      state.expansionDraft.name = seed.name ?? null;
+      state.expansionDraft.description = seed.description ?? null;
     }
     fillExpansionEditor();
-  } else if (section === "gestures") {
-    gestureDraft = isNew
+  } else if (state.section === "gestures") {
+    state.gestureDraft = isNew
       ? {
           name: null,
           description: null,
@@ -4106,14 +3883,14 @@ function openDetail(
           actions: [newAction("text")],
           enabled: true,
         }
-      : deepClone((cfg.gestures ?? [])[i]);
+      : deepClone((state.cfg.gestures ?? [])[i]);
     if (isNew && seed) {
-      gestureDraft.name = seed.name ?? null;
-      if (seed.pattern) gestureDraft.pattern = seed.pattern;
+      state.gestureDraft.name = seed.name ?? null;
+      if (seed.pattern) state.gestureDraft.pattern = seed.pattern;
     }
     fillGestureEditor();
-  } else if (section === "touchpads") {
-    touchpadDraft = isNew
+  } else if (state.section === "touchpads") {
+    state.touchpadDraft = isNew
       ? {
           name: null,
           description: null,
@@ -4124,14 +3901,14 @@ function openDetail(
           actions: [newAction("text")],
           enabled: true,
         }
-      : deepClone((cfg.touchpad_gestures ?? [])[i]);
+      : deepClone((state.cfg.touchpad_gestures ?? [])[i]);
     if (isNew && seed) {
-      touchpadDraft.name = seed.name ?? null;
-      if (seed.pattern) touchpadDraft.pattern = seed.pattern;
+      state.touchpadDraft.name = seed.name ?? null;
+      if (seed.pattern) state.touchpadDraft.pattern = seed.pattern;
     }
     fillTouchpadEditor();
-  } else if (section === "hotcorners") {
-    hotcornerDraft = isNew
+  } else if (state.section === "hotcorners") {
+    state.hotcornerDraft = isNew
       ? {
           spot: "top_left",
           name: null,
@@ -4142,11 +3919,11 @@ function openDetail(
           actions: [newAction("text")],
           enabled: true,
         }
-      : deepClone((cfg.hot_corners ?? [])[i]);
-    if (isNew && seed) hotcornerDraft.name = seed.name ?? null;
+      : deepClone((state.cfg.hot_corners ?? [])[i]);
+    if (isNew && seed) state.hotcornerDraft.name = seed.name ?? null;
     fillHotCornerEditor();
-  } else if (section === "wheeledges") {
-    wheeledgeDraft = isNew
+  } else if (state.section === "wheeledges") {
+    state.wheeledgeDraft = isNew
       ? {
           edge: "top",
           name: null,
@@ -4156,8 +3933,8 @@ function openDetail(
           actions: [newAction("text")],
           enabled: true,
         }
-      : deepClone((cfg.wheel_edges ?? [])[i]);
-    if (isNew && seed) wheeledgeDraft.name = seed.name ?? null;
+      : deepClone((state.cfg.wheel_edges ?? [])[i]);
+    if (isNew && seed) state.wheeledgeDraft.name = seed.name ?? null;
     fillWheelEdgeEditor();
   }
   markDraftBaseline();
@@ -4169,21 +3946,21 @@ function closeDetail() {
   stopCapture();
   void stopRecIfAny();
   discardDraft();
-  draftNew = false;
-  selected = null;
+  state.draftNew = false;
+  state.selected = null;
   render();
 }
 
 function discardDraft() {
   // 草稿隔离：编辑只改 draft/remapDraft/expansionDraft/gestureDraft，取消/关闭/切换直接丢弃，cfg 不受影响。
-  draft = null;
-  remapDraft = null;
-  expansionDraft = null;
-  gestureDraft = null;
-  touchpadDraft = null;
-  hotcornerDraft = null;
-  wheeledgeDraft = null;
-  draftBaseline = null;
+  state.draft = null;
+  state.remapDraft = null;
+  state.expansionDraft = null;
+  state.gestureDraft = null;
+  state.touchpadDraft = null;
+  state.hotcornerDraft = null;
+  state.wheeledgeDraft = null;
+  state.draftBaseline = null;
   refreshDirty();
 }
 
@@ -4192,70 +3969,70 @@ function discardDraft() {
 
 // 快捷键：保存后留在编辑页（草稿继续可改）；空的新条目会被 save() 清洗剔除，那才回落到关闭编辑页。
 async function saveShortcutDetail(): Promise<boolean> {
-  if (section !== "shortcuts" || !draft) return false;
+  if (state.section !== "shortcuts" || !state.draft) return false;
   await stopRecIfAny();
-  draft.description = domValue("edit-desc") || null;
-  draft.layer = domValue("edit-layer") || null;
+  state.draft.description = domValue("edit-desc") || null;
+  state.draft.layer = domValue("edit-layer") || null;
   // 落盘的是草稿副本：草稿与 cfg 从此各持一份，之后继续在编辑页改动就不会悄悄改到内存里的
   // cfg（冲突检测 / 列表读的都是 cfg，「保存了但没保存」的样子很难查）。
-  const item = deepClone(draft);
-  if (draftNew) {
-    cfg.shortcuts.unshift(item);
-  } else if (selected !== null && cfg.shortcuts[selected]) {
+  const item = deepClone(state.draft);
+  if (state.draftNew) {
+    state.cfg.shortcuts.unshift(item);
+  } else if (state.selected !== null && state.cfg.shortcuts[state.selected]) {
     // 「启用」只有列表行的开关能改（编辑页没这个控件），别拿草稿里的旧值把用户刚点的开关盖回去。
-    item.enabled = cfg.shortcuts[selected].enabled;
-    cfg.shortcuts[selected] = item;
+    item.enabled = state.cfg.shortcuts[state.selected].enabled;
+    state.cfg.shortcuts[state.selected] = item;
   }
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = cfg.shortcuts.indexOf(item);
-  if (selected < 0) draft = null; // 空条目被清洗剔除 → 关闭编辑页
+  state.selected = state.cfg.shortcuts.indexOf(item);
+  if (state.selected < 0) state.draft = null; // 空条目被清洗剔除 → 关闭编辑页
   // 保存成功才刷新基线；失败（或草稿已被剔除）保持原样，别让用户以为已经落盘。
-  if (ok) draftBaseline = draftSignature();
-  else if (!draft) draftBaseline = null;
+  if (ok) state.draftBaseline = draftSignature();
+  else if (!state.draft) state.draftBaseline = null;
   render();
-  if (ok) flashRow(selected ?? -1, "shortcut");
+  if (ok) flashRow(state.selected ?? -1, "shortcut");
   return ok;
 }
 
 async function saveRemapDetail(): Promise<boolean> {
-  if (section !== "remaps" || !remapDraft) return false;
-  remapDraft.description = domValue("edit-desc") || null;
-  remapDraft.from = domValue("remap-from").trim();
+  if (state.section !== "remaps" || !state.remapDraft) return false;
+  state.remapDraft.description = domValue("edit-desc") || null;
+  state.remapDraft.from = domValue("remap-from").trim();
   // 原键是必填：留空（新增时的默认）会被后端 sanitize 整条丢掉（toast 只报「原键无法解析」，
   // 用户以为存了其实条目没了）。保存前拦住并把输入框标红。别名（Escape 等）交给后端解析。
-  if (!remapDraft.from) {
+  if (!state.remapDraft.from) {
     const input = document.getElementById("remap-from") as HTMLInputElement;
     showFieldError(input, tr("请选择原键"));
     input.focus();
     toast(tr("请先选择原键"));
     return false;
   }
-  remapDraft.tap = domValue("remap-tap") || null;
-  remapDraft.hold = domValue("remap-hold") || null;
-  remapDraft.oneshot = domValue("remap-oneshot") || null;
-  remapDraft.sticky = domValue("remap-sticky") || null;
-  remapDraft.tap2 = domValue("remap-tap2") || null;
-  remapDraft.tap3 = domValue("remap-tap3") || null;
-  remapDraft.layer = domValue("remap-layer") || null;
-  remapDraft.hold_layer = domValue("remap-hold-layer") || null;
-  remapDraft.lock_layer = domValue("remap-lock-layer") || null;
-  remapDraft.tap_timeout_ms = intIn(domValue("remap-timeout"), 50, 200, 2000);
+  state.remapDraft.tap = domValue("remap-tap") || null;
+  state.remapDraft.hold = domValue("remap-hold") || null;
+  state.remapDraft.oneshot = domValue("remap-oneshot") || null;
+  state.remapDraft.sticky = domValue("remap-sticky") || null;
+  state.remapDraft.tap2 = domValue("remap-tap2") || null;
+  state.remapDraft.tap3 = domValue("remap-tap3") || null;
+  state.remapDraft.layer = domValue("remap-layer") || null;
+  state.remapDraft.hold_layer = domValue("remap-hold-layer") || null;
+  state.remapDraft.lock_layer = domValue("remap-lock-layer") || null;
+  state.remapDraft.tap_timeout_ms = intIn(domValue("remap-timeout"), 50, 200, 2000);
   // 任一非普通改键形态（tap-hold/切层/单次/粘滞/连击）→ 清空「改为」；否则用「改为」。
-  remapDraft.to = remapDraft.tap ||
-    remapDraft.hold ||
-    remapDraft.hold_layer ||
-    remapDraft.lock_layer ||
-    remapDraft.oneshot ||
-    remapDraft.sticky ||
-    remapDraft.tap2 ||
-    remapDraft.tap3
+  state.remapDraft.to = state.remapDraft.tap ||
+    state.remapDraft.hold ||
+    state.remapDraft.hold_layer ||
+    state.remapDraft.lock_layer ||
+    state.remapDraft.oneshot ||
+    state.remapDraft.sticky ||
+    state.remapDraft.tap2 ||
+    state.remapDraft.tap3
     ? ""
     : domValue("remap-to");
   // 长按进入层（momentary）与长按锁定层（切换式）互斥：两者都选了保留切换式（层内放和弦/
   // 序列只能用切换式，见前端的提示文案），避免后端归一化时静默丢一个让用户困惑。
-  if (remapDraft.hold_layer && remapDraft.lock_layer) {
-    remapDraft.hold_layer = null;
+  if (state.remapDraft.hold_layer && state.remapDraft.lock_layer) {
+    state.remapDraft.hold_layer = null;
     (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
     toast(tr("同时选了「长按进入层」与「长按锁定层」，保留「长按锁定层」"));
   }
@@ -4263,39 +4040,39 @@ async function saveRemapDetail(): Promise<boolean> {
   // 无效条目丢掉。这里直接拦住并说清楚，别让用户以为配好了（「长按进入层」没选中层就是这样丢的）。
   // 返回 false 让「保存并离开」也停下来，改键还留在编辑页。
   if (
-    !remapDraft.tap &&
-    !remapDraft.hold &&
-    !remapDraft.hold_layer &&
-    !remapDraft.lock_layer &&
-    !remapDraft.oneshot &&
-    !remapDraft.sticky &&
-    !remapDraft.tap2 &&
-    !remapDraft.tap3 &&
-    !remapDraft.to
+    !state.remapDraft.tap &&
+    !state.remapDraft.hold &&
+    !state.remapDraft.hold_layer &&
+    !state.remapDraft.lock_layer &&
+    !state.remapDraft.oneshot &&
+    !state.remapDraft.sticky &&
+    !state.remapDraft.tap2 &&
+    !state.remapDraft.tap3 &&
+    !state.remapDraft.to
   ) {
     toast(tr("请至少设置一种输出：改为 / 短按 / 长按 / 长按进入层 / 长按锁定层 / 单次 / 粘滞 / 双击 / 三击"));
     return false;
   }
-  const item = deepClone(remapDraft);
-  if (draftNew) {
-    cfg.remaps.unshift(item);
-  } else if (selected !== null && cfg.remaps[selected]) {
-    item.enabled = cfg.remaps[selected].enabled;
-    cfg.remaps[selected] = item;
+  const item = deepClone(state.remapDraft);
+  if (state.draftNew) {
+    state.cfg.remaps.unshift(item);
+  } else if (state.selected !== null && state.cfg.remaps[state.selected]) {
+    item.enabled = state.cfg.remaps[state.selected].enabled;
+    state.cfg.remaps[state.selected] = item;
   }
   // 保存后留在编辑页（草稿继续可改）：与快捷键同行为，别把用户刚存的条目关掉。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = cfg.remaps.indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = state.cfg.remaps.indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "remap");
+  if (ok) flashRow(state.selected ?? -1, "remap");
   return ok;
 }
 
 async function saveExpansionDetail(): Promise<boolean> {
-  if (section !== "expansions" || !expansionDraft) return false;
-  expansionDraft.description = domValue("edit-desc") || null;
+  if (state.section !== "expansions" || !state.expansionDraft) return false;
+  state.expansionDraft.description = domValue("edit-desc") || null;
   const trigger = domValue("edit-exp-trigger").trim();
   // 触发词非法必须拦在保存前：save() 会把空触发词整条剔除——用户以为存了，其实条目没了。
   const err = expansionTriggerError(trigger);
@@ -4306,28 +4083,28 @@ async function saveExpansionDetail(): Promise<boolean> {
     toast(trt`触发词无效：${err}`);
     return false;
   }
-  expansionDraft.trigger = trigger;
-  expansionDraft.replace = domValue("edit-exp-replace");
-  const item = deepClone(expansionDraft);
-  if (draftNew) {
-    cfg.expansions.unshift(item);
-  } else if (selected !== null && cfg.expansions[selected]) {
-    item.enabled = cfg.expansions[selected].enabled;
-    cfg.expansions[selected] = item;
+  state.expansionDraft.trigger = trigger;
+  state.expansionDraft.replace = domValue("edit-exp-replace");
+  const item = deepClone(state.expansionDraft);
+  if (state.draftNew) {
+    state.cfg.expansions.unshift(item);
+  } else if (state.selected !== null && state.cfg.expansions[state.selected]) {
+    item.enabled = state.cfg.expansions[state.selected].enabled;
+    state.cfg.expansions[state.selected] = item;
   }
   // 保存后留在编辑页（与快捷键同行为）。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = cfg.expansions.indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = state.cfg.expansions.indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "expansion");
+  if (ok) flashRow(state.selected ?? -1, "expansion");
   return ok;
 }
 
 // 鼠标操作（手势）保存：方向串必填（空的后端清洗会整条丢掉），动作可空（空 = 只留条目不做事）。
 async function saveGestureDetail(): Promise<boolean> {
-  if (section !== "gestures" || !gestureDraft) return false;
+  if (state.section !== "gestures" || !state.gestureDraft) return false;
   const pattern = domValue("edit-gesture-pattern").trim().toUpperCase();
   if (!pattern) {
     const input = document.getElementById("edit-gesture-pattern") as HTMLInputElement;
@@ -4336,31 +4113,31 @@ async function saveGestureDetail(): Promise<boolean> {
     toast(tr("请先填写方向串（如 D、DL、DRUL）"));
     return false;
   }
-  gestureDraft.pattern = pattern;
-  gestureDraft.description = domValue("edit-desc") || null;
-  const item = deepClone(gestureDraft);
-  const list = cfg.gestures ?? (cfg.gestures = []);
-  if (draftNew) {
+  state.gestureDraft.pattern = pattern;
+  state.gestureDraft.description = domValue("edit-desc") || null;
+  const item = deepClone(state.gestureDraft);
+  const list = state.cfg.gestures ?? (state.cfg.gestures = []);
+  if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (selected !== null && list[selected]) {
-    item.enabled = list[selected].enabled;
-    list[selected] = item;
+  } else if (state.selected !== null && list[state.selected]) {
+    item.enabled = list[state.selected].enabled;
+    list[state.selected] = item;
   }
   // 保存后留在编辑页（与快捷键同行为）。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = (cfg.gestures ?? []).indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = (state.cfg.gestures ?? []).indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "gesture");
+  if (ok) flashRow(state.selected ?? -1, "gesture");
   return ok;
 }
 
 // 触摸板手势保存：**触发键必填**；方向串与形状模板至少有一个（后端清洗会把两者都空的整条丢掉），
 // 只有模板 = 「纯形状」条目（方向串留空，靠模板兜底匹配）；动作可空（空 = 只留条目不做事）。
 async function saveTouchpadDetail(): Promise<boolean> {
-  if (section !== "touchpads" || !touchpadDraft) return false;
+  if (state.section !== "touchpads" || !state.touchpadDraft) return false;
   const trigger = domValue("edit-touchpad-trigger");
   if (!trigger) {
     const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
@@ -4370,180 +4147,89 @@ async function saveTouchpadDetail(): Promise<boolean> {
     return false;
   }
   const pattern = domValue("edit-touchpad-pattern").trim().toUpperCase();
-  if (!pattern && !(touchpadDraft.template?.length ?? 0)) {
+  if (!pattern && !(state.touchpadDraft.template?.length ?? 0)) {
     const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
     showFieldError(input, tr("请填写方向串，或用「录入」画一笔形状"));
     input.focus();
     toast(tr("方向串可以留空（只认形状），但要先「录入」一笔留下形状模板"));
     return false;
   }
-  touchpadDraft.trigger = trigger;
-  touchpadDraft.pattern = pattern;
-  touchpadDraft.template = touchpadDraft.template?.length ? touchpadDraft.template : null;
-  touchpadDraft.description = domValue("edit-desc") || null;
-  const item = deepClone(touchpadDraft);
-  const list = cfg.touchpad_gestures ?? (cfg.touchpad_gestures = []);
-  if (draftNew) {
+  state.touchpadDraft.trigger = trigger;
+  state.touchpadDraft.pattern = pattern;
+  state.touchpadDraft.template = state.touchpadDraft.template?.length ? state.touchpadDraft.template : null;
+  state.touchpadDraft.description = domValue("edit-desc") || null;
+  const item = deepClone(state.touchpadDraft);
+  const list = state.cfg.touchpad_gestures ?? (state.cfg.touchpad_gestures = []);
+  if (state.draftNew) {
     list.unshift(item);
     touchpadOrderFront(item);
-  } else if (selected !== null && list[selected]) {
-    item.enabled = list[selected].enabled;
-    list[selected] = item;
+  } else if (state.selected !== null && list[state.selected]) {
+    item.enabled = list[state.selected].enabled;
+    list[state.selected] = item;
   }
   // 保存后留在编辑页（与快捷键同行为）。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = (cfg.touchpad_gestures ?? []).indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = (state.cfg.touchpad_gestures ?? []).indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "touchpad");
+  if (ok) flashRow(state.selected ?? -1, "touchpad");
   return ok;
 }
 
 // 角动作 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
 async function saveHotCornerDetail(): Promise<boolean> {
-  if (section !== "hotcorners" || !hotcornerDraft) return false;
-  hotcornerDraft.description = domValue("edit-desc") || null;
-  hotcornerDraft.layer = domValue("hotcorner-layer") || null;
-  const item = deepClone(hotcornerDraft);
-  const list = cfg.hot_corners ?? (cfg.hot_corners = []);
-  if (draftNew) {
+  if (state.section !== "hotcorners" || !state.hotcornerDraft) return false;
+  state.hotcornerDraft.description = domValue("edit-desc") || null;
+  state.hotcornerDraft.layer = domValue("hotcorner-layer") || null;
+  const item = deepClone(state.hotcornerDraft);
+  const list = state.cfg.hot_corners ?? (state.cfg.hot_corners = []);
+  if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (selected !== null && list[selected]) {
-    item.enabled = list[selected].enabled;
-    list[selected] = item;
+  } else if (state.selected !== null && list[state.selected]) {
+    item.enabled = list[state.selected].enabled;
+    list[state.selected] = item;
   }
   // 保存后留在编辑页（与快捷键同行为）。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = (cfg.hot_corners ?? []).indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = (state.cfg.hot_corners ?? []).indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "hotcorner");
+  if (ok) flashRow(state.selected ?? -1, "hotcorner");
   return ok;
 }
 
 async function saveWheelEdgeDetail(): Promise<boolean> {
-  if (section !== "wheeledges" || !wheeledgeDraft) return false;
-  wheeledgeDraft.description = domValue("edit-desc") || null;
-  wheeledgeDraft.layer = domValue("wheeledge-layer") || null;
-  const item = deepClone(wheeledgeDraft);
-  const list = cfg.wheel_edges ?? (cfg.wheel_edges = []);
-  if (draftNew) {
+  if (state.section !== "wheeledges" || !state.wheeledgeDraft) return false;
+  state.wheeledgeDraft.description = domValue("edit-desc") || null;
+  state.wheeledgeDraft.layer = domValue("wheeledge-layer") || null;
+  const item = deepClone(state.wheeledgeDraft);
+  const list = state.cfg.wheel_edges ?? (state.cfg.wheel_edges = []);
+  if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (selected !== null && list[selected]) {
-    item.enabled = list[selected].enabled;
-    list[selected] = item;
+  } else if (state.selected !== null && list[state.selected]) {
+    item.enabled = list[state.selected].enabled;
+    list[state.selected] = item;
   }
   // 保存后留在编辑页（与快捷键同行为）。
-  draftNew = false;
+  state.draftNew = false;
   const ok = await save();
-  selected = (cfg.wheel_edges ?? []).indexOf(item);
-  if (ok) draftBaseline = draftSignature();
+  state.selected = (state.cfg.wheel_edges ?? []).indexOf(item);
+  if (ok) state.draftBaseline = draftSignature();
   render();
-  if (ok) flashRow(selected ?? -1, "wheeledge");
+  if (ok) flashRow(state.selected ?? -1, "wheeledge");
   return ok;
 }
 
 // ---- 未保存改动守卫 ----
-// 编辑草稿是 cfg 的副本（openDetail 时 deepClone / 新建模板），所以「改没改过」没法靠引用比对，
-// 只能与基线比对：draftBaseline 记下打开编辑页（或上次保存）那一刻的草稿签名。
-// 签名里必须带上「只在保存时才读回草稿」的那些输入框——描述 / 所属层、改键的原键与长按阈值、
-// 文本扩展的触发词与替换文本——否则改这些字段脏标记不亮，离开时照样静默丢。
-
-function domValue(id: string): string {
-  const node = document.getElementById(id) as
-    | HTMLInputElement
-    | HTMLSelectElement
-    | HTMLTextAreaElement
-    | null;
-  return node ? node.value : "";
-}
-
-// 数值框取值：解析失败回退默认值、越界收回到 [min, max]（input 的 min/max 属性就是口径）。
-// 此前 `parseInt(x, 10) || 0` 对负数照单全收（-50ms 这种值一路落盘，后端 u64 反序列化直接报错）。
-function intIn(v: string, min: number, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
-  const n = parseInt(v, 10);
-  if (!Number.isFinite(n)) return fallback;
-  return Math.min(max, Math.max(min, n));
-}
-
-function draftSignature(): string | null {
-  if (section === "shortcuts") {
-    if (!draft) return null;
-    return JSON.stringify({
-      ...draft,
-      description: domValue("edit-desc") || null,
-      layer: domValue("edit-layer") || null,
-    });
-  }
-  if (section === "remaps") {
-    if (!remapDraft) return null;
-    return JSON.stringify({
-      ...remapDraft,
-      description: domValue("edit-desc") || null,
-      from: domValue("remap-from"),
-      to: domValue("remap-to"),
-      layer: domValue("remap-layer") || null,
-      tap_timeout_ms: intIn(domValue("remap-timeout"), 50, 200, 2000),
-    });
-  }
-  if (section === "expansions") {
-    if (!expansionDraft) return null;
-    return JSON.stringify({
-      ...expansionDraft,
-      description: domValue("edit-desc") || null,
-      trigger: domValue("edit-exp-trigger").trim(),
-      replace: domValue("edit-exp-replace"),
-    });
-  }
-  if (section === "gestures") {
-    if (!gestureDraft) return null;
-    return JSON.stringify({
-      ...gestureDraft,
-      description: domValue("edit-desc") || null,
-      pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
-    });
-  }
-  if (section === "touchpads") {
-    if (!touchpadDraft) return null;
-    return JSON.stringify({
-      ...touchpadDraft,
-      description: domValue("edit-desc") || null,
-      trigger: domValue("edit-touchpad-trigger") || null,
-      pattern: domValue("edit-touchpad-pattern").trim().toUpperCase(),
-    });
-  }
-  if (section === "hotcorners")
-    return hotcornerDraft
-      ? JSON.stringify({
-          ...hotcornerDraft,
-          description: domValue("edit-desc") || null,
-          layer: domValue("hotcorner-layer") || null,
-        })
-      : null;
-  if (section === "wheeledges")
-    return wheeledgeDraft
-      ? JSON.stringify({
-          ...wheeledgeDraft,
-          description: domValue("edit-desc") || null,
-          layer: domValue("wheeledge-layer") || null,
-        })
-      : null;
-  return null;
-}
+// 草稿签名与脏判定在 state.ts（draftSignature / isDraftDirty），这里只留触发重绘的部分。
 
 function markDraftBaseline() {
-  draftBaseline = draftSignature();
+  state.draftBaseline = draftSignature();
   refreshDirty();
-}
-
-// 基线为 null = 没有草稿（或正在填充），一律不算脏——编辑内容清空时签名也是 null，
-// 不这么判会把「草稿没了」当成「有改动」。
-function isDraftDirty(): boolean {
-  return draftBaseline !== null && draftSignature() !== draftBaseline;
 }
 
 // 脏标记与「撤销改动」的可用态。（标记放标题行右侧：标题本身就是名称输入框，动作行腾给了页签。）
@@ -4559,27 +4245,27 @@ function refreshDirty() {
 
 // 撤销改动：把草稿还原成基线内容（打开时 / 上次保存的），编辑页留在原地。
 function revertDraft() {
-  if (!draftBaseline) return;
-  if (section === "shortcuts") {
-    draft = JSON.parse(draftBaseline) as ShortcutItem;
+  if (!state.draftBaseline) return;
+  if (state.section === "shortcuts") {
+    state.draft = JSON.parse(state.draftBaseline) as ShortcutItem;
     fillShortcutEditor();
-  } else if (section === "remaps") {
-    remapDraft = JSON.parse(draftBaseline) as Remap;
+  } else if (state.section === "remaps") {
+    state.remapDraft = JSON.parse(state.draftBaseline) as Remap;
     fillRemapEditor();
-  } else if (section === "expansions") {
-    expansionDraft = JSON.parse(draftBaseline) as TextExpansion;
+  } else if (state.section === "expansions") {
+    state.expansionDraft = JSON.parse(state.draftBaseline) as TextExpansion;
     fillExpansionEditor();
-  } else if (section === "gestures") {
-    gestureDraft = JSON.parse(draftBaseline) as Gesture;
+  } else if (state.section === "gestures") {
+    state.gestureDraft = JSON.parse(state.draftBaseline) as Gesture;
     fillGestureEditor();
-  } else if (section === "touchpads") {
-    touchpadDraft = JSON.parse(draftBaseline) as TouchpadGesture;
+  } else if (state.section === "touchpads") {
+    state.touchpadDraft = JSON.parse(state.draftBaseline) as TouchpadGesture;
     fillTouchpadEditor();
-  } else if (section === "hotcorners") {
-    hotcornerDraft = JSON.parse(draftBaseline) as HotCornerRule;
+  } else if (state.section === "hotcorners") {
+    state.hotcornerDraft = JSON.parse(state.draftBaseline) as HotCornerRule;
     fillHotCornerEditor();
-  } else if (section === "wheeledges") {
-    wheeledgeDraft = JSON.parse(draftBaseline) as WheelEdgeRule;
+  } else if (state.section === "wheeledges") {
+    state.wheeledgeDraft = JSON.parse(state.draftBaseline) as WheelEdgeRule;
     fillWheelEdgeEditor();
   } else {
     return;
@@ -4594,24 +4280,24 @@ type UnsavedChoice = "save" | "discard" | "cancel";
 let unsavedPending: ((c: UnsavedChoice) => void) | null = null;
 
 function draftLabel(): string {
-  if (section === "shortcuts") return trt`快捷键「${draft?.name || tr("未命名")}」`;
-  if (section === "remaps" && remapDraft) {
-    return trt`改键「${remapDraft.name?.trim() || `${remapDraft.from} → ${remapSummary(remapDraft)}`}」`;
+  if (state.section === "shortcuts") return trt`快捷键「${state.draft?.name || tr("未命名")}」`;
+  if (state.section === "remaps" && state.remapDraft) {
+    return trt`改键「${state.remapDraft.name?.trim() || `${state.remapDraft.from} → ${remapSummary(state.remapDraft)}`}」`;
   }
-  if (section === "expansions") {
-    return trt`文本扩展「${expansionDraft?.name?.trim() || expansionDraft?.trigger || tr("未命名")}」`;
+  if (state.section === "expansions") {
+    return trt`文本扩展「${state.expansionDraft?.name?.trim() || state.expansionDraft?.trigger || tr("未命名")}」`;
   }
-  if (section === "gestures") {
-    return trt`鼠标操作「${gestureDraft?.name?.trim() || gestureDraft?.pattern || tr("未命名")}」`;
+  if (state.section === "gestures") {
+    return trt`鼠标操作「${state.gestureDraft?.name?.trim() || state.gestureDraft?.pattern || tr("未命名")}」`;
   }
-  if (section === "touchpads") {
-    return trt`触摸板手势「${touchpadDraft?.name?.trim() || touchpadDraft?.pattern || tr("未命名")}」`;
+  if (state.section === "touchpads") {
+    return trt`触摸板手势「${state.touchpadDraft?.name?.trim() || state.touchpadDraft?.pattern || tr("未命名")}」`;
   }
-  if (section === "hotcorners") {
-    return trt`角动作「${hotcornerDraft?.name?.trim() || spotLabel(hotcornerDraft?.spot ?? "top_left")}」`;
+  if (state.section === "hotcorners") {
+    return trt`角动作「${state.hotcornerDraft?.name?.trim() || spotLabel(state.hotcornerDraft?.spot ?? "top_left")}」`;
   }
-  if (section === "wheeledges") {
-    return trt`边缘滚动「${wheeledgeDraft?.name?.trim() || spotLabel(wheeledgeDraft?.edge ?? "top")}」`;
+  if (state.section === "wheeledges") {
+    return trt`边缘滚动「${state.wheeledgeDraft?.name?.trim() || spotLabel(state.wheeledgeDraft?.edge ?? "top")}」`;
   }
   return tr("当前编辑");
 }
@@ -4639,7 +4325,7 @@ async function confirmLeaveDraft(): Promise<boolean> {
   if (choice === "cancel") return false;
   if (choice === "discard") {
     discardDraft();
-    draftNew = false;
+    state.draftNew = false;
     return true;
   }
   // 「保存并离开」：保存失败（或改键没设任何输出被判无效）就别走，留在编辑页别把改动丢了。
@@ -4647,13 +4333,13 @@ async function confirmLeaveDraft(): Promise<boolean> {
 }
 
 async function saveCurrentDraft(): Promise<boolean> {
-  if (section === "shortcuts") return await saveShortcutDetail();
-  if (section === "remaps") return await saveRemapDetail();
-  if (section === "expansions") return await saveExpansionDetail();
-  if (section === "gestures") return await saveGestureDetail();
-  if (section === "touchpads") return await saveTouchpadDetail();
-  if (section === "hotcorners") return await saveHotCornerDetail();
-  if (section === "wheeledges") return await saveWheelEdgeDetail();
+  if (state.section === "shortcuts") return await saveShortcutDetail();
+  if (state.section === "remaps") return await saveRemapDetail();
+  if (state.section === "expansions") return await saveExpansionDetail();
+  if (state.section === "gestures") return await saveGestureDetail();
+  if (state.section === "touchpads") return await saveTouchpadDetail();
+  if (state.section === "hotcorners") return await saveHotCornerDetail();
+  if (state.section === "wheeledges") return await saveWheelEdgeDetail();
   return false;
 }
 
@@ -4662,7 +4348,7 @@ async function saveCurrentDraft(): Promise<boolean> {
 async function requestOpenDetail(i: number, isNew = false, kind: ListKind = "shortcut") {
   if (!(await confirmLeaveDraft())) return;
   const tab = KIND_SECTION[kind];
-  if (section !== tab) switchSectionNow(tab, { keepList: true });
+  if (state.section !== tab) switchSectionNow(tab, { keepList: true });
   openDetail(i, isNew);
 }
 
@@ -4670,7 +4356,7 @@ async function requestOpenDetail(i: number, isNew = false, kind: ListKind = "sho
 async function requestNew(kind: ListKind, folderId: string | null = null) {
   if (!(await confirmLeaveDraft())) return;
   const tab = KIND_SECTION[kind];
-  if (section !== tab) switchSectionNow(tab, { keepList: true });
+  if (state.section !== tab) switchSectionNow(tab, { keepList: true });
   openDetail(-1, true, folderId);
 }
 
@@ -4688,13 +4374,13 @@ async function requestCloseDetail() {
 // 的同一下标可能已经是另一条，草稿一保存就写到别人身上去了。
 async function applyExternalConfig(next: Config) {
   const editing =
-    draft !== null ||
-    remapDraft !== null ||
-    expansionDraft !== null ||
-    gestureDraft !== null ||
-    touchpadDraft !== null ||
-    hotcornerDraft !== null ||
-    wheeledgeDraft !== null;
+    state.draft !== null ||
+    state.remapDraft !== null ||
+    state.expansionDraft !== null ||
+    state.gestureDraft !== null ||
+    state.touchpadDraft !== null ||
+    state.hotcornerDraft !== null ||
+    state.wheeledgeDraft !== null;
   if (editing) {
     if (isDraftDirty()) {
       const take = await askConfirm({
@@ -4712,10 +4398,10 @@ async function applyExternalConfig(next: Config) {
     stopCapture();
     void stopRecIfAny();
     discardDraft();
-    draftNew = false;
-    selected = null;
+    state.draftNew = false;
+    state.selected = null;
   }
-  cfg = next;
+  state.cfg = next;
   await refreshConflicts();
   render();
   syncSettings();
@@ -5016,7 +4702,7 @@ function attachActionDragStart(
   handle.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     e.stopPropagation();
-    actionDrag = { list, index, startX: e.clientX, startY: e.clientY, active: false, sourceEl: row };
+    state.actionDrag = { list, index, startX: e.clientX, startY: e.clientY, active: false, sourceEl: row };
   });
 }
 
@@ -5081,8 +4767,8 @@ function nestedActionLists(a: Action): Action[][] {
 // 命中计算：先在所有列表里找包含指针的最内层，再按卡片中线算插入下标；
 // 插入线画在两张卡片之间的空隙里（不是画在卡片上下边缘的内描边上）。
 function actionDropAt(x: number, y: number): ActionDropHit | null {
-  if (!actionDrag) return null;
-  const moved = actionDrag.list[actionDrag.index];
+  if (!state.actionDrag) return null;
+  const moved = state.actionDrag.list[state.actionDrag.index];
   if (!moved) return null;
   const boxes = actionListBoxes();
   if (!boxes.length) return null;
@@ -5342,7 +5028,7 @@ function actionSubtypeSelect(
   }
   if (a.type === "tool") {
     const sel = el("select", "action-type") as HTMLSelectElement;
-    for (const t of runningTools) {
+    for (const t of state.runningTools) {
       for (const c of t.capabilities) {
         const opt = el("option") as HTMLOptionElement;
         opt.value = `${t.id}\u0000${c.id}`;
@@ -5678,23 +5364,23 @@ function mouseRecordButton(
   ctx?: { actions: Action[]; idx: number },
 ): HTMLElement {
   const btn = el("button", "record action-mouse-record") as HTMLButtonElement;
-  btn.textContent = mouseRecording ? tr("■ 录制中（点此停止）") : tr("● 录制鼠标操作");
-  if (mouseRecording) btn.classList.add("recording");
+  btn.textContent = state.mouseRecording ? tr("■ 录制中（点此停止）") : tr("● 录制鼠标操作");
+  if (state.mouseRecording) btn.classList.add("recording");
   btn.title = tr("录一段鼠标动作：移动到某处点击 / 滚轮，录完替换当前动作");
   onClickAsync(btn, async () => {
-    if (!mouseRecording) {
+    if (!state.mouseRecording) {
       try {
         await invoke("start_mouse_record");
       } catch (err) {
         toast(trt`开始录制失败: ${err}`);
         return;
       }
-      mouseRecording = true;
+      state.mouseRecording = true;
       btn.classList.add("recording");
       btn.textContent = tr("■ 录制中（点此停止）");
       return;
     }
-    mouseRecording = false;
+    state.mouseRecording = false;
     let rec: Action[];
     try {
       rec = await invoke<Action[]>("stop_mouse_record");
@@ -5724,23 +5410,23 @@ function keyRecordButton(
   ctx?: { actions: Action[]; idx: number },
 ): HTMLElement {
   const btn = el("button", "record action-key-record") as HTMLButtonElement;
-  btn.textContent = recording ? tr("■ 录制中（点此停止）") : tr("● 开始录制");
-  if (recording) btn.classList.add("recording");
+  btn.textContent = state.recording ? tr("■ 录制中（点此停止）") : tr("● 开始录制");
+  if (state.recording) btn.classList.add("recording");
   btn.title = tr("录一段按键（组合键与按键间隔），录完替换当前动作");
   onClickAsync(btn, async () => {
-    if (!recording) {
+    if (!state.recording) {
       try {
         await invoke("start_record");
       } catch (err) {
         toast(trt`开始录制失败: ${err}`);
         return;
       }
-      recording = true;
+      state.recording = true;
       btn.classList.add("recording");
       btn.textContent = tr("■ 录制中（点此停止）");
       return;
     }
-    recording = false;
+    state.recording = false;
     let rec: Action[];
     try {
       rec = await invoke<Action[]>("stop_record");
@@ -6167,7 +5853,7 @@ function actionFields(
     // 从已保存的快捷键里挑触发组合：只收单个组合（序列 "F9 J K" 不能塞进一次按键注入）。
     const combos: { combo: string; label: string }[] = [];
     const seen = new Set<string>();
-    for (const s of cfg.shortcuts) {
+    for (const s of state.cfg.shortcuts) {
       const name = s.name?.trim();
       for (const t of s.triggers) {
         const combo = t.trim();
@@ -7053,12 +6739,12 @@ function renderConflictBubble() {
   // 「配了但总开关关着」也各说一声：鼠标操作与触摸板手势是**两枚独立开关**，
   // 关着时这些类**整类不显示**，用户在列表里看不到自己的条目，只会觉得「配了没反应」
   // ——这里把原因分开摆出来（点哪条就开哪枚，别用一枚开关去猜另一类）。
-  const mouseOffCount = (cfg.gestures ?? []).length;
-  const touchpadOffCount = (cfg.touchpad_gestures ?? []).length;
-  const inList = isListSection(section);
+  const mouseOffCount = (state.cfg.gestures ?? []).length;
+  const touchpadOffCount = (state.cfg.touchpad_gestures ?? []).length;
+  const inList = isListSection(state.section);
   const mouseOff = inList && mouseOffCount > 0 && !mouseFeaturesEnabled();
   const touchpadOff = inList && touchpadOffCount > 0 && !touchpadFeaturesEnabled();
-  const hasConflict = inList && conflicts.length > 0 && !conflictBubbleDismissed;
+  const hasConflict = inList && state.conflicts.length > 0 && !state.conflictBubbleDismissed;
   const show = hasConflict || mouseOff || touchpadOff;
   box.classList.toggle("hidden", !show);
   if (!show) return;
@@ -7089,7 +6775,7 @@ function renderConflictBubble() {
     box.append(b);
   }
   if (!hasConflict) return;
-  const { errors, warns, caps } = splitConflicts(conflicts);
+  const { errors, warns, caps } = splitConflicts(state.conflicts);
   const bits: string[] = [];
   if (errors.length || warns.length)
     bits.push(
@@ -7106,7 +6792,7 @@ function renderConflictBubble() {
   close.title = tr("消除提醒");
   close.addEventListener("click", (e) => {
     e.stopPropagation();
-    conflictBubbleDismissed = true;
+    state.conflictBubbleDismissed = true;
     renderConflictBubble();
   });
   bubble.append(close);
@@ -7115,7 +6801,7 @@ function renderConflictBubble() {
 
 // 打开「鼠标操作」总开关并立刻落盘：手势这类功能默认关着，用户配好了却没打开就白配。
 async function enableExperimentalFeatures() {
-  cfg.settings.experimental = true;
+  state.cfg.settings.experimental = true;
   const box = document.getElementById("set-experimental") as HTMLInputElement | null;
   if (box) box.checked = true;
   syncMouseOpts();
@@ -7124,7 +6810,7 @@ async function enableExperimentalFeatures() {
 
 // 打开「触摸板手势」开关并立刻落盘（与上面那枚分开：两类各有自己的闸门）。
 async function enableTouchpadFeatures() {
-  cfg.settings.touchpad = true;
+  state.cfg.settings.touchpad = true;
   const box = document.getElementById("set-touchpad") as HTMLInputElement | null;
   if (box) box.checked = true;
   syncTouchpadOpts();
@@ -7136,27 +6822,27 @@ async function enableTouchpadFeatures() {
 // 改键来源兜底定位（与 `entryConflicted` 同一套「靠文案认条目」的口径，UI 与后端同包发布）。
 function conflictOwner(c: Conflict): { kind: ListKind; index: number } | null {
   if (c.name) {
-    const i = cfg.shortcuts.findIndex((s) => (s.name ?? "") === c.name);
+    const i = state.cfg.shortcuts.findIndex((s) => (s.name ?? "") === c.name);
     if (i >= 0) return { kind: "shortcut", index: i };
   }
   // 后端文案仍是中文（壳层消息不参与界面 i18n），所以这里按中文字面量判断，别套 tr()。
   const remapMsg = c.message.startsWith("改键"); // i18n:ignore
   for (const q of [...c.message.matchAll(/「([^」]+)」/g)].map((m) => m[1])) {
     if (!remapMsg) {
-      const si = cfg.shortcuts.findIndex((s) => s.triggers.includes(q));
+      const si = state.cfg.shortcuts.findIndex((s) => s.triggers.includes(q));
       if (si >= 0) return { kind: "shortcut", index: si };
     }
-    const ri = cfg.remaps.findIndex((r) => r.from === q.split(" →")[0].trim());
+    const ri = state.cfg.remaps.findIndex((r) => r.from === q.split(" →")[0].trim());
     if (ri >= 0) return { kind: "remap", index: ri };
   }
   return null;
 }
 
 function entryLabel(ref: { kind: ListKind; index: number }): string {
-  if (ref.kind === "shortcut" && cfg.shortcuts[ref.index])
-    return cfg.shortcuts[ref.index].name?.trim() || tr("未命名快捷键");
-  if (ref.kind === "remap" && cfg.remaps[ref.index])
-    return cfg.remaps[ref.index].name?.trim() || tr("未命名改键");
+  if (ref.kind === "shortcut" && state.cfg.shortcuts[ref.index])
+    return state.cfg.shortcuts[ref.index].name?.trim() || tr("未命名快捷键");
+  if (ref.kind === "remap" && state.cfg.remaps[ref.index])
+    return state.cfg.remaps[ref.index].name?.trim() || tr("未命名改键");
   return "";
 }
 
@@ -7164,12 +6850,12 @@ function entryLabel(ref: { kind: ListKind; index: number }): string {
 function renderConflictList() {
   const box = document.getElementById("msg-conflict-list")!;
   box.replaceChildren();
-  if (conflicts.length === 0) {
+  if (state.conflicts.length === 0) {
     box.append(el("div", "detail-empty", tr("暂无冲突")));
     return;
   }
-  box.append(el("div", "conflict-head", trt`⚠ 冲突提醒（${conflicts.length} 处）`));
-  const { errors, warns, caps } = splitConflicts(conflicts);
+  box.append(el("div", "conflict-head", trt`⚠ 冲突提醒（${state.conflicts.length} 处）`));
+  const { errors, warns, caps } = splitConflicts(state.conflicts);
   const groups: [string, Conflict[], string][] = [
     [tr("需处理"), errors, "error"],
     [tr("软冲突（遮蔽 / 重叠）"), warns, "warn"],
@@ -7200,7 +6886,7 @@ function renderConflictList() {
 
 // 跳到「消息 → 冲突」标签查看冲突详情。
 function openConflictView() {
-  msgView = "conflicts";
+  state.msgView = "conflicts";
   void switchSection("messages");
 }
 
@@ -7229,7 +6915,7 @@ function renderClipboardMenuEditor() {
   host.replaceChildren();
   const rerender = () => renderClipboardMenuEditor();
   // 只读展示时不要顺手往 cfg 里塞一个默认字段（没碰过菜单的用户不该因此多一份配置）。
-  const menu = cfg.settings.clipboard_menu ?? { enabled: false, double_copy_ms: 500, items: [] };
+  const menu = state.cfg.settings.clipboard_menu ?? { enabled: false, double_copy_ms: 500, items: [] };
   host.append(menuItemsEditor(menu.items, 1, rerender));
 }
 
@@ -7382,104 +7068,104 @@ function menuEntryEditor(
 }
 
 function syncSettings() {
-  (document.getElementById("set-autostart") as HTMLInputElement).checked = cfg.settings.autostart;
-  (document.getElementById("set-paused") as HTMLInputElement).checked = cfg.settings.paused;
+  (document.getElementById("set-autostart") as HTMLInputElement).checked = state.cfg.settings.autostart;
+  (document.getElementById("set-paused") as HTMLInputElement).checked = state.cfg.settings.paused;
   // 缺字段按「关」显示，与后端 serde default 一致。
   (document.getElementById("set-ignore-fullscreen") as HTMLInputElement).checked =
-    cfg.settings.ignore_fullscreen === true;
-  (document.getElementById("set-wake-key") as HTMLSelectElement).value = cfg.settings.wake_key ?? "";
+    state.cfg.settings.ignore_fullscreen === true;
+  (document.getElementById("set-wake-key") as HTMLSelectElement).value = state.cfg.settings.wake_key ?? "";
   (document.getElementById("set-action-timeout") as HTMLInputElement).value = String(
-    timeoutSeconds(cfg.settings.action_timeout_ms),
+    timeoutSeconds(state.cfg.settings.action_timeout_ms),
   );
   (document.getElementById("set-sequence-timeout") as HTMLInputElement).value = timeoutMs(
-    cfg.settings.sequence_timeout_ms,
+    state.cfg.settings.sequence_timeout_ms,
   );
   (document.getElementById("set-chord-timeout") as HTMLInputElement).value = timeoutMs(
-    cfg.settings.chord_timeout_ms,
+    state.cfg.settings.chord_timeout_ms,
   );
   // 缺字段的老配置（写在该设置出现之前）按「开」显示，与后端 `default_true` 一致。
   (document.getElementById("set-status-hud") as HTMLInputElement).checked =
-    cfg.settings.show_status_hud !== false;
+    state.cfg.settings.show_status_hud !== false;
   // 提示框默认「关」（后端 `HintsWindow::default` 也是 false）：老配置缺 `hints` 时显示为未勾选。
   (document.getElementById("set-hints") as HTMLInputElement).checked =
-    cfg.settings.hints?.visible === true;
+    state.cfg.settings.hints?.visible === true;
   // 触发提醒缺字段按「开」（与后端 `default_true` 一致）。
   (document.getElementById("set-trigger-toast") as HTMLInputElement).checked =
-    cfg.settings.trigger_toast !== false;
+    state.cfg.settings.trigger_toast !== false;
   // 缺字段的老配置按默认「剪贴板粘贴」显示，与后端 serde default 一致。
   (document.getElementById("set-text-inject") as HTMLSelectElement).value =
-    cfg.settings.text_inject_mode ?? "clipboard";
+    state.cfg.settings.text_inject_mode ?? "clipboard";
   // 索引地址：只显示自定义值；内置默认 / 空串都显示为空（后端把空串当默认）。
   // 老配置没有这个字段时同样显示空 = 用内置默认，别把内置 URL 摆给用户看。
-  const snippetIndexValue = cfg.settings.snippet_index_url ?? "";
+  const snippetIndexValue = state.cfg.settings.snippet_index_url ?? "";
   (document.getElementById("set-snippet-index") as HTMLInputElement).value =
     snippetIndexValue === DEFAULT_SNIPPET_INDEX_URL ? "" : snippetIndexValue;
   // 同步存档目录：未设置时给一句引导语，设置后显示完整路径。
   document.getElementById("sync-dir")!.textContent =
-    cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个文件夹（如 OneDrive）即可自动存一份");
+    state.cfg.settings.sync_dir?.trim() || tr("未设置 —— 选一个文件夹（如 OneDrive）即可自动存一份");
   // 输入层环境诊断：缺字段的老配置按「开」显示，与后端 `default_true` 一致；
   // 结论每次进设置页重算（探测在后端，有 3 秒缓存，不构成负担）。
   (document.getElementById("set-input-env") as HTMLInputElement).checked =
-    cfg.settings.input_env_diag !== false;
+    state.cfg.settings.input_env_diag !== false;
   void renderInputEnvReport();
   // 鼠标手势的实验开关（规划 7.2-MG）：缺字段按「关」显示，与后端 serde default 一致
   // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
   (document.getElementById("set-experimental") as HTMLInputElement).checked =
-    cfg.settings.experimental === true;
+    state.cfg.settings.experimental === true;
   // 触摸板手势是**独立分类**：自己的开关与参数，跟上面那枚无关（缺字段 = 关 / 默认值）。
   (document.getElementById("set-touchpad") as HTMLInputElement).checked =
-    cfg.settings.touchpad === true;
+    state.cfg.settings.touchpad === true;
   (document.getElementById("set-touchpad-start-distance") as HTMLInputElement).value = String(
-    cfg.settings.touchpad_start_distance ?? 22,
+    state.cfg.settings.touchpad_start_distance ?? 22,
   );
   (document.getElementById("set-touchpad-exclude") as HTMLTextAreaElement).value = (
-    cfg.settings.touchpad_exclude ?? []
+    state.cfg.settings.touchpad_exclude ?? []
   ).join("\n");
   // 缺字段按「开」显示（后端 serde default 就是 true）。
   (document.getElementById("set-touchpad-restore-cursor") as HTMLInputElement).checked =
-    cfg.settings.touchpad_restore_cursor !== false;
+    state.cfg.settings.touchpad_restore_cursor !== false;
   (document.getElementById("set-touchpad-overlay") as HTMLInputElement).checked =
-    cfg.settings.touchpad_overlay !== false;
+    state.cfg.settings.touchpad_overlay !== false;
   (document.getElementById("set-gesture-screenshot") as HTMLInputElement).checked =
-    cfg.settings.gesture_screenshot !== false;
+    state.cfg.settings.gesture_screenshot !== false;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
-    (cfg.settings.gesture_exclude ?? []).join("\n");
+    (state.cfg.settings.gesture_exclude ?? []).join("\n");
   (document.getElementById("set-exclude-apps") as HTMLTextAreaElement).value =
-    (cfg.settings.exclude_apps ?? []).join("\n");
+    (state.cfg.settings.exclude_apps ?? []).join("\n");
   // 手势参数（EXT-01）：缺字段按后端 serde default 显示，避免老配置显示成 0。
   (document.getElementById("set-gesture-start-distance") as HTMLInputElement).value = String(
-    cfg.settings.gesture_start_distance ?? 22,
+    state.cfg.settings.gesture_start_distance ?? 22,
   );
   (document.getElementById("set-gesture-timeout") as HTMLInputElement).value = String(
-    cfg.settings.gesture_timeout_ms ?? 1500,
+    state.cfg.settings.gesture_timeout_ms ?? 1500,
   );
   (document.getElementById("set-gesture-min-segment") as HTMLInputElement).value = String(
-    cfg.settings.gesture_min_segment ?? 16,
+    state.cfg.settings.gesture_min_segment ?? 16,
   );
   // 手势视觉（EXT-02）：颜色用取色器，数值同样回落后端默认。
   (document.getElementById("set-gesture-trail-color") as HTMLInputElement).value =
-    cfg.settings.gesture_trail_color ?? "#4c9aff";
+    state.cfg.settings.gesture_trail_color ?? "#4c9aff";
   (document.getElementById("set-gesture-trail-width") as HTMLInputElement).value = String(
-    cfg.settings.gesture_trail_width ?? 5,
+    state.cfg.settings.gesture_trail_width ?? 5,
   );
   (document.getElementById("set-gesture-label-font-size") as HTMLInputElement).value = String(
-    cfg.settings.gesture_label_font_size ?? 14,
+    state.cfg.settings.gesture_label_font_size ?? 14,
   );
   (document.getElementById("set-gesture-label-offset") as HTMLInputElement).value = String(
-    cfg.settings.gesture_label_offset ?? 16,
+    state.cfg.settings.gesture_label_offset ?? 16,
   );
   (document.getElementById("set-gesture-fail-color") as HTMLInputElement).value =
-    cfg.settings.gesture_fail_color ?? "#ff5f56";
+    state.cfg.settings.gesture_fail_color ?? "#ff5f56";
   // 提权窗口注入：缺字段的老配置按「关」显示（后端 serde default 就是 false）；状态每次都
   // 问一遍后端（提权进程可能已经退出，这个值会变）。
   (document.getElementById("set-elevated") as HTMLInputElement).checked =
-    cfg.settings.elevated_inject === true;
+    state.cfg.settings.elevated_inject === true;
   void renderElevatedReport();
   // 软件更新源：缺字段按默认 ihomy 显示（后端 serde default 一致）。
   (document.getElementById("set-update-source") as HTMLSelectElement).value =
-    cfg.settings.update_source ?? "ihomy";
+    state.cfg.settings.update_source ?? "ihomy";
   (document.getElementById("set-auto-update") as HTMLInputElement).checked =
-    cfg.settings.auto_update === true;
+    state.cfg.settings.auto_update === true;
   // 复制快捷菜单（双击 Ctrl+C）已删除，设置卡不再渲染。
   // 旧配置里残留的条目仍能只读渲染（没有宿主节点时函数直接返回），不再提供编辑入口。
   renderClipboardMenuEditor();
@@ -7491,7 +7177,7 @@ function syncSettings() {
 function syncMouseOpts() {
   document
     .getElementById("mouse-opts")
-    ?.classList.toggle("hidden", cfg.settings.experimental !== true);
+    ?.classList.toggle("hidden", state.cfg.settings.experimental !== true);
   syncGestureVisual();
 }
 
@@ -7499,7 +7185,7 @@ function syncMouseOpts() {
 function syncTouchpadOpts() {
   document
     .getElementById("touchpad-opts")
-    ?.classList.toggle("hidden", cfg.settings.touchpad !== true);
+    ?.classList.toggle("hidden", state.cfg.settings.touchpad !== true);
   syncGestureVisual();
 }
 
@@ -7509,7 +7195,7 @@ function syncGestureVisual() {
     .getElementById("gesture-visual-card")
     ?.classList.toggle(
       "hidden",
-      cfg.settings.experimental !== true && cfg.settings.touchpad !== true,
+      state.cfg.settings.experimental !== true && state.cfg.settings.touchpad !== true,
     );
 }
 
@@ -7537,7 +7223,7 @@ async function renderElevatedReport() {
     line(tr("当前平台不支持（这是 Windows 专属能力：它的对手是 UIPI）。"));
     return;
   }
-  const enabled = cfg.settings.elevated_inject === true;
+  const enabled = state.cfg.settings.elevated_inject === true;
   run.hidden = false;
   run.textContent = s.connected ? tr("断开提权进程") : tr("启动提权进程");
   if (!enabled) {
@@ -7568,7 +7254,7 @@ async function renderInputEnvReport() {
   const box = document.getElementById("input-env-report")!;
   let r: InputEnvReport;
   try {
-    r = await invoke<InputEnvReport>("input_env_report", { config: cfg });
+    r = await invoke<InputEnvReport>("input_env_report", { config: state.cfg });
   } catch (e) {
     box.textContent = trt`检测失败：${e}`;
     return;
@@ -7582,7 +7268,7 @@ async function renderInputEnvReport() {
     line(tr("当前平台暂不支持这项检测。"));
     return;
   }
-  if (cfg.settings.input_env_diag === false) {
+  if (state.cfg.settings.input_env_diag === false) {
     line(tr("已关闭。开启后 Kada 才会检测会接管按键的厂商软件。"));
     return;
   }
@@ -7623,8 +7309,8 @@ function inputEnvIgnoreButton(d: InputEnvReport["diverters"][number]): HTMLButto
 
 /** 记住 / 撤销对某个接管者的忽略，落盘后重画结论区（冲突检测也随配置一起更新）。 */
 async function toggleInputEnvIgnore(id: string, ignore: boolean) {
-  const rest = (cfg.settings.input_env_ignored ?? []).filter((x) => x !== id);
-  cfg.settings.input_env_ignored = ignore ? [...rest, id] : rest;
+  const rest = (state.cfg.settings.input_env_ignored ?? []).filter((x) => x !== id);
+  state.cfg.settings.input_env_ignored = ignore ? [...rest, id] : rest;
   await save();
   await renderInputEnvReport();
 }
@@ -7750,67 +7436,67 @@ function bindSettings() {
   const statusHud = document.getElementById("set-status-hud") as HTMLInputElement;
   const hints = document.getElementById("set-hints") as HTMLInputElement;
   autostart.addEventListener("change", () => {
-    cfg.settings.autostart = autostart.checked;
+    state.cfg.settings.autostart = autostart.checked;
     void save();
   });
   paused.addEventListener("change", () => {
-    cfg.settings.paused = paused.checked;
+    state.cfg.settings.paused = paused.checked;
     void save();
   });
   // 全屏程序里暂停（EXT-05）：只是行为开关，配置照常保存。
   const ignoreFullscreen = document.getElementById("set-ignore-fullscreen") as HTMLInputElement;
   ignoreFullscreen.addEventListener("change", () => {
-    cfg.settings.ignore_fullscreen = ignoreFullscreen.checked;
+    state.cfg.settings.ignore_fullscreen = ignoreFullscreen.checked;
     void save();
   });
   wakeKey.addEventListener("change", () => {
-    cfg.settings.wake_key = wakeKey.value || null;
+    state.cfg.settings.wake_key = wakeKey.value || null;
     void save();
   });
   actionTimeout.addEventListener("change", () => {
     // 负值 / 非数字按 0（不限时）处理：后端只认 u64，宁可放开也不静默变成 1 秒把人坑了。
     const secs = Math.max(0, Math.floor(Number(actionTimeout.value) || 0));
     actionTimeout.value = String(secs);
-    cfg.settings.action_timeout_ms = secs * 1000;
+    state.cfg.settings.action_timeout_ms = secs * 1000;
     void save();
   });
   // 两个等待窗按毫秒录入（默认 1000）：负数 / 非数字同样按 0（不限时）处理。
   sequenceTimeout.addEventListener("change", () => {
     const ms = Math.max(0, Math.floor(Number(sequenceTimeout.value) || 0));
     sequenceTimeout.value = String(ms);
-    cfg.settings.sequence_timeout_ms = ms;
+    state.cfg.settings.sequence_timeout_ms = ms;
     void save();
   });
   chordTimeout.addEventListener("change", () => {
     const ms = Math.max(0, Math.floor(Number(chordTimeout.value) || 0));
     chordTimeout.value = String(ms);
-    cfg.settings.chord_timeout_ms = ms;
+    state.cfg.settings.chord_timeout_ms = ms;
     void save();
   });
   statusHud.addEventListener("change", () => {
-    cfg.settings.show_status_hud = statusHud.checked;
+    state.cfg.settings.show_status_hud = statusHud.checked;
     void save();
   });
   const triggerToast = document.getElementById("set-trigger-toast") as HTMLInputElement;
   triggerToast.addEventListener("change", () => {
-    cfg.settings.trigger_toast = triggerToast.checked;
+    state.cfg.settings.trigger_toast = triggerToast.checked;
     void save();
   });
   // 提示框的开关：改动随整份配置落盘，后端 `set_config` 比对到 `visible` 变了就把窗口
   // 建出来 / 收起来，并把托盘菜单的勾对齐（见 `apply_hints_visible`）。
   hints.addEventListener("change", () => {
-    cfg.settings.hints = { ...(cfg.settings.hints ?? { scale: 100, opacity: 92 }), visible: hints.checked };
+    state.cfg.settings.hints = { ...(state.cfg.settings.hints ?? { scale: 100, opacity: 92 }), visible: hints.checked };
     void save();
   });
   const textInject = document.getElementById("set-text-inject") as HTMLSelectElement;
   textInject.addEventListener("change", () => {
-    cfg.settings.text_inject_mode = textInject.value as "clipboard" | "unicode";
+    state.cfg.settings.text_inject_mode = textInject.value as "clipboard" | "unicode";
     void save();
   });
   // 索引地址：留空 = 内置默认（后端把空串也当默认，别让人以为索引被关掉了）。
   const snippetIndex = document.getElementById("set-snippet-index") as HTMLInputElement;
   snippetIndex.addEventListener("change", () => {
-    cfg.settings.snippet_index_url = snippetIndex.value.trim();
+    state.cfg.settings.snippet_index_url = snippetIndex.value.trim();
     // 换了索引地址，下次进市场页必须重新拉，别把旧索引继续挂在列表里。
     marketLoaded = false;
     void save();
@@ -7819,7 +7505,7 @@ function bindSettings() {
   // （`get_conflicts` / `input_env_report` 都先看这个开关），所以改完要重画结论区。
   const inputEnv = document.getElementById("set-input-env") as HTMLInputElement;
   inputEnv.addEventListener("change", () => {
-    cfg.settings.input_env_diag = inputEnv.checked;
+    state.cfg.settings.input_env_diag = inputEnv.checked;
     void save();
     void renderInputEnvReport();
   });
@@ -7827,7 +7513,7 @@ function bindSettings() {
   // （只是入口隐藏 + 行为不生效），所以这里只改开关，不动 cfg.gestures。
   const experimental = document.getElementById("set-experimental") as HTMLInputElement;
   experimental.addEventListener("change", () => {
-    cfg.settings.experimental = experimental.checked;
+    state.cfg.settings.experimental = experimental.checked;
     syncMouseOpts();
     // 改完重画列表：快捷键页里鼠标类条目的显隐由它决定。
     void save().then(() => render());
@@ -7836,7 +7522,7 @@ function bindSettings() {
   // 关掉时配置保留（入口隐藏 + 不采集，触发键照常输出）。
   const touchpad = document.getElementById("set-touchpad") as HTMLInputElement;
   touchpad.addEventListener("change", () => {
-    cfg.settings.touchpad = touchpad.checked;
+    state.cfg.settings.touchpad = touchpad.checked;
     syncTouchpadOpts();
     void save().then(() => render());
   });
@@ -7847,7 +7533,7 @@ function bindSettings() {
   touchpadStart.addEventListener("change", () => {
     const v = Math.min(50, Math.max(1, Math.floor(Number(touchpadStart.value) || 22)));
     touchpadStart.value = String(v);
-    cfg.settings.touchpad_start_distance = v;
+    state.cfg.settings.touchpad_start_distance = v;
     void save();
   });
   // 触摸板手势的排除程序：每行一个，与鼠标手势的 `gesture_exclude` 各自一份名单。
@@ -7855,7 +7541,7 @@ function bindSettings() {
     "set-touchpad-exclude",
   ) as HTMLTextAreaElement;
   touchpadExclude.addEventListener("change", () => {
-    cfg.settings.touchpad_exclude = touchpadExclude.value
+    state.cfg.settings.touchpad_exclude = touchpadExclude.value
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -7866,26 +7552,26 @@ function bindSettings() {
     "set-touchpad-restore-cursor",
   ) as HTMLInputElement;
   touchpadRestore.addEventListener("change", () => {
-    cfg.settings.touchpad_restore_cursor = touchpadRestore.checked;
+    state.cfg.settings.touchpad_restore_cursor = touchpadRestore.checked;
     void save();
   });
   // 采集时显示轨迹浮层：只影响触摸板这条来源（右键手势没有单独开关）。
   const touchpadOverlay = document.getElementById("set-touchpad-overlay") as HTMLInputElement;
   touchpadOverlay.addEventListener("change", () => {
-    cfg.settings.touchpad_overlay = touchpadOverlay.checked;
+    state.cfg.settings.touchpad_overlay = touchpadOverlay.checked;
     void save();
   });
   const gestureScreenshot = document.getElementById(
     "set-gesture-screenshot",
   ) as HTMLInputElement;
   gestureScreenshot.addEventListener("change", () => {
-    cfg.settings.gesture_screenshot = gestureScreenshot.checked;
+    state.cfg.settings.gesture_screenshot = gestureScreenshot.checked;
     void save();
   });
   // 手势排除程序：每行一个（后端清洗会 trim 并丢空行），失焦时落盘。
   const gestureExclude = document.getElementById("set-gesture-exclude") as HTMLTextAreaElement;
   gestureExclude.addEventListener("change", () => {
-    cfg.settings.gesture_exclude = gestureExclude.value
+    state.cfg.settings.gesture_exclude = gestureExclude.value
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -7894,7 +7580,7 @@ function bindSettings() {
   // 全局排除程序（EXT-04）：命中的程序里所有触发都不生效，与手势专用列表独立。
   const excludeApps = document.getElementById("set-exclude-apps") as HTMLTextAreaElement;
   excludeApps.addEventListener("change", () => {
-    cfg.settings.exclude_apps = excludeApps.value
+    state.cfg.settings.exclude_apps = excludeApps.value
       .split("\n")
       .map((s) => s.trim())
       .filter(Boolean);
@@ -7906,34 +7592,34 @@ function bindSettings() {
   gestureStart.addEventListener("change", () => {
     const v = Math.min(50, Math.max(1, Math.floor(Number(gestureStart.value) || 22)));
     gestureStart.value = String(v);
-    cfg.settings.gesture_start_distance = v;
+    state.cfg.settings.gesture_start_distance = v;
     void save();
   });
   const gestureTimeout = document.getElementById("set-gesture-timeout") as HTMLInputElement;
   gestureTimeout.addEventListener("change", () => {
     const v = Math.min(3000, Math.max(500, Math.floor(Number(gestureTimeout.value) || 1500)));
     gestureTimeout.value = String(v);
-    cfg.settings.gesture_timeout_ms = v;
+    state.cfg.settings.gesture_timeout_ms = v;
     void save();
   });
   const gestureMinSegment = document.getElementById("set-gesture-min-segment") as HTMLInputElement;
   gestureMinSegment.addEventListener("change", () => {
     const v = Math.min(40, Math.max(4, Math.floor(Number(gestureMinSegment.value) || 16)));
     gestureMinSegment.value = String(v);
-    cfg.settings.gesture_min_segment = v;
+    state.cfg.settings.gesture_min_segment = v;
     void save();
   });
   // 手势视觉（EXT-02）：颜色是 `#rrggbb`，数值范围与后端 sanitize 一致。
   const gestureTrailColor = document.getElementById("set-gesture-trail-color") as HTMLInputElement;
   gestureTrailColor.addEventListener("change", () => {
-    cfg.settings.gesture_trail_color = gestureTrailColor.value;
+    state.cfg.settings.gesture_trail_color = gestureTrailColor.value;
     void save();
   });
   const gestureTrailWidth = document.getElementById("set-gesture-trail-width") as HTMLInputElement;
   gestureTrailWidth.addEventListener("change", () => {
     const v = Math.min(20, Math.max(1, Math.floor(Number(gestureTrailWidth.value) || 5)));
     gestureTrailWidth.value = String(v);
-    cfg.settings.gesture_trail_width = v;
+    state.cfg.settings.gesture_trail_width = v;
     void save();
   });
   const gestureLabelFont = document.getElementById(
@@ -7942,7 +7628,7 @@ function bindSettings() {
   gestureLabelFont.addEventListener("change", () => {
     const v = Math.min(48, Math.max(8, Math.floor(Number(gestureLabelFont.value) || 14)));
     gestureLabelFont.value = String(v);
-    cfg.settings.gesture_label_font_size = v;
+    state.cfg.settings.gesture_label_font_size = v;
     void save();
   });
   const gestureLabelOffset = document.getElementById(
@@ -7951,12 +7637,12 @@ function bindSettings() {
   gestureLabelOffset.addEventListener("change", () => {
     const v = Math.min(200, Math.max(0, Math.floor(Number(gestureLabelOffset.value) || 16)));
     gestureLabelOffset.value = String(v);
-    cfg.settings.gesture_label_offset = v;
+    state.cfg.settings.gesture_label_offset = v;
     void save();
   });
   const gestureFailColor = document.getElementById("set-gesture-fail-color") as HTMLInputElement;
   gestureFailColor.addEventListener("change", () => {
-    cfg.settings.gesture_fail_color = gestureFailColor.value;
+    state.cfg.settings.gesture_fail_color = gestureFailColor.value;
     void save();
   });
   // 复制快捷菜单（双击 Ctrl+C）已删除：不再有设置项与条目编辑器。
@@ -7972,7 +7658,7 @@ function bindSettings() {
   // 不弹 UAC（用户点「启动」才弹），关掉时后端会顺带断开通道，提权进程随之退出。
   const elevated = document.getElementById("set-elevated") as HTMLInputElement;
   elevated.addEventListener("change", () => {
-    cfg.settings.elevated_inject = elevated.checked;
+    state.cfg.settings.elevated_inject = elevated.checked;
     void save();
     void renderElevatedReport();
   });
@@ -7997,7 +7683,7 @@ function bindSettings() {
   document.getElementById("export-config")!.addEventListener("click", () => void exportConfig());
   document.getElementById("sync-choose")!.addEventListener("click", () => void chooseSyncDir());
   document.getElementById("sync-clear")!.addEventListener("click", () => {
-    cfg.settings.sync_dir = null;
+    state.cfg.settings.sync_dir = null;
     void save();
   });
   document.getElementById("sync-now")!.addEventListener("click", () => void syncNow());
@@ -8057,7 +7743,7 @@ function bindSettings() {
   // 更新源：写进配置后下一次检查（含手动「检查更新」）立即生效，后端每次检查都重读设置。
   const updateSource = document.getElementById("set-update-source") as HTMLSelectElement;
   updateSource.addEventListener("change", () => {
-    cfg.settings.update_source = updateSource.value as "ihomy" | "github";
+    state.cfg.settings.update_source = updateSource.value as "ihomy" | "github";
     void save();
   });
   document.getElementById("check-update")!.addEventListener("click", () => {
@@ -8065,7 +7751,7 @@ function bindSettings() {
   });
   const autoUpdate = document.getElementById("set-auto-update") as HTMLInputElement;
   autoUpdate.addEventListener("change", () => {
-    cfg.settings.auto_update = autoUpdate.checked;
+    state.cfg.settings.auto_update = autoUpdate.checked;
     void save();
     // 已经发现新版本时勾上就立刻开始下载：否则要等下一次检查（可能一天后）才动，
     // 用户会以为开关没生效。
@@ -8101,7 +7787,7 @@ async function chooseSyncDir() {
   const def = (await invoke<string | null>("default_sync_dir").catch(() => null)) ?? undefined;
   const dir = await openFile({ directory: true, defaultPath: def });
   if (!dir || Array.isArray(dir)) return;
-  cfg.settings.sync_dir = dir;
+  state.cfg.settings.sync_dir = dir;
   await save();
 }
 
@@ -8216,17 +7902,6 @@ function hideImportResult() {
 // 状态源在后端（src-tauri/src/update.rs）：检查/下载/安装各阶段由 Rust 推进并 emit
 // `update-status`，前端只渲染，不自己维护「正在检查」这类瞬时状态（否则窗口重开就丢）。
 // 下载与安装是两步：`available` 给「下载」，下载完进 `ready` 才给「安装」。
-type UpdateStatus = { current: string; kind: "installed" | "portable" } & (
-  | { phase: "idle" }
-  | { phase: "checking" }
-  | { phase: "up-to-date" }
-  | { phase: "available"; version: string; notes?: string | null }
-  | { phase: "downloading"; version: string; percent?: number | null }
-  | { phase: "ready"; version: string; notes?: string | null }
-  | { phase: "installing"; version: string }
-  | { phase: "error"; message: string }
-);
-
 let updateStatus: UpdateStatus | null = null;
 
 function syncUpdate() {
@@ -8282,7 +7957,7 @@ function syncUpdate() {
       const how = portable
         ? tr("点「安装」将替换 kada.exe 并重启应用")
         : tr("点「安装」将退出应用、由安装器静默安装后重启");
-      const auto = cfg.settings.auto_update
+      const auto = state.cfg.settings.auto_update
         ? portable
           ? tr("；已开启自动更新，也会在长时间空闲或下次启动时自动安装")
           : tr("；已开启自动更新，也会在长时间空闲时自动安装")
@@ -8406,10 +8081,10 @@ function fillKeySelect(sel: HTMLSelectElement, value: string, withEmpty = false)
 
 // 根据所选形态，切换「单次/粘滞键」「短按/双击/三击/长按/切层 + 阈值」与「普通改键」表单显示。
 function syncRemapEditor() {
-  if (!remapDraft) return;
-  const isModKey = !!(remapDraft.oneshot || remapDraft.sticky);
-  const isTapHold = !!(remapDraft.tap || remapDraft.hold || remapDraft.tap2 || remapDraft.tap3);
-  const isLayerKey = !!(remapDraft.hold_layer || remapDraft.lock_layer);
+  if (!state.remapDraft) return;
+  const isModKey = !!(state.remapDraft.oneshot || state.remapDraft.sticky);
+  const isTapHold = !!(state.remapDraft.tap || state.remapDraft.hold || state.remapDraft.tap2 || state.remapDraft.tap3);
+  const isLayerKey = !!(state.remapDraft.hold_layer || state.remapDraft.lock_layer);
   // 单次/粘滞键与 tap-hold/切层/普通改键互斥：隐藏后者；反之隐藏修饰下拉无意义（保留可见）。
   document.getElementById("remap-tap-row")!.classList.toggle("hidden", isModKey);
   document.getElementById("remap-hold-row")!.classList.toggle("hidden", isModKey);
@@ -8429,7 +8104,7 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
   empty.value = "";
   empty.textContent = mode === "hold" ? tr("（不切层）") : tr("基础层（始终生效）");
   sel.append(empty);
-  for (const l of cfg.layers) {
+  for (const l of state.cfg.layers) {
     const o = document.createElement("option");
     o.value = l.id;
     o.textContent = l.name;
@@ -8440,7 +8115,7 @@ function fillLayerSelect(sel: HTMLSelectElement, value: string | null, mode: "as
 
 function layerName(id: string | null | undefined): string {
   if (!id) return tr("基础层");
-  return cfg.layers.find((l) => l.id === id)?.name ?? tr("基础层");
+  return state.cfg.layers.find((l) => l.id === id)?.name ?? tr("基础层");
 }
 
 // 层标记调色板：固定色值，保证「已用颜色在别的层不可选」的判重稳定，也免得调出肉眼难分的近似色。
@@ -8463,7 +8138,7 @@ function isLayerColor(mark: string | null | undefined): boolean {
 }
 
 function layerById(id: string | null | undefined): Layer | undefined {
-  return id ? cfg.layers.find((l) => l.id === id) : undefined;
+  return id ? state.cfg.layers.find((l) => l.id === id) : undefined;
 }
 
 // 层标记贴在组合键 chip 的左下角（绝对定位，不占组合键的字符位）：颜色是与 chip 融为一体的角标——
@@ -8499,7 +8174,7 @@ function renderLayers() {
   const list = document.getElementById("layer-list")!;
   list.replaceChildren();
   // 一个层都没有时给一句说明：卡片里只剩「＋ 新建层」和一个折叠块，用户不知道层是干什么的。
-  if (cfg.layers.length === 0) {
+  if (state.cfg.layers.length === 0) {
     list.append(
       el(
         "div",
@@ -8511,9 +8186,9 @@ function renderLayers() {
   }
   // 颜色唯一：已被别的层占用的颜色在本层下拉里禁用（emoji 不受限）。
   const usedColors = new Set(
-    cfg.layers.map((l) => l.mark).filter((m): m is string => isLayerColor(m)),
+    state.cfg.layers.map((l) => l.mark).filter((m): m is string => isLayerColor(m)),
   );
-  cfg.layers.forEach((l) => {
+  state.cfg.layers.forEach((l) => {
     const row = el("div", "layer-row");
 
     // 预览色块 / emoji（与列表条目组合键 chip 内的标记同义）。
@@ -8526,7 +8201,7 @@ function renderLayers() {
     row.append(swatch);
 
     // 名称：点击改名（新建时直接进改名态）。
-    if (editingLayerId === l.id) {
+    if (state.editingLayerId === l.id) {
       const inp = el("input", "layer-name-input") as HTMLInputElement;
       inp.value = l.name;
       inp.placeholder = tr("层名");
@@ -8536,8 +8211,8 @@ function renderLayers() {
         done = true;
         const v = inp.value.trim();
         if (v) l.name = v;
-        else cfg.layers = cfg.layers.filter((x) => x.id !== l.id);
-        editingLayerId = null;
+        else state.cfg.layers = state.cfg.layers.filter((x) => x.id !== l.id);
+        state.editingLayerId = null;
         void save();
       };
       inp.addEventListener("keydown", (e) => {
@@ -8547,7 +8222,7 @@ function renderLayers() {
           commit();
         } else if (e.key === "Escape") {
           done = true;
-          editingLayerId = null;
+          state.editingLayerId = null;
           renderLayers();
         }
       });
@@ -8558,7 +8233,7 @@ function renderLayers() {
       const name = el("span", "layer-name", l.name);
       name.title = tr("点击改名");
       name.addEventListener("click", () => {
-        editingLayerId = l.id;
+        state.editingLayerId = l.id;
         renderLayers();
       });
       row.append(name);
@@ -8613,13 +8288,13 @@ function renderLayers() {
 
 function addLayer() {
   const l: Layer = { id: newFolderId(), name: "" };
-  cfg.layers.push(l);
-  editingLayerId = l.id;
+  state.cfg.layers.push(l);
+  state.editingLayerId = l.id;
   renderLayers();
 }
 
 async function deleteLayer(id: string) {
-  const target = cfg.layers.find((l) => l.id === id);
+  const target = state.cfg.layers.find((l) => l.id === id);
   if (!target) return;
   const ok = await askConfirm({
     title: tr("删除层"),
@@ -8628,19 +8303,19 @@ async function deleteLayer(id: string) {
     danger: true,
   });
   if (!ok) return;
-  cfg.layers = cfg.layers.filter((l) => l.id !== id);
-  cfg.shortcuts.forEach((s) => {
+  state.cfg.layers = state.cfg.layers.filter((l) => l.id !== id);
+  state.cfg.shortcuts.forEach((s) => {
     if (s.layer === id) s.layer = null;
   });
-  cfg.remaps.forEach((r) => {
+  state.cfg.remaps.forEach((r) => {
     if (r.layer === id) r.layer = null;
     if (r.hold_layer === id) r.hold_layer = null;
     if (r.lock_layer === id) r.lock_layer = null;
   });
-  for (const r of [...(cfg.hot_corners ?? []), ...(cfg.wheel_edges ?? [])]) {
+  for (const r of [...(state.cfg.hot_corners ?? []), ...(state.cfg.wheel_edges ?? [])]) {
     if (r.layer === id) r.layer = null;
   }
-  if (editingLayerId === id) editingLayerId = null;
+  if (state.editingLayerId === id) state.editingLayerId = null;
   void save();
 }
 
@@ -8776,7 +8451,7 @@ function bind() {
       { label: tr("新增快捷键"), run: () => void requestNew("shortcut") },
       { label: tr("新增文件夹"), run: () => addFolder(null) },
     ];
-    if (clipboard) items.push({ label: tr("粘贴到根级"), run: () => pasteIntoFolder(null) });
+    if (state.clipboard) items.push({ label: tr("粘贴到根级"), run: () => pasteIntoFolder(null) });
     showMenu(e.currentTarget as HTMLElement, items);
   });
 
@@ -8843,19 +8518,19 @@ function bind() {
   document.getElementById("add-layer-btn")!.addEventListener("click", addLayer);
 
   document.getElementById("list-search")!.addEventListener("input", (e) => {
-    search = (e.target as HTMLInputElement).value;
+    state.search = (e.target as HTMLInputElement).value;
     renderListPane();
   });
 
   // 筛选下拉（与搜索叠加；改完只重画列表栏，同搜索路径）。勾上 = 生效。
   document.getElementById("filter-btn")!.addEventListener("click", (e) => {
     const flip = (k: "enabled" | "conflicted") => () => {
-      listFilter[k] = !listFilter[k];
+      state.listFilter[k] = !state.listFilter[k];
       renderListPane();
     };
     showMenu(e.currentTarget as HTMLElement, [
-      { label: tr("已启用"), on: listFilter.enabled, run: flip("enabled") },
-      { label: tr("有冲突"), on: listFilter.conflicted, run: flip("conflicted") },
+      { label: tr("已启用"), on: state.listFilter.enabled, run: flip("enabled") },
+      { label: tr("有冲突"), on: state.listFilter.conflicted, run: flip("conflicted") },
     ]);
   });
 
@@ -8892,16 +8567,16 @@ function bind() {
   fillTouchpadTriggerSelect();
   const touchpadTrigger = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
   touchpadTrigger.addEventListener("change", () => {
-    if (section !== "touchpads" || !touchpadDraft) return;
-    touchpadDraft.trigger = touchpadTrigger.value || null;
+    if (state.section !== "touchpads" || !state.touchpadDraft) return;
+    state.touchpadDraft.trigger = touchpadTrigger.value || null;
     // 换触发键 = 换了「哪只手 / 哪个键」录的那一笔：形状模板跟着作废（要留就重新录入）。
-    touchpadDraft.template = null;
+    state.touchpadDraft.template = null;
     syncTouchpadUi();
     refreshDirty();
   });
   document.getElementById("edit-touchpad-capture")!.addEventListener("click", () => {
-    if (section !== "touchpads" || !touchpadDraft) return;
-    const key = touchpadDraft.trigger;
+    if (state.section !== "touchpads" || !state.touchpadDraft) return;
+    const key = state.touchpadDraft.trigger;
     if (!key) {
       toast(tr("先选一个键盘键作触发键，再用触摸板录入"));
       return;
@@ -8909,27 +8584,27 @@ function bind() {
     openTrackpadRecord(key);
   });
   document.getElementById("edit-touchpad-drop-template")!.addEventListener("click", () => {
-    if (!touchpadDraft?.template) return;
+    if (!state.touchpadDraft?.template) return;
     // 纯形状条目（方向串留空）只有模板这一个判据，清掉它这条就永远匹配不上了。
-    if (!touchpadDraft.pattern.trim()) {
+    if (!state.touchpadDraft.pattern.trim()) {
       toast(tr("方向串为空时不能清除形状模板（先填方向串）"));
       return;
     }
-    touchpadDraft.template = null;
+    state.touchpadDraft.template = null;
     syncTouchpadUi();
     refreshDirty();
     toast(tr("已清除形状模板，只保留方向串"));
   });
 
   document.getElementById("edit-gesture-record")!.addEventListener("click", () => {
-    if (section !== "gestures" || !gestureDraft) return;
+    if (state.section !== "gestures" || !state.gestureDraft) return;
     openGesturePad((pattern) => {
       const input = document.getElementById("edit-gesture-pattern") as HTMLInputElement;
       input.value = pattern;
       input.dispatchEvent(new Event("input", { bubbles: true }));
-      if (gestureDraft) {
-        gestureDraft.pattern = pattern;
-        renderActions(gestureDraft, pattern);
+      if (state.gestureDraft) {
+        state.gestureDraft.pattern = pattern;
+        renderActions(state.gestureDraft, pattern);
       }
       toast(trt`已录入方向串 ${pattern}，记得保存`);
     });
@@ -8937,8 +8612,8 @@ function bind() {
 
   document.getElementById("edit-capture")!.addEventListener("click", (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
-    if (section !== "shortcuts" || !draft) return;
-    const d = draft;
+    if (state.section !== "shortcuts" || !state.draft) return;
+    const d = state.draft;
     startCapture((combo) => {
       if (!d.triggers.includes(combo)) d.triggers.push(combo);
       renderTriggers(d);
@@ -8948,8 +8623,8 @@ function bind() {
 
   document.getElementById("edit-sequence")!.addEventListener("click", (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
-    if (section !== "shortcuts" || !draft) return;
-    const d = draft;
+    if (state.section !== "shortcuts" || !state.draft) return;
+    const d = state.draft;
     startSequenceCapture((seq) => {
       if (!d.triggers.includes(seq)) d.triggers.push(seq);
       renderTriggers(d);
@@ -8959,8 +8634,8 @@ function bind() {
 
   document.getElementById("edit-chord")!.addEventListener("click", (e) => {
     const btn = e.currentTarget as HTMLButtonElement;
-    if (section !== "shortcuts" || !draft) return;
-    const d = draft;
+    if (state.section !== "shortcuts" || !state.draft) return;
+    const d = state.draft;
     startChordCapture((chord) => {
       if (!d.triggers.includes(chord)) d.triggers.push(chord);
       renderTriggers(d);
@@ -9001,7 +8676,7 @@ function bind() {
   document.getElementById("entry-tabs")!.addEventListener("click", (e) => {
     const btn = (e.target as HTMLElement).closest<HTMLElement>(".entry-tab");
     if (!btn?.dataset.tab) return;
-    entryTab = btn.dataset.tab as EntryTab;
+    state.entryTab = btn.dataset.tab as EntryTab;
     applyEntryTab();
   });
 
@@ -9011,7 +8686,7 @@ function bind() {
   fromInput.addEventListener("focus", () => renderKeyMenu(""));
   fromInput.addEventListener("click", () => renderKeyMenu(""));
   fromInput.addEventListener("input", () => {
-    if (remapDraft) remapDraft.from = fromInput.value;
+    if (state.remapDraft) state.remapDraft.from = fromInput.value;
     renderKeyMenu(fromInput.value);
     refreshDirty();
   });
@@ -9045,70 +8720,70 @@ function bind() {
   fillKeySelect(document.getElementById("remap-tap2") as HTMLSelectElement, "", true);
   fillKeySelect(document.getElementById("remap-tap3") as HTMLSelectElement, "", true);
   document.getElementById("remap-tap")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.tap = (e.target as HTMLSelectElement).value || null;
+    if (!state.remapDraft) return;
+    state.remapDraft.tap = (e.target as HTMLSelectElement).value || null;
     syncRemapEditor();
   });
   document.getElementById("remap-hold")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.hold = (e.target as HTMLSelectElement).value || null;
-    if (remapDraft.hold) {
+    if (!state.remapDraft) return;
+    state.remapDraft.hold = (e.target as HTMLSelectElement).value || null;
+    if (state.remapDraft.hold) {
       // 长按输出键与切层互斥（进入层 / 锁定层都算切层）。
-      remapDraft.hold_layer = null;
-      remapDraft.lock_layer = null;
+      state.remapDraft.hold_layer = null;
+      state.remapDraft.lock_layer = null;
       (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
       (document.getElementById("remap-lock-layer") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
   document.getElementById("remap-hold-layer")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.hold_layer = (e.target as HTMLSelectElement).value || null;
-    if (remapDraft.hold_layer) {
-      remapDraft.hold = null;
-      remapDraft.lock_layer = null; // 进入层与锁定层互斥（切换式才用得起层内和弦/序列）
+    if (!state.remapDraft) return;
+    state.remapDraft.hold_layer = (e.target as HTMLSelectElement).value || null;
+    if (state.remapDraft.hold_layer) {
+      state.remapDraft.hold = null;
+      state.remapDraft.lock_layer = null; // 进入层与锁定层互斥（切换式才用得起层内和弦/序列）
       (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
       (document.getElementById("remap-lock-layer") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
   document.getElementById("remap-lock-layer")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.lock_layer = (e.target as HTMLSelectElement).value || null;
-    if (remapDraft.lock_layer) {
-      remapDraft.hold = null;
-      remapDraft.hold_layer = null;
+    if (!state.remapDraft) return;
+    state.remapDraft.lock_layer = (e.target as HTMLSelectElement).value || null;
+    if (state.remapDraft.lock_layer) {
+      state.remapDraft.hold = null;
+      state.remapDraft.hold_layer = null;
       (document.getElementById("remap-hold") as HTMLSelectElement).value = "";
       (document.getElementById("remap-hold-layer") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
   document.getElementById("remap-oneshot")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.oneshot = (e.target as HTMLSelectElement).value || null;
-    if (remapDraft.oneshot) {
-      remapDraft.sticky = null; // 单次与粘滞互斥
+    if (!state.remapDraft) return;
+    state.remapDraft.oneshot = (e.target as HTMLSelectElement).value || null;
+    if (state.remapDraft.oneshot) {
+      state.remapDraft.sticky = null; // 单次与粘滞互斥
       (document.getElementById("remap-sticky") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
   document.getElementById("remap-sticky")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.sticky = (e.target as HTMLSelectElement).value || null;
-    if (remapDraft.sticky) {
-      remapDraft.oneshot = null;
+    if (!state.remapDraft) return;
+    state.remapDraft.sticky = (e.target as HTMLSelectElement).value || null;
+    if (state.remapDraft.sticky) {
+      state.remapDraft.oneshot = null;
       (document.getElementById("remap-oneshot") as HTMLSelectElement).value = "";
     }
     syncRemapEditor();
   });
   document.getElementById("remap-tap2")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.tap2 = (e.target as HTMLSelectElement).value || null;
+    if (!state.remapDraft) return;
+    state.remapDraft.tap2 = (e.target as HTMLSelectElement).value || null;
     syncRemapEditor();
   });
   document.getElementById("remap-tap3")!.addEventListener("change", (e) => {
-    if (!remapDraft) return;
-    remapDraft.tap3 = (e.target as HTMLSelectElement).value || null;
+    if (!state.remapDraft) return;
+    state.remapDraft.tap3 = (e.target as HTMLSelectElement).value || null;
     syncRemapEditor();
   });
 
@@ -9151,7 +8826,7 @@ function bind() {
     // Ctrl+S：保存当前编辑页，等价点标题行的保存图标（含校验与提示）。没改动就与置灰的按钮同一口径，不落盘。
     if (mod && !e.altKey && (e.key === "s" || e.key === "S")) {
       e.preventDefault();
-      if (isListSection(section) && currentDraft() && isDraftDirty()) void saveCurrentDraft();
+      if (isListSection(state.section) && currentDraft() && isDraftDirty()) void saveCurrentDraft();
       return;
     }
 
@@ -9172,7 +8847,7 @@ function bind() {
     }
 
     // Delete：删当前详情页这条（与标题行的删除图标同一条路径，含确认框）；焦点在表单控件里时不动。
-    if (e.key === "Delete" && !isFormTarget(e.target) && isListSection(section) && currentDraft()) {
+    if (e.key === "Delete" && !isFormTarget(e.target) && isListSection(state.section) && currentDraft()) {
       e.preventDefault();
       deleteCurrentEntry();
     }
@@ -9244,14 +8919,14 @@ function syncRailTab(tab: Section) {
 function switchSectionNow(tab: Section, opts?: { keepList?: boolean }) {
   void stopRecIfAny();
   discardDraft();
-  draftNew = false;
-  selected = null;
-  section = tab;
+  state.draftNew = false;
+  state.selected = null;
+  state.section = tab;
   if (!opts?.keepList) {
-    search = "";
-    listFilter = { enabled: false, conflicted: false };
-    picked.clear();
-    pickAnchor = null;
+    state.search = "";
+    state.listFilter = { enabled: false, conflicted: false };
+    state.picked.clear();
+    state.pickAnchor = null;
     (document.getElementById("list-search") as HTMLInputElement).value = "";
   }
   hideRowMenu();
@@ -9263,25 +8938,25 @@ function switchSectionNow(tab: Section, opts?: { keepList?: boolean }) {
 }
 
 async function stopRecIfAny() {
-  if (recording) {
+  if (state.recording) {
     // 录制按钮长在「按键组合」动作卡片里，随重绘自然复位；这里只收掉后端的时间线，
     // 不把录到的东西塞进任何草稿（离开编辑页 = 这次录制作废）。
-    recording = false;
+    state.recording = false;
     await invoke("stop_record").catch(() => {});
   }
-  if (mouseRecording) {
-    mouseRecording = false;
+  if (state.mouseRecording) {
+    state.mouseRecording = false;
     await invoke("stop_mouse_record").catch(() => {});
   }
 }
 
 // ---- 消息中心 ----
 function renderBadge() {
-  document.getElementById("msg-badge")!.classList.toggle("hidden", !unread);
+  document.getElementById("msg-badge")!.classList.toggle("hidden", !state.unread);
 }
 
 function markRead() {
-  unread = false;
+  state.unread = false;
   renderBadge();
   void invoke("mark_results_read");
 }
@@ -9384,7 +9059,7 @@ function findRunOwner(run: { name?: string | null; trigger: string }): { section
   const name = (run.name ?? "").trim();
   const trigger = run.trigger.trim();
   const byName = (n?: string | null) => name.length > 0 && (n ?? "").trim() === name;
-  const i = cfg.shortcuts.findIndex(
+  const i = state.cfg.shortcuts.findIndex(
     (s) => byName(s.name) || (!name && s.triggers.some((t) => t.trim() === trigger)),
   );
   if (i >= 0) return { section: "shortcuts", index: i };
@@ -9392,10 +9067,10 @@ function findRunOwner(run: { name?: string | null; trigger: string }): { section
     Section,
     { name?: string | null; pattern?: string | null; edge?: string; spot?: string }[],
   ][] = [
-    ["gestures", cfg.gestures ?? []],
-    ["touchpads", cfg.touchpad_gestures ?? []],
-    ["hotcorners", cfg.hot_corners ?? []],
-    ["wheeledges", cfg.wheel_edges ?? []],
+    ["gestures", state.cfg.gestures ?? []],
+    ["touchpads", state.cfg.touchpad_gestures ?? []],
+    ["hotcorners", state.cfg.hot_corners ?? []],
+    ["wheeledges", state.cfg.wheel_edges ?? []],
   ];
   for (const [section, list] of simple) {
     const j = list.findIndex((it) => {
@@ -9410,17 +9085,17 @@ function findRunOwner(run: { name?: string | null; trigger: string }): { section
 }
 
 function currentEditorActions(): Action[] | null {
-  switch (section) {
+  switch (state.section) {
     case "shortcuts":
-      return draft?.actions ?? null;
+      return state.draft?.actions ?? null;
     case "gestures":
-      return gestureDraft?.actions ?? null;
+      return state.gestureDraft?.actions ?? null;
     case "touchpads":
-      return touchpadDraft?.actions ?? null;
+      return state.touchpadDraft?.actions ?? null;
     case "hotcorners":
-      return hotcornerDraft?.actions ?? null;
+      return state.hotcornerDraft?.actions ?? null;
     case "wheeledges":
-      return wheeledgeDraft?.actions ?? null;
+      return state.wheeledgeDraft?.actions ?? null;
     default:
       return null;
   }
@@ -9545,13 +9220,6 @@ function resultCard(r: CommandResult): HTMLElement {
 
 // ---- 执行记录（时间线 / 流水线）----
 
-function fmtMs(ms: number): string {
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 2 : 1)}s`;
-  const m = Math.floor(ms / 60_000);
-  return trt`${m}分${Math.round((ms % 60_000) / 1000)}秒`;
-}
-
 // 执行时刻（绝对钟点）：记录的起始 epoch 毫秒 + 相对毫秒 → HH:MM:SS.mmm
 function clockAt(run: RunRecord, offsetMs: number): string {
   const d = new Date(run.start_epoch_ms + offsetMs);
@@ -9595,13 +9263,13 @@ function entryTitle(run: RunRecord): string {
 // 后者在界面上按「只有一个动作块的记录」渲染，两类共用一套时间线 / 流水线。
 type MsgEntry = { id: string; time: string; label: string; run: RunRecord };
 function msgEntries(): MsgEntry[] {
-  const fromRuns: MsgEntry[] = runs.map((r) => ({
+  const fromRuns: MsgEntry[] = state.runs.map((r) => ({
     id: `r${r.id}`,
     time: r.time,
     label: entryTitle(r),
     run: r,
   }));
-  const fromMsgs: MsgEntry[] = messages
+  const fromMsgs: MsgEntry[] = state.messages
     .filter((r) => r.run_id === null)
     .map((r) => ({
       id: `m${r.time}-${r.kind}-${r.command}`,
@@ -9727,7 +9395,7 @@ function renderTimeline(run: RunRecord): HTMLElement {
     const frac = Math.max((step.end_ms - step.start_ms) / total, 0.02);
     const block = el(
       "button",
-      `tl-block st-${step.status}` + (step.id === msgSelStep ? " sel" : ""),
+      `tl-block st-${step.status}` + (step.id === state.msgSelStep ? " sel" : ""),
     );
     block.style.left = `${left * 100}%`;
     block.style.width = `calc(${frac * 100}% + ${TL_TAIL_PX}px)`;
@@ -9743,7 +9411,7 @@ function renderTimeline(run: RunRecord): HTMLElement {
     meta.append(el("span", "tl-block-flag", STEP_STATUS_LABEL[step.status] ?? step.status));
     block.append(head, meta);
     block.addEventListener("click", () => {
-      msgSelStep = msgSelStep === step.id ? -1 : step.id;
+      state.msgSelStep = state.msgSelStep === step.id ? -1 : step.id;
       renderMessages();
     });
     rows.append(block);
@@ -9847,7 +9515,7 @@ function renderRunCard(run: RunRecord): void {
   document.getElementById("msg-run-modes")!.classList.toggle("hidden", run.steps.length === 0);
   const timeline = document.getElementById("msg-timeline")!;
   const pipeline = document.getElementById("msg-pipeline")!;
-  const onTimeline = msgMode === "timeline";
+  const onTimeline = state.msgMode === "timeline";
   timeline.classList.toggle("hidden", !onTimeline);
   pipeline.classList.toggle("hidden", onTimeline);
   (document.getElementById("msg-mode-timeline") as HTMLElement).classList.toggle("active", onTimeline);
@@ -9856,7 +9524,7 @@ function renderRunCard(run: RunRecord): void {
   if (onTimeline) {
     timeline.replaceChildren(renderTimeline(run));
     pipeline.replaceChildren();
-    const sel = run.steps.find((s) => s.id === msgSelStep);
+    const sel = run.steps.find((s) => s.id === state.msgSelStep);
     detail.classList.toggle("hidden", !sel);
     if (sel) detail.replaceChildren(el("div", "msg-step-title", stepLabel(sel)), stepDetail(run, sel));
   } else {
@@ -9871,12 +9539,12 @@ function renderMessages() {
 
   // 冲突标签角标 + 冲突清单（常驻刷新，无论当前在哪个标签）。
   const conflictCount = document.getElementById("msg-conflict-count")!;
-  conflictCount.textContent = String(conflicts.length);
-  conflictCount.classList.toggle("hidden", conflicts.length === 0);
+  conflictCount.textContent = String(state.conflicts.length);
+  conflictCount.classList.toggle("hidden", state.conflicts.length === 0);
   renderConflictList();
 
   // 视图切换：执行记录 / 冲突。
-  const onResults = msgView === "results";
+  const onResults = state.msgView === "results";
   document.getElementById("msg-results-view")!.classList.toggle("hidden", !onResults);
   document.getElementById("msg-conflicts-view")!.classList.toggle("hidden", onResults);
   document.getElementById("msg-view-results")!.classList.toggle("active", onResults);
@@ -9896,30 +9564,30 @@ function renderMessages() {
   (document.getElementById("msg-next") as HTMLButtonElement).disabled = !has;
   if (!has) return;
   // 选中项按 id 记住（后台线程会持续推更新，按下标记住会漂）；找不到就退回原下标。
-  let sel = entries.findIndex((e) => e.id === msgSelId);
+  let sel = entries.findIndex((e) => e.id === state.msgSelId);
   if (sel < 0) {
-    sel = Math.min(Math.max(msgIndex, 0), entries.length - 1);
-    msgSelStep = -1;
+    sel = Math.min(Math.max(state.msgIndex, 0), entries.length - 1);
+    state.msgSelStep = -1;
   }
-  msgIndex = sel;
-  msgSelId = entries[sel].id;
+  state.msgIndex = sel;
+  state.msgSelId = entries[sel].id;
   entries.forEach((e, i) => {
     const st = runState(e.run);
-    const t = el("button", `msg-tab ${st.cls}` + (i === msgIndex ? " active" : ""));
+    const t = el("button", `msg-tab ${st.cls}` + (i === state.msgIndex ? " active" : ""));
     // 状态只留一个色点（与任务名同一行平齐），文字标签收进 tooltip。
     t.append(el("i", "msg-tab-dot"), el("span", "msg-tab-title", e.label));
     t.title = `${st.label} · ${e.label} · ${e.time}`;
     t.addEventListener("click", () => {
-      msgIndex = i;
-      msgSelId = e.id;
-      msgSelStep = -1;
+      state.msgIndex = i;
+      state.msgSelId = e.id;
+      state.msgSelStep = -1;
       renderMessages();
     });
     tablist.append(t);
   });
-  const active = tablist.children[msgIndex] as HTMLElement | undefined;
+  const active = tablist.children[state.msgIndex] as HTMLElement | undefined;
   active?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  renderRunCard(entries[msgIndex].run);
+  renderRunCard(entries[state.msgIndex].run);
 }
 
 // 弹窗打开前的焦点：关掉后还回去（还给已重绘消失的元素等于没还，isConnected 挡掉）。
@@ -9956,36 +9624,36 @@ function hideResultModal() {
 
 function bindMessages() {
   document.getElementById("msg-view-results")!.addEventListener("click", () => {
-    msgView = "results";
+    state.msgView = "results";
     renderMessages();
   });
   document.getElementById("msg-view-conflicts")!.addEventListener("click", () => {
-    msgView = "conflicts";
+    state.msgView = "conflicts";
     renderMessages();
   });
   document.getElementById("msg-mode-timeline")!.addEventListener("click", () => {
-    msgMode = "timeline";
-    msgSelStep = -1;
+    state.msgMode = "timeline";
+    state.msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("msg-mode-pipeline")!.addEventListener("click", () => {
-    msgMode = "pipeline";
+    state.msgMode = "pipeline";
     renderMessages();
   });
   document.getElementById("msg-prev")!.addEventListener("click", () => {
     const entries = msgEntries();
     if (!entries.length) return;
-    msgIndex = (msgIndex - 1 + entries.length) % entries.length;
-    msgSelId = entries[msgIndex].id;
-    msgSelStep = -1;
+    state.msgIndex = (state.msgIndex - 1 + entries.length) % entries.length;
+    state.msgSelId = entries[state.msgIndex].id;
+    state.msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("msg-next")!.addEventListener("click", () => {
     const entries = msgEntries();
     if (!entries.length) return;
-    msgIndex = (msgIndex + 1) % entries.length;
-    msgSelId = entries[msgIndex].id;
-    msgSelStep = -1;
+    state.msgIndex = (state.msgIndex + 1) % entries.length;
+    state.msgSelId = entries[state.msgIndex].id;
+    state.msgSelStep = -1;
     renderMessages();
   });
   onClickAsync(document.getElementById("clear-logs")!, async () => {
@@ -10007,11 +9675,11 @@ function bindMessages() {
   });
   document.getElementById("clear-messages")!.addEventListener("click", () => {
     void invoke("clear_command_results");
-    messages = [];
-    runs = [];
-    msgIndex = 0;
-    msgSelId = "";
-    msgSelStep = -1;
+    state.messages = [];
+    state.runs = [];
+    state.msgIndex = 0;
+    state.msgSelId = "";
+    state.msgSelStep = -1;
     renderMessages();
   });
   document.getElementById("modal-close")!.addEventListener("click", hideResultModal);
@@ -10023,8 +9691,8 @@ async function initEvents() {
     const r = event.payload;
     if (r.run_id === null) {
       // 非触发的普通消息（配置变更、热串注入失败等）：单独成条，弹窗 / 红点照旧。
-      messages.unshift(r);
-      msgSelId = `m${r.time}-${r.kind}-${r.command}`;
+      state.messages.unshift(r);
+      state.msgSelId = `m${r.time}-${r.kind}-${r.command}`;
     }
     if (r.show_output) {
       showResultModal(r);
@@ -10032,7 +9700,7 @@ async function initEvents() {
       // 走监听器，把可能残留的 pending 清掉，避免同一条再弹第二次（CS-11）。
       void invoke("take_pending_result_modal").catch(() => null);
     } else {
-      unread = true;
+      state.unread = true;
     }
     renderMessages();
   });
@@ -10045,13 +9713,13 @@ async function initEvents() {
   // 执行记录：每条动作结束就推一次整张卡（后台线程边跑边刷，界面能看到逐步推进）。
   await listen<RunRecord>("run-update", (event) => {
     const run = event.payload;
-    const i = runs.findIndex((r) => r.id === run.id);
-    if (i >= 0) runs[i] = run;
+    const i = state.runs.findIndex((r) => r.id === run.id);
+    if (i >= 0) state.runs[i] = run;
     else {
-      runs.unshift(run);
-      msgSelId = `r${run.id}`;
-      msgIndex = 0;
-      unread = true;
+      state.runs.unshift(run);
+      state.msgSelId = `r${run.id}`;
+      state.msgIndex = 0;
+      state.unread = true;
     }
     renderMessages();
   });
@@ -10078,13 +9746,13 @@ async function initEvents() {
   await listen<Config>("config-updated", (event) => {
     const next = event.payload.settings?.hints;
     if (next) {
-      cfg.settings.hints = next;
+      state.cfg.settings.hints = next;
       // 只动这一个勾：整份 `syncSettings()` 会把用户正在输入框里敲到一半的超时数字覆盖掉。
       (document.getElementById("set-hints") as HTMLInputElement).checked = next.visible === true;
     }
     const paused = event.payload.settings?.paused === true;
-    if (paused !== cfg.settings.paused) {
-      cfg.settings.paused = paused;
+    if (paused !== state.cfg.settings.paused) {
+      state.cfg.settings.paused = paused;
       (document.getElementById("set-paused") as HTMLInputElement).checked = paused;
     }
   });
@@ -10957,9 +10625,9 @@ if (location.hash === "#toast") {
   // 回到窗口时重新扫一遍外部工具：用户可能刚把比特口袋 / 自动化助手打开。
   // 只有「在跑的工具集合」真的变了才重画，避免每次切窗口都重置编辑区。
   window.addEventListener("focus", () => {
-    const before = runningTools.map((t) => t.id).join(",");
+    const before = state.runningTools.map((t) => t.id).join(",");
     void refreshRunningTools().then(() => {
-      if (runningTools.map((t) => t.id).join(",") !== before) render();
+      if (state.runningTools.map((t) => t.id).join(",") !== before) render();
     });
   });
   void (async () => {

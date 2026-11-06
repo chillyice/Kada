@@ -1,6 +1,6 @@
 // 动作类型预设、子操作表、内容判定与摘要（从 main.ts 抽出，U-01）。
 import { tr, trt } from "./i18n";
-import { runningTools } from "./state";
+import { state } from "./state";
 import type {
   Action,
   ActionBase,
@@ -97,7 +97,7 @@ export function actionTypeLabel(t: ActionBase["type"]): string {
 /** 动作类型下拉的可选项：外部工具没探测到在跑时不给新建入口。 */
 export function actionTypeChoices(includeTool = false): typeof ACTION_TYPES {
   let list = ACTION_TYPES;
-  if (runningTools.length === 0 && !includeTool) {
+  if (state.runningTools.length === 0 && !includeTool) {
     list = list.filter((t) => t.value !== "tool");
   }
   return list;
@@ -559,7 +559,7 @@ export function newAction(type: ActionBase["type"]): ActionBase {
     case "capture":
       return { type: "capture", operation: "full_screen", output: "clipboard", path: "" };
     case "tool": {
-      const t = runningTools[0];
+      const t = state.runningTools[0];
       return { type: "tool", tool: t?.id ?? "", capability: t?.capabilities[0]?.id ?? "" };
     }
     case "brightness":
@@ -1008,7 +1008,7 @@ export function actionSummary(a: Action): string {
       return trt`截图：${op} → ${out}`;
     }
     case "tool": {
-      const t = runningTools.find((x) => x.id === a.tool);
+      const t = state.runningTools.find((x) => x.id === a.tool);
       const cap = t?.capabilities.find((c) => c.id === a.capability);
       return trt`${t?.name ?? a.tool}：${cap?.name ?? a.capability}（未接入）`;
     }

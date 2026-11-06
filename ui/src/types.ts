@@ -507,6 +507,18 @@ export type InputDeviceList = {
  */
 export type ElevatedStatus = { supported: boolean; enabled: boolean; connected: boolean };
 
+/** 软件更新现状（后端 `get_update_status` / `update-status` 事件）。 */
+export type UpdateStatus = { current: string; kind: "installed" | "portable" } & (
+  | { phase: "idle" }
+  | { phase: "checking" }
+  | { phase: "up-to-date" }
+  | { phase: "available"; version: string; notes?: string | null }
+  | { phase: "downloading"; version: string; percent?: number | null }
+  | { phase: "ready"; version: string; notes?: string | null }
+  | { phase: "installing"; version: string }
+  | { phase: "error"; message: string }
+);
+
 export type Section =
   | "shortcuts"
   | "remaps"
@@ -579,3 +591,46 @@ export type RunRecord = {
   status: string;
   steps: ActionStep[];
 };
+
+// 拖拽排序 / 移动（列表与编辑器画布共用；pointer events，不依赖 WebView2 的 HTML5 DnD）。
+export type DragPayload =
+  | { kind: "shortcut"; idx: number }
+  | { kind: "folder"; id: string }
+  | { kind: "remap"; idx: number }
+  | { kind: "expansion"; idx: number }
+  | { kind: "gesture"; idx: number }
+  | { kind: "touchpad"; idx: number }
+  | { kind: "hotcorner"; idx: number }
+  | { kind: "wheeledge"; idx: number };
+export type DropZone =
+  | { kind: "root" }
+  | { kind: "folder"; folderId: string; pos: "before" | "into" | "after" }
+  | { kind: "row"; idx: number; pos: "before" | "after"; targetKind?: ListKind };
+export interface DragState {
+  payload: DragPayload;
+  startX: number;
+  startY: number;
+  active: boolean; // 越过启动阈值后才算真正在拖拽
+  sourceEl: HTMLElement;
+}
+/** 动作拖拽（详情编辑器内）：改变动作顺序或逻辑纵深（拖进/拖出条件分支）。 */
+export interface ActionDragState {
+  list: Action[]; // 源动作所在列表（数组引用）
+  index: number; // 源动作在列表中的下标
+  startX: number;
+  startY: number;
+  active: boolean; // 越过启动阈值后才算真正在拖拽
+  sourceEl: HTMLElement;
+}
+
+// 选中集操作（合并列表里各类条目共存，靠内容定位而不是下标）。
+export type AnyEntry =
+  | ShortcutItem
+  | Remap
+  | TextExpansion
+  | Gesture
+  | TouchpadGesture
+  | HotCornerRule
+  | WheelEdgeRule;
+/** **有目录归属的**条目（鼠标类触发源没有目录：它们是全局触发源，不参与目录树）。 */
+export type FolderEntry = ShortcutItem | Remap | TextExpansion;
