@@ -2,7 +2,14 @@
   "name": "kada",
   "private": true,
   "scripts": {
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "lint:rust": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings",
+    "lint:ui": "npm --prefix ui run lint",
+    "lint:docs": "node scripts/check-docs.mjs && node scripts/check-i18n.mjs && node scripts/build-snippet-index.mjs --check",
+    "lint": "npm run lint:rust && npm run lint:ui && npm run lint:docs",
+    "test": "cargo test --workspace",
+    "check:build": "npm --prefix ui run build && cargo check -p kada && cargo check -p kada --no-default-features",
+    "check": "npm run lint && npm run test && npm run check:build"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1"

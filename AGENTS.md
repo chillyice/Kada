@@ -155,7 +155,7 @@
 ## 3. 构建与验证命令
 
 ```powershell
-cargo fmt --all -- --check  # 格式闸门（行尾一律 LF，.gitattributes 守着）
+cargo fmt --all -- --check  # 格式闸门（LF）
 cargo clippy --workspace --all-targets -- -D warnings  # 静态检查（零警告）
 cargo test --workspace      # 全测试
 cargo check -p kada         # Tauri 壳编译（完整版）
@@ -165,6 +165,7 @@ npm --prefix ui run build   # 前端构建（含 tsc strict）
 npm --prefix ui run lint    # 前端 lint（invoke 漏 await 直接报错）
 node scripts/check-docs.mjs # 文档一致性
 node scripts/check-i18n.mjs # 文案必须 tr()/trt()，en.json 全覆盖
+npm run check # 一键跑完全部闸门
 cargo run -p kada-hook --example demo   # 冒烟 demo
 cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 唯一本地验证
 powershell scripts\clean-build.ps1 # 清 debug / 交叉产物
