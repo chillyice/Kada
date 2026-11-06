@@ -1773,8 +1773,8 @@ function saveCollapsed() {
     localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...collapsedFolders]));
   } catch {}
 }
-let collapsedFolders = loadCollapsed(); // 折叠的目录 id（localStorage 持久化，重启保持）
-let collapsedActions = new WeakSet<Action>(); // 收起态的动作（按对象引用，重绘/重排后仍保持）
+const collapsedFolders = loadCollapsed(); // 折叠的目录 id（localStorage 持久化，重启保持）
+const collapsedActions = new WeakSet<Action>(); // 收起态的动作（按对象引用，重绘/重排后仍保持）
 
 // pointer events 拖拽状态（不依赖 WebView2 的 HTML5 DnD，避免其兼容性抖动）。
 interface DragState {
@@ -2285,6 +2285,12 @@ function el(tag: string, cls?: string, text?: string): HTMLElement {
   if (cls) n.className = cls;
   if (text !== undefined) n.textContent = text;
   return n;
+}
+
+// 异步点击处理器：`addEventListener` 的回调必须返回 void，直接塞 async 函数会把 Promise
+// 丢在没人处理的地方（钩不到失败）。这里显式 void 掉；处理器内部仍要自己 try/catch 提示。
+function onClickAsync(target: HTMLElement, fn: () => Promise<void>): void {
+  target.addEventListener("click", () => void fn());
 }
 
 // 深拷贝（配置是纯 JSON 数据，用结构化克隆隔离编辑草稿，避免误写回原配置）。
@@ -7108,7 +7114,7 @@ function conditionFields(cond: Condition): HTMLElement {
       cond.id = pick.value;
       id.value = pick.value;
     });
-    recheck.addEventListener("click", async () => {
+    onClickAsync(recheck, async () => {
       recheck.disabled = true;
       fillPicker(await refreshInputDevices(true));
       recheck.disabled = false;
@@ -7206,7 +7212,7 @@ function mouseRecordButton(
   btn.textContent = mouseRecording ? tr("■ 录制中（点此停止）") : tr("● 录制鼠标操作");
   if (mouseRecording) btn.classList.add("recording");
   btn.title = tr("录一段鼠标动作：移动到某处点击 / 滚轮，录完替换当前动作");
-  btn.addEventListener("click", async () => {
+  onClickAsync(btn, async () => {
     if (!mouseRecording) {
       try {
         await invoke("start_mouse_record");
@@ -7252,7 +7258,7 @@ function keyRecordButton(
   btn.textContent = recording ? tr("■ 录制中（点此停止）") : tr("● 开始录制");
   if (recording) btn.classList.add("recording");
   btn.title = tr("录一段按键（组合键与按键间隔），录完替换当前动作");
-  btn.addEventListener("click", async () => {
+  onClickAsync(btn, async () => {
     if (!recording) {
       try {
         await invoke("start_record");
@@ -9504,7 +9510,7 @@ function bindSettings() {
   // 启动 / 断开：这一下会弹 UAC（用户在等授权，界面上要说清楚），且后端在等提权进程把通道
   // 建起来（最长 30 秒）。所以按键就地禁用 + 写一句进度，别让人以为界面卡死了。
   const elevatedRun = document.getElementById("elevated-toggle-run") as HTMLButtonElement;
-  elevatedRun.addEventListener("click", async () => {
+  onClickAsync(elevatedRun, async () => {
     const box = document.getElementById("elevated-report")!;
     const wasConnected = elevatedRun.textContent?.includes(tr("断开")) === true;
     elevatedRun.disabled = true;
@@ -10826,7 +10832,7 @@ function msgField(k: string, v: string, code = false, inline = false): HTMLEleme
 function copyResultButton(text: string): HTMLButtonElement {
   const btn = el("button", "ghost msg-action-btn", tr("复制全文")) as HTMLButtonElement;
   btn.type = "button";
-  btn.addEventListener("click", async () => {
+  onClickAsync(btn, async () => {
     try {
       await invoke("copy_result_text", { text });
       toast(tr("已复制"));
@@ -10841,7 +10847,7 @@ function openLogButton(path: string): HTMLButtonElement {
   const btn = el("button", "ghost msg-action-btn", tr("打开完整日志")) as HTMLButtonElement;
   btn.type = "button";
   btn.title = path;
-  btn.addEventListener("click", async () => {
+  onClickAsync(btn, async () => {
     try {
       await invoke("open_result_log", { path });
     } catch (e) {
@@ -11513,7 +11519,7 @@ function bindMessages() {
     msgSelStep = -1;
     renderMessages();
   });
-  document.getElementById("clear-logs")!.addEventListener("click", async () => {
+  onClickAsync(document.getElementById("clear-logs")!, async () => {
     const ok = await askConfirm({
       title: tr("清理命令日志"),
       text: tr(
