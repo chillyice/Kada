@@ -2,3 +2,4 @@
 // `generate_handler!` 里用 `commands::<域>::<命令>` 的路径形式注册（编译期校验）。
 
 pub(crate) mod config;
+pub(crate) mod devices;
