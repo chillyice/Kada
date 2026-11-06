@@ -668,7 +668,9 @@ case "run_entry":
       emit("run-update", structuredClone(run));
     };
     push(run);
+    // 演示数据固定非空；万一被清空就没什么可演示的。
     const demo = DEMO_RUNS[0];
+    if (!demo) return;
     demo.steps.forEach((s, i) => {
       setTimeout(() => {
         run.duration_ms = s.end_ms;

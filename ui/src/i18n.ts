@@ -47,7 +47,7 @@ export function tr(zh: string): string {
 }
 
 export function trt(strings: TemplateStringsArray, ...values: unknown[]): string {
-  let key = strings[0];
+  let key = strings[0] ?? "";
   for (let i = 1; i < strings.length; i++) key += `{${i - 1}}` + strings[i];
   const tpl = locale === "zh" ? key : (EN as Record<string, string>)[key] ?? key;
   return tpl.replace(/\{(\d+)\}/g, (m, i) => {

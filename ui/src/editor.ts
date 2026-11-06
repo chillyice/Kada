@@ -228,13 +228,16 @@ function simplifyGesture(
   if (points.length <= 2) return points.slice();
   const first = points[0];
   const last = points[points.length - 1];
+  if (!first || !last) return points.slice();
   const dx = last[0] - first[0];
   const dy = last[1] - first[1];
   const len = Math.hypot(dx, dy);
   let idx = 0;
   let max = 0;
   for (let i = 1; i < points.length - 1; i++) {
-    const [px, py] = points[i];
+    const p = points[i];
+    if (!p) continue;
+    const [px, py] = p;
     const d =
       len === 0
         ? Math.hypot(px - first[0], py - first[1])
@@ -264,7 +267,9 @@ function patternFromPoints(
   const pts = simplifyGesture(points, Math.max(2, min / 4));
   // 每段先按位移向量累积；相邻 ≤45° 的段合并（向量相加，方向取平均）。
   const runs: [number, number][] = [];
-  let anchor = pts[0];
+  const start = pts[0];
+  if (!start) return "";
+  let anchor = start;
   for (const p of pts.slice(1)) {
     const dx = p[0] - anchor[0];
     const dy = p[1] - anchor[1];
@@ -313,6 +318,8 @@ export function openGesturePad(onDone: (pattern: string) => void) {
     if (!ctx) return;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     if (points.length < 2) return;
+    const start = points[0];
+    if (!start) return;
     ctx.strokeStyle = getComputedStyle(document.documentElement)
       .getPropertyValue("--accent")
       .trim() || "#4c9aff";
@@ -320,7 +327,7 @@ export function openGesturePad(onDone: (pattern: string) => void) {
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     ctx.beginPath();
-    ctx.moveTo(points[0][0], points[0][1]);
+    ctx.moveTo(start[0], start[1]);
     for (const p of points.slice(1)) ctx.lineTo(p[0], p[1]);
     ctx.stroke();
   };
@@ -896,53 +903,69 @@ export function openDetail(
   state.draftBaseline = null; // 填充期间先不标脏，填完统一标定基线
   state.entryTab = "work"; // 打开条目默认停在「动作 / 操作 / 展开文本」页签
   if (state.section === "shortcuts") {
-    state.draft = isNew
-      ? { name: "", description: "", folder: folderId, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true }
-      : deepClone(state.cfg.shortcuts[i]);
+    const existing = isNew ? null : state.cfg.shortcuts[i];
+    // 下标失效（条目刚被删）：不打开详情，别让一份 undefined 草稿挂上去。
+    if (!isNew && !existing) return;
+    const draft = existing
+      ? deepClone(existing)
+      : { name: "", description: "", folder: folderId, layer: null, when: null, triggers: [], actions: [newAction("text")], enabled: true };
     // 打开已创建的、含多个动作的快捷键时，动作默认收起；新建/新增的动作保持展开。
-    if (!isNew && state.draft.actions.length > 1) collapseAllActions(state.draft.actions);
+    if (!isNew && draft.actions.length > 1) collapseAllActions(draft.actions);
     if (isNew && seed) {
-      state.draft.name = seed.name ?? "";
-      state.draft.description = seed.description ?? "";
+      draft.name = seed.name ?? "";
+      draft.description = seed.description ?? "";
     }
+    state.draft = draft;
     fillShortcutEditor();
   } else if (state.section === "remaps") {
-    state.remapDraft = isNew
-      ? { name: null, description: null, folder: folderId, from: "", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true }
-      : deepClone(state.cfg.remaps[i]);
+    const existing = isNew ? null : state.cfg.remaps[i];
+    if (!isNew && !existing) return;
+    const draft = existing
+      ? deepClone(existing)
+      : { name: null, description: null, folder: folderId, from: "", to: "Ctrl", tap: null, hold: null, layer: null, when: null, hold_layer: null, lock_layer: null, tap_timeout_ms: 200, oneshot: null, sticky: null, tap2: null, tap3: null, enabled: true };
     if (isNew && seed) {
-      state.remapDraft.name = seed.name ?? null;
-      state.remapDraft.description = seed.description ?? null;
+      draft.name = seed.name ?? null;
+      draft.description = seed.description ?? null;
     }
+    state.remapDraft = draft;
     fillRemapEditor();
   } else if (state.section === "expansions") {
-    state.expansionDraft = isNew
-      ? { name: null, description: null, folder: folderId, trigger: "", replace: "", enabled: true }
-      : deepClone(state.cfg.expansions[i]);
+    const existing = isNew ? null : state.cfg.expansions[i];
+    if (!isNew && !existing) return;
+    const draft = existing
+      ? deepClone(existing)
+      : { name: null, description: null, folder: folderId, trigger: "", replace: "", enabled: true };
     if (isNew && seed) {
-      state.expansionDraft.name = seed.name ?? null;
-      state.expansionDraft.description = seed.description ?? null;
+      draft.name = seed.name ?? null;
+      draft.description = seed.description ?? null;
     }
+    state.expansionDraft = draft;
     fillExpansionEditor();
   } else if (state.section === "gestures") {
-    state.gestureDraft = isNew
-      ? {
+    const existing = isNew ? null : (state.cfg.gestures ?? [])[i];
+    if (!isNew && !existing) return;
+    const draft = existing
+      ? deepClone(existing)
+      : {
           name: null,
           description: null,
           folder: folderId,
           pattern: "D",
           actions: [newAction("text")],
           enabled: true,
-        }
-      : deepClone((state.cfg.gestures ?? [])[i]);
+        };
     if (isNew && seed) {
-      state.gestureDraft.name = seed.name ?? null;
-      if (seed.pattern) state.gestureDraft.pattern = seed.pattern;
+      draft.name = seed.name ?? null;
+      if (seed.pattern) draft.pattern = seed.pattern;
     }
+    state.gestureDraft = draft;
     fillGestureEditor();
   } else if (state.section === "touchpads") {
-    state.touchpadDraft = isNew
-      ? {
+    const existing = isNew ? null : (state.cfg.touchpad_gestures ?? [])[i];
+    if (!isNew && !existing) return;
+    const draft = existing
+      ? deepClone(existing)
+      : {
           name: null,
           description: null,
           folder: folderId,
@@ -951,16 +974,19 @@ export function openDetail(
           template: null,
           actions: [newAction("text")],
           enabled: true,
-        }
-      : deepClone((state.cfg.touchpad_gestures ?? [])[i]);
+        };
     if (isNew && seed) {
-      state.touchpadDraft.name = seed.name ?? null;
-      if (seed.pattern) state.touchpadDraft.pattern = seed.pattern;
+      draft.name = seed.name ?? null;
+      if (seed.pattern) draft.pattern = seed.pattern;
     }
+    state.touchpadDraft = draft;
     fillTouchpadEditor();
   } else if (state.section === "hotcorners") {
-    state.hotcornerDraft = isNew
-      ? {
+    const existing = isNew ? null : (state.cfg.hot_corners ?? [])[i];
+    if (!isNew && !existing) return;
+    const draft: HotCornerRule = existing
+      ? deepClone(existing)
+      : {
           spot: "top_left",
           name: null,
           description: null,
@@ -969,13 +995,16 @@ export function openDetail(
           when: null,
           actions: [newAction("text")],
           enabled: true,
-        }
-      : deepClone((state.cfg.hot_corners ?? [])[i]);
-    if (isNew && seed) state.hotcornerDraft.name = seed.name ?? null;
+        };
+    if (isNew && seed) draft.name = seed.name ?? null;
+    state.hotcornerDraft = draft;
     fillHotCornerEditor();
   } else if (state.section === "wheeledges") {
-    state.wheeledgeDraft = isNew
-      ? {
+    const existing = isNew ? null : (state.cfg.wheel_edges ?? [])[i];
+    if (!isNew && !existing) return;
+    const draft: WheelEdgeRule = existing
+      ? deepClone(existing)
+      : {
           edge: "top",
           name: null,
           description: null,
@@ -983,9 +1012,9 @@ export function openDetail(
           when: null,
           actions: [newAction("text")],
           enabled: true,
-        }
-      : deepClone((state.cfg.wheel_edges ?? [])[i]);
-    if (isNew && seed) state.wheeledgeDraft.name = seed.name ?? null;
+        };
+    if (isNew && seed) draft.name = seed.name ?? null;
+    state.wheeledgeDraft = draft;
     fillWheelEdgeEditor();
   }
   markDraftBaseline();
@@ -1029,10 +1058,13 @@ async function saveShortcutDetail(): Promise<boolean> {
   const item = deepClone(state.draft);
   if (state.draftNew) {
     state.cfg.shortcuts.unshift(item);
-  } else if (state.selected !== null && state.cfg.shortcuts[state.selected]) {
-    // 「启用」只有列表行的开关能改（编辑页没这个控件），别拿草稿里的旧值把用户刚点的开关盖回去。
-    item.enabled = state.cfg.shortcuts[state.selected].enabled;
-    state.cfg.shortcuts[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = state.cfg.shortcuts[state.selected];
+    if (prev) {
+      // 「启用」只有列表行的开关能改（编辑页没这个控件），别拿草稿里的旧值把用户刚点的开关盖回去。
+      item.enabled = prev.enabled;
+      state.cfg.shortcuts[state.selected] = item;
+    }
   }
   state.draftNew = false;
   const ok = await save();
@@ -1107,9 +1139,12 @@ async function saveRemapDetail(): Promise<boolean> {
   const item = deepClone(state.remapDraft);
   if (state.draftNew) {
     state.cfg.remaps.unshift(item);
-  } else if (state.selected !== null && state.cfg.remaps[state.selected]) {
-    item.enabled = state.cfg.remaps[state.selected].enabled;
-    state.cfg.remaps[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = state.cfg.remaps[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      state.cfg.remaps[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（草稿继续可改）：与快捷键同行为，别把用户刚存的条目关掉。
   state.draftNew = false;
@@ -1139,9 +1174,12 @@ async function saveExpansionDetail(): Promise<boolean> {
   const item = deepClone(state.expansionDraft);
   if (state.draftNew) {
     state.cfg.expansions.unshift(item);
-  } else if (state.selected !== null && state.cfg.expansions[state.selected]) {
-    item.enabled = state.cfg.expansions[state.selected].enabled;
-    state.cfg.expansions[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = state.cfg.expansions[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      state.cfg.expansions[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（与快捷键同行为）。
   state.draftNew = false;
@@ -1171,9 +1209,12 @@ async function saveGestureDetail(): Promise<boolean> {
   if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (state.selected !== null && list[state.selected]) {
-    item.enabled = list[state.selected].enabled;
-    list[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = list[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      list[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（与快捷键同行为）。
   state.draftNew = false;
@@ -1214,9 +1255,12 @@ async function saveTouchpadDetail(): Promise<boolean> {
   if (state.draftNew) {
     list.unshift(item);
     touchpadOrderFront(item);
-  } else if (state.selected !== null && list[state.selected]) {
-    item.enabled = list[state.selected].enabled;
-    list[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = list[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      list[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（与快捷键同行为）。
   state.draftNew = false;
@@ -1238,9 +1282,12 @@ async function saveHotCornerDetail(): Promise<boolean> {
   if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (state.selected !== null && list[state.selected]) {
-    item.enabled = list[state.selected].enabled;
-    list[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = list[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      list[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（与快捷键同行为）。
   state.draftNew = false;
@@ -1261,9 +1308,12 @@ async function saveWheelEdgeDetail(): Promise<boolean> {
   if (state.draftNew) {
     list.unshift(item);
     mouseOrderFront(item);
-  } else if (state.selected !== null && list[state.selected]) {
-    item.enabled = list[state.selected].enabled;
-    list[state.selected] = item;
+  } else if (state.selected !== null) {
+    const prev = list[state.selected];
+    if (prev) {
+      item.enabled = prev.enabled;
+      list[state.selected] = item;
+    }
   }
   // 保存后留在编辑页（与快捷键同行为）。
   state.draftNew = false;

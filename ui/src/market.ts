@@ -532,12 +532,12 @@ function readPublishMeta() {
 function syncPublishName() {
   if (publishNameTouched) return;
   const picks = publishPicks();
-  const name =
-    picks.length === 0
+  const only = picks.length === 1 ? picks[0] : undefined;
+  const name = only
+    ? labelOf(arrOf(only.kind)[only.idx] as object)
+    : picks.length === 0
       ? ""
-      : picks.length === 1
-        ? labelOf(arrOf(picks[0].kind)[picks[0].idx] as object)
-        : trt`卡带（${picks.length} 项）`;
+      : trt`卡带（${picks.length} 项）`;
   (document.getElementById("publish-name") as HTMLInputElement).value = name;
 }
 

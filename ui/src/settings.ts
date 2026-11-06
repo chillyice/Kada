@@ -1024,7 +1024,8 @@ function menuItemsEditor(items: MenuEntry[], depth: number, rerender: () => void
 
 function moveMenuEntry(items: MenuEntry[], from: number, to: number) {
   if (to < 0 || to >= items.length || from === to) return;
-  const [moved] = items.splice(from, 1);
+  const moved = items.splice(from, 1)[0];
+  if (!moved) return;
   items.splice(to, 0, moved);
 }
 
@@ -1036,6 +1037,8 @@ function menuEntryEditor(
 ): HTMLElement {
   const item = items[i];
   const box = el("div", "menu-editor-entry");
+  // 调用方按 items 的下标渲染，正常不会越界；越界时给个空壳，别让整块菜单崩掉。
+  if (!item) return box;
   // 动作字段的改动在失焦时落盘（与设置页其它字段同一口径）。
   box.addEventListener("change", () => void save());
 

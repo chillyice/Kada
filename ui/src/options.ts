@@ -128,7 +128,9 @@ export function actionVarWrites(a: Action): string[] {
       return a.var.trim() ? [a.var.trim()] : [];
     case "inline_script": {
       // 除了动作自己的「存为变量」，脚本里 set_var("名", …) 写的变量也要算进数据流。
-      const names = [...a.source.matchAll(/set_var\s*\(\s*["']([^"']+)["']/g)].map((m) => m[1]);
+      const names = [...a.source.matchAll(/set_var\s*\(\s*["']([^"']+)["']/g)]
+        .map((m) => m[1])
+        .filter((n): n is string => n !== undefined);
       return [...new Set([...(a.var.trim() ? [a.var.trim()] : []), ...names])];
     }
     case "os":
@@ -248,7 +250,7 @@ export function actionVarReads(a: Action): string[] {
   const out = new Set<string>();
   for (const t of texts) {
     for (const m of t.matchAll(/\{([^{}\s]+)\}/g)) {
-      const name = m[1].split(".")[0];
+      const name = m[1]?.split(".")[0];
       if (name && !VAR_DYNAMIC.has(name)) out.add(name);
     }
   }

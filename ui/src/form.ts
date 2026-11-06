@@ -451,9 +451,14 @@ export function actionDropAt(x: number, y: number): ActionDropHit | null {
     return { target: { kind: "into", list: box.list }, container: box.el, forbidden };
   }
 
+  const first = rows[0]?.getBoundingClientRect();
+  if (!first) return null;
+
   let index = rows.length;
   for (let j = 0; j < rows.length; j++) {
-    const r = rows[j].getBoundingClientRect();
+    const row = rows[j];
+    if (!row) continue;
+    const r = row.getBoundingClientRect();
     if (y < r.top + r.height / 2) {
       index = j;
       break;
@@ -461,10 +466,9 @@ export function actionDropAt(x: number, y: number): ActionDropHit | null {
   }
 
   // 线落在相邻两张卡片的空隙中央；首尾各向外让 6px（贴着卡片但不压住内容）。
-  const prev = index > 0 ? rows[index - 1].getBoundingClientRect() : null;
-  const next = index < rows.length ? rows[index].getBoundingClientRect() : null;
-  const yLine = prev && next ? (prev.bottom + next.top) / 2 : next ? next.top - 6 : prev!.bottom + 6;
-  const first = rows[0].getBoundingClientRect();
+  const prev = index > 0 ? rows[index - 1]?.getBoundingClientRect() ?? null : null;
+  const next = index < rows.length ? rows[index]?.getBoundingClientRect() ?? null : null;
+  const yLine = prev && next ? (prev.bottom + next.top) / 2 : next ? next.top - 6 : prev ? prev.bottom + 6 : first.top;
   return {
     target: { kind: "line", list: box.list, index },
     line: { y: yLine, left: first.left, width: first.width },
@@ -2472,22 +2476,24 @@ function conflictOwner(c: Conflict): { kind: ListKind; index: number } | null {
   }
   // 后端文案仍是中文（壳层消息不参与界面 i18n），所以这里按中文字面量判断，别套 tr()。
   const remapMsg = c.message.startsWith("改键"); // i18n:ignore
-  for (const q of [...c.message.matchAll(/「([^」]+)」/g)].map((m) => m[1])) {
+  for (const q of [...c.message.matchAll(/「([^」]+)」/g)]
+    .map((m) => m[1])
+    .filter((q): q is string => q !== undefined)) {
     if (!remapMsg) {
       const si = state.cfg.shortcuts.findIndex((s) => s.triggers.includes(q));
       if (si >= 0) return { kind: "shortcut", index: si };
     }
-    const ri = state.cfg.remaps.findIndex((r) => r.from === q.split(" →")[0].trim());
+    const ri = state.cfg.remaps.findIndex((r) => r.from === (q.split(" →")[0] ?? "").trim());
     if (ri >= 0) return { kind: "remap", index: ri };
   }
   return null;
 }
 
 function entryLabel(ref: { kind: ListKind; index: number }): string {
-  if (ref.kind === "shortcut" && state.cfg.shortcuts[ref.index])
-    return state.cfg.shortcuts[ref.index].name?.trim() || tr("未命名快捷键");
-  if (ref.kind === "remap" && state.cfg.remaps[ref.index])
-    return state.cfg.remaps[ref.index].name?.trim() || tr("未命名改键");
+  const shortcut = ref.kind === "shortcut" ? state.cfg.shortcuts[ref.index] : undefined;
+  if (shortcut) return shortcut.name?.trim() || tr("未命名快捷键");
+  const remap = ref.kind === "remap" ? state.cfg.remaps[ref.index] : undefined;
+  if (remap) return remap.name?.trim() || tr("未命名改键");
   return "";
 }
 

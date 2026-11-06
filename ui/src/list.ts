@@ -895,7 +895,7 @@ function dropFolderTree(id: string) {
     const arr = list();
     // 原地删除：条目对象被草稿/选中态按引用持有，换数组会让它们变孤儿。
     for (let i = arr.length - 1; i >= 0; i--) {
-      const f = arr[i].folder;
+      const f = arr[i]?.folder;
       if (f && ids.has(f)) arr.splice(i, 1);
     }
   }
@@ -1065,8 +1065,9 @@ async function deleteSelection() {
   const n = objs.length;
   const editing = selectedObject();
   const hitEdit = editing !== null && objs.includes(editing);
+  const first = objs[0];
   const what =
-    n === 1 ? `${kindLabel(kindOf(objs[0]))}「${labelOf(objs[0])}」` : trt`选中的 ${n} 项`;
+    n === 1 && first ? `${kindLabel(kindOf(first))}「${labelOf(first)}」` : trt`选中的 ${n} 项`;
   const dirty = hitEdit && isDraftDirty() ? tr("正在编辑的那条还有未保存的改动，会一并丢弃。") : "";
   if (
     !(await askConfirm({
@@ -1316,9 +1317,13 @@ function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
     // 整份列表首行之上 / 末行之下留一点空白：拖到那里 = 回根级（鼠标类只靠拖动改归属）。
     const allRows = Array.from(list.querySelectorAll<HTMLElement>(".row, .folder-row"));
     if (cands.length && allRows.length) {
-      const first = allRows[0].getBoundingClientRect();
-      const last = allRows[allRows.length - 1].getBoundingClientRect();
-      if (y < first.top - 6 || y > last.bottom + 6) return { kind: "root" };
+      const firstRow = allRows[0];
+      const lastRow = allRows[allRows.length - 1];
+      if (firstRow && lastRow) {
+        const first = firstRow.getBoundingClientRect();
+        const last = lastRow.getBoundingClientRect();
+        if (y < first.top - 6 || y > last.bottom + 6) return { kind: "root" };
+      }
     }
     const up = cands.filter((el) => el.getBoundingClientRect().bottom < y).pop();
     const down = cands.find((el) => el.getBoundingClientRect().top > y);
@@ -1360,7 +1365,7 @@ function nearestDropZone(list: HTMLElement, y: number): DropZone | null {
     if (state.dragPayload?.kind === "folder") return { kind: "folder", folderId, pos: "before" };
     const i = state.cfg.folders.findIndex((x) => x.id === folderId);
     if (i < 0) return null;
-    const parent = state.cfg.folders[i].parent ?? null;
+    const parent = state.cfg.folders[i]?.parent ?? null;
     const first = !state.cfg.folders.slice(0, i).some((x) => (x.parent ?? null) === parent);
     return first ? { kind: "folder", folderId, pos: "before" } : null;
   };
@@ -1732,9 +1737,12 @@ export function onPointerUp(e: PointerEvent) {
       if (res) applyActionDrop(list, index, res.target);
     } else {
       // 未拖拽：单击手柄 → 切换展开/收起（按动作本体记，禁用壳已剥掉）
-      const a = unwrapAction(list[index]);
-      if (collapsedActions.has(a)) collapsedActions.delete(a);
-      else collapsedActions.add(a);
+      const target = list[index];
+      if (target) {
+        const a = unwrapAction(target);
+        if (collapsedActions.has(a)) collapsedActions.delete(a);
+        else collapsedActions.add(a);
+      }
     }
     sourceEl.classList.remove("dragging");
     sourceEl.style.pointerEvents = "";

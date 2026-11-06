@@ -320,7 +320,9 @@ export function renderMessages() {
     state.msgSelStep = -1;
   }
   state.msgIndex = sel;
-  state.msgSelId = entries[sel].id;
+  const current = entries[sel];
+  if (!current) return;
+  state.msgSelId = current.id;
   entries.forEach((e, i) => {
     const st = runState(e.run);
     const t = el("button", `msg-tab ${st.cls}` + (i === state.msgIndex ? " active" : ""));
@@ -337,7 +339,7 @@ export function renderMessages() {
   });
   const active = tablist.children[state.msgIndex] as HTMLElement | undefined;
   active?.scrollIntoView({ block: "nearest", inline: "nearest" });
-  renderRunCard(entries[state.msgIndex].run);
+  renderRunCard(current.run);
 }
 
 // 弹窗打开前的焦点：关掉后还回去（还给已重绘消失的元素等于没还，isConnected 挡掉）。
@@ -394,7 +396,9 @@ export function bindMessages() {
     const entries = msgEntries();
     if (!entries.length) return;
     state.msgIndex = (state.msgIndex - 1 + entries.length) % entries.length;
-    state.msgSelId = entries[state.msgIndex].id;
+    const entry = entries[state.msgIndex];
+    if (!entry) return;
+    state.msgSelId = entry.id;
     state.msgSelStep = -1;
     renderMessages();
   });
@@ -402,7 +406,9 @@ export function bindMessages() {
     const entries = msgEntries();
     if (!entries.length) return;
     state.msgIndex = (state.msgIndex + 1) % entries.length;
-    state.msgSelId = entries[state.msgIndex].id;
+    const entry = entries[state.msgIndex];
+    if (!entry) return;
+    state.msgSelId = entry.id;
     state.msgSelStep = -1;
     renderMessages();
   });
