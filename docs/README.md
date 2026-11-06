@@ -74,6 +74,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # KadaState/decide/Recorder/消息中心/tauri commands/托盘常驻 + 窗口懒创建
   src/tests.rs              # 壳层单元测试整块（T-01 从 lib.rs 搬出：键表一致性 / 卡带市场 / 层与和弦 / 录制 / 状态 / 同步存档）
   src/net.rs                # 网络叶子（T-02 从 lib.rs 搬出）：卡带下载 / 发布 POST / 统一 reqwest 客户端 / strip_urls
+  src/results.rs            # 执行记录表 + 消息中心（T-02 从 lib.rs 搬出）：RunRecord 增删改 / 命令完整日志 / 托盘红点
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
