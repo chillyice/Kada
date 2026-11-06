@@ -74,6 +74,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   src/messages.ts           # 消息中心 + 结果卡深链：记录列表 / 结果卡 / 定位到动作
   src/market.ts             # 卡带市场 + 卡带发布 + 导出卡带：索引缓存 / 搜索标签筛选 / 安装预览 / 机审块 / 发布页
   src/settings.ts           # 设置页：卡片填充 / 开关绑定 / 输入层诊断 / 提权 / 罗技解锁 / 导入导出 / 同步存档 / 软件更新 / 更新对话框
+  src/list.ts               # 左侧列表：行与目录树渲染 / 搜索筛选 / 折叠 / 多选 / 行菜单 / 拖拽排序
   src/state.ts              # 全局可变状态（`state` 对象）+ 未保存守卫的草稿签名 / 脏判定
   src/api.ts                # Tauri IPC 薄封装（fetch* / saveConfig）+ 只改 state 的刷新（runningTools / 设备 / 冲突）
   src/dom.ts                # 无状态 DOM 小工具：el / onClickAsync / deepClone / toast / domValue / intIn / fmtMs
