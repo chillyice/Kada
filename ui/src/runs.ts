@@ -3,7 +3,7 @@ import { tr, trt } from "./i18n";
 import { state } from "./state";
 import { ACTION_ICONS, ACTION_TYPE_LABELS, condSummary } from "./options";
 import type { ActionBase, ActionStep, Condition, RunRecord } from "./types";
-import { abortActions, locateStepButton, msgField, msgOutputField, renderMessages, resultActions } from "./main";
+import { abortActions, locateStepButton, msgField, msgOutputField, renderMessages, resultActions } from "./messages";
 
 // 执行记录 / 时间线 / 流水线（U-03 从 main.ts 搬出）：只放「一条记录怎么画」。
 // 页面级编排（renderMessages / 消息中心 / 结果卡）仍在入口，等 messages 批次再搬。
