@@ -80,6 +80,48 @@ fn skill_automation_actions_parse() {
     assert_eq!(cfg.shortcuts[0].actions.len(), 8);
 }
 
+/// 技能 §2 的目录约定 + §5.1 的「原生动作优先」清单：这些形状必须真能解析，
+/// 否则文档就是在教模型写死条目。
+#[cfg(feature = "automation")]
+#[test]
+fn skill_generated_folder_and_native_actions_parse() {
+    let cfg = parse(
+        r#"{
+          "kada_snippet": { "version": 1, "name": "打包迁移" },
+          "folders": [{ "id": "c0da0000-0000-4000-8000-000000000001", "name": "咔哒生成结果" }],
+          "shortcuts": [{
+            "name": "打包迁移",
+            "folder": "c0da0000-0000-4000-8000-000000000001",
+            "triggers": ["Ctrl+Alt+Shift+Z"],
+            "actions": [
+              { "type": "group", "name": "1/4 压缩", "actions": [
+                { "type": "os", "operation": { "op": "zip", "source": "C:\\proj", "dest": "D:\\proj.zip" } }
+              ] },
+              { "type": "os", "operation": { "op": "copy", "source": "D:\\a.zip", "dest": "E:\\a.zip" } },
+              { "type": "os", "operation": { "op": "unzip", "source": "E:\\a.zip", "dest": "E:\\" } },
+              { "type": "os", "operation": { "op": "delete", "path": "D:\\tmp" } },
+              { "type": "os", "operation": { "op": "get_file_props", "path": "E:\\a.zip", "var": "file" } },
+              { "type": "parallel", "actions": [
+                { "type": "pause_ms", "ms": 100 },
+                { "type": "disabled", "action": { "type": "text", "text": "x" } }
+              ] },
+              { "type": "wait_for", "target": { "kind": "file", "path": "E:\\a.zip" }, "timeout_ms": 0 },
+              { "type": "ask", "var": "v", "prompt": "版本号？", "default": "1.0.0" },
+              { "type": "system", "operation": { "op": "empty_recycle_bin" } },
+              { "type": "app", "operation": { "op": "status", "program": "a.exe", "var": "on", "retries": 3, "interval_ms": 500 } },
+              { "type": "system", "operation": { "op": "send_to", "target": "a.exe", "payload": { "kind": "text", "text": "hi" } } },
+              { "type": "inline_script", "source": "print(1+1);", "var": "sum" }
+            ],
+            "enabled": true
+          }]
+        }"#,
+    );
+    let folder = &cfg.folders[0];
+    assert_eq!(folder.name, "咔哒生成结果");
+    assert_eq!(cfg.shortcuts[0].folder.as_deref(), Some(folder.id.as_str()));
+    assert_eq!(cfg.shortcuts[0].actions.len(), 12);
+}
+
 #[cfg(feature = "automation")]
 #[test]
 fn skill_trigger_syntax_is_accepted() {
