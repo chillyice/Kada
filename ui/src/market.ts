@@ -4,11 +4,8 @@ import { el, toast } from "./dom";
 import { tr, trt } from "./i18n";
 import { state } from "./state";
 import { actionSummary } from "./options";
+import { arrOf, kindLabel, kindOf, labelOf } from "./list";
 import {
-  arrOf,
-  kindLabel,
-  kindOf,
-  labelOf,
   load,
   remapSummary,
   switchSection,

@@ -4,7 +4,8 @@ import { tr, trt } from "./i18n";
 import { state } from "./state";
 import { actionSummary, unwrapAction } from "./options";
 import { msgEntries, renderRunCard, runState } from "./runs";
-import { askConfirm, collapsedActions, confirmLeaveDraft, openDetail, renderConflictList, renderDetail, switchSectionNow } from "./main";
+import { collapsedActions } from "./list";
+import { askConfirm, confirmLeaveDraft, openDetail, renderConflictList, renderDetail, switchSectionNow } from "./main";
 import type { Action, ActionStep, CommandResult, RunRecord, Section } from "./types";
 
 // 消息中心 + 结果卡深链（U-03 从 main.ts 搬出）：执行记录列表 / 视图切换 / 结果卡 /
