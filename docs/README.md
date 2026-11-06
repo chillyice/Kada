@@ -78,6 +78,8 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/windows.rs            # 浮窗（T-03 从 lib.rs 搬出）：触发气泡 / 状态悬浮窗 / 「设置变量」输入窗
   src/tray.rs               # 托盘（T-03 从 lib.rs 搬出）：自绘托盘菜单 / Linux 原生菜单 / 红点图标绘制
   src/overlays.rs           # 复制快捷菜单（EXT-13）+ 快捷键提示框（7.3-㊳）：建窗 / 定位 / 悬停让位
+  src/commands/mod.rs       # 命令层（T-04 从 lib.rs 搬出）：按域分组的 #[tauri::command]
+  src/commands/config.rs    # 配置读写命令：get_config / set_config
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
