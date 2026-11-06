@@ -8,7 +8,7 @@
 //   - `tr("…")`：字符串字面量的 cooked 值；
 //   - `trt\`…${x}…\``：模板的 cooked 片段用 `{0}` / `{1}` 拼接；
 //   - `ui/index.html` 的静态文本节点与 title / placeholder / aria-label / alt / value。
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -20,12 +20,24 @@ const ts = require(join(root, "ui/node_modules/typescript/lib/typescript.js"));
 const CJK = /[\u4e00-\u9fff]/;
 
 function tsKeys() {
-  const file = join(root, "ui/src/main.ts");
-  const src = readFileSync(file, "utf8");
-  const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+  // 扫描全部界面模块（U-01 之后 main.ts 不再是唯一入口）。跳过 i18n.ts（字典实现）与
+  // mock.ts（浏览器预览用的假数据，不是界面文案）。
+  const dir = join(root, "ui/src");
+  const files = readdirSync(dir)
+    .filter((f) => f.endsWith(".ts") && f !== "i18n.ts" && f !== "mock.ts")
+    .map((f) => join(dir, f));
   const keys = new Set();
   const unwrapped = [];
-  function visit(n) {
+  for (const file of files) {
+    const src = readFileSync(file, "utf8");
+    const sf = ts.createSourceFile(file, src, ts.ScriptTarget.ES2022, true, ts.ScriptKind.TS);
+    visit(sf, src, keys, unwrapped, file);
+  }
+  return { keys, unwrapped };
+}
+
+function visit(sf, src, keys, unwrapped, file) {
+  function walk(n) {
     if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "tr") {
       const a = n.arguments[0];
       if (a && (ts.isStringLiteral(a) || ts.isNoSubstitutionTemplateLiteral(a))) keys.add(a.text);
@@ -38,7 +50,7 @@ function tsKeys() {
         t.templateSpans.forEach((s, i) => (key += `{${i}}` + s.literal.text));
         keys.add(key);
         // 插值里的字面量也要求翻译（`…${cond ? tr("上") : tr("下")}…`）。
-        for (const s of t.templateSpans) visit(s.expression);
+        for (const s of t.templateSpans) walk(s.expression);
       } else {
         keys.add(t.text);
       }
@@ -53,15 +65,14 @@ function tsKeys() {
         // 故意保留中文的地方（比如拿后端中文文案做前缀匹配）在行尾写 `i18n:ignore`。
         const lineText = src.slice(sf.getLineStarts()[line], sf.getLineStarts()[line + 1] ?? src.length);
         if (!lineText.includes("i18n:ignore")) {
-          unwrapped.push(`${line + 1}: ${text.slice(0, 60)}`);
+          unwrapped.push(`${file}:${line + 1}: ${text.slice(0, 60)}`);
         }
       }
       return;
     }
-    ts.forEachChild(n, visit);
+    ts.forEachChild(n, walk);
   }
-  visit(sf);
-  return { keys, unwrapped };
+  walk(sf);
 }
 
 function readDict() {

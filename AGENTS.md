@@ -102,7 +102,7 @@
 
 ### 1.11 前端键表须与 core 同源
 
-`ui/src/main.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持显式字面量**（`frontend_key_table_matches_core` 守着）。
+`ui/src/options.ts` 的 `KEY_OPTIONS` 须与 `kada-core` 的 `Key::ALL` 一致且**保持字面量**（`frontend_key_table_matches_core` 守着）。
 
 ### 1.12 软冲突（说明书 §3 / §4.6 / §4.8）
 

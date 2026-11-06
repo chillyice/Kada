@@ -4843,21 +4843,24 @@ impl MouseRecorder {
 mod tests {
     use super::*;
 
-    /// `ui/src/main.ts` 的键表是 `kada-core` 的手抄副本（改键下拉 / 组合键录入显示名），
+    /// `ui/src/options.ts` 的键表是 `kada-core` 的手抄副本（改键下拉 / 组合键录入显示名），
     /// 一旦 Rust 新增 `Key` 而前端漏了，下拉会静默空白、保存时可能写空值（见规划 7.4-㉘）。
     /// 这里按字面量解析前端数组 / 对象，跟 [`Key::ALL`]（与 `key_name` 同源生成）逐一比对。
     ///
     /// 前端这两处必须是**显式字面量**（不能 spread / 循环拼），否则解析不到——这是有意的约束。
     #[test]
     fn frontend_key_table_matches_core() {
-        let src =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/main.ts"))
-                .expect("读取 ui/src/main.ts 失败");
+        // 拆包后键表跟着选项表去了 options.ts；录入映射（CODE_TABLE）仍在 main.ts。
+        let read_src = |name: &str| {
+            let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../ui/src/");
+            std::fs::read_to_string(format!("{dir}{name}")).expect("读取前端源码失败")
+        };
+        let src = read_src("main.ts");
         let names: std::collections::BTreeSet<&str> =
             Key::ALL.iter().map(|k| key_name(*k)).collect();
 
         // ① 改键下拉的全键表：必须与 core 完全一致（不多不少）。
-        let options = quoted_literals(region(&src, "const KEY_OPTIONS = ["));
+        let options = quoted_literals(region(&read_src("options.ts"), "const KEY_OPTIONS = ["));
         let options: std::collections::BTreeSet<&str> =
             options.iter().map(String::as_str).collect();
         let missing: Vec<&&str> = names.difference(&options).collect();
