@@ -71,7 +71,7 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
 crates/kada-actions/        # 动作执行引擎（automation feature 门控）：run_actions/run_os/run_app/run_cmd/Script + CommandResult
   src/abort.rs              # 中止开关（代数计数器 + 运行计数 RunGuard，细节见 架构设计.md §3.17）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
-  src/lib.rs                # KadaState / 决策层 / 引擎接线与定时器 / run() + generate_handler!（命令层已拆到 commands/，手势已拆到 gestures.rs）
+  src/lib.rs                # 决策层 / 输入模块 / 同步与自启等叶子 / run() + generate_handler!（命令层与 T-05 各域已拆出）
   src/tests.rs              # 壳层单元测试整块（T-01 从 lib.rs 搬出：键表一致性 / 卡带市场 / 层与和弦 / 录制 / 状态 / 同步存档）
   src/net.rs                # 网络叶子（T-02 从 lib.rs 搬出）：卡带下载 / 发布 POST / 统一 reqwest 客户端 / strip_urls
   src/results.rs            # 执行记录表 + 消息中心（T-02 从 lib.rs 搬出）：RunRecord 增删改 / 命令完整日志 / 托盘红点
@@ -88,6 +88,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/engine_host.rs        # 引擎接线（T-05 从 lib.rs 搬出）：状态机定时器 / 输入状态复位 / 配置监听 / 暂停重载 / fire 触发执行
   src/recorder.rs           # 录制器（T-05 从 lib.rs 搬出）：键盘宏事件 → 动作序列 / 鼠标触发 → Action::Mouse
   src/main_window.rs        # 主窗口（T-05 从 lib.rs 搬出）：按需建窗 / 拉到最前 / 界面外链交给系统浏览器
+  src/state.rs              # 运行时状态（T-05 从 lib.rs 搬出）：KadaState 共享字段 / 状态快照与指示载荷 / 各浮窗载荷
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
