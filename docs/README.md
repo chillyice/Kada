@@ -70,6 +70,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   tauri.conf.json           # 窗口/图标/构建配置 + bundle.createUpdaterArtifacts + plugins.updater（公钥/端点）
 ui/                         # Vite + TypeScript 前端（kada-ui）
   src/main.ts               # 配置界面入口：列表 / 详情 / 编辑页 / 事件绑定 / 各独立窗口（island 越小越好，U-03 起按屏继续拆）
+  src/runs.ts               # 执行记录 / 时间线 / 流水线：一条 RunRecord 怎么画（含步骤详情与状态）
   src/state.ts              # 全局可变状态（`state` 对象）+ 未保存守卫的草稿签名 / 脏判定
   src/api.ts                # Tauri IPC 薄封装（fetch* / saveConfig）+ 只改 state 的刷新（runningTools / 设备 / 冲突）
   src/dom.ts                # 无状态 DOM 小工具：el / onClickAsync / deepClone / toast / domValue / intIn / fmtMs
