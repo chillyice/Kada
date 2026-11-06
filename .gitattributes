@@ -1,0 +1,31 @@
+# 行尾统一：索引与检出都是 LF。
+#
+# 背景：本机 git 配了 core.autocrlf=true 且仓库原先没有 .gitattributes，
+# 结果工作区是 CRLF、索引是 LF、CI（Linux）是 LF——
+# `cargo fmt --check` 在本地永远红、在 CI 永远绿，等于没有闸门；
+# 任何一次格式化都会把整个文件标成改动。见 docs/代码拆分与质量加固计划.md Q-01。
+* text=auto eol=lf
+
+# 二进制：不做行尾转换、不做文本 diff
+*.png   binary
+*.ico   binary
+*.icns  binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+*.otf   binary
+*.zip   binary
+*.gz    binary
+*.exe   binary
+*.dll   binary
+*.dylib binary
+*.so    binary
+*.pdf   binary
+
+# 锁文件按文本处理，但冲突时不自动合并（重新生成更可靠）
+package-lock.json merge=binary
+Cargo.lock        merge=binary
