@@ -11,10 +11,10 @@ import {
   labelOf,
   load,
   remapSummary,
-  showImportResult,
   switchSection,
 } from "./main";
-import type { ImportOutcome } from "./main";
+import { showImportResult } from "./settings";
+import type { ImportOutcome } from "./settings";
 import type {
   AnyEntry,
   FolderEntry,
