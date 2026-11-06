@@ -85,6 +85,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/commands/results.rs   # 执行结果命令：消息中心 / 结果弹窗 / 命令日志 / 执行记录读取
   src/commands/windows.rs   # 浮窗回报命令：gesture_overlay_ready / hud_ready / get_status_payload / prompt_*
   src/gestures.rs           # 手势（T-05 从 lib.rs 搬出）：鼠标手势浮层与识别 / 触摸板 / 角动作 / 边缘滚动 / 画圈转 Snipaste
+  src/engine_host.rs        # 引擎接线（T-05 从 lib.rs 搬出）：状态机定时器 / 输入状态复位 / 配置监听 / 暂停重载 / fire 触发执行
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
