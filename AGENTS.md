@@ -161,11 +161,12 @@ cargo test --workspace      # 全测试
 cargo check -p kada         # Tauri 壳编译（完整版）
 cargo check -p kada --no-default-features  # 基础版编译（裁掉 automation）
 cargo build --release -p kada --features custom-protocol   # 手动打 exe：漏 custom-protocol 会白屏
-npm --prefix ui run build   # 前端构建
-node scripts/check-docs.mjs # 文档一致性（路径 / § / 令牌 / 体积）
-node scripts/check-i18n.mjs # 界面文案：中文必须包 tr()/trt()，i18n.en.json 覆盖全部 key
+npm --prefix ui run build   # 前端构建（含 tsc strict）
+npm --prefix ui run lint    # 前端 lint（invoke 漏 await 直接报错）
+node scripts/check-docs.mjs # 文档一致性
+node scripts/check-i18n.mjs # 文案必须 tr()/trt()，en.json 全覆盖
 cargo run -p kada-hook --example demo   # 冒烟 demo
-cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 侧唯一可用的本地验证
+cargo check -p kada-hook --target aarch64-apple-darwin --all-targets  # macOS 唯一本地验证
 powershell scripts\clean-build.ps1 # 清 debug / 交叉产物
 ```
 
