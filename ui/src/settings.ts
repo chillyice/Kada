@@ -4,20 +4,23 @@ import { applyLocale, savedLocale, tr, trt } from "./i18n";
 import { el, onClickAsync, toast } from "./dom";
 import { state } from "./state";
 import { DEFAULT_SNIPPET_INDEX_URL, bindMarket, resetMarketCache } from "./market";
+import { actionFields, actionSubtypeSelect, convertedAction } from "./form";
+import { actionTypeChoices, newAction, unwrapAction } from "./options";
 import {
   THEME_KEY,
   applyTheme,
   loadTheme,
   render,
   load,
-  renderClipboardMenuEditor,
   save,
 } from "./main";
 import type {
+  ActionBase,
   ElevatedStatus,
   HidppStatusView,
   HidppUnlockView,
   InputEnvReport,
+  MenuEntry,
   UpdateStatus,
 } from "./types";
 
@@ -995,4 +998,165 @@ export function bindUpdateDialog() {
     e.preventDefault();
     closeUpdateDialog(false);
   });
+}
+
+// ---- 复制快捷菜单（EXT-13，已删除；保留只读编辑器函数供旧配置兜底）----
+// 条目 = 一个 Action（可用「分组」串多步），编辑器内嵌在设置页；菜单浮窗只负责展示与点击，
+// 动作执行始终在壳层（与快捷键同一条 fire 链路）。
+export function renderClipboardMenuEditor() {
+  const host = document.getElementById("clipboard-menu-editor");
+  if (!host) return;
+  host.replaceChildren();
+  const rerender = () => renderClipboardMenuEditor();
+  // 只读展示时不要顺手往 cfg 里塞一个默认字段（没碰过菜单的用户不该因此多一份配置）。
+  const menu = state.cfg.settings.clipboard_menu ?? { enabled: false, double_copy_ms: 500, items: [] };
+  host.append(menuItemsEditor(menu.items, 1, rerender));
+}
+
+function menuItemsEditor(items: MenuEntry[], depth: number, rerender: () => void): HTMLElement {
+  const list = el("div", "menu-editor-list");
+  if (!items.length) {
+    list.append(el("div", "unit-hint", tr("还没有条目：点下面的「＋ 动作」开始添加。")));
+  }
+  items.forEach((_, i) => list.append(menuEntryEditor(items, i, depth, rerender)));
+  return list;
+}
+
+function moveMenuEntry(items: MenuEntry[], from: number, to: number) {
+  if (to < 0 || to >= items.length || from === to) return;
+  const [moved] = items.splice(from, 1);
+  items.splice(to, 0, moved);
+}
+
+function menuEntryEditor(
+  items: MenuEntry[],
+  i: number,
+  depth: number,
+  rerender: () => void,
+): HTMLElement {
+  const item = items[i];
+  const box = el("div", "menu-editor-entry");
+  // 动作字段的改动在失焦时落盘（与设置页其它字段同一口径）。
+  box.addEventListener("change", () => void save());
+
+  const head = el("div", "menu-editor-head");
+  if (item.kind === "separator") {
+    head.append(el("span", "menu-editor-kind", tr("分割线")));
+  } else {
+    const label = el("input", "action-input menu-editor-label") as HTMLInputElement;
+    label.type = "text";
+    label.value = item.label;
+    label.placeholder = tr("菜单上显示的文字");
+    label.addEventListener("input", () => {
+      item.label = label.value;
+    });
+    head.append(label);
+
+    const on = el("label", "action-check") as HTMLLabelElement;
+    const cb = el("input", "toggle") as HTMLInputElement;
+    cb.type = "checkbox";
+    cb.checked = item.enabled !== false;
+    cb.title = tr("取消勾选 = 菜单里灰掉不可点（配置保留）");
+    cb.addEventListener("change", () => {
+      item.enabled = cb.checked;
+    });
+    on.append(cb, el("span", undefined, tr("启用")));
+    head.append(on);
+  }
+
+  const up = el("button", "ghost menu-editor-btn", "↑") as HTMLButtonElement;
+  up.title = tr("上移");
+  up.disabled = i === 0;
+  up.addEventListener("click", () => {
+    moveMenuEntry(items, i, i - 1);
+    rerender();
+    void save();
+  });
+  const down = el("button", "ghost menu-editor-btn", "↓") as HTMLButtonElement;
+  down.title = tr("下移");
+  down.disabled = i === items.length - 1;
+  down.addEventListener("click", () => {
+    moveMenuEntry(items, i, i + 1);
+    rerender();
+    void save();
+  });
+  const del = el("button", "ghost menu-editor-btn danger", "×") as HTMLButtonElement;
+  del.title = tr("删除这一条");
+  del.addEventListener("click", () => {
+    items.splice(i, 1);
+    rerender();
+    void save();
+  });
+  head.append(up, down, del);
+  box.append(head);
+
+  if (item.kind === "action") {
+    const action = unwrapAction(item.action);
+    const typeRow = el("div", "action-type-row");
+    const typeSel = el("select", "action-type-name") as HTMLSelectElement;
+    typeSel.title = tr("点击切换动作类型");
+    typeSel.setAttribute("aria-label", tr("动作类型"));
+    for (const t of actionTypeChoices(action.type === "tool")) {
+      const o = el("option") as HTMLOptionElement;
+      o.value = t.value;
+      o.textContent = t.label;
+      typeSel.append(o);
+    }
+    // 「设置变量」归文本操作：类型名显示「文本操作」，方式看子类型下拉。
+    typeSel.value = action.type === "ask" ? "text" : action.type;
+    typeSel.addEventListener("change", () => {
+      item.action = convertedAction(action, typeSel.value as ActionBase["type"]);
+      rerender();
+      void save();
+    });
+    typeRow.append(typeSel);
+    const sub = actionSubtypeSelect(
+      action,
+      () => {
+        rerender();
+        void save();
+      },
+      (next) => {
+        item.action = next;
+      },
+    );
+    if (sub) typeRow.append(sub);
+    box.append(typeRow);
+    box.append(
+      actionFields(action, () => {
+        rerender();
+        void save();
+      }),
+    );
+  } else if (item.kind === "submenu") {
+    box.append(el("div", "menu-editor-sub", tr("子菜单")));
+    box.append(menuItemsEditor(item.items, depth + 1, rerender));
+    // 子菜单最多再嵌两层（顶层算第 1 层，与后端 `MAX_DEPTH` 一致）。
+    if (depth < 3) {
+      const adds = el("div", "set-actions menu-editor-adds");
+      for (const [text, mk] of [
+        [tr("＋ 动作"), () => ({ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") })],
+        [
+          tr("＋ 子菜单"),
+          () => ({
+            kind: "submenu",
+            label: tr("新子菜单"),
+            enabled: true,
+            items: [{ kind: "action", label: tr("新条目"), enabled: true, action: newAction("text") }],
+          }),
+        ],
+        [tr("＋ 分割线"), () => ({ kind: "separator" })],
+      ] as [string, () => MenuEntry][]) {
+        const b = el("button", "ghost", text) as HTMLButtonElement;
+        b.addEventListener("click", () => {
+          item.items.push(mk());
+          rerender();
+          void save();
+        });
+        adds.append(b);
+      }
+      box.append(adds);
+    }
+  }
+  return box;
 }
