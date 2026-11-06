@@ -3293,297 +3293,6 @@ fn platform_caps() -> kada_core::PlatformCaps {
     }
 }
 
-/// 暂停/恢复快捷键触发：录入组合键/序列/和弦时暂停，避免自触发。
-/// 暂停是限时租约（[`PAUSE_LEASE_MS`]），前端若被中断来不及解除也不会永久卡死。
-#[tauri::command]
-fn set_paused(state: tauri::State<'_, KadaState>, paused: bool) {
-    set_pause_lease(&state.paused_until, paused);
-}
-
-/// 中止正在执行的动作：剩余动作不再执行、正在跑的命令/脚本（含子进程）立即强制终止。
-/// 返回中止请求发出时**正在执行**的动作链数量——0 表示此刻没有可停的东西，前端据此
-/// 给出「当前没有正在执行的动作」，而不是假装停成功了。
-#[tauri::command]
-fn abort_actions() -> usize {
-    let running = actions_abort::running();
-    actions_abort::request();
-    running
-}
-
-/// 编辑页「执行」按钮：把当前草稿的动作串当一次触发跑掉（不落盘、不看 `when` 与启停），
-/// 走的与快捷键命中同一条 [`fire`] 路径——气泡、消息中心、`show_output` 弹窗一并复用。
-#[tauri::command]
-fn run_entry(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, KadaState>,
-    actions: Vec<Action>,
-    name: String,
-) {
-    // 超时与注入模式在锁内取一次（`fire` 不再二次读配置，避免与保存写锁多一层纠缠）。
-    let (timeout_ms, text_mode) = {
-        let g = state.config.read().unwrap();
-        (g.settings.action_timeout_ms, g.settings.text_inject_mode)
-    };
-    fire(
-        app,
-        state.results.clone(),
-        state.unread.clone(),
-        state.runs.clone(),
-        actions,
-        "手动执行".into(),
-        name,
-        timeout_ms,
-        text_mode,
-        None,
-        None,
-    );
-}
-
-/// 录制不可用时给用户的解释（[`input::hooks_supported`] 为 false 时用）。
-///
-/// false 不表示「平台没实现」，而是「输入层没起来」——macOS 是还没拿到辅助功能权限，
-/// Linux 是 input 组 / udev 没配好（启动时消息中心里已有一条能照抄的修复指引）。
-/// 说成「平台不支持」会让用户彻底放弃（他不知道要去修权限）。
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-const RECORD_UNAVAILABLE: &str = "宏录制不可用：输入层未启动（见「消息」页启动时的权限指引），\
-    按指引修复权限并重启 Kada 后可用";
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-const RECORD_UNAVAILABLE: &str = "当前平台暂不支持宏录制";
-
-/// 开始录制宏：快捷键/改键随即暂停，所有按键进时间线。
-#[tauri::command]
-fn start_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
-    if !input::hooks_supported() {
-        return Err(RECORD_UNAVAILABLE.into());
-    }
-    if state.mrec.lock().unwrap().is_some() {
-        return Err("已在录制中".into());
-    }
-    let mut g = state.rec.lock().unwrap();
-    if g.is_some() {
-        return Err("已在录制中".into());
-    }
-    *g = Some(Recorder::new());
-    set_pause_lease(&state.paused_until, true);
-    Ok(())
-}
-
-/// 停止录制，返回时间线步骤（可直接作为 Sequence 动作保存）。
-#[tauri::command]
-fn stop_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String> {
-    if !input::hooks_supported() {
-        return Err(RECORD_UNAVAILABLE.into());
-    }
-    let mut g = state.rec.lock().unwrap();
-    let Some(rec) = g.take() else {
-        return Err("没有正在进行的录制".into());
-    };
-    set_pause_lease(&state.paused_until, false);
-    Ok(rec.finish())
-}
-
-/// 开始录制鼠标操作：快捷键/改键随即暂停，之后的鼠标点击 / 滚轮进时间线（按键不记）。
-///
-/// 钩子层按「录制中」临时挂上鼠标钩子（配置没用鼠标键触发时也要监听），并把当前光标
-/// 位置记成位移原点——每次触发的位移即「移动到该处再触发」的移动量。
-#[tauri::command]
-fn start_mouse_record(state: tauri::State<'_, KadaState>) -> Result<(), String> {
-    if !input::hooks_supported() {
-        return Err(RECORD_UNAVAILABLE.into());
-    }
-    if state.rec.lock().unwrap().is_some() {
-        return Err("已在录制中".into());
-    }
-    {
-        let mut g = state.mrec.lock().unwrap();
-        if g.is_some() {
-            return Err("已在录制中".into());
-        }
-        *g = Some(MouseRecorder::default());
-    }
-    set_pause_lease(&state.paused_until, true);
-    let mrec = state.mrec.clone();
-    input::set_mouse_recorder(Some(Box::new(move |ev| {
-        if let Some(r) = mrec.lock().unwrap().as_mut() {
-            r.push(&ev);
-        }
-    })));
-    Ok(())
-}
-
-/// 停止鼠标录制，返回鼠标操作动作时间线（`Move` / `Click` / `Scroll`）。
-#[tauri::command]
-fn stop_mouse_record(state: tauri::State<'_, KadaState>) -> Result<Vec<Action>, String> {
-    if !input::hooks_supported() {
-        return Err(RECORD_UNAVAILABLE.into());
-    }
-    input::set_mouse_recorder(None);
-    let rec = state.mrec.lock().unwrap().take();
-    let Some(rec) = rec else {
-        return Err("没有正在进行的鼠标录制".into());
-    };
-    set_pause_lease(&state.paused_until, false);
-    Ok(rec.into_actions())
-}
-
-/// 设置页「从触摸板录一笔」：开一个**只回填配置、不执行动作**的采集会话。
-///
-/// 与宏录制不同，这里**不能**暂停快捷键：采集本身就是靠钩子接住触发键的。
-/// 录制期间 `TRACKPAD_RECORD` 同时充当闸门覆盖（见定时器线程里的 `trackpad_on`）。
-#[tauri::command]
-fn start_trackpad_record(key: String) -> Result<(), String> {
-    let k: Key = key.parse().map_err(|_| format!("无法识别的键名：{key}"))?;
-    if k.is_mouse() {
-        return Err("触发键只能是键盘键：鼠标键已经是右键手势那条路了".into());
-    }
-    if !kada_hook::trackpad::supported() {
-        return Err("当前平台还不支持采集触摸板手势（目前只接了 Windows）".into());
-    }
-    *TRACKPAD_RECORD.lock().unwrap() = Some(k);
-    // 立刻开闸，不等定时器那一拍；下一拍也会按「录制中」把闸门维持住。
-    kada_hook::trackpad::set_enabled(true);
-    // 鼠标钩子同样要立刻挂上：新建第一条时配置里还没有启用的触摸板手势，
-    // 不临时挂钩子就收不到触摸板合成的鼠标移动（见定时器里的 `use_mouse`）。
-    input::set_mouse_enabled(true);
-    Ok(())
-}
-
-/// 结束「从触摸板录一笔」会话：清掉会话并复位采集状态（闸门由定时器按配置收回）。
-#[tauri::command]
-fn stop_trackpad_record() {
-    *TRACKPAD_RECORD.lock().unwrap() = None;
-    kada_hook::trackpad::reset();
-}
-
-/// 读取消息中心全部命令结果（最新在前）。
-#[tauri::command]
-fn get_command_results(state: tauri::State<'_, KadaState>) -> Vec<CommandResult> {
-    // 倒序产出，免去先克隆整表再 reverse 的那一趟。
-    state
-        .results
-        .lock()
-        .unwrap()
-        .iter()
-        .rev()
-        .cloned()
-        .collect()
-}
-
-/// 当前是否有未读命令结果（红点）。
-#[tauri::command]
-fn get_unread(state: tauri::State<'_, KadaState>) -> bool {
-    state.unread.load(Ordering::Relaxed)
-}
-
-/// 读取最近一次触发气泡的载荷（toast 窗口懒创建后，前端加载时调用兜底渲染）。
-#[tauri::command]
-fn get_toast_payload(state: tauri::State<'_, KadaState>) -> Option<ToastPayload> {
-    state.toast.lock().unwrap().clone()
-}
-
-/// 标记全部已读（熄灭红点，还原托盘图标）。
-#[tauri::command]
-fn mark_results_read(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
-    state.unread.store(false, Ordering::Relaxed);
-    set_tray_unread(&app, false);
-}
-
-/// 冷启动补发（CS-11）：前端启动并注册好监听器后取走没弹出来的结果（取走即清）。
-#[tauri::command]
-fn take_pending_result_modal(state: tauri::State<'_, KadaState>) -> Option<CommandResult> {
-    state.pending_result_modal.lock().unwrap().take()
-}
-
-/// 复制文本到系统剪贴板（CS-10）：走平台注入层，不依赖 WebView 的
-/// `navigator.clipboard` 权限（各平台 / 各 WebView 不一致）。
-#[tauri::command]
-fn copy_result_text(text: String) -> Result<(), String> {
-    if text.is_empty() {
-        return Err("没有可复制的文本".into());
-    }
-    input::simulate::set_clipboard_text(&text).map_err(|e| format!("复制失败：{e}"))
-}
-
-/// 打开完整命令日志（CS-10）：只允许 `app_data_dir()/logs/commands/` 下的文件，
-/// 用系统文件管理器定位到该文件（Windows `explorer /select,`、macOS `open -R`、
-/// Linux `xdg-open <父目录>`）。
-#[tauri::command]
-fn open_result_log(app: tauri::AppHandle, path: String) -> Result<(), String> {
-    let dir = command_logs_dir(&app)
-        .ok_or_else(|| "拿不到应用数据目录".to_string())?
-        .canonicalize()
-        .map_err(|e| format!("命令日志目录不存在：{e}"))?;
-    let file = PathBuf::from(&path)
-        .canonicalize()
-        .map_err(|e| format!("日志文件不存在：{e}"))?;
-    if !file.starts_with(&dir) || !file.is_file() {
-        return Err("只能打开命令日志目录里的文件".into());
-    }
-    #[cfg(target_os = "windows")]
-    {
-        std::process::Command::new("explorer")
-            .arg(format!("/select,{}", file.display()))
-            .spawn()
-            .map_err(|e| format!("打开文件管理器失败：{e}"))?;
-    }
-    #[cfg(target_os = "macos")]
-    {
-        std::process::Command::new("open")
-            .arg("-R")
-            .arg(&file)
-            .spawn()
-            .map_err(|e| format!("打开 Finder 失败：{e}"))?;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let parent = file
-            .parent()
-            .ok_or_else(|| "日志文件没有父目录".to_string())?;
-        std::process::Command::new("xdg-open")
-            .arg(parent)
-            .spawn()
-            .map_err(|e| format!("打开文件管理器失败：{e}"))?;
-    }
-    Ok(())
-}
-
-/// 清理完整命令日志（CS-21）：删除 `app_data_dir()/logs/commands/` 下的文件，返回删除数量。
-/// 只动这一个目录里的常规文件——目录本身、配置与别的日志都不碰。
-#[tauri::command]
-fn clear_command_logs(app: tauri::AppHandle) -> Result<usize, String> {
-    let dir = match command_logs_dir(&app) {
-        Some(d) => d,
-        None => return Err("拿不到应用数据目录".into()),
-    };
-    if !dir.exists() {
-        return Ok(0);
-    }
-    let mut removed = 0usize;
-    for entry in std::fs::read_dir(&dir).map_err(|e| format!("读取日志目录失败：{e}"))? {
-        let entry = entry.map_err(|e| format!("读取日志目录失败：{e}"))?;
-        let path = entry.path();
-        if path.is_file() && std::fs::remove_file(&path).is_ok() {
-            removed += 1;
-        }
-    }
-    Ok(removed)
-}
-
-/// 清空消息中心（命令结果与执行记录一起清，同时熄灭红点）。
-#[tauri::command]
-fn clear_command_results(app: tauri::AppHandle, state: tauri::State<'_, KadaState>) {
-    state.results.lock().unwrap().clear();
-    state.runs.lock().unwrap().clear();
-    state.unread.store(false, Ordering::Relaxed);
-    set_tray_unread(&app, false);
-}
-
-/// 读取全部执行记录（最新在前）。界面的「执行记录」标签页拿它铺列表。
-#[tauri::command]
-fn get_run_records(state: tauri::State<'_, KadaState>) -> Vec<RunRecord> {
-    state.runs.lock().unwrap().clone()
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -3617,19 +3326,19 @@ pub fn run() {
             commands::config::submit_publish,
             commands::config::import_config,
             commands::config::load_sample_config,
-            set_paused,
-            abort_actions,
-            run_entry,
-            start_record,
-            stop_record,
-            start_mouse_record,
-            stop_mouse_record,
-            start_trackpad_record,
-            stop_trackpad_record,
-            get_command_results,
-            get_run_records,
-            get_unread,
-            get_toast_payload,
+            commands::record::set_paused,
+            commands::record::abort_actions,
+            commands::record::run_entry,
+            commands::record::start_record,
+            commands::record::stop_record,
+            commands::record::start_mouse_record,
+            commands::record::stop_mouse_record,
+            commands::record::start_trackpad_record,
+            commands::record::stop_trackpad_record,
+            commands::results::get_command_results,
+            commands::results::get_run_records,
+            commands::results::get_unread,
+            commands::results::get_toast_payload,
             get_status_payload,
             overlays::get_clipboard_menu_payload,
             overlays::clipboard_menu_ready,
@@ -3648,12 +3357,12 @@ pub fn run() {
             overlays::hints_commit,
             overlays::hints_prefs,
             overlays::hints_set_visible,
-            mark_results_read,
-            clear_command_results,
-            clear_command_logs,
-            take_pending_result_modal,
-            copy_result_text,
-            open_result_log,
+            commands::results::mark_results_read,
+            commands::results::clear_command_results,
+            commands::results::clear_command_logs,
+            commands::results::take_pending_result_modal,
+            commands::results::copy_result_text,
+            commands::results::open_result_log,
             update::get_update_status,
             update::check_update,
             update::download_update,
