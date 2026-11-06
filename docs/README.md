@@ -81,6 +81,8 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/commands/mod.rs       # 命令层（T-04 从 lib.rs 搬出）：按域分组的 #[tauri::command]
   src/commands/config.rs    # 配置读写命令（T-04）：get/set_config + 同步存档 / 导入导出 / 卡带索引与发布
   src/commands/devices.rs   # 平台 / 设备诊断命令：冲突 / 输入环境 / 输入设备 / HID++ / 提权通道
+  src/commands/record.rs    # 录制 / 暂停 / 手动执行命令：录入暂停租约 / 中止 / 宏与鼠标·触摸板录制
+  src/commands/results.rs   # 执行结果命令：消息中心 / 结果弹窗 / 命令日志 / 执行记录读取
   src/engine.rs             # 输入决策引擎（Tauri 无关、可单测）：tap-hold/层/和弦/键序列/热串状态机 + Inject 通道
   src/config_io.rs          # 配置读写：原子写 + .bak + 损坏留档与自愈；read_only 只读入口供监听
   src/config_watch.rs       # 配置外部修改监听（内容指纹比对），可单测
