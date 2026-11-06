@@ -3,22 +3,24 @@ import { tr, trt } from "./i18n";
 import { isDraftDirty, state } from "./state";
 import {
   actionDropAt,
-  appendLayerMark,
   applyActionDrop,
   askConfirm,
   clearActionDropIndicators,
-  discardDraft,
   KIND_SECTION,
-  layerName,
-  remapSummary,
   render,
   renderActions,
-  requestNew,
-  requestOpenDetail,
-  runActions,
   save,
   updateActionDropTarget,
 } from "./main";
+import {
+  appendLayerMark,
+  discardDraft,
+  layerName,
+  remapSummary,
+  requestNew,
+  requestOpenDetail,
+  runActions,
+} from "./editor";
 import { exportFragment, openPublish, picksInFolder, picksOfSelection } from "./market";
 import { actionSummary, unwrapAction } from "./options";
 import type {

@@ -7,9 +7,9 @@ import { actionSummary } from "./options";
 import { arrOf, kindLabel, kindOf, labelOf } from "./list";
 import {
   load,
-  remapSummary,
   switchSection,
 } from "./main";
+import { remapSummary } from "./editor";
 import { showImportResult } from "./settings";
 import type { ImportOutcome } from "./settings";
 import type {
