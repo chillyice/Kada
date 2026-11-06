@@ -66,7 +66,7 @@ impl Inject for SimulatedInject {
     }
 }
 
-/// 平台输入层。
+// 平台输入层。
 #[cfg(target_os = "windows")]
 mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
@@ -1136,7 +1136,9 @@ fn spawn_engine_ticker(
             };
             let any_edge = hot_on || wheel_on;
             let refetch = any_edge
-                && (hot_corner_tick % 50 == 0 || !last_edge_on || last_monitors.is_empty());
+                && (hot_corner_tick.is_multiple_of(50)
+                    || !last_edge_on
+                    || last_monitors.is_empty());
             let monitors = if refetch {
                 app.available_monitors()
                     .unwrap_or_default()
@@ -1554,6 +1556,7 @@ fn reload_config_now(app: &tauri::AppHandle) {
 /// `timeout_ms` 是命令/脚本的执行超时（0 = 不限时），由调用点从配置读出后传入——调用点
 /// 已经持有配置读锁，这里不再进线程里二次加锁（保存配置时写锁会等读锁，多一层没必要）。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn fire(
     app: tauri::AppHandle,
     results: Arc<Mutex<Vec<CommandResult>>>,
@@ -2167,6 +2170,7 @@ fn spawn_trackpad_listener(
 /// 所以这里没有 `replay_right_click`（吞键铁律要求回放的是「本可以正常工作的输入」，
 /// 触发键不是）。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn handle_trackpad_stroke(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
@@ -2539,6 +2543,7 @@ static HOT_CORNER_DWELL_GEN: AtomicU64 = AtomicU64::new(0);
 ///
 /// **不吞任何鼠标事件**，所以这里没有回放逻辑。触发时抓前台窗口由 `fire` 在调用线程上做。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn handle_hot_corner(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
@@ -2655,6 +2660,7 @@ fn spawn_wheel_edge_listener(
 ///
 /// 钩子层**没有吞滚轮**，所以这里没有回放逻辑。触发时抓前台窗口由 `fire` 在调用线程上做。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+#[allow(clippy::too_many_arguments)]
 fn handle_wheel_edge(
     app: tauri::AppHandle,
     cfg: Arc<RwLock<Config>>,
@@ -5006,7 +5012,7 @@ mod tests {
         let vim =
             tauri::async_runtime::block_on(fetch_snippet(format!("{base}/vim-keys.json"))).unwrap();
         assert_eq!(vim.preview.remaps.len(), 6);
-        assert!(fetched.text.len() > 0 && !vim.text.is_empty());
+        assert!(!fetched.text.is_empty() && !vim.text.is_empty());
         stop.store(true, Ordering::Relaxed);
     }
 

@@ -364,7 +364,7 @@ fn scan_walk(
                             *level = lv;
                         }
                         if !desc.is_empty() {
-                            *findings.entry(format!("{desc}")).or_insert(0) += 1;
+                            *findings.entry(desc.to_string()).or_insert(0) += 1;
                         }
                     }
                     None => {

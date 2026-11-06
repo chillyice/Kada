@@ -30,7 +30,6 @@ pub fn sample_config() -> Config {
             name: "示例层".into(),
             // 层标记（纯展示）：emoji 会当「贴纸」骑在组合键 chip 左下角上，一眼看出这条属于哪层。
             mark: Some("🧭".into()),
-            ..Default::default()
         }],
         ..Config::default()
     };

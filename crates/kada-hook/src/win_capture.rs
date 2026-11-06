@@ -32,7 +32,6 @@ use crate::{BrightnessOp, CapturedImage};
 pub type Image = CapturedImage;
 
 /// 抓指定屏幕区域（虚拟屏坐标，可为负）。
-
 fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Image, String> {
     if w <= 0 || h <= 0 {
         return Err("要截取的区域是空的".into());
@@ -73,7 +72,7 @@ fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Image, String> {
             let len = (w as usize) * (h as usize) * 4;
             let bgra = std::slice::from_raw_parts(bits as *const u8, len);
             let mut rgba = Vec::with_capacity(len);
-            for px in bgra.chunks_exact(4) {
+            for px in bgra.as_chunks::<4>().0 {
                 rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
             }
             Some(rgba)

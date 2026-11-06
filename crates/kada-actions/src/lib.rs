@@ -524,6 +524,7 @@ fn has_key_lifecycle(actions: &[Action]) -> bool {
 /// `parent` / `lane` 是本层动作在流水线里的位置：所属容器节点 id 与并行成员序号。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 #[cfg_attr(not(feature = "automation"), allow(unused_variables))]
+#[allow(clippy::too_many_arguments)]
 fn run_chain(
     rep: &mut Reporter<'_>,
     actions: &[Action],
@@ -748,7 +749,8 @@ fn run_parallel(
         .iter()
         .any(|m| has_key_lifecycle(std::slice::from_ref(m)));
     // 每个成员：私有 vars / last_copied 快照 + 本地结果表。
-    let outs: Vec<(Vars, Option<String>, Vec<CommandResult>, Vec<ActionStep>)> = if serial {
+    type MemberOut = (Vars, Option<String>, Vec<CommandResult>, Vec<ActionStep>);
+    let outs: Vec<MemberOut> = if serial {
         // 串行组共用一个按住作用域：`Press` 在成员 0、`Release` 在成员 2 也能跨成员保持。
         let gscope = ctx.next_scope();
         let _held = HeldScope(gscope);
@@ -3989,6 +3991,7 @@ fn kill_tree(child: &mut Child) {
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
+#[allow(clippy::too_many_arguments)]
 fn run_cmd(
     label: &str,
     is_powershell: bool,
@@ -4038,8 +4041,8 @@ fn run_cmd(
     if hide_window {
         no_console_window(&mut cmd);
     }
-    let out = run_child(&mut cmd, label, ctx, timeout, wait, temp_bat, live);
-    out
+
+    run_child(&mut cmd, label, ctx, timeout, wait, temp_bat, live)
 }
 
 /// 执行脚本文件：可选解释器（`None` = 直接执行脚本本身），统一注入 `KADA_*` 环境变量
@@ -5368,11 +5371,7 @@ mod tests {
             if_running: Default::default(),
             description: None,
         };
-        let exit1 = if cfg!(target_os = "windows") {
-            "exit 1".to_string()
-        } else {
-            "exit 1".to_string()
-        };
+        let exit1 = "exit 1".to_string();
         let sleep30 = if cfg!(target_os = "windows") {
             "powershell -NoProfile -Command Start-Sleep -Seconds 30".to_string()
         } else {
@@ -5493,7 +5492,7 @@ mod tests {
     #[test]
     fn long_failure_summary_is_truncated_to_one_line() {
         let _g = abort::test_lock();
-        let actions = vec![Action::Text {
+        let actions = [Action::Text {
             text: format!("第一行\n{}", "长".repeat(500)),
             mode: TextMode::Input,
             masked: false,
@@ -5739,7 +5738,7 @@ mod tests {
             mode: KeysMode::Press,
             description: None,
         };
-        assert!(!has_key_lifecycle(&[tap.clone()]));
+        assert!(!has_key_lifecycle(std::slice::from_ref(&tap)));
         assert!(!has_key_lifecycle(&[Action::Group {
             name: String::new(),
             actions: vec![Action::Parallel {

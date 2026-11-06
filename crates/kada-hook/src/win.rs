@@ -630,7 +630,7 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
     let Some(key) = hook_key(kb, extended) else {
         return false;
     };
-    let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
+    let down = matches!(wparam, WM_KEYDOWN | WM_SYSKEYDOWN);
 
     if !down {
         // keyup：先解除「按下」标记（自动重复判定的依据），被吞掉的键仍吞掉（防幽灵），
@@ -676,8 +676,8 @@ fn swallow(wparam: u32, kb: &KBDLLHOOKSTRUCT) -> bool {
             SWALLOWED.lock().unwrap().insert(key);
             if !repeat {
                 let mut r = REPLACED_DOWN.lock().unwrap();
-                if !r.contains_key(&key) {
-                    r.insert(key, target);
+                if let std::collections::hash_map::Entry::Vacant(e) = r.entry(key) {
+                    e.insert(target);
                     simulate::down(target);
                 }
             }
@@ -736,10 +736,8 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
                         return LRESULT(1);
                     }
                 }
-                WM_LBUTTONUP => {
-                    if crate::gesture::on_left_up() {
-                        return LRESULT(1);
-                    }
+                WM_LBUTTONUP if crate::gesture::on_left_up() => {
+                    return LRESULT(1);
                 }
                 _ => {}
             }
@@ -1924,9 +1922,11 @@ fn focused_child(top: HWND) -> HWND {
     if focus.0.is_null() {
         return top;
     }
-    (unsafe { GetAncestor(focus, GA_ROOT) } == top)
-        .then_some(focus)
-        .unwrap_or(top)
+    if unsafe { GetAncestor(focus, GA_ROOT) } == top {
+        focus
+    } else {
+        top
+    }
 }
 
 /// 发送按键组合：按顺序按下 → 逆序抬起。鼠标键 / 滚轮不在 `PostMessage` 的语义内，明确报错。

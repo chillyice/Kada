@@ -49,7 +49,8 @@ fn skill_remap_and_layer_parse() {
     assert!(cfg.expansions[0].enabled);
 }
 
-/// 技能里反复强调的坑：`enabled` 不写就是 false（导入后静默失效）。#[test]
+/// 技能里反复强调的坑：`enabled` 不写就是 false（导入后静默失效）。
+#[test]
 fn missing_enabled_is_false() {
     let cfg = parse(r#"{ "shortcuts": [{ "triggers": ["F8"], "actions": [] }] }"#);
     assert!(!cfg.shortcuts[0].enabled);

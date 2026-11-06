@@ -29,6 +29,11 @@ jobs:
       - name: Rust formatting
         run: cargo fmt --all -- --check
 
+      # 静态检查（quality plan Q-02）：-D warnings = 新增警告直接红，
+      # 否则「以后再修」会沉淀成几十条，最后没人看。
+      - name: Rust clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
       - name: Node.js
         uses: actions/setup-node@v4
         with:

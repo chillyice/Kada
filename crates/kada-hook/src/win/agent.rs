@@ -233,7 +233,7 @@ fn to_hex(s: &str) -> String {
 }
 
 fn from_hex(s: &str) -> Option<String> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     let bytes: Option<Vec<u8>> = (0..s.len() / 2)

@@ -1108,8 +1108,10 @@ mod tests {
 
     #[test]
     fn find_gesture_is_exact_and_skips_disabled() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("DRUL"), gesture("D")];
+        let mut cfg = Config {
+            gestures: vec![gesture("DRUL"), gesture("D")],
+            ..Default::default()
+        };
         let ctx = TriggerContext::empty();
         // 旧写法 `DRUL` 归一到 `D,R,U,L`，与画出来的四段一致。
         assert!(find_gesture(&cfg, "D,R,U,L", &ctx).is_some());
@@ -1123,8 +1125,10 @@ mod tests {
     /// `D,R` 与 `DR` 互不命中：方向串精确匹配，不再靠字母拼接猜。
     #[test]
     fn diagonal_and_two_segments_do_not_match_each_other() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("D,R")];
+        let mut cfg = Config {
+            gestures: vec![gesture("D,R")],
+            ..Default::default()
+        };
         let ctx = TriggerContext::empty();
         assert!(find_gesture(&cfg, "D,R", &ctx).is_some());
         assert!(find_gesture(&cfg, "DR", &ctx).is_none());
@@ -1201,8 +1205,10 @@ mod tests {
 
     #[test]
     fn gesture_enabled_requires_an_enabled_entry() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("D")];
+        let mut cfg = Config {
+            gestures: vec![gesture("D")],
+            ..Default::default()
+        };
         assert!(gesture_enabled(&cfg));
         cfg.gestures[0].enabled = false;
         assert!(!gesture_enabled(&cfg));
@@ -1212,8 +1218,10 @@ mod tests {
 
     #[test]
     fn mouse_hook_is_needed_for_gestures_but_the_switch_gates_it() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("D")];
+        let mut cfg = Config {
+            gestures: vec![gesture("D")],
+            ..Default::default()
+        };
         // 新功能默认**关**：没开总闸就不抢右键、鼠标钩子也不为手势而挂。
         assert!(!cfg.settings.experimental);
         assert!(!crate::config_needs_mouse_hook(&cfg));
@@ -1223,8 +1231,10 @@ mod tests {
 
     #[test]
     fn sanitize_drops_broken_and_duplicate_gestures() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("???"), gesture("D"), gesture("d")];
+        let cfg = Config {
+            gestures: vec![gesture("???"), gesture("D"), gesture("d")],
+            ..Default::default()
+        };
         let (clean, ignored) = crate::sanitize_config(&cfg);
         assert_eq!(clean.gestures.len(), 1, "ignored: {ignored:?}");
         assert_eq!(clean.gestures[0].pattern, "D");
@@ -1233,8 +1243,10 @@ mod tests {
 
     #[test]
     fn conflicts_warn_on_duplicate_gesture_pattern() {
-        let mut cfg = Config::default();
-        cfg.gestures = vec![gesture("D"), gesture("d")];
+        let cfg = Config {
+            gestures: vec![gesture("D"), gesture("d")],
+            ..Default::default()
+        };
         let conflicts = crate::detect_conflicts(&cfg, &crate::PlatformCaps::default());
         assert!(
             conflicts.iter().any(|c| c.message.contains("方向串")),
@@ -1244,10 +1256,14 @@ mod tests {
 
     #[test]
     fn merge_brings_gestures_and_skips_duplicates() {
-        let mut current = Config::default();
-        current.gestures = vec![gesture("D")];
-        let mut incoming = Config::default();
-        incoming.gestures = vec![gesture("R"), gesture("d")];
+        let current = Config {
+            gestures: vec![gesture("D")],
+            ..Default::default()
+        };
+        let incoming = Config {
+            gestures: vec![gesture("R"), gesture("d")],
+            ..Default::default()
+        };
         let (out, report) = crate::merge_configs(&current, &incoming);
         assert_eq!(out.gestures.len(), 2);
         assert_eq!(report.gestures, 1);
@@ -1323,7 +1339,7 @@ mod tests {
         let mut scribble = Vec::new();
         for i in 0..40 {
             let x = if i % 2 == 0 { 0.0 } else { 40.0 };
-            scribble.push((x as i32, (i % 3) as i32));
+            scribble.push((x as i32, i % 3));
         }
         assert_eq!(pattern_from_stroke(&scribble, 24.0), "", "涂鸦不吐方向串");
     }
@@ -1363,7 +1379,7 @@ mod tests {
         assert!(d < 0.05, "同形状缩放平移后应该几乎重合，实际 {d}");
 
         // 换一个形状：横向直线 vs L 形，必须明显更远。
-        b.truncate(0);
+        b.clear();
         b.extend(line((500.0, 500.0), (900.0, 500.0), 20));
         let tc = template_from_points(&b).expect("模板");
         let dc = template_distance(&ta, &tc).expect("同点数");
@@ -1404,14 +1420,16 @@ mod tests {
     #[test]
     fn template_fallback_only_when_pattern_misses() {
         let stroke = line((0.0, 0.0), (90.0, 60.0), 18);
-        let mut cfg = Config::default();
-        cfg.touchpad_gestures = vec![TouchpadGesture {
-            trigger: Some(Key::F9),
-            pattern: "R".into(),
-            template: template_from_points(&stroke),
-            enabled: true,
+        let cfg = Config {
+            touchpad_gestures: vec![TouchpadGesture {
+                trigger: Some(Key::F9),
+                pattern: "R".into(),
+                template: template_from_points(&stroke),
+                enabled: true,
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let ctx = TriggerContext::empty();
         // 方向串没命中（R）→ 模板兜底命中同一条。
         let hit = find_touchpad_by_template(&cfg, &stroke, Key::F9, &ctx).expect("模板兜底");
@@ -1425,14 +1443,16 @@ mod tests {
     #[test]
     fn shape_only_touchpad_gesture_matches_by_template() {
         let stroke = line((0.0, 0.0), (90.0, 60.0), 18);
-        let mut cfg = Config::default();
-        cfg.touchpad_gestures = vec![TouchpadGesture {
-            trigger: Some(Key::F9),
-            pattern: String::new(),
-            template: template_from_points(&stroke),
-            enabled: true,
+        let cfg = Config {
+            touchpad_gestures: vec![TouchpadGesture {
+                trigger: Some(Key::F9),
+                pattern: String::new(),
+                template: template_from_points(&stroke),
+                enabled: true,
+                ..Default::default()
+            }],
             ..Default::default()
-        }];
+        };
         let ctx = TriggerContext::empty();
         assert!(
             find_touchpad(&cfg, Key::F9, "R", &ctx).is_none(),

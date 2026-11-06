@@ -3301,7 +3301,7 @@ impl HotCorner {
 /// **默认关**（缺字段即关，老配置照常读）。触发判定在钩子层（纯坐标状态机，
 /// `kada-hook::hotcorner`），执行在壳层；只在 Windows 落地，其余平台走
 /// [`PlatformCaps::hot_corners`] 软冲突。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct HotCorners {
     /// 总开关。关掉只是不触发，四角配置保留。
     #[serde(default)]
@@ -3314,18 +3314,6 @@ pub struct HotCorners {
     pub bottom_left: HotCorner,
     #[serde(default)]
     pub bottom_right: HotCorner,
-}
-
-impl Default for HotCorners {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            top_left: HotCorner::default(),
-            top_right: HotCorner::default(),
-            bottom_left: HotCorner::default(),
-            bottom_right: HotCorner::default(),
-        }
-    }
 }
 
 impl HotCorners {
@@ -3373,7 +3361,7 @@ impl WheelEdge {
 /// **默认关**（缺字段即关，老配置照常读）。触发判定在钩子层（纯坐标状态机，
 /// `kada-hook::wheel_edge`），执行在壳层；只在 Windows 落地，其余平台走
 /// [`PlatformCaps::wheel_edges`] 软冲突。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct WheelEdges {
     /// 总开关。关掉只是不触发，四边配置保留。
     #[serde(default)]
@@ -3386,18 +3374,6 @@ pub struct WheelEdges {
     pub left: WheelEdge,
     #[serde(default)]
     pub right: WheelEdge,
-}
-
-impl Default for WheelEdges {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            top: WheelEdge::default(),
-            bottom: WheelEdge::default(),
-            left: WheelEdge::default(),
-            right: WheelEdge::default(),
-        }
-    }
 }
 
 impl WheelEdges {
@@ -6147,7 +6123,8 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
     // 都为空 = 永远匹配不上，整条忽略。判重指纹：方向串非空时看「触发键 + 方向串 + `when`」
     // （同一方向串配不同模板仍会互相遮蔽，只会触发先配置的那条）；**方向串为空时看模板**，
     // 否则两条纯形状条目会被误判成重复。
-    let mut seen_touchpad: Vec<(Key, String, WhenKey, Option<Vec<[i16; 2]>>)> = Vec::new();
+    type TouchpadFingerprint = (Key, String, WhenKey, Option<Vec<[i16; 2]>>);
+    let mut seen_touchpad: Vec<TouchpadFingerprint> = Vec::new();
     for g in &cfg.touchpad_gestures {
         let label = g.label();
         let mut item = g.clone();
@@ -6396,8 +6373,8 @@ mod tests {
     fn parse_errors() {
         assert!(matches!("".parse::<Shortcut>(), Err(ParseError::Empty)));
         assert!(matches!("+".parse::<Shortcut>(), Err(ParseError::Empty)));
-        assert!(matches!("Foo+K".parse::<Shortcut>(), Err(_)));
-        assert!(matches!("Ctrl+K+J".parse::<Shortcut>(), Err(_)));
+        assert!("Foo+K".parse::<Shortcut>().is_err());
+        assert!("Ctrl+K+J".parse::<Shortcut>().is_err());
     }
 
     #[test]
@@ -6540,7 +6517,7 @@ mod config_tests {
             "extra_field": 1
         }"#;
         let cfg: Config = serde_json::from_str(json).unwrap();
-        assert_eq!(cfg.shortcuts[0].enabled, false);
+        assert!(!cfg.shortcuts[0].enabled);
         assert_eq!(
             cfg.shortcuts[0].actions,
             vec![Action::Text {
@@ -8264,7 +8241,6 @@ mod os_and_sanitize_tests {
         assert_eq!(cfg.settings.clipboard_menu.double_copy_ms, 2000);
 
         // 清洗：空标签 / 非法动作 / 空子菜单丢弃，合法条目保留。
-        let mut cfg = cfg;
         cfg.settings.clipboard_menu.items.push(MenuEntry::Action {
             label: "  ".into(),
             enabled: true,
@@ -8610,12 +8586,9 @@ mod new_action_and_folder_tests {
                 ..
             }
         ));
-        assert_eq!(
-            serde_json::to_string(&a)
-                .unwrap()
-                .contains(r#""type":"capture""#),
-            true
-        );
+        assert!(serde_json::to_string(&a)
+            .unwrap()
+            .contains(r#""type":"capture""#));
     }
 
     /// 外部工具占位动作：工具 / 能力都不许为空；目录里的 id 能查到展示名。
