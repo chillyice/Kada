@@ -31,7 +31,7 @@ const read = (f) => readFileSync(f, "utf8");
 
 // ---- 1. 仓库内路径引用 ----
 const REPO_PATH = /^(docs|scripts|src-tauri|crates|ui|\.github|kada-prime)\//;
-const GLOB = /[*?{]/;
+const GLOB = /[*?{<>]/; // `*`/`?`/`{` 通配 与 `<YYYY-MM>` 占位符都不算真实路径
 for (const f of mdFiles) {
   if (isArchive(f)) continue;
   for (const m of read(f).matchAll(/`([^`\n]*?)`/g)) {
@@ -145,6 +145,21 @@ for (const f of docFiles) {
   const name = f.split("\\").pop().split("/").pop();
   if (name === "README.md" || isArchive(f)) continue;
   if (!idx.includes(name)) problems.push(`[index] docs/README.md 未收录 ${name}`);
+}
+
+// ---- 6. 日更目录命名：docs/归档/日更/<YYYY-MM>/<YYYY-MM-DD>.md ----
+const dailyRoot = join(docsDir, "归档", "日更");
+if (existsSync(dailyRoot)) {
+  for (const d of readdirSync(dailyRoot, { withFileTypes: true })) {
+    if (!d.isDirectory() || !/^\d{4}-\d{2}$/.test(d.name)) {
+      problems.push(`[daily] 日更下只许 YYYY-MM 月目录: ${d.name}`);
+      continue;
+    }
+    for (const f of readdirSync(join(dailyRoot, d.name))) {
+      if (!new RegExp(`^${d.name}-\\d{2}\\.md$`).test(f))
+        problems.push(`[daily] 日更文件名须 ${d.name}-DD.md: docs/归档/日更/${d.name}/${f}`);
+    }
+  }
 }
 
 console.log(problems.length ? problems.join("\n") : "OK: 文档无问题");
