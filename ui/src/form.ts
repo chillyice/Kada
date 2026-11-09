@@ -183,12 +183,22 @@ function flowStep(a: Action, i: number, actions: Action[], rerender: () => void)
     attachActionDragStart(handle, row, actions, i);
   }
 
-  // 变量流向标签：写出（⇒ var，绿）在前、引用（{var}，灰）在后，一眼看出数据怎么流。
-  const tags = el("span", "action-vartags");
-  for (const w of actionVarWrites(act)) tags.append(el("span", "var-tag write", `⇒ ${w}`));
+  // 变量流向：平铺标签（⇒ var / {var}）太吵，收成一个小图标——有写出显绿、只有引用显灰，
+  // 悬停看具体写了 / 读了哪些变量。
+  const writes = actionVarWrites(act);
   const reads = actionVarReads(act);
-  for (const r of reads.slice(0, 3)) tags.append(el("span", "var-tag read", `{${r}}`));
-  if (reads.length > 3) tags.append(el("span", "var-tag read", `+${reads.length - 3}`));
+  const tags = el("span", "action-vartags");
+  if (writes.length || reads.length) {
+    const badge = el("span", "var-badge" + (writes.length ? " write" : ""));
+    const lines: string[] = [];
+    if (writes.length) lines.push(trt`写入变量：${writes.join("、")}`);
+    if (reads.length) lines.push(trt`引用变量：${reads.join("、")}`);
+    badge.title = lines.join("\n");
+    badge.setAttribute("aria-label", lines.join("；"));
+    badge.innerHTML =
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H6a2 2 0 0 0-2 2v3a2 2 0 0 1-2 2 2 2 0 0 1 2 2v3a2 2 0 0 0 2 2h2"/><path d="M16 4h2a2 2 0 0 1 2 2v3a2 2 0 0 0 2 2 2 2 0 0 0-2 2v3a2 2 0 0 1-2 2h-2"/></svg>';
+    tags.append(badge);
+  }
 
   if (collapsed) {
     const title = el("span", "action-title", actionDescription(a));

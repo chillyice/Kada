@@ -1772,35 +1772,34 @@ select.action-type-name:focus-visible {
   outline-offset: 1px;
 }
 
-/* 变量流向标签：⇒ var 写出（绿）/ {var} 引用（灰）。 */
+/* 变量流向：不再平铺 ⇒ var / {var} 标签，只留一个花括号图标（悬停看明细）。
+   写出显绿、只引用显灰——颜色一眼区分数据流方向。 */
 .action-vartags {
   flex-shrink: 0;
   display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 4px;
 }
 
-.var-tag {
-  font-family: Consolas, monospace;
-  font-size: var(--fs-xs);
-  line-height: 1.7;
-  padding: 0 6px;
-  border-radius: 4px;
-  white-space: nowrap;
+.var-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--muted);
+  cursor: help;
 }
 
-.var-tag.write {
+.var-badge svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+}
+
+.var-badge.write {
   color: #4ec97a;
   background: rgba(78, 201, 122, 0.12);
-  border: 1px solid rgba(78, 201, 122, 0.35);
-}
-
-.var-tag.read {
-  color: var(--muted);
-  background: var(--bg);
-  border: 1px solid var(--line);
 }
 
 .action-title {
@@ -4658,7 +4657,6 @@ textarea.invalid {
 [data-theme="crt"] .key-item,
 [data-theme="crt"] .flow-dot,
 [data-theme="crt"] .flow-term-label b,
-[data-theme="crt"] .var-tag,
 [data-theme="crt"] .msg-tab,
 [data-theme="crt"] .tl-tick,
 [data-theme="crt"] pre.msg-v,

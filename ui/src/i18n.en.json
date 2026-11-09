@@ -1082,5 +1082,7 @@
   "删除所有完整日志文件（执行记录里保留的输出摘录不受影响，仍可复制 / 定位到动作）。清理后「打开完整日志」会失效。": "Delete all full log files (the output excerpts kept in run records are unaffected and can still be copied / located). “Open full log” stops working after cleanup.",
   "已清理 {0} 份日志": "Cleaned up {0} log files",
   "没有可清理的日志": "No logs to clean up",
-  "清理失败: {0}": "Cleanup failed: {0}"
+  "清理失败: {0}": "Cleanup failed: {0}",
+  "写入变量：{0}": "Writes variable: {0}",
+  "引用变量：{0}": "Reads variable: {0}"
 }
