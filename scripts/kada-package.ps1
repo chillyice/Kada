@@ -9,7 +9,7 @@
 # Windows PowerShell 5.1 的原生命令行解析对嵌套双引号并不可靠（cmd 那条命令当年就是因此改用临时
 # .bat）。所以动作命令里**一个双引号都不要出现**：单引号包参数 + 具体逻辑放脚本文件里。
 #
-# 流程：杀运行中实例（不杀 exe 被锁，构建报「拒绝访问」）→ npx tauri build → 成功则启动新 exe。
+# 流程：杀运行中实例（不杀 exe 被锁，构建报「拒绝访问」）→ 缺依赖则 npm ci 兜底 → npx tauri build → 成功则启动新 exe。
 # 构建失败会把旧版本重新拉起来（否则这个动作会把 Kada 弄死，连打包键都没了），并留窗口给看报错。
 #
 # 用法：
@@ -21,7 +21,7 @@
 [CmdletBinding()]
 param(
     # 项目根目录（含 tauri.conf.json 与 package.json）。
-    [string]$ProjectDir = (Split-Path -Parent $PSScriptRoot),
+    [string]$ProjectDir = '',
     # 出安装包（MSI/NSIS）。默认只出裸 exe，快得多。
     [switch]$Bundle,
     # 只打印将要做的步骤：不杀进程、不构建、不重启（改命令或排错时先跑这个）。
@@ -31,6 +31,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# PowerShell 5.1 里 [CmdletBinding()] 脚本在绑定参数默认值时 $PSScriptRoot 还是空的（只在函数体里可用），
+# 所以项目根必须在这里补算，否则不带 -ProjectDir 调用会直接报错退出。
+if (-not $ProjectDir) {
+    $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
+    $ProjectDir = Split-Path -Parent $scriptDir
+}
 
 $ProjectDir = (Resolve-Path -LiteralPath $ProjectDir).Path
 $exe = Join-Path $ProjectDir 'target\release\kada.exe'
@@ -66,6 +73,41 @@ if ($running.Count -gt 0) {
     Write-Step '没有运行中的 Kada 实例'
 }
 
+# 1.5) 依赖兜底：仓库允许被清成「只剩源码 + 资源」（target / node_modules 都不在），此时先还原依赖。
+#      - ui/node_modules 缺了 → beforeBuildCommand 里的 tsc / vite 必挂
+#      - 根 node_modules 缺了 → 锁定版本的 @tauri-apps/cli 不在（版本红线 ^2.12.1），npx 会去拉最新
+#      已装好就整段跳过，不打扰正常流程。
+$npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+if (-not $npm) { $npm = 'npm.cmd' }
+
+function Restore-Deps([string]$Probe, [string[]]$NpmArgs, [string]$Message) {
+    if (Test-Path -LiteralPath (Join-Path $ProjectDir $Probe)) { return }
+    Write-Step "$Message：npm $($NpmArgs -join ' ')"
+    if ($DryRun) { return }
+    Push-Location $ProjectDir
+    try {
+        & $npm @NpmArgs
+        if ($LASTEXITCODE -ne 0) { throw "npm $($NpmArgs -join ' ') 失败（exit $LASTEXITCODE）" }
+    } finally {
+        Pop-Location
+    }
+}
+
+Restore-Deps 'node_modules\@tauri-apps\cli' @('ci', '--no-audit', '--no-fund') '缺少根依赖（@tauri-apps/cli），还原中'
+Restore-Deps 'ui\node_modules\vite' @('--prefix', 'ui', 'ci', '--no-audit', '--no-fund') '缺少前端依赖（tsc / vite），还原中'
+
+# -Bundle 会生成 updater 签名产物；没带环境变量时从本机密钥读（私钥不入库）。
+if ($Bundle -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    $keyFile = Join-Path $env:USERPROFILE '.tauri\kada.key'
+    if (Test-Path -LiteralPath $keyFile) {
+        $env:TAURI_SIGNING_PRIVATE_KEY = (Get-Content -LiteralPath $keyFile -Raw).Trim()
+        if (-not $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = '' }
+        Write-Step "签名密钥取自 $keyFile"
+    } else {
+        Write-Warning "-Bundle 需要签名，但 $keyFile 不存在；构建会在签名步骤失败"
+    }
+}
+
 # 2) 构建（工作目录必须是项目根，npx 才找得到 tauri.conf.json / package.json）。
 $npx = (Get-Command npx.cmd -ErrorAction SilentlyContinue).Source
 if (-not $npx) { $npx = 'npx.cmd' }
@@ -82,6 +124,12 @@ if (-not $DryRun) {
     } finally {
         Pop-Location
     }
+}
+
+if ($DryRun) {
+    Write-Step '（DryRun 结束：未构建、未重启）'
+    try { Stop-Transcript | Out-Null } catch {}
+    exit 0
 }
 
 # 3) 成功 → 启动新 exe；失败 → 把旧版本拉回来（别让打包动作把工具弄死）+ 留窗口看报错。
