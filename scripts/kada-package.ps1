@@ -9,7 +9,7 @@
 # Windows PowerShell 5.1 的原生命令行解析对嵌套双引号并不可靠（cmd 那条命令当年就是因此改用临时
 # .bat）。所以动作命令里**一个双引号都不要出现**：单引号包参数 + 具体逻辑放脚本文件里。
 #
-# 流程：杀运行中实例（不杀 exe 被锁，构建报「拒绝访问」）→ 缺依赖则 npm ci 兜底 → npx tauri build → 成功则启动新 exe。
+# 流程：杀运行中实例（不杀 exe 被锁，构建报「拒绝访问」）→ 依赖预检 → npx tauri build → 成功则启动新 exe。
 # 构建失败会把旧版本重新拉起来（否则这个动作会把 Kada 弄死，连打包键都没了），并留窗口给看报错。
 #
 # 用法：
@@ -73,28 +73,21 @@ if ($running.Count -gt 0) {
     Write-Step '没有运行中的 Kada 实例'
 }
 
-# 1.5) 依赖兜底：仓库允许被清成「只剩源码 + 资源」（target / node_modules 都不在），此时先还原依赖。
+# 1.5) 依赖预检：依赖常驻项目目录，打包过程**不联网安装**。
+#      仓库若被清过（node_modules 不在）就直接报错并给出还原命令，别在打包中途悄悄拉包。
 #      - ui/node_modules 缺了 → beforeBuildCommand 里的 tsc / vite 必挂
-#      - 根 node_modules 缺了 → 锁定版本的 @tauri-apps/cli 不在（版本红线 ^2.12.1），npx 会去拉最新
-#      已装好就整段跳过，不打扰正常流程。
-$npm = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
-if (-not $npm) { $npm = 'npm.cmd' }
-
-function Restore-Deps([string]$Probe, [string[]]$NpmArgs, [string]$Message) {
-    if (Test-Path -LiteralPath (Join-Path $ProjectDir $Probe)) { return }
-    Write-Step "$Message：npm $($NpmArgs -join ' ')"
-    if ($DryRun) { return }
-    Push-Location $ProjectDir
-    try {
-        & $npm @NpmArgs
-        if ($LASTEXITCODE -ne 0) { throw "npm $($NpmArgs -join ' ') 失败（exit $LASTEXITCODE）" }
-    } finally {
-        Pop-Location
+#      - 根 node_modules 缺了 → 锁定版本的 @tauri-apps/cli 不在（版本红线 ^2.12.1）
+$missing = @()
+if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'node_modules\@tauri-apps\cli'))) { $missing += 'npm ci' }
+if (-not (Test-Path -LiteralPath (Join-Path $ProjectDir 'ui\node_modules\vite'))) { $missing += 'npm --prefix ui ci' }
+if ($missing.Count -gt 0) {
+    Write-Host ("缺少依赖，请先在项目根执行：{0}（走本机 npm 缓存，不重新下载）" -f ($missing -join ' && ')) -ForegroundColor Yellow
+    if (-not $DryRun) {
+        Read-Host '按回车关闭此窗口'
+        try { Stop-Transcript | Out-Null } catch {}
+        exit 1
     }
 }
-
-Restore-Deps 'node_modules\@tauri-apps\cli' @('ci', '--no-audit', '--no-fund') '缺少根依赖（@tauri-apps/cli），还原中'
-Restore-Deps 'ui\node_modules\vite' @('--prefix', 'ui', 'ci', '--no-audit', '--no-fund') '缺少前端依赖（tsc / vite），还原中'
 
 # -Bundle 会生成 updater 签名产物；没带环境变量时从本机密钥读（私钥不入库）。
 if ($Bundle -and -not $env:TAURI_SIGNING_PRIVATE_KEY) {
