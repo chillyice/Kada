@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Kada S0</string>
-    <string name="accessibility_label">Kada S0 键过滤</string>
-    <string name="accessibility_description">S0 探针：在无障碍服务里观察并过滤硬件按键事件，验证按键能否被收下、吞掉与判定。不含任何联网行为，不读取屏幕文字。</string>
+    <string name="app_name">Kada 探针</string>
+    <string name="accessibility_label">Kada 探针 键过滤</string>
+    <string name="accessibility_description">Kada 探针：在无障碍服务里接管硬件按键，按配置里的快捷键执行动作。不含任何联网行为，不读取屏幕文字。</string>
 </resources>

@@ -239,6 +239,11 @@ S1 段：
 - **模拟器打字偶发多出一个字母**（`hllo` → `hllllo`）：`sendevent` 的按下 / 抬起之间若被系统
   放大成一次连发就会多一个字符。`Type-Into-Field` 因此带一次重试，不是判定问题。
 - **脚本文件要带 BOM**：`verify.ps1` / `build-rust.ps1` 里有中文注释，PS 5.1 没 BOM 会按 GBK 解析报错。
+- **别把 Gradle 的输出接进管道**：Gradle 留的常驻 daemon（空闲 3 小时才退）会继承父进程的
+  stdout 句柄，于是 `powershell verify.ps1 | Tee-Object ...` 永远等不到 EOF——脚本跑完、汇总都
+  打完了，外层却挂到超时才被杀（日志是完整的，只有管道不收尾）。`verify.ps1` 里 Gradle 改走
+  「输出落临时文件 → 用 `FileShare.ReadWrite` 读回来回显」，daemon 拿的是文件句柄而不是管道。
+  自己手动跑时同理：要留日志就 `> 文件`，别 `| Tee-Object`。
 
 ## 已知限制 / 下一步
 

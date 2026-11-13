@@ -295,13 +295,35 @@ if (-not $SkipBuild) {
     }
     $buildLog | ForEach-Object { Write-Host $_ }
     if ($buildCode -ne 0) { throw "Rust 库构建失败（$buildCode）" }
+    # Gradle 的输出落到临时文件再回显，**不要**直接接到本进程的 stdout。
+    #
+    # 原因：Gradle 会留一个常驻 daemon（空闲 3 小时才退），它继承父进程的 stdout 句柄。
+    # 只要本脚本被管道接走（`powershell verify.ps1 | Tee-Object ...`），那个管道就永远等不到
+    # EOF——脚本跑完、汇总都打完了，外层却挂到超时才被杀。句柄落到文件就没这个循环等待。
+    $gradleLog = Join-Path $env:TEMP "kada-build-gradle.log"
     Push-Location $androidDir
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
     try {
-        & .\gradlew.bat --offline assembleDebug 2>&1 | ForEach-Object { Write-Host $_ }
-        if ($LASTEXITCODE -ne 0) { throw "构建失败" }
+        & cmd /c ".\gradlew.bat --offline assembleDebug > `"$gradleLog`" 2>&1"
+        $gradleCode = $LASTEXITCODE
     } finally {
+        $ErrorActionPreference = $prev
         Pop-Location
     }
+    # daemon 可能还持有这个文件的写句柄：用 FileShare.ReadWrite 打开，别让回显本身失败。
+    if (Test-Path $gradleLog) {
+        try {
+            $fs = [System.IO.File]::Open($gradleLog, 'Open', 'Read', 'ReadWrite')
+            $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8)
+            $sr.ReadToEnd().Split("`n") | Where-Object { $_.Trim() } | ForEach-Object { Write-Host $_ }
+            $sr.Dispose()
+            $fs.Dispose()
+        } catch {
+            Write-Host "  [warn] 构建日志读不出来（daemon 占着），见 $gradleLog"
+        }
+    }
+    if ($gradleCode -ne 0) { throw "构建失败（$gradleCode，日志 $gradleLog）" }
 }
 if (-not (Test-Path $apkPath)) { throw "APK 不存在：$apkPath" }
 
