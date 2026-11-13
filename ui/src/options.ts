@@ -499,7 +499,7 @@ export function newAction(type: ActionBase["type"]): ActionBase {
     case "text":
       return { type: "text", text: "", mode: "input", masked: false };
     case "ask":
-      return { type: "ask", var: "", prompt: "", default: "" };
+      return { type: "ask", var: "", prompt: "", default: "", popup: true };
     case "command":
       return {
         type: "command",
@@ -685,7 +685,8 @@ export function actionHasContent(a: Action): boolean {
     case "transform":
       return a.input.trim().length > 0 && (a.var.trim().length > 0 || !!a.inject);
     case "ask":
-      return a.var.trim().length > 0 && a.prompt.trim().length > 0;
+      // 不弹框时提示语不显示，只要变量名就能跑（默认值可以留空）。
+      return a.var.trim().length > 0 && (a.popup === false || a.prompt.trim().length > 0);
     case "os":
       return osHasContent(a.operation);
     // 虚拟桌面 / 回收站这类没有要填的字段（方向有默认值），新建出来就是可执行的；
@@ -986,7 +987,10 @@ export function actionSummary(a: Action): string {
     case "clipboard":
       return clipboardSummary(a.operation);
     case "ask":
-      return trt`设置变量 ${a.var || "?"}：${a.prompt}`;
+      // 不弹框形态的摘要看的是「写进去什么」，不再显示用户根本看不到的提示语。
+      return a.popup === false
+        ? trt`设置变量 ${a.var || "?"} = ${a.default || tr("（空）")}（不弹框）`
+        : trt`设置变量 ${a.var || "?"}：${a.prompt}`;
     case "transform": {
       const sink = [a.var.trim() ? `→ ${a.var.trim()}` : "", a.inject ? tr("并注入") : ""]
         .filter(Boolean)

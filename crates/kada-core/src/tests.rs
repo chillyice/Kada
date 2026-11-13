@@ -2886,24 +2886,54 @@ mod new_action_and_folder_tests {
             var: "version".into(),
             prompt: "版本号".into(),
             default: "1.2.3".into(),
+            popup: true,
             description: None,
         };
         ok.validate().unwrap();
         let json = serde_json::to_string(&ok).unwrap();
+        // 默认值（弹框）不落盘：老配置 / 卡带里没有这个键，读回来仍是 true。
+        assert!(!json.contains("popup"), "{json}");
         let back: Action = serde_json::from_str(&json).unwrap();
         assert_eq!(back, ok);
+        let missing: Action =
+            serde_json::from_str(r#"{"type":"ask","var":"v","prompt":"p","default":"d"}"#).unwrap();
+        assert!(
+            matches!(missing, Action::Ask { popup: true, .. }),
+            "{missing:?}"
+        );
+
+        // 关掉弹框：不显示提示语，所以提示语空着也合法、默认值也可以为空。
+        let silent = Action::Ask {
+            var: "v".into(),
+            prompt: String::new(),
+            default: String::new(),
+            popup: false,
+            description: None,
+        };
+        silent.validate().unwrap();
+        let json = serde_json::to_string(&silent).unwrap();
+        assert!(json.contains(r#""popup":false"#), "{json}");
 
         for bad in [
             Action::Ask {
                 var: " ".into(),
                 prompt: "p".into(),
                 default: String::new(),
+                popup: true,
                 description: None,
             },
             Action::Ask {
                 var: "v".into(),
                 prompt: " ".into(),
                 default: String::new(),
+                popup: true,
+                description: None,
+            },
+            Action::Ask {
+                var: " ".into(),
+                prompt: String::new(),
+                default: String::new(),
+                popup: false,
                 description: None,
             },
         ] {

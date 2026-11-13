@@ -1197,16 +1197,35 @@ export function actionFields(
   const body = el("div", "action-body");
   if (a.type === "ask") {
     // 设置变量（文本操作的第四种方式）：沿用文本动作的通用行样式，不另立一套表单卡。
-    const line = (label: string, value: string, placeholder: string, set: (v: string) => void) => {
+    const popupOn = a.popup !== false;
+    const line = (
+      label: string,
+      value: string,
+      placeholder: string,
+      set: (v: string) => void,
+      disabled = false,
+    ) => {
       const row = el("div", "action-line");
       const input = el("input", "action-input") as HTMLInputElement;
       input.type = "text";
       input.value = value;
       input.placeholder = placeholder;
+      input.disabled = disabled;
       input.addEventListener("input", () => set(input.value));
       row.append(el("span", "unit-hint", label), input);
       return row;
     };
+    // 关掉弹框 = 这条动作不再问人，默认值就是写进变量的内容。
+    const popup = el("label", "action-check") as HTMLLabelElement;
+    const pb = el("input", "toggle") as HTMLInputElement;
+    pb.type = "checkbox";
+    pb.checked = popupOn;
+    pb.addEventListener("change", () => {
+      a.popup = pb.checked;
+      rerender();
+    });
+    popup.title = tr("关掉后不弹框，直接把「默认值」存进变量");
+    popup.append(pb, el("span", undefined, tr("弹出输入框")));
     body.append(
       line(tr("变量名"), a.var, tr("变量名（后面用 {变量名} 引用）"), (v) => (a.var = v.trim())),
       line(
@@ -1214,14 +1233,24 @@ export function actionFields(
         a.prompt,
         tr("弹框里问用户的话（支持 {变量名}）"),
         (v) => (a.prompt = v),
+        !popupOn,
       ),
       line(
         tr("默认值"),
         a.default ?? "",
-        tr("回车前先填好的内容（支持 {变量名}）"),
+        popupOn
+          ? tr("回车前先填好的内容（支持 {变量名}）")
+          : tr("直接写进变量的内容（支持 {变量名}）"),
         (v) => (a.default = v),
       ),
-      el("div", "unit-hint", tr("触发时弹输入框（跟随主题），填的内容存进变量；点取消或留空则本次执行中止。")),
+      popup,
+      el(
+        "div",
+        "unit-hint",
+        popupOn
+          ? tr("触发时弹输入框（跟随主题），填的内容存进变量；点取消或留空则本次执行中止。")
+          : tr("不弹框：触发时直接把「默认值」（代入变量后）存进变量，空值也照写。"),
+      ),
     );
     return body;
   }

@@ -1204,6 +1204,8 @@ pub enum Action {
     },
     /// 设置变量：弹一个输入框，把用户填的内容写进变量 `var`（文本动作的变量来源之一）。
     /// `prompt` / `default` 支持 `{变量}` 占位符；取消或留空 = 本次执行报错中止。
+    /// `popup` 默认开；关掉 = 不弹框、直接把 `default`（代入变量后）写进变量，
+    /// 此时 `prompt` 不展示也不校验（`default` 为空 = 写一个空文本变量，是合法值）。
     #[cfg(feature = "automation")]
     Ask {
         #[serde(default)]
@@ -1212,6 +1214,8 @@ pub enum Action {
         prompt: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         default: String,
+        #[serde(default = "default_true", skip_serializing_if = "is_true")]
+        popup: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
@@ -1451,9 +1455,14 @@ impl Action {
                 Ok(())
             }
             #[cfg(feature = "automation")]
-            Action::Ask { var, prompt, .. } => {
+            Action::Ask {
+                var, prompt, popup, ..
+            } => {
                 non_empty("变量名", var)?;
-                non_empty("提示语", prompt)?;
+                // 不弹框时提示语没地方显示，空着不算错。
+                if *popup {
+                    non_empty("提示语", prompt)?;
+                }
                 Ok(())
             }
             Action::Mouse { op, .. } => match op {

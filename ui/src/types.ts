@@ -119,7 +119,7 @@ export type ActionBase =
   | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; if_running?: IfRunning; description?: string }
   | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }
   | { type: "wait_for"; target: WaitTarget; timeout_ms?: number | null; interval_ms?: number; var: string; description?: string }
-  | { type: "ask"; var: string; prompt: string; default?: string; description?: string };
+  | { type: "ask"; var: string; prompt: string; default?: string; popup?: boolean; description?: string };
 /** 禁用标记（执行时整条跳过）：只包一层，界面编辑的一直是被包住的那条。 */
 export type DisabledAction = { type: "disabled"; action: Action };
 export type Action = ActionBase | DisabledAction;

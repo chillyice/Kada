@@ -1110,7 +1110,19 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             TextMode::ToLower => "把选中/剪贴板文本转为小写".into(),
         },
         #[cfg(feature = "automation")]
-        Action::Ask { var, prompt, .. } => format!("输入 {} → {var}", preview(&sub(prompt))),
+        Action::Ask {
+            var,
+            prompt,
+            default,
+            popup,
+            ..
+        } => {
+            if *popup {
+                format!("输入 {} → {var}", preview(&sub(prompt)))
+            } else {
+                format!("不弹框，{var} = {}", preview(&sub(default)))
+            }
+        }
         Action::Keys { keys, mode, .. } => match mode {
             KeysMode::Tap => format!("按下 {}", keys.join("+")),
             KeysMode::Press => format!("按住 {}", keys.join("+")),
@@ -1960,11 +1972,18 @@ fn run_action(
             var,
             prompt,
             default,
+            popup,
             ..
         } => {
             let prompt = substitute_vars(prompt, vars);
             let default = substitute_vars(default, vars);
-            let text = prompt_input(&prompt, &default, ctx)?;
+            // 不弹框：默认值就是答案（代入变量之后），空字符串同样照写——
+            // 这个形态的语义是「给变量填一个值」，「必须有人输入」的要求只属于弹框。
+            let text = if *popup {
+                prompt_input(&prompt, &default, ctx)?
+            } else {
+                default
+            };
             vars.insert(
                 var.trim().to_string(),
                 Value::Text(TextValue {
@@ -5630,6 +5649,50 @@ mod tests {
         let s = super::action_summary(&action, &vars);
         assert!(s.contains("URL 编码 hi Kada"), "{s}");
         assert!(s.contains("→ q + 注入"), "{s}");
+    }
+
+    /// 设置变量关掉弹框：不弹窗、直接把默认值（代入变量后）写进变量；
+    /// 空默认值也是合法内容，摘要要能看出是「不弹框」形态。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn ask_without_popup_writes_default_value() {
+        let _g = abort::test_lock();
+        let mut vars: Vars = BTreeMap::new();
+        vars.insert("who".into(), Value::Text("Kada".into()));
+        let action = Action::Ask {
+            var: "version".into(),
+            prompt: "版本号".into(),
+            default: "{who}-1.2.3".into(),
+            popup: false,
+            description: None,
+        };
+        let mut last_copied = None;
+        super::run_action(&action, &ctx(5_000), &mut vars, &mut last_copied, 0, None)
+            .expect("不弹框的「设置变量」不该等输入");
+        match vars.get("version") {
+            Some(Value::Text(t)) => assert_eq!(t.text, "Kada-1.2.3"),
+            other => panic!("version 应为文本：{other:?}"),
+        }
+        let s = super::action_summary(&action, &vars);
+        assert!(
+            s.contains("不弹框") && s.contains("version = Kada-1.2.3"),
+            "{s}"
+        );
+
+        // 空默认值照写空文本（没人输入 ≠ 出错）。
+        let empty = Action::Ask {
+            var: "blank".into(),
+            prompt: String::new(),
+            default: String::new(),
+            popup: false,
+            description: None,
+        };
+        super::run_action(&empty, &ctx(5_000), &mut vars, &mut last_copied, 0, None)
+            .expect("空默认值同样合法");
+        match vars.get("blank") {
+            Some(Value::Text(t)) => assert_eq!(t.text, ""),
+            other => panic!("blank 应为空文本：{other:?}"),
+        }
     }
 
     /// 截图 / 亮度摘要：执行记录里要看得出「截了什么 / 存到哪 / 调了多少」。
