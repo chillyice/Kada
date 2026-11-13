@@ -269,3 +269,6 @@ S1 段：
   **`GLOBAL_ACTION_*` 七项全通（没被裁）**、**两台物理键盘可同时接管且不丢键**（67 down / 67 up、`unmatchedUp=0`）；
   **仍缺**：命中即吞的真机验证（那次只打了字，5 条示例快捷键一次没按）、长按连发、锁屏 8 小时存活。
 - `sendevent` 需要 root（模拟器 `adb root` 即可）；真机自动化要么 root，要么用外接键盘手测。
+- **SAF 那两条（导入·替换 / 恢复出厂）只能人工点**：`ACTION_OPEN_DOCUMENT` 的 result 只回到发起它的
+  Activity，adb 送不进去 → 没进 `verify.ps1`；要自动化得引 UiAutomator 测试工程（探针阶段不划算）。
+  本轮是用 `uiautomator dump` + `input tap` 真点验的，证据在「验收结果」表里。
