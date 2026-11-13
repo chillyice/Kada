@@ -447,27 +447,27 @@ if ($volBefore -ge 0) {
 # 顺序按依赖走：先写入文本 → 再全选 → 最后复制（复制需要有效选区）。
 Bcast "clear"
 $focusOk = Focus-Field
-foreach ($a in @("setText", "selectAll", "copy")) {
+foreach ($a in @("set_text", "select_all", "copy")) {
     Bcast "fire" @("--es", "action", $a)
     Start-Sleep -Milliseconds 500
 }
 $report = Get-Report
-$nodeOk = (($report.actions.selectAll.lastOk) -and ($report.actions.copy.lastOk) -and ($report.actions.setText.lastOk))
-Check "S0-5 节点动作（写入 / 全选 / 复制）" $nodeOk "setText=$($report.actions.setText.lastOk) selectAll=$($report.actions.selectAll.lastOk) copy=$($report.actions.copy.lastOk) focused=$focusOk"
+$nodeOk = (($report.actions.select_all.lastOk) -and ($report.actions.copy.lastOk) -and ($report.actions.set_text.lastOk))
+Check "S0-5 节点动作（写入 / 全选 / 复制）" $nodeOk "set_text=$($report.actions.set_text.lastOk) select_all=$($report.actions.select_all.lastOk) copy=$($report.actions.copy.lastOk) focused=$focusOk"
 if (-not $nodeOk) { Bcast "focusInfo" }
 
 # S0-5 全局动作
 Bcast "clear"
-foreach ($a in @("home", "back", "recents", "notifications", "quickSettings", "toast")) {
+foreach ($a in @("home", "back", "recents", "notifications", "quick_settings", "toast")) {
     Bcast "fire" @("--es", "action", $a)
     Start-Sleep -Milliseconds 400
 }
 $report = Get-Report
 $globalOk = $true
-foreach ($a in @("home", "back", "recents", "notifications", "quickSettings", "toast")) {
+foreach ($a in @("home", "back", "recents", "notifications", "quick_settings", "toast")) {
     if (-not $report.actions.$a.lastOk) { $globalOk = $false }
 }
-Check "S0-5 GLOBAL_ACTION_* / toast" $globalOk "lockScreen / screenshot 单独手测"
+Check "S0-5 GLOBAL_ACTION_* / toast" $globalOk "lock_screen / screenshot 单独手测"
 # 上面拉开了通知栏 / 快捷设置，收回来（否则后续音量键落给通知栏）
 Shell "cmd statusbar collapse" | Out-Null
 
@@ -582,6 +582,34 @@ if ($exported) {
     Check "S1-2 remaps 标为「本机不支持」（软冲突，不拦保存）" (($script:lastReport.rust.report.unsupported.remaps -eq 1) -and ($notes -like "*改键*")) "unsupported.remaps=$($script:lastReport.rust.report.unsupported.remaps)"
     $files = (Shell "run-as $package ls files") -join "`n"
     Check "S1-2 替换导入前留档" ($files -match "pre-import-") "files=$(($files -split "`n") -join ",")"
+
+    # S1-3 语义动作（core 的 `Action::Semantic` 变体）：合并导入一条 F5 → semantic(notifications)。
+    # 选 notifications 不选 home / back：后两者会把应用踢到后台，毁掉后面所有按键投递；
+    # 通知栏收尾 `cmd statusbar collapse` 一按就回去。
+    $semPath = Join-Path $env:TEMP "kada-import-semantic.json"
+    $sem = [pscustomobject]@{
+        folders   = @()
+        layers    = @()
+        shortcuts = @([pscustomobject]@{
+                name     = "S1 语义动作"
+                triggers = @("F5")
+                actions  = @([pscustomobject]@{ type = "semantic"; operation = "notifications" })
+                enabled  = $true
+            })
+    }
+    [System.IO.File]::WriteAllText($semPath, ($sem | ConvertTo-Json -Depth 20), (New-Object System.Text.UTF8Encoding($false)))
+    Adb @("push", $semPath, "$extDir/incoming.json") | Out-Null
+    Bcast "import" @("--es", "file", "incoming.json", "--ez", "merge", "true")
+    Start-Sleep -Milliseconds 700
+    $script:lastReport = Get-Report
+    $semUnsupported = @($script:lastReport.rust.report.unsupported_actions | Where-Object { @($_.kinds) -contains "semantic" }).Count
+    Check "S1-3 语义动作算「本机支持」（不进不支持清单）" ($semUnsupported -eq 0) "unsupported_actions=$(@($script:lastReport.rust.report.unsupported_actions).Count)"
+
+    $semOk = Test-KeyFlow -Label "F5 → semantic" -Send { SendKey 63 40 } -Assert { Rust-Fired "F5" }
+    Check "S1-3 F5 → 语义动作（notifications）" $semOk "$(Event-Digest $script:lastReport)"
+    $semRec = $script:lastReport.actions.'rust:F5'
+    Check "S1-3 语义动作执行成功" ($semRec -and $semRec.lastOk) "ok=$($semRec.lastOk) detail=$($semRec.lastDetail)"
+    Shell "cmd statusbar collapse" | Out-Null
 
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null

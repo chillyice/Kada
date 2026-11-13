@@ -85,6 +85,25 @@ export type MouseOp =
   | { op: "click"; button: MouseButton }
   | { op: "scroll"; dx: number; dy: number };
 export type KeysMode = "tap" | "press" | "release";
+/**
+ * 语义动作的子操作（`Action::Semantic`）：安卓无障碍的「改键」替身。
+ * 值的拼写必须与 `kada_core::SemanticOperation` 的 serde 名逐字相同（snake_case）。
+ */
+export type SemanticOperation =
+  | "copy"
+  | "cut"
+  | "paste"
+  | "select_all"
+  | "ime_enter"
+  | "scroll_forward"
+  | "scroll_backward"
+  | "back"
+  | "home"
+  | "recents"
+  | "notifications"
+  | "quick_settings"
+  | "lock_screen"
+  | "screenshot";
 export type SendPayload =
   | { kind: "keys"; keys: string[] }
   | { kind: "text"; text: string };
@@ -103,6 +122,7 @@ export type ActionBase =
   | { type: "send_to"; target: string; payload: SendPayload; description?: string }
   | { type: "pause_ms"; ms: number; description?: string }
   | { type: "mouse"; op: MouseOp; description?: string }
+  | { type: "semantic"; operation: SemanticOperation; description?: string }
   | { type: "clipboard"; operation: ClipboardOperation; description?: string }
   | { type: "transform"; operation: TransformOperation; input: string; var: string; inject?: boolean; description?: string }
   | { type: "os"; operation: OsOperation; description?: string }

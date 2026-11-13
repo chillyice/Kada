@@ -5,6 +5,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -16,6 +17,9 @@ import java.util.concurrent.Executors
  * **支持哪些类型由 Rust 判定**（`crates/kada-android/src/action_support.rs`），这里只认
  * 那份清单里的类型；清单外的动作一律跳过并留痕（不占执行记录，同桌面 `Action::Disabled`
  * 的「跳过」口径）。新增支持类型时两处同步改，Rust 是唯一事实来源。
+ *
+ * `semantic`（语义动作）的子操作名也以 Rust（`kada_core::SemanticOperation`）为准，
+ * 与探针 `ActionCatalog` 的 id 逐字相同，**不在这边做第二张映射表**。
  *
  * 线程：整条链跑在单线程执行器上（`pause_ms` 要真的等）；无障碍节点动作是 binder 调用，
  * 不必回主线程。**钩子回调里绝不执行动作**——`onKeyEvent` 只做判定并 post 出去。
@@ -108,6 +112,23 @@ class ActionRunner(private val service: AccessibilityService) {
 
                     else -> report.skip("clipboard/${op.optString("op")}")
                 }
+            }
+
+            "semantic" -> {
+                // 语义动作：配置里 `operation` 是短名（`kada_core::SemanticOperation`），
+                // 与 `ActionCatalog` 的 id 逐字相同，直接查表；查不到 = 名字分叉，必须报错别猜。
+                val op = action.optString("operation")
+                val spec = ActionCatalog.byId(op)
+                if (spec == null) {
+                    report.fail("未知语义动作「${op.ifEmpty { "?" }}」（core 与探针的动作名不一致）")
+                    return
+                }
+                if (Build.VERSION.SDK_INT < spec.minSdk) {
+                    report.fail("${spec.label}需要 API ${spec.minSdk}（本机 ${Build.VERSION.SDK_INT}）")
+                    return
+                }
+                val result = semantic.perform(spec.id)
+                if (result.ok) report.ok() else report.fail("${spec.label}失败：${result.detail}")
             }
 
             "pause_ms" -> {

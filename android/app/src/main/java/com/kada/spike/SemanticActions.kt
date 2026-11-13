@@ -11,6 +11,12 @@ data class ActionResult(val ok: Boolean, val detail: String)
 
 /**
  * 语义动作表（docs/安卓版规划.md §3.2）：无 root 档唯一能落地的「改键」替身。
+ *
+ * **id 必须与 `kada_core::SemanticOperation` 的 serde 名逐字相同**（snake_case）：配置里的
+ * `{"type":"semantic","operation":"select_all"}` 直接拿 `operation` 来查这张表，不再多一张
+ * 映射表——两处名字一旦分叉，报告说支持、按下去却「未知动作」，最难查。
+ * `set_text` / `toast` 是探针自用（不是 core 的动作），只在本界面点。
+ *
  * `minSdk` 用来在界面上标「本机 API 够不够」，`needsInput` 表示必须先把光标放进输入框。
  */
 data class ActionSpec(
@@ -27,17 +33,17 @@ object ActionCatalog {
         ActionSpec("copy", "复制", "ACTION_COPY", 26, needsInput = true),
         ActionSpec("paste", "粘贴", "ACTION_PASTE", 26, needsInput = true),
         ActionSpec("cut", "剪切", "ACTION_CUT", 26, needsInput = true),
-        ActionSpec("selectAll", "全选", "ACTION_SET_SELECTION 0..n", 26, needsInput = true, note = "SDK 没有 ACTION_SELECT_ALL，用选区整个文本模拟"),
-        ActionSpec("imeEnter", "提交", "ACTION_IME_ENTER", 30, needsInput = true),
-        ActionSpec("setText", "写入文本", "ACTION_SET_TEXT", 26, needsInput = true, note = "文本落地实验"),
-        ActionSpec("scrollBackward", "上翻页", "ACTION_SCROLL_BACKWARD", 26),
-        ActionSpec("scrollForward", "下翻页", "ACTION_SCROLL_FORWARD", 26),
+        ActionSpec("select_all", "全选", "ACTION_SET_SELECTION 0..n", 26, needsInput = true, note = "SDK 没有 ACTION_SELECT_ALL，用选区整个文本模拟"),
+        ActionSpec("ime_enter", "提交", "ACTION_IME_ENTER", 30, needsInput = true),
+        ActionSpec("set_text", "写入文本", "ACTION_SET_TEXT", 26, needsInput = true, note = "文本落地实验（探针自用）"),
+        ActionSpec("scroll_backward", "上翻页", "ACTION_SCROLL_BACKWARD", 26),
+        ActionSpec("scroll_forward", "下翻页", "ACTION_SCROLL_FORWARD", 26),
         ActionSpec("recents", "最近任务", "GLOBAL_ACTION_RECENTS", 26),
         ActionSpec("home", "主屏", "GLOBAL_ACTION_HOME", 26),
         ActionSpec("back", "返回", "GLOBAL_ACTION_BACK", 26),
         ActionSpec("notifications", "通知栏", "GLOBAL_ACTION_NOTIFICATIONS", 26),
-        ActionSpec("quickSettings", "控制中心", "GLOBAL_ACTION_QUICK_SETTINGS", 26),
-        ActionSpec("lockScreen", "锁屏", "GLOBAL_ACTION_LOCK_SCREEN", 28),
+        ActionSpec("quick_settings", "控制中心", "GLOBAL_ACTION_QUICK_SETTINGS", 26),
+        ActionSpec("lock_screen", "锁屏", "GLOBAL_ACTION_LOCK_SCREEN", 28),
         ActionSpec("screenshot", "截图", "GLOBAL_ACTION_TAKE_SCREENSHOT", 30),
         ActionSpec("toast", "气泡提示", "Toast（S0 调试）", 26),
     )
@@ -51,11 +57,11 @@ class SemanticActions(private val service: AccessibilityService) {
         "copy" -> nodeAction(AccessibilityNodeInfo.ACTION_COPY, "ACTION_COPY")
         "paste" -> nodeAction(AccessibilityNodeInfo.ACTION_PASTE, "ACTION_PASTE")
         "cut" -> nodeAction(AccessibilityNodeInfo.ACTION_CUT, "ACTION_CUT")
-        "selectAll" -> selectAll()
-        "setText" -> setText()
-        "scrollBackward" -> nodeAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, "ACTION_SCROLL_BACKWARD")
-        "scrollForward" -> nodeAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, "ACTION_SCROLL_FORWARD")
-        "imeEnter" -> if (Build.VERSION.SDK_INT >= 30) {
+        "select_all" -> selectAll()
+        "set_text" -> setText()
+        "scroll_backward" -> nodeAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD, "ACTION_SCROLL_BACKWARD")
+        "scroll_forward" -> nodeAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD, "ACTION_SCROLL_FORWARD")
+        "ime_enter" -> if (Build.VERSION.SDK_INT >= 30) {
             nodeAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id, "ACTION_IME_ENTER")
         } else {
             ActionResult(false, "API 30 以下没有 ACTION_IME_ENTER")
@@ -65,8 +71,8 @@ class SemanticActions(private val service: AccessibilityService) {
         "home" -> global(AccessibilityService.GLOBAL_ACTION_HOME, "GLOBAL_ACTION_HOME")
         "back" -> global(AccessibilityService.GLOBAL_ACTION_BACK, "GLOBAL_ACTION_BACK")
         "notifications" -> global(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS, "GLOBAL_ACTION_NOTIFICATIONS")
-        "quickSettings" -> global(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, "GLOBAL_ACTION_QUICK_SETTINGS")
-        "lockScreen" -> if (Build.VERSION.SDK_INT >= 28) {
+        "quick_settings" -> global(AccessibilityService.GLOBAL_ACTION_QUICK_SETTINGS, "GLOBAL_ACTION_QUICK_SETTINGS")
+        "lock_screen" -> if (Build.VERSION.SDK_INT >= 28) {
             global(AccessibilityService.GLOBAL_ACTION_LOCK_SCREEN, "GLOBAL_ACTION_LOCK_SCREEN")
         } else {
             ActionResult(false, "API 28 以下没有 GLOBAL_ACTION_LOCK_SCREEN")

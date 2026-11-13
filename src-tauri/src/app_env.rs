@@ -95,6 +95,7 @@ pub(crate) fn platform_caps() -> kada_core::PlatformCaps {
             hot_corners: false,
             wheel_edges: false,
             brightness: false,
+            semantic_actions: false,
             ..Default::default()
         }
     }
@@ -117,14 +118,19 @@ pub(crate) fn platform_caps() -> kada_core::PlatformCaps {
             hot_corners: false,
             wheel_edges: false,
             brightness: false,
+            semantic_actions: false,
             ..Default::default()
         }
     }
     // Windows：键 / 前台 / 设备条件全支持——设备识别随 7.2-㊷ 落地（Raw Input 旁路，
     // 见 `kada-hook::win::current_device`）。
+    // 语义动作（`Action::Semantic`）只有安卓壳实现：桌面靠注入按键，这里显式标不可用。
     #[cfg(target_os = "windows")]
     {
-        kada_core::PlatformCaps::default()
+        kada_core::PlatformCaps {
+            semantic_actions: false,
+            ..Default::default()
+        }
     }
     // 其它无输入层平台：拿不到设备 → 设备条件恒不成立。
     #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
@@ -139,6 +145,7 @@ pub(crate) fn platform_caps() -> kada_core::PlatformCaps {
             wheel_edges: false,
             touchpad_gestures: false,
             brightness: false,
+            semantic_actions: false,
             ..Default::default()
         }
     }

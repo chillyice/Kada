@@ -15,6 +15,7 @@ import type {
   MouseButton,
   MouseOp,
   OsOperation,
+  SemanticOperation,
   SendPayload,
   SystemOperation,
   TransformOperation,
@@ -38,6 +39,7 @@ export const ACTION_TYPES: { value: ActionBase["type"]; label: string }[] = [
   { value: "tool", label: tr("外部工具") },
   { value: "keys", label: tr("按键组合") },
   { value: "mouse", label: tr("鼠标操作") },
+  { value: "semantic", label: tr("语义动作（安卓）") },
   { value: "pause_ms", label: tr("延迟") },
   { value: "if", label: tr("条件判断") },
   { value: "parallel", label: tr("并行执行") },
@@ -72,6 +74,7 @@ export const ACTION_ICONS: Record<ActionBase["type"], string> = {
   clipboard: "📋",
   transform: "🔣",
   pause_ms: "⏱️",
+  semantic: "📱",
   os: "📁",
   system: "🖥️",
   window: "🪟",
@@ -494,6 +497,30 @@ export function newMouseOp(op: MouseOp["op"]): MouseOp {
   return { op: "move", dx: 100, dy: 0 };
 }
 
+// ---- 语义动作的子操作（安卓无障碍：复制 / 返回 / 通知栏…） ----
+// 值的拼写必须与 `kada_core::SemanticOperation` 的 serde 名逐字相同（snake_case），
+// 安卓壳拿它直接查表，名字分叉就会「报告说支持、按下去未知动作」。
+export const SEMANTIC_OPS: { value: SemanticOperation; label: string }[] = [
+  { value: "copy", label: tr("复制") },
+  { value: "cut", label: tr("剪切") },
+  { value: "paste", label: tr("粘贴") },
+  { value: "select_all", label: tr("全选") },
+  { value: "ime_enter", label: tr("提交输入") },
+  { value: "scroll_forward", label: tr("向下翻页") },
+  { value: "scroll_backward", label: tr("向上翻页") },
+  { value: "back", label: tr("返回") },
+  { value: "home", label: tr("回主屏") },
+  { value: "recents", label: tr("最近任务") },
+  { value: "notifications", label: tr("通知栏") },
+  { value: "quick_settings", label: tr("控制中心") },
+  { value: "lock_screen", label: tr("锁屏") },
+  { value: "screenshot", label: tr("截图") },
+];
+
+export function semanticLabel(op: SemanticOperation): string {
+  return SEMANTIC_OPS.find((o) => o.value === op)?.label ?? op;
+}
+
 export function newAction(type: ActionBase["type"]): ActionBase {
   switch (type) {
     case "text":
@@ -546,6 +573,8 @@ export function newAction(type: ActionBase["type"]): ActionBase {
       return { type: "send_to", target: "", payload: { kind: "keys", keys: [] } };
     case "mouse":
       return { type: "mouse", op: newMouseOp("move") };
+    case "semantic":
+      return { type: "semantic", operation: "copy" };
     case "clipboard":
       return { type: "clipboard", operation: { op: "set_clipboard", text: "" } };
     case "transform":
@@ -670,6 +699,9 @@ export function actionHasContent(a: Action): boolean {
         a.op.dx !== 0 ||
         a.op.dy !== 0
       );
+    // 语义动作只有一个必填的子操作（新建时就有默认值），永远可执行。
+    case "semantic":
+      return true;
     case "clipboard":
       // 写入空文本 = 清空剪贴板，是完整操作；读取要有变量名，临时文本要有内容。
       switch (a.operation.op) {
@@ -984,6 +1016,8 @@ export function actionSummary(a: Action): string {
     }
     case "mouse":
       return mouseSummary(a.op);
+    case "semantic":
+      return trt`语义动作：${semanticLabel(a.operation)}（仅安卓）`;
     case "clipboard":
       return clipboardSummary(a.operation);
     case "ask":

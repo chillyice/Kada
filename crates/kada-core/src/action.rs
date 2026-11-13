@@ -882,6 +882,92 @@ pub enum TransformOperation {
     HashSha512,
 }
 
+/// 语义动作的子操作（[`Action::Semantic`]）：安卓无 root 档的「改键」替身。
+///
+/// 桌面上这些事靠注入按键 / 文本完成，安卓无 root 档注入不了，只能用无障碍的语义 API
+/// （`ACTION_COPY` / `GLOBAL_ACTION_BACK`…）。**不要把 `Keys` 自动翻译成这里**——把
+/// `Ctrl+C` 猜成「复制」在终端、画布、游戏里都会误伤，且「猜」错了没人能发现。
+///
+/// 三组：焦点节点动作（光标要在输入框 / 可滚动区域里）、滚动、系统全局动作。
+/// 只有安卓壳实现了执行；桌面上配置合法但执行会明确报错，并由冲突检测标「当前平台用不了」。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticOperation {
+    // —— 焦点节点动作 ——
+    /// 复制当前选区（`ACTION_COPY`）。
+    Copy,
+    /// 剪切当前选区（`ACTION_CUT`）。
+    Cut,
+    /// 粘贴到当前输入框（`ACTION_PASTE`）。
+    Paste,
+    /// 全选当前输入框的文本（`ACTION_SET_SELECTION 0..n`；SDK 没有 `ACTION_SELECT_ALL`）。
+    SelectAll,
+    /// 提交输入（`ACTION_IME_ENTER`，API 30+）。
+    ImeEnter,
+    // —— 滚动 ——
+    /// 向下翻页 / 前进一屏（`ACTION_SCROLL_FORWARD`）。
+    ScrollForward,
+    /// 向上翻页 / 后退一屏（`ACTION_SCROLL_BACKWARD`）。
+    ScrollBackward,
+    // —— 系统全局 ——
+    /// 返回（`GLOBAL_ACTION_BACK`）。
+    Back,
+    /// 主屏（`GLOBAL_ACTION_HOME`）。
+    Home,
+    /// 最近任务（`GLOBAL_ACTION_RECENTS`）。
+    Recents,
+    /// 通知栏（`GLOBAL_ACTION_NOTIFICATIONS`）。
+    Notifications,
+    /// 控制中心（`GLOBAL_ACTION_QUICK_SETTINGS`）。
+    QuickSettings,
+    /// 锁屏（`GLOBAL_ACTION_LOCK_SCREEN`，API 28+）。
+    LockScreen,
+    /// 截图（`GLOBAL_ACTION_TAKE_SCREENSHOT`，API 30+）。
+    Screenshot,
+}
+
+#[cfg(feature = "automation")]
+impl SemanticOperation {
+    /// 全部子操作（顺序 = 分组顺序；界面下拉、测试与安卓支持表共用）。
+    pub const ALL: &'static [Self] = &[
+        Self::Copy,
+        Self::Cut,
+        Self::Paste,
+        Self::SelectAll,
+        Self::ImeEnter,
+        Self::ScrollForward,
+        Self::ScrollBackward,
+        Self::Back,
+        Self::Home,
+        Self::Recents,
+        Self::Notifications,
+        Self::QuickSettings,
+        Self::LockScreen,
+        Self::Screenshot,
+    ];
+
+    /// 中文展示名（执行记录摘要、报错文案用）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Copy => "复制",
+            Self::Cut => "剪切",
+            Self::Paste => "粘贴",
+            Self::SelectAll => "全选",
+            Self::ImeEnter => "提交输入",
+            Self::ScrollForward => "向下翻页",
+            Self::ScrollBackward => "向上翻页",
+            Self::Back => "返回",
+            Self::Home => "回主屏",
+            Self::Recents => "最近任务",
+            Self::Notifications => "通知栏",
+            Self::QuickSettings => "控制中心",
+            Self::LockScreen => "锁屏",
+            Self::Screenshot => "截图",
+        }
+    }
+}
+
 /// `serde` 的 `skip_serializing_if` 帮手：`false` 的布尔字段不落盘——默认值写进 JSON 只是噪音
 /// （配置、导出卡带、分享出去的卡带都会带上）。
 pub(crate) fn is_zero_u64(v: &u64) -> bool {
@@ -1183,6 +1269,15 @@ pub enum Action {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// 语义动作：安卓无 root 档的「改键」替身（复制 / 粘贴 / 返回 / 通知栏…），
+    /// 走无障碍的语义 API 而不是注入按键。桌面没有对应实现：配置合法、执行明确报错，
+    /// 冲突检测标「当前平台用不了」。子操作与安卓 API 的对应见 [`SemanticOperation`]。
+    #[cfg(feature = "automation")]
+    Semantic {
+        operation: SemanticOperation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 剪贴板动作（EXT-15）：写入 / 读取文本到变量 / 临时文本（粘贴后恢复原剪贴板）。
     Clipboard {
         operation: ClipboardOperation,
@@ -1437,6 +1532,9 @@ impl Action {
         };
         match self {
             Action::Text { .. } | Action::PauseMs { .. } => Ok(()),
+            // 语义动作只有子操作一个字段，没有可填错的东西。
+            #[cfg(feature = "automation")]
+            Action::Semantic { .. } => Ok(()),
             // 禁用的动作照样校验：打开开关后它要原样跑起来，别把非法配置藏到开关后面。
             Action::Disabled { action } => action.validate(),
             Action::Clipboard { operation, .. } => match operation {

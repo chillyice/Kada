@@ -30,6 +30,8 @@ fn android_caps() -> PlatformCaps {
         wheel_edges: false,
         touchpad_gestures: false,
         brightness: false,
+        // 语义动作是安卓的强项：无障碍的 ACTION_* / GLOBAL_ACTION_* 就在这台上。
+        semantic_actions: true,
     }
 }
 

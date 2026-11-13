@@ -81,7 +81,8 @@ adb shell am start -n com.kada.spike/.MainActivity
   「和弦全吞式」三个对照开关。
 - **吞键端到端验证**：界面里有一个输入框，用 `adb shell input text` **测不出来**
   （注入事件不进无障碍过滤，见下），要用 `sendevent` 打物理键。
-- **语义动作**：§3.2 的 15 条动作逐条点，结果写进报告（标注 ROM 可用性）。
+- **语义动作**：§3.2 的 16 条动作逐条点（14 个 core 的 `SemanticOperation` + `set_text` / `toast` 两条探针自用），
+  结果写进报告（标注 ROM 可用性）。
 - **统计 / 延迟 / 事件流**：按下 / 抬起 / 连发 / 未配对抬起、吞 / 放行、动作成功失败、
   P50/P95、最近 14 条事件。
 - **导出报告**：`/sdcard/Android/data/com.kada.spike/files/kada-s0-report.json`（`adb pull` 拿走）。
@@ -109,7 +110,7 @@ adb shell am start -n com.kada.spike/.MainActivity
 | 配置块 | 安卓无 root 档 | 说明 |
 |---|---|---|
 | `shortcuts`（combo / sequence / chord） | ✅ 成立 | 与桌面同一份 `Trigger::parse` + `match_shortcut` |
-| `shortcuts` 里的 `open_url` / `text` / `clipboard` / `pause_ms` / `group` / `disabled` | ✅ 执行 | 支持表只在 `crates/kada-android/src/action_support.rs` |
+| `shortcuts` 里的 `open_url` / `text` / `clipboard` / `pause_ms` / `semantic` / `group` / `disabled` | ✅ 执行 | 支持表只在 `crates/kada-android/src/action_support.rs` |
 | `remaps`（含 tap-hold / oneshot / sticky / 切层键） | ❌ 报告标记 | 要注入目标键，无 root 做不到；**绝不吞**，只留 `remap:unsupported:*` 痕迹 |
 | `layers` / 层内快捷键 | ❌ 报告标记 | 层只能由改键激活 |
 | `expansions`（打字触发） | ❌ 报告标记 | 软键盘输入不产生 `KeyEvent` |
@@ -168,7 +169,7 @@ powershell android\tools\verify.ps1 -SkipBuild # 只跑检查
 
 ## 已验证（2026-11-13，emulator-5554 / ihomy34，Android 14）
 
-`android/tools/verify.ps1` **32/32 通过**，连跑两轮结果一致（第二轮无 `[warn]`）。
+`android/tools/verify.ps1` **35/35 通过**（s4 版本，S1 段新增 S1-3 三断言）。
 
 S0 段（32 项检查里的 S0 部分）：
 
@@ -181,7 +182,7 @@ S0 段（32 项检查里的 S0 部分）：
 | S0-3 延迟（服务侧） | ✅ 空载 P50 < 2 ms / P95 < 3 ms；主线程忙（刷新 + 输入法动画）时 P50 可达 115 ms / P95 491 ms | 报告 `latency`；同进程主线程排队，见下「坑」 |
 | S0-3 音量键流水线 | ⚠️ 系统收到 → 回调 **~160 ms**（字母键 1~8 ms） | 报告 `events[].pipelineMs`；触发手感要真机验 |
 | S0-4 常驻 | ✅ 前台服务 + 常驻通知；`dumpsys deviceidle force-idle` 深睡时按键仍响应 | `hb tick` 30s 一次；8 小时待真机 |
-| S0-5 语义动作 | ✅ `GLOBAL_ACTION_*` 全部返回 true；节点动作 `setText` / `selectAll` / `copy` 依次 true | 报告 `actions` |
+| S0-5 语义动作 | ✅ `GLOBAL_ACTION_*` 全部返回 true；节点动作 `set_text` / `select_all` / `copy` 依次 true | 报告 `actions` |
 | 音量键可吞 | ✅ 吞掉后系统音量不变（7→7 连按 3 次），放行则变（7→11） | `cmd media_session volume --stream 3 --get` |
 | 档位探测 | ⚠️ 模拟器把触屏/电源键也报成 `SOURCE_KEYBOARD`；改用 `hasKeys(A,Z,Enter,Space)` 判键盘 | 报告 `tier.inputDevices` |
 
@@ -203,10 +204,13 @@ S1 段：
 | S1-2 界面替换导入（SAF） | ✅ 5 → 20 条（20 条桌面卡带，带被忽略的 `kada_snippet` 顶层键），面板显示 `20/20 启用 · 组合 20` | `uiautomator` 点「导入·替换」→ 确认框 → 文件选择器 → `kada-20.json`；面板「5 → 20 条 + 留档 `config.json.pre-import-20261113-100135`」 |
 | S1-2 界面合并导入（SAF） | ✅ 同一张卡带再合并一次：20 → 20（不重复） | 面板「合并导入完成：快捷键 20 → 20 条」 |
 | S1-2 恢复出厂 | ✅ 20 → 5 条示例，旧配置留档 `config.json.pre-reset-20261113-100206`（5947 B = 那张 20 条卡带） | 面板「已恢复出厂示例：快捷键 5 条」+ `run-as ls files` |
-| S0-5 失败原因留存 | ✅ 同一动作「先失败后成功」：`lastOk=true` / `failCount=2` 的同时仍留 `lastFailDetail` 与 `lastFailAtMs` | 报告 `actions.selectAll`（真机报告里 `failCount=4` 看不到原因，这条就是补它） |
+| S0-5 失败原因留存 | ✅ 同一动作「先失败后成功」：`lastOk=true` / `failCount=2` 的同时仍留 `lastFailDetail` 与 `lastFailAtMs` | 报告 `actions.select_all`（真机报告里 `failCount=4` 看不到原因，这条就是补它） |
+| S1-3 语义动作算「本机支持」 | ✅ `{"type":"semantic","operation":"notifications"}` 不进 `unsupported_actions` | 报告 `unsupported_actions=0` |
+| S1-3 F5 → 语义动作 | ✅ 合并导入的 F5 命中，down/up 都吞 | `rust.fires` / `events` |
+| S1-3 语义动作执行成功 | ✅ 通知栏真的拉下来（`ok=True`） | 报告 `actions['rust:F5'].lastOk` |
 
-> 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；
-> 连跑两轮都是 32/32（第二轮无 `[warn]`），不再受上一轮残留条目影响。
+> 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去。
+> 本轮 s4 全量跑 **35/35 通过**（S1-3 的三条是新增）；旧的 32 项基线此前连跑两轮一致。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -259,8 +263,10 @@ S1 段：
 
 - `remaps` / 层 / 热串在无 root 档**不成立**，只做报告提示：想真的改键得等 root 档（规划 §3.1）或
   「输入法式」输入通道（规划 §4）。
-- 语义动作（§3.2）目前是探针里的独立动作表，**还不是 core 的 `Action` 变体**：
-  要进配置 / 界面 / i18n 得单独一轮（规划 §11 已记）。
+- 语义动作已是 core 的 `Action::Semantic`（`{"type":"semantic","operation":"select_all"}`，14 个 op，
+  见 `需求设计说明书.md` §3.7）：安卓探针的 `ActionCatalog` id 与 core 的 serde 名**逐字相同**，
+  `ActionRunner` 直接查表、不留第二张映射表。桌面侧配置合法但执行明确报错 + 冲突 Warn。
+  **真机逐条 op 的表现**（尤其厂商 ROM 对 `GLOBAL_ACTION_*` 的裁剪）见 `docs/人工验证清单.md` §89。
 - S1 的 `text` 动作走「写剪贴板 + `ACTION_PASTE`」：粘贴依赖目标输入框、会覆盖用户剪贴板，
   规划 §4 的方案 ③ 仍待定。
 - `ControlReceiver` 是 `exported=true` 的 adb 控制入口，但配了 `android:permission="android.permission.DUMP"`：

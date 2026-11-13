@@ -394,6 +394,8 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Tool { .. } => "tool",
         #[cfg(feature = "automation")]
         Action::Brightness { .. } => "brightness",
+        #[cfg(feature = "automation")]
+        Action::Semantic { .. } => "semantic",
     }
 }
 
@@ -1032,6 +1034,8 @@ fn action_label(action: &Action) -> &'static str {
         Action::Tool { .. } => "外部工具未接入",
         #[cfg(feature = "automation")]
         Action::Brightness { .. } => "亮度调节失败",
+        #[cfg(feature = "automation")]
+        Action::Semantic { .. } => "语义动作失败",
     }
 }
 
@@ -1212,6 +1216,10 @@ fn action_body(action: &Action, vars: &Vars) -> String {
         Action::Brightness {
             operation, step, ..
         } => brightness_body(*operation, *step),
+        #[cfg(feature = "automation")]
+        Action::Semantic { operation, .. } => {
+            format!("语义动作：{}（只支持安卓）", operation.label())
+        }
     }
 }
 
@@ -1557,7 +1565,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::Window { description, .. }
         | Action::Capture { description, .. }
         | Action::Tool { description, .. }
-        | Action::Brightness { description, .. } => description.as_deref(),
+        | Action::Brightness { description, .. }
+        | Action::Semantic { description, .. } => description.as_deref(),
     }
 }
 
@@ -1951,6 +1960,14 @@ fn run_action(
                 .unwrap_or(capability.as_str());
             return Err(format!(
                 "「{name}」的能力「{cap}」尚未接入：现在只能识别到它在运行，还不能替它执行"
+            ));
+        }
+        #[cfg(feature = "automation")]
+        Action::Semantic { operation, .. } => {
+            return Err(format!(
+                "「语义动作 · {}」只支持安卓（走无障碍的语义接口）：桌面请改用「按键组合」\
+                 （如 Ctrl+C / Ctrl+V）或「文本」动作",
+                operation.label()
             ));
         }
         #[cfg(feature = "automation")]
@@ -5726,6 +5743,37 @@ mod tests {
             description: None,
         };
         assert!(super::action_summary(&restore, &vars).contains("恢复"));
+    }
+
+    /// 语义动作：桌面上一律明确报错（不许静默跳过），摘要要写清「只支持安卓」。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn semantic_action_is_rejected_on_desktop_with_clear_message() {
+        use kada_core::SemanticOperation;
+        let vars = BTreeMap::new();
+        let action = Action::Semantic {
+            operation: SemanticOperation::Paste,
+            description: None,
+        };
+        assert_eq!(super::action_kind(&action), "semantic");
+        let summary = super::action_summary(&action, &vars);
+        assert!(
+            summary.contains("粘贴") && summary.contains("只支持安卓"),
+            "{summary}"
+        );
+
+        let mut last_copied = None;
+        let err = super::run_action(
+            &action,
+            &ctx(5_000),
+            &mut BTreeMap::new(),
+            &mut last_copied,
+            0,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("只支持安卓"), "{err}");
+        assert!(err.contains("按键组合"), "{err}");
     }
 
     /// 切换虚拟桌面的摘要要写明方向——执行记录里只写「切换虚拟桌面」看不出去了哪一边。

@@ -2354,6 +2354,100 @@ mod new_action_and_folder_tests {
         .is_err());
     }
 
+    /// 语义动作：`operation` 是短名（与 `transform` 同形，不是对象），驼峰一律 snake_case；
+    /// `ALL` 覆盖每种 op 且中文名不空。
+    #[test]
+    fn semantic_action_json_roundtrip_and_ops_are_listed() {
+        let a: Action =
+            serde_json::from_str(r#"{"type":"semantic","operation":"select_all"}"#).unwrap();
+        assert!(a.validate().is_ok());
+        assert!(matches!(
+            a,
+            Action::Semantic {
+                operation: SemanticOperation::SelectAll,
+                ..
+            }
+        ));
+        let json = serde_json::to_string(&a).unwrap();
+        assert_eq!(json, r#"{"type":"semantic","operation":"select_all"}"#);
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), a);
+
+        // 缺 `operation` 是非法配置（没有「默认子操作」这种含糊情况）。
+        assert!(serde_json::from_str::<Action>(r#"{"type":"semantic"}"#).is_err());
+        // 不认识的名字也不能被悄悄当成默认值。
+        assert!(
+            serde_json::from_str::<Action>(r#"{"type":"semantic","operation":"selectAll"}"#)
+                .is_err()
+        );
+
+        for op in SemanticOperation::ALL {
+            assert!(!op.label().is_empty(), "{op:?}");
+            let json = serde_json::to_string(op).unwrap();
+            let back: SemanticOperation = serde_json::from_str(&json).unwrap();
+            assert_eq!(*op, back, "{json}");
+        }
+        assert_eq!(SemanticOperation::ALL.len(), 14);
+    }
+
+    fn semantic_shortcut(name: &str, trigger: &str, actions: Vec<Action>) -> ShortcutItem {
+        ShortcutItem {
+            name: Some(name.into()),
+            triggers: vec![trigger.into()],
+            actions,
+            enabled: true,
+            ..Default::default()
+        }
+    }
+
+    /// 语义动作在桌面上是「平台能力缺失」：`Warn` + `platform`，不拦保存。
+    #[test]
+    fn semantic_action_warns_on_platform_without_a11y() {
+        let cfg = Config {
+            shortcuts: vec![semantic_shortcut(
+                "语义",
+                "Ctrl+Alt+Y",
+                vec![Action::Semantic {
+                    operation: SemanticOperation::Back,
+                    description: None,
+                }],
+            )],
+            ..Default::default()
+        };
+        let hits = detect_conflicts(&cfg, &PlatformCaps::default());
+        assert!(hits.is_empty(), "{hits:?}");
+
+        let desktop = PlatformCaps {
+            semantic_actions: false,
+            ..PlatformCaps::default()
+        };
+        let hits = detect_conflicts(&cfg, &desktop);
+        let hit = hits
+            .iter()
+            .find(|c| c.platform && c.message.contains("语义动作"))
+            .expect("桌面缺语义动作能力时要给 Warn");
+        assert_eq!(hit.severity, Severity::Warn);
+        assert_eq!(hit.name, "语义");
+
+        // 包在分组 / 条件里的同样要扫到。
+        let nested = Config {
+            shortcuts: vec![semantic_shortcut(
+                "嵌套",
+                "Ctrl+Alt+U",
+                vec![Action::Group {
+                    name: "g".into(),
+                    actions: vec![Action::Semantic {
+                        operation: SemanticOperation::Screenshot,
+                        description: None,
+                    }],
+                }],
+            )],
+            ..Default::default()
+        };
+        assert!(detect_conflicts(&nested, &desktop)
+            .iter()
+            .any(|c| c.platform && c.message.contains("语义动作")));
+    }
+
     /// 算法动作（EXT-18）：`operation` 是短名（不是对象），默认 `inject = false` 不落盘。
     #[test]
     fn transform_action_json_roundtrip_and_validate() {
@@ -4470,6 +4564,7 @@ mod platform_caps_tests {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
+            semantic_actions: false,
             ..Default::default()
         }
     }
@@ -4492,6 +4587,7 @@ mod platform_caps_tests {
             hot_corners: false,
             wheel_edges: false,
             brightness: false,
+            semantic_actions: false,
             ..Default::default()
         }
     }

@@ -68,6 +68,9 @@ pub struct PlatformCaps {
     pub touchpad_gestures: bool,
     /// 显示器亮度（[`Action::Brightness`]）是否可用。目前只有 Windows 走 DDC/CI。
     pub brightness: bool,
+    /// 语义动作（[`Action::Semantic`]）是否可用。只有安卓壳（无障碍 `ACTION_*` /
+    /// `GLOBAL_ACTION_*`）实现了；桌面靠注入按键，这类动作执行会明确报错。
+    pub semantic_actions: bool,
 }
 
 impl Default for PlatformCaps {
@@ -87,6 +90,7 @@ impl Default for PlatformCaps {
             wheel_edges: true,
             touchpad_gestures: true,
             brightness: true,
+            semantic_actions: true,
         }
     }
 }
@@ -107,6 +111,7 @@ impl PlatformCaps {
             && self.wheel_edges
             && self.touchpad_gestures
             && self.brightness
+            && self.semantic_actions
     }
 }
 
@@ -756,6 +761,15 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                 name: name_of(s),
             });
         }
+        #[cfg(feature = "automation")]
+        if !caps.semantic_actions && uses_semantic(&s.actions) {
+            out.push(Conflict {
+                severity: Severity::Warn,
+                platform: true,
+                message: "「语义动作」只支持安卓（无障碍复制 / 返回 / 通知栏这类），当前平台执行到这一步会失败；桌面请改用「按键组合」或「文本」动作".into(),
+                name: name_of(s),
+            });
+        }
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
@@ -834,6 +848,19 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
                     message:
                         "「显示器亮度」当前平台用不了（只有 Windows 走 DDC/CI），执行到这一步会失败"
                             .into(),
+                    name: label,
+                });
+            }
+        }
+    }
+    #[cfg(feature = "automation")]
+    if !caps.semantic_actions {
+        for (actions, label) in gesture_action_sets(cfg) {
+            if uses_semantic(actions) {
+                out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: true,
+                    message: "「语义动作」只支持安卓（无障碍复制 / 返回 / 通知栏这类），当前平台执行到这一步会失败；桌面请改用「按键组合」或「文本」动作".into(),
                     name: label,
                 });
             }
@@ -1315,6 +1342,21 @@ pub(crate) fn uses_brightness(actions: &[Action]) -> bool {
             then, otherwise, ..
         } => uses_brightness(then) || uses_brightness(otherwise),
         Action::Parallel { actions, .. } => uses_brightness(actions),
+        _ => false,
+    })
+}
+
+/// 动作树里有没有语义动作（`If` / `Parallel` / 分组递归进去）。
+/// 基础版没有这个动作类型，恒 false。
+#[cfg(feature = "automation")]
+pub(crate) fn uses_semantic(actions: &[Action]) -> bool {
+    actions.iter().any(|a| match a {
+        Action::Semantic { .. } => true,
+        Action::Group { actions, .. } => uses_semantic(actions),
+        Action::If {
+            then, otherwise, ..
+        } => uses_semantic(then) || uses_semantic(otherwise),
+        Action::Parallel { actions, .. } => uses_semantic(actions),
         _ => false,
     })
 }

@@ -1090,5 +1090,22 @@
   "没有可清理的日志": "No logs to clean up",
   "清理失败: {0}": "Cleanup failed: {0}",
   "写入变量：{0}": "Writes variable: {0}",
-  "引用变量：{0}": "Reads variable: {0}"
+  "引用变量：{0}": "Reads variable: {0}",
+  "语义动作（安卓）": "Semantic action (Android)",
+  "复制": "Copy",
+  "剪切": "Cut",
+  "粘贴": "Paste",
+  "全选": "Select all",
+  "提交输入": "Submit input",
+  "向下翻页": "Scroll down",
+  "向上翻页": "Scroll up",
+  "返回": "Back",
+  "回主屏": "Home",
+  "最近任务": "Recent apps",
+  "通知栏": "Notifications",
+  "控制中心": "Quick settings",
+  "锁屏": "Lock screen",
+  "截图": "Screenshot",
+  "语义动作：{0}（仅安卓）": "Semantic action: {0} (Android only)",
+  "安卓无障碍的语义动作（复制 / 返回 / 通知栏…）：只在安卓版生效，桌面上执行会明确报错并在冲突里标出。需要光标在输入框里的：复制 / 剪切 / 粘贴 / 全选 / 提交输入；翻页需要可滚动区域。": "Android accessibility actions (copy / back / notifications…): they only work in the Android build. On desktop the step fails with an explicit error and is flagged in conflicts. Copy / cut / paste / select all / submit need the cursor in an input box; scrolling needs a scrollable area."
 }

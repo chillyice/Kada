@@ -7,6 +7,8 @@
 //! - `open_url`：系统浏览器打开（`ACTION_VIEW`），无需权限；
 //! - `text`：写剪贴板 + `ACTION_PASTE` 到当前输入框（规划 §4 方案 ③ 的底座）；
 //! - `clipboard`：写剪贴板（读回变量 / 临时粘贴暂不支持）；
+//! - `semantic`：语义动作（复制 / 返回 / 通知栏…），无障碍的 `ACTION_*` 与 `GLOBAL_ACTION_*`
+//!   ——这正是安卓强于桌面的地方，见 `kada_core::SemanticOperation`；
 //! - `pause_ms`：链内延迟；
 //! - `group` / `disabled`：容器（递归判定成员）；
 //! - 其它（命令 / 脚本 / 按键注入 / 鼠标 / 应用 / 文件 / 系统 / 条件 / 变量 / 脚本…）
@@ -19,6 +21,7 @@ pub(crate) const SUPPORTED: &[&str] = &[
     "open_url",
     "text",
     "clipboard",
+    "semantic",
     "pause_ms",
     "group",
     "disabled",
@@ -98,6 +101,20 @@ mod tests {
         };
         assert!(!is_supported(&no));
         assert_eq!(collect(&[no]), vec!["command".to_string()]);
+    }
+
+    /// 语义动作是安卓能做到、桌面做不到的那一类，必须算「本机支持」。
+    #[test]
+    fn semantic_is_supported_here() {
+        for op in kada_core::SemanticOperation::ALL {
+            let a = Action::Semantic {
+                operation: *op,
+                description: None,
+            };
+            assert!(is_supported(&a), "{op:?}");
+            assert!(collect(std::slice::from_ref(&a)).is_empty(), "{op:?}");
+            assert_eq!(kind(&a), "semantic");
+        }
     }
 
     #[test]

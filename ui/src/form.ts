@@ -16,6 +16,7 @@ import {
   MOUSE_BUTTON_LABELS,
   MOUSE_OPS,
   OS_OPS,
+  SEMANTIC_OPS,
   SYSTEM_OPS,
   TRANSFORM_OPS,
   WAIT_TARGET_TYPES,
@@ -58,6 +59,7 @@ import type {
   MouseButton,
   MouseOp,
   OsOperation,
+  SemanticOperation,
   SendPayload,
   Shell,
   ShowOutput,
@@ -786,6 +788,21 @@ export function actionSubtypeSelect(
     sel.value = a.op.op;
     sel.addEventListener("change", () => {
       a.op = newMouseOp(sel.value as MouseOp["op"]);
+      rerender();
+    });
+    return sel;
+  }
+  if (a.type === "semantic") {
+    const sel = el("select", "action-type") as HTMLSelectElement;
+    for (const o of SEMANTIC_OPS) {
+      const opt = el("option") as HTMLOptionElement;
+      opt.value = o.value;
+      opt.textContent = o.label;
+      sel.append(opt);
+    }
+    sel.value = a.operation;
+    sel.addEventListener("change", () => {
+      a.operation = sel.value as SemanticOperation;
       rerender();
     });
     return sel;
@@ -1680,6 +1697,14 @@ export function actionFields(
     }
     body.append(line);
     body.append(mouseRecordButton(rerender, ctx));
+  } else if (a.type === "semantic") {
+    body.append(
+      el(
+        "div",
+        "unit-hint",
+        tr("安卓无障碍的语义动作（复制 / 返回 / 通知栏…）：只在安卓版生效，桌面上执行会明确报错并在冲突里标出。需要光标在输入框里的：复制 / 剪切 / 粘贴 / 全选 / 提交输入；翻页需要可滚动区域。"),
+      ),
+    );
   } else if (a.type === "clipboard") {
     const op = a.operation;
     if (op.op === "get_clipboard") {
