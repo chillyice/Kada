@@ -91,12 +91,18 @@ adb shell am start -n com.kada.spike/.MainActivity
 - **用 Rust 判定**开关：关掉退回 S0 的硬编码演示规则（对照实验用，状态会持久化）。
 - **配置**：首启自动生成安卓示例配置到 `/data/user/0/com.kada.spike/files/config.json`
   （5 条：单键 / 组合 / 序列 / 和弦）。落盘走 `kada_core::config_io`（原子写 + `.bak` + 损坏留档）。
-- **导入 / 导出**：SAF 选文件。导入要点「合并 / 替换」二选一——合并只增不删，
-  替换前先 `archive_copy` 留 `config.json.pre-import-<时间戳>`。
+- **导入 / 导出**：SAF 选文件。导入有两条路，缺一不可：
+  - **导入·合并**：只增不删（往里加卡带），设置保留本机；
+  - **导入·替换**：整份换掉（把桌面那一份原样搬过来，出厂示例 5 条随之消失），
+    弹框二次确认，替换前 Rust 侧先 `archive_copy` 留 `config.json.pre-import-<时间戳>`。
+  导入完成会在面板上写一行「快捷键 5 → 20 条 + 留档文件名」，不靠 Toast 猜。
+- **恢复出厂**：删掉本机 `config.json`、重新落回示例 5 条。删之前壳层先留档
+  `config.json.pre-reset-<时间戳>`（`resetToSample` 自己不归档，这一份由 `RustPanel` 补）。
 - **报告**：条数、触发键分类（combo / sequence / chord）、**本机不支持项**
   （`remaps` / 层内条目 / `expansions` / 手势 / 桌角 / 边缘滚动）、逐条不支持的动作类型、
   软冲突、告警、`notes`（含吞键策略说明）。
-- **执行日志**：最近命中的快捷键、动作结果、失败原因。
+- **执行日志**：最近命中的快捷键、动作结果、失败原因（报告里 `actions.<id>.lastFailDetail` /
+  `lastFailAtMs` 只记失败、成功不覆盖——真机出现「成功过但失败过」时也能看到错在哪）。
 
 判定口径（S1-a）：
 
@@ -194,6 +200,10 @@ S1 段：
 | S1-2 替换导入 | ✅ 整份换掉，F6 随旧配置消失（6 → 5） | 报告 shortcuts=5 |
 | S1-2 导入留档 | ✅ `config.json.pre-import-<YYYYMMDD-HHMMSS>` | `run-as com.kada.spike ls files` |
 | S1-2 软冲突 | ✅ 配置里的 `remaps` 标为「本机不支持」，不拦保存 | 报告 `unsupported.remaps` |
+| S1-2 界面替换导入（SAF） | ✅ 5 → 20 条（20 条桌面卡带，带被忽略的 `kada_snippet` 顶层键），面板显示 `20/20 启用 · 组合 20` | `uiautomator` 点「导入·替换」→ 确认框 → 文件选择器 → `kada-20.json`；面板「5 → 20 条 + 留档 `config.json.pre-import-20261113-100135`」 |
+| S1-2 界面合并导入（SAF） | ✅ 同一张卡带再合并一次：20 → 20（不重复） | 面板「合并导入完成：快捷键 20 → 20 条」 |
+| S1-2 恢复出厂 | ✅ 20 → 5 条示例，旧配置留档 `config.json.pre-reset-20261113-100206`（5947 B = 那张 20 条卡带） | 面板「已恢复出厂示例：快捷键 5 条」+ `run-as ls files` |
+| S0-5 失败原因留存 | ✅ 同一动作「先失败后成功」：`lastOk=true` / `failCount=2` 的同时仍留 `lastFailDetail` 与 `lastFailAtMs` | 报告 `actions.selectAll`（真机报告里 `failCount=4` 看不到原因，这条就是补它） |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；
 > 连跑两轮都是 32/32（第二轮无 `[warn]`），不再受上一轮残留条目影响。

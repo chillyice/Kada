@@ -209,6 +209,9 @@ object SpikeState {
         val lastAtMs: Long,
         val okCount: Int,
         val failCount: Int,
+        /** 最近一次失败的细节（成功不会覆盖它）——只记 `lastDetail` 会出现「有 4 次失败但看不到原因」。 */
+        val lastFailDetail: String = "",
+        val lastFailAtMs: Long = 0,
     )
 
     private var downCount = 0
@@ -311,6 +314,8 @@ object SpikeState {
                 lastAtMs = System.currentTimeMillis(),
                 okCount = okCount,
                 failCount = failCount,
+                lastFailDetail = if (ok) prev?.lastFailDetail.orEmpty() else detail,
+                lastFailAtMs = if (ok) (prev?.lastFailAtMs ?: 0L) else System.currentTimeMillis(),
             )
         }
         Log.i(TAG, "action id=$id ok=$ok detail=$detail reason=$reason")

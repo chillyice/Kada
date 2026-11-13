@@ -392,8 +392,10 @@ class MainActivity : Activity() {
             val record = records[id]
             view.text = when {
                 record == null -> "未试"
+                record.lastOk == true && record.failCount > 0 ->
+                    "✓ 成功 ${record.okCount} 次 · ${record.lastDetail}\n  （另有 ${record.failCount} 次失败：${record.lastFailDetail}）"
                 record.lastOk == true -> "✓ 成功 ${record.okCount} 次 · ${record.lastDetail}"
-                else -> "✗ 失败 ${record.failCount} 次 · ${record.lastDetail}"
+                else -> "✗ 失败 ${record.failCount} 次 · ${record.lastFailDetail.ifBlank { record.lastDetail }}"
             }
             view.setTextColor(
                 when {

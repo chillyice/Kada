@@ -1,6 +1,7 @@
 package com.kada.spike
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Typeface
 import android.net.Uri
@@ -15,6 +16,7 @@ import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -24,13 +26,20 @@ import java.util.Locale
  *
  * 判定与配置全在 Rust（`crates/kada-android`）；这里**只展示**报告、只调 API，
  * 不解析触发键、不自己判支持不支持。
+ *
+ * 导入有两条路，缺一不可：**合并**只增不删（往里加卡带），**替换**整份换掉
+ * （把桌面那一份原样搬过来，示例 5 条随之消失；替换前 Rust 侧先留档）。
  */
 class RustPanel(private val activity: Activity) {
 
     private lateinit var tvStatus: TextView
     private lateinit var tvTriggers: TextView
     private lateinit var tvLog: TextView
+    private lateinit var tvImport: TextView
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
+
+    /** 只想选一次文件，选择器回调时靠它区分合并 / 替换。 */
+    private var pendingImportMerge: Boolean? = null
 
     fun build(): View {
         val column = LinearLayout(activity).apply {
@@ -57,10 +66,19 @@ class RustPanel(private val activity: Activity) {
         column.addView(
             row(
                 button("重载配置") { reload() },
-                button("导入（合并）") { pickImport() },
-                button("导出") { pickExport() },
+                button("导入·合并") { pickImport(merge = true) },
+                button("导入·替换") { pickImport(merge = false) },
             ),
         )
+        column.addView(
+            row(
+                button("导出") { pickExport() },
+                button("恢复出厂") { confirmReset() },
+            ),
+        )
+
+        tvImport = body(11f)
+        column.addView(tvImport)
 
         tvStatus = body()
         column.addView(tvStatus)
@@ -165,13 +183,39 @@ class RustPanel(private val activity: Activity) {
         refresh()
     }
 
-    fun pickImport() {
+    fun pickImport(merge: Boolean) {
+        if (merge) {
+            openImportPicker(merge = true)
+            return
+        }
+        AlertDialog.Builder(activity)
+            .setTitle("替换导入")
+            .setMessage(
+                "会整份换掉本机配置：出厂示例 5 条与当前条目全部消失，改成你选的这一份。\n\n" +
+                    "替换前 Rust 侧会先留档 config.json.pre-import-<时间戳>，选错了能从留档捞回来。",
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("替换") { _, _ -> openImportPicker(merge = false) }
+            .show()
+    }
+
+    private fun openImportPicker(merge: Boolean) {
+        pendingImportMerge = merge
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
             addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/json"
+            // 只给 application/json 会让某些文件提供方（下载 / 网盘）把 .json 标成
+            // octet-stream 后选不了，所以放开 */* 再限定几类常见 MIME。
+            type = "*/*"
+            putExtra(
+                Intent.EXTRA_MIME_TYPES,
+                arrayOf("application/json", "text/plain", "application/octet-stream"),
+            )
         }
         runCatching { activity.startActivityForResult(intent, REQUEST_IMPORT) }
-            .onFailure { Toast.makeText(activity, "没有文件选择器：${it.message}", Toast.LENGTH_LONG).show() }
+            .onFailure {
+                pendingImportMerge = null
+                Toast.makeText(activity, "没有文件选择器：${it.message}", Toast.LENGTH_LONG).show()
+            }
     }
 
     fun pickExport() {
@@ -187,31 +231,46 @@ class RustPanel(private val activity: Activity) {
     /** 返回 true = 这个请求归本面板处理。 */
     fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?): Boolean {
         if (requestCode != REQUEST_IMPORT && requestCode != REQUEST_EXPORT) return false
+        if (requestCode == REQUEST_IMPORT) {
+            val merge = pendingImportMerge ?: true
+            pendingImportMerge = null
+            if (resultCode != Activity.RESULT_OK) return true
+            val uri = data?.data ?: return true
+            importFrom(uri, merge)
+            return true
+        }
         if (resultCode != Activity.RESULT_OK) return true
         val uri = data?.data ?: return true
-        when (requestCode) {
-            REQUEST_IMPORT -> importFrom(uri)
-            REQUEST_EXPORT -> exportTo(uri)
-        }
+        exportTo(uri)
         return true
     }
 
-    private fun importFrom(uri: Uri) {
+    private fun importFrom(uri: Uri, merge: Boolean) {
         val text = runCatching {
             activity.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() }
         }.getOrNull()
         if (text.isNullOrBlank()) {
-            Toast.makeText(activity, "读取文件失败", Toast.LENGTH_LONG).show()
+            showImportResult("读取文件失败（${uri.lastPathSegment ?: uri}）", failed = true)
             return
         }
-        val report = RustBridge.importFrom(text, merge = true)
+        val before = shortcutCount()
+        val report = RustBridge.importFrom(text, merge)
         val ok = report?.optBoolean("ok", false) ?: false
-        val message = if (ok) {
-            "已合并导入（只增不删；设置保留本机）"
-        } else {
-            "导入失败：${report?.optString("error") ?: "Rust 未加载"}"
+        if (!ok) {
+            val error = report?.optString("error").orEmpty().ifBlank { "Rust 未加载" }
+            showImportResult("${if (merge) "合并" else "替换"}导入失败：$error", failed = true)
+            refresh()
+            return
         }
-        Toast.makeText(activity, message, Toast.LENGTH_LONG).show()
+        val after = shortcutCount()
+        val archive = if (merge) null else latestArchive()
+        showImportResult(
+            buildString {
+                append("${if (merge) "合并" else "替换"}导入完成：快捷键 $before → $after 条")
+                if (merge) append("（只增不删，设置保留本机）") else if (archive != null) append("\n旧配置留档：$archive")
+            },
+            failed = false,
+        )
         refresh()
     }
 
@@ -226,6 +285,61 @@ class RustPanel(private val activity: Activity) {
             if (ok) "已导出 ${text.length} 字节" else "写入失败",
             Toast.LENGTH_LONG,
         ).show()
+    }
+
+    private fun confirmReset() {
+        AlertDialog.Builder(activity)
+            .setTitle("恢复出厂示例")
+            .setMessage(
+                "会删掉本机 config.json，重新落回出厂 5 条示例。\n\n" +
+                    "删之前先留档 config.json.pre-reset-<时间戳>。",
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("恢复") { _, _ -> resetToSample() }
+            .show()
+    }
+
+    private fun resetToSample() {
+        val archive = archiveCurrent(PRE_RESET_MARK)
+        RustBridge.resetToSample(activity)
+        showImportResult(
+            buildString {
+                append("已恢复出厂示例：快捷键 ${shortcutCount()} 条")
+                if (archive != null) append("\n旧配置留档：$archive")
+            },
+            failed = false,
+        )
+        refresh()
+    }
+
+    /**
+     * 「恢复出厂」前把当前配置留一份：`RustBridge.resetToSample` 直接删文件，
+     * 不像替换导入那样自带 `archive_copy`，这里补上同一个命名习惯，避免一键丢配置。
+     */
+    private fun archiveCurrent(mark: String): String? {
+        val dir = activity.filesDir
+        val source = File(dir, CONFIG_NAME)
+        if (!source.exists()) return null
+        val name = "$CONFIG_NAME.$mark-${ARCHIVE_STAMP.format(Date())}"
+        return runCatching {
+            source.copyTo(File(dir, name), overwrite = false)
+            name
+        }.getOrNull()
+    }
+
+    private fun latestArchive(): String? = activity.filesDir
+        .listFiles { f -> f.name.startsWith("$CONFIG_NAME.$PRE_IMPORT_MARK-") }
+        ?.maxByOrNull { it.lastModified() }
+        ?.name
+
+    private fun shortcutCount(): Int =
+        RustBridge.json()?.optJSONObject("counts")?.optInt("shortcuts", -1) ?: -1
+
+    private fun showImportResult(message: String, failed: Boolean) {
+        if (!::tvImport.isInitialized) return
+        tvImport.text = message
+        tvImport.setTextColor(if (failed) 0xFFB3261E.toInt() else 0xFF1B7F3B.toInt())
+        Toast.makeText(activity, message.replace("\n", "；"), Toast.LENGTH_LONG).show()
     }
 
     // --- 小工具（与 MainActivity 同一套观感）---
@@ -273,5 +387,9 @@ class RustPanel(private val activity: Activity) {
     companion object {
         private const val REQUEST_IMPORT = 4101
         private const val REQUEST_EXPORT = 4102
+        private const val CONFIG_NAME = "config.json"
+        private const val PRE_RESET_MARK = "pre-reset"
+        private const val PRE_IMPORT_MARK = "pre-import"
+        private val ARCHIVE_STAMP = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
     }
 }

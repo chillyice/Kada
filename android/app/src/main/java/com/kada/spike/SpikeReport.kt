@@ -168,6 +168,8 @@ object SpikeReport {
                 put("lastAtMs", record.lastAtMs)
                 put("okCount", record.okCount)
                 put("failCount", record.failCount)
+                put("lastFailDetail", record.lastFailDetail)
+                put("lastFailAtMs", record.lastFailAtMs)
             })
         }
         root.put("actions", actions)
