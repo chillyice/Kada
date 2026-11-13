@@ -255,5 +255,7 @@ S1 段：
   规划 §4 的方案 ③ 仍待定。
 - `ControlReceiver` 是 `exported=true` 的 adb 控制入口，但配了 `android:permission="android.permission.DUMP"`：
   只有 shell / system 持有该权限，普通应用发不进来（`adb shell am broadcast` 照旧可用）。
-- 模拟器无法验证：真机厂商 ROM 对 `GLOBAL_ACTION_*` 的裁剪、物理键盘连发、锁屏 8 小时存活。
+- 模拟器无法验证的三项，2026-11-13 华为 MRO-W00（Android 12 / sdk 31）真机回过一次：
+  **`GLOBAL_ACTION_*` 七项全通（没被裁）**、**两台物理键盘可同时接管且不丢键**（67 down / 67 up、`unmatchedUp=0`）；
+  **仍缺**：命中即吞的真机验证（那次只打了字，5 条示例快捷键一次没按）、长按连发、锁屏 8 小时存活。
 - `sendevent` 需要 root（模拟器 `adb root` 即可）；真机自动化要么 root，要么用外接键盘手测。
