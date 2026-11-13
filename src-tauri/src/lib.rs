@@ -9,7 +9,7 @@
 //! [`Recorder`] 判定。Windows / Linux 已有钩子实现，其它平台（macOS）壳仍
 //! 可编译运行（改键/快捷键/录制暂不可用，托盘与配置界面可用）。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -29,12 +29,12 @@ use kada_actions::{
 use kada_core::ClipboardMenu;
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
-    is_touchpad_trigger, matches, parse_snippet_index, publish_payload, sanitize_config,
-    scan_snippet, snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardOperation,
-    Config, Conflict, IndexEntry, Key, Modifier, RawEvent, Remap, Settings, Severity, Shortcut,
-    ShortcutItem, SnippetMeta, SnippetPick, SnippetScan, TextExpansion, TextInjectMode,
-    TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL,
-    DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
+    is_touchpad_trigger, parse_snippet_index, publish_payload, sanitize_config, scan_snippet,
+    snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardOperation, Config, Conflict,
+    IndexEntry, Key, Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick,
+    SnippetScan, TextExpansion, TextInjectMode, TriggerContext, Vars,
+    DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL, DEFAULT_SNIPPET_PUBLISH_URL,
+    SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -45,8 +45,8 @@ mod engine;
 /// 软件更新（Tauri updater + GitHub Releases + Ed25519 签名），与 Tauri 壳解耦、可单测。
 mod update;
 
-/// 配置读写（原子写 + 损坏自愈），与 Tauri 壳解耦、可单测。
-mod config_io;
+/// 配置读写（原子写 + 损坏自愈）：安卓版 S1 起搬进 `kada-core`，桌面壳与安卓壳共用。
+use kada_core::config_io;
 
 /// 配置外部修改监听（手改 JSON / 恢复备份 / 同步落盘后自动生效），与 Tauri 壳解耦、可单测。
 mod config_watch;
@@ -137,9 +137,11 @@ pub(crate) use decide::FocusTracker;
 pub(crate) use decide::SECURE_INPUT_TICKS;
 #[cfg(test)]
 pub(crate) use decide::WAKE_DOUBLE_TAP_MS;
-pub(crate) use decide::{decide, pause_active, set_pause_lease, wake_double_tap, Ev, Outcome};
+pub(crate) use decide::{pause_active, set_pause_lease, wake_double_tap};
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 pub(crate) use decide::{spawn_hotstring, to_ev, ResetWatch, ENGINE_TICK_MS};
+/// 单条事件的判定与快捷键匹配（安卓版 S1-a 起搬进 `kada-core`，桌面壳与安卓壳共用）。
+pub(crate) use kada_core::{decide, Ev, Outcome};
 
 /// 把平台注入（SendInput / uinput）接到引擎的 [`Inject`] 通道。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]

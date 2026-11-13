@@ -2,6 +2,10 @@
 
 use super::*;
 
+use std::collections::BTreeSet;
+
+use kada_core::Modifier;
+
 /// `ui/src/options.ts` 的键表是 `kada-core` 的手抄副本（改键下拉 / 组合键录入显示名），
 /// 一旦 Rust 新增 `Key` 而前端漏了，下拉会静默空白、保存时可能写空值（见规划 7.4-㉘）。
 /// 这里按字面量解析前端数组 / 对象，跟 [`Key::ALL`]（与 `key_name` 同源生成）逐一比对。

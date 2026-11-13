@@ -2251,9 +2251,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "kada-android"
+version = "0.1.0"
+dependencies = [
+ "jni 0.21.1",
+ "kada-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "kada-core"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
 ]

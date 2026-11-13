@@ -22,7 +22,7 @@
 
 > 每条违反了都是 bug，不是风格问题。**这里只留约束（该做 / 不许做什么）**；机制与「为什么」看小节括号里的引用，**别在本文件复述**。
 
-### 1.1 配置与落盘（`src-tauri/src/config_io.rs` / `config_watch.rs`｜说明书 §5.6）
+### 1.1 配置与落盘（`crates/kada-core/src/config_io.rs` / `config_watch.rs`｜说明书 §5.6）
 
 - **保存 = 原子写**（临时 → `fsync` → `rename`，留 `.bak`），**不要退回 `fs::write`**
 - **解析失败绝不静默清空**：留档 → `.bak` 恢复；全失败才空配置 + 告警
@@ -141,7 +141,7 @@
 
 | 项 | 值 |
 |----|----|
-| workspace members | `crates/kada-core` / `crates/kada-hook` / `crates/kada-actions` / `src-tauri` |
+| workspace members | `crates/kada-core` / `crates/kada-hook` / `crates/kada-actions` / `crates/kada-android` / `src-tauri` |
 | Tauri crate 名（`src-tauri/Cargo.toml`） | `kada` |
 | npm 包名（`ui/package.json`） | `kada-ui` |
 | Tauri `identifier` | `com.kada` |

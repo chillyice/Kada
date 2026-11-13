@@ -13,8 +13,11 @@
 //!
 //! 与 Tauri 无关，可单测。
 //!
-//! 运行期的**外部修改监听**（[`crate::config_watch`]）走另一条口子 [`read_only`]：同样解析
+//! 运行期的**外部修改监听**走另一条口子 [`read_only`]：同样解析
 //! 配置，但**绝不碰磁盘**——自愈那套只属于启动，见该函数注释。
+//!
+//! 安卓版（S1）与桌面壳共用这一份：路径由调用方给（桌面 = 配置目录，安卓 = app 私有目录），
+//! 两条规矩一模一样——**原子写**、**损坏绝不静默清空**。
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Write};
@@ -22,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use kada_core::Config;
+use crate::Config;
 
 /// 上次保存成功时的良好副本：损坏时的自愈来源，也是手动回滚点。
 const BAK_SUFFIX: &str = ".bak";
@@ -311,7 +314,7 @@ fn file_name(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kada_core::{Action, ShortcutItem, TextMode};
+    use crate::{Action, ShortcutItem, TextMode};
 
     /// 独立临时目录（进程 id + 序号，避免并行测试 / 多进程互相踩），析构时清理。
     struct TmpDir(PathBuf);

@@ -1,0 +1,16 @@
+[package]
+name = "kada-android"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "kada_android"
+# cdylib = 给 Kotlin 用的 .so；rlib = 让本机跑单测（判定逻辑必须能在宿主机上验）。
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+kada-core = { path = "../kada-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# JNI 桥（只在 Android 上被真正调用；宿主机上也能编，方便 cargo check）。
+jni = "0.21"

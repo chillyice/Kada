@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  S0 spike（docs/安卓版规划.md §6）：只有无障碍 + 前台服务 + 语义动作，
+  没有任何 Rust / JNI / 网络代码，NDK 未装也能编。
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 语义动作表里 ACTION_SET_TEXT / 复制粘贴走无障碍节点，不需要额外权限 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:name=".KadaApp"
+        android:allowBackup="false"
+        android:icon="@drawable/ic_kada"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.KadaSpike">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".KeyFilterService"
+            android:exported="true"
+            android:label="@string/accessibility_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <service
+            android:name=".HeartbeatService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="S0 spike: keep the accessibility key router process alive" />
+        </service>
+
+        <!--
+          仅 S0 探针用：给 adb / 自动化脚本一个开关入口（am broadcast）。
+          出货前必须删掉或改成 signature 权限（docs/安卓版规划.md §8）。
+        -->
+        <receiver
+            android:name=".ControlReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.kada.spike.CONTROL" />
+            </intent-filter>
+        </receiver>
+    </application>
+</manifest>

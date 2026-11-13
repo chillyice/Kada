@@ -52,6 +52,12 @@ pub use trigger::{
 mod action;
 pub use action::*;
 
+/// 决策层（安卓版 S1-a 搬出）：跨平台事件模型 `Ev` / 单条事件的决定 / 快捷键与改键匹配。
+///
+/// 从桌面壳搬进 core 是为了让安卓壳与桌面壳共用同一份判定——两边只差「谁去执行动作」。
+mod decide;
+pub use decide::{decide, match_plain_remap, match_shortcut, Ev, Outcome};
+
 // ---------------------------------------------------------------------------
 // 配置模型：咔哒的配置是跨平台同步介质，直接以 JSON 形式落盘/交换。
 // 快捷键以 "Ctrl+Alt+K" 文本存放（人类可读、可编辑），加载时解析校验。
@@ -74,6 +80,9 @@ type WhenKey = Option<()>;
 /// 冲突检测（C-04 从 lib.rs 搬出）：Severity / Conflict / PlatformCaps / 平台与输入环境诊断。
 mod conflicts;
 pub use conflicts::*;
+
+/// 配置读写（原子写 + 损坏自愈），与 Tauri 壳解耦、可单测。安卓壳共用同一份。
+pub mod config_io;
 
 /// 配置 / 动作迁移（C-04 从 lib.rs 搬出）：旧版动作归一化与设置越界值钳制。
 mod migrate;

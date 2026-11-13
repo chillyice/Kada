@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  canRequestFilterKeyEvents + flagRequestFilterKeyEvents 是 S0-1 的全部前提。
+  notificationTimeout 调到 50ms 是为了让窗口事件（前台包名）足够新，不影响按键。
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRequestFilterKeyEvents|flagReportViewIds|flagRetrieveInteractiveWindows"
+    android:canRequestFilterKeyEvents="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_description"
+    android:notificationTimeout="50"
+    android:settingsActivity="com.kada.spike.MainActivity" />
