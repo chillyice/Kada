@@ -6,6 +6,10 @@
   --muted: #8b93a3;
   --accent: #e06040;
   --accent-dim: #7a3a2a;
+  /* 「执行中」的蓝。原先复用 --accent，而 accent 橙 #e06040 与失败红 #e0574f 只差一点，
+     徽标 / 边框 / 圆点糊在一起分不清。换成一档独立的蓝，与成功绿、失败红、中止黄都不撞；
+     这是唯一要分主题的结论色——同一档亮蓝当文字在浅底上太淡。 */
+  --run: #4aa3f0;
   /* 单行控件（按钮 / 输入框 / 下拉 / 页签）的统一高度：以列表顶栏按钮为基准，
      全站一个值——原先 26~34px 参差，一行里高低不齐。改这里即可整体调。 */
   --ctl-h: 26px;
@@ -43,6 +47,9 @@
   --muted: #626b7a;
   --accent: #d1553a;
   --accent-dim: #f6ddd6;
+  /* 同一档蓝在浅底上要压深：#4aa3f0 作 11~12px 小字只剩 ~2:1，看不出是「执行中」。
+     #1a6ab8 在白面板上 5.3:1、淡底上 4.7:1。 */
+  --run: #1a6ab8;
   --hover-bg: rgba(0, 0, 0, 0.05);
   --float-bg: rgba(255, 255, 255, 0.97);
   --line-soft: rgba(0, 0, 0, 0.08);
@@ -3486,7 +3493,7 @@ body:has(.hints-panel) {
 }
 
 .msg-tab.is-running .msg-tab-dot {
-  background: var(--accent);
+  background: var(--run);
   animation: pulse 1.2s ease-in-out infinite;
 }
 .msg-tab.is-ok .msg-tab-dot {
@@ -3650,7 +3657,7 @@ pre.msg-output-pre.collapsed {
   color: #e0bb5c;
 }
 .msg-run-badge.st-running {
-  color: var(--accent);
+  color: var(--run);
 }
 
 /* 「执行中」徽标右侧的停止按钮：方形图标（■）比文字省地方，只在跑着的记录上出现。
@@ -3811,7 +3818,7 @@ pre.msg-output-pre.collapsed {
   color: #e0bb5c;
 }
 .tl-block.st-running .tl-block-flag {
-  color: var(--accent);
+  color: var(--run);
 }
 
 .tl-empty {
@@ -3859,7 +3866,7 @@ pre.msg-output-pre.collapsed {
   border-color: #c8a13a;
 }
 .st-running {
-  border-color: var(--accent);
+  border-color: var(--run);
 }
 
 .pipe-head {
@@ -3903,7 +3910,7 @@ pre.msg-output-pre.collapsed {
   color: #e0bb5c;
 }
 .pipe-block.st-running .pipe-flag {
-  color: var(--accent);
+  color: var(--run);
 }
 
 .pipe-detail {
@@ -5353,6 +5360,8 @@ html[data-theme="crt"]:has(.layout)::after {
   --muted: #626b7a;
   --accent: #d1553a;
   --accent-dim: #f6ddd6;
+  /* 浅色像素档沿用深色档的蓝会太淡，跟浅色主题一样压深。 */
+  --run: #2d5fa8;
   --hover-bg: rgba(0, 0, 0, 0.05);
   --float-bg: rgba(255, 255, 255, 0.97);
   --line-soft: rgba(0, 0, 0, 0.08);
