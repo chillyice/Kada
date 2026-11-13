@@ -16,7 +16,9 @@ import java.io.File
  *   -n com.kada.spike/.ControlReceiver --es op export
  * ```
  *
- * `exported=true` 是探针的取舍：出货前必须删掉（docs/安卓版规划.md §8）。
+ * `exported=true` 是为了让 adb 发得进来，但配了 `android.permission.DUMP`：
+ * 只有 shell / system 持有该权限，普通应用广播不进来（docs/安卓版规划.md §8）。
+ * 注意：adb 若被换成普通应用身份（非 shell uid）同样会被拦，这是预期行为。
  */
 class ControlReceiver : BroadcastReceiver() {
 

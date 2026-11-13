@@ -52,12 +52,15 @@
         </service>
 
         <!--
-          仅 S0 探针用：给 adb / 自动化脚本一个开关入口（am broadcast）。
-          出货前必须删掉或改成 signature 权限（docs/安卓版规划.md §8）。
+          adb / 自动化脚本的控制入口（am broadcast）。
+          门控用 android.permission.DUMP：它是 signature|privileged 级权限，只有 shell / system 持有，
+          普通应用发不进来 —— 取代早期「出货前记得删」的口头约定（docs/安卓版规划.md §8）。
+          adb 侧照旧：adb shell am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver ...
         -->
         <receiver
             android:name=".ControlReceiver"
-            android:exported="true">
+            android:exported="true"
+            android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="com.kada.spike.CONTROL" />
             </intent-filter>

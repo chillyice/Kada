@@ -24,7 +24,7 @@ android/
     TierProbe.kt             档位探测（root / /dev/uinput / 物理键盘）
     SpikeState.kt            进程内状态（开关 / 统计 / 事件环 / 延迟 / 动作结果 / 焦点）
     SpikeReport.kt           导出 kada-s0-report.json（S0 + S1 共用）
-    ControlReceiver.kt       adb 控制入口（**探针专用，出货前删**）
+    ControlReceiver.kt       adb 控制入口（`android.permission.DUMP` 门控：只有 shell / system 能发）
   app/src/main/jniLibs/<abi>/libkada_android.so   cargo-ndk 产物（不进 Git）
   tools/build-rust.ps1       编 Rust 动态库（cargo-ndk，Gradle 不编它）
   tools/verify.ps1           自动化验收（构建 / 安装 / 开无障碍 / 逐条测 / 读报告）
@@ -253,6 +253,7 @@ S1 段：
   要进配置 / 界面 / i18n 得单独一轮（规划 §11 已记）。
 - S1 的 `text` 动作走「写剪贴板 + `ACTION_PASTE`」：粘贴依赖目标输入框、会覆盖用户剪贴板，
   规划 §4 的方案 ③ 仍待定。
-- `ControlReceiver` 是 `exported=true` 的调试入口，**出货前必须删除**。
+- `ControlReceiver` 是 `exported=true` 的 adb 控制入口，但配了 `android:permission="android.permission.DUMP"`：
+  只有 shell / system 持有该权限，普通应用发不进来（`adb shell am broadcast` 照旧可用）。
 - 模拟器无法验证：真机厂商 ROM 对 `GLOBAL_ACTION_*` 的裁剪、物理键盘连发、锁屏 8 小时存活。
 - `sendevent` 需要 root（模拟器 `adb root` 即可）；真机自动化要么 root，要么用外接键盘手测。
