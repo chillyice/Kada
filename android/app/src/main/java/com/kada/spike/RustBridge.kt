@@ -98,6 +98,15 @@ object RustBridge {
         return parseObject(report)
     }
 
+    /**
+     * 编辑期校验一条触发键：解析（含大小写补正）与撞车判定都在 Rust（core 的
+     * `Trigger::parse_loose`）——**Kotlin 不解析触发键**，否则与桌面分叉。
+     *
+     * `excludeIndex` = 正在编辑的条目下标（新建传 -1）：跳过「和自己重复」。
+     */
+    fun checkTrigger(trigger: String, excludeIndex: Int): JSONObject? =
+        parseObject(runCatching { nativeCheckTrigger(trigger, excludeIndex) }.getOrNull())
+
     fun exportText(): String = if (ensureLoaded()) nativeExport() else ""
 
     fun save(text: String): JSONObject? {
@@ -182,6 +191,7 @@ object RustBridge {
     private external fun nativeReset()
     private external fun nativeSetForeground(pkg: String): String
     private external fun nativeTriggers(): String
+    private external fun nativeCheckTrigger(trigger: String, excludeIndex: Int): String
     private external fun nativeImport(text: String, merge: Boolean): String
     private external fun nativeExport(): String
     private external fun nativeSave(text: String): String

@@ -18,6 +18,9 @@ android/
     SemanticActions.kt       §3.2 语义动作表（ACTION_* / GLOBAL_ACTION_*）
     RustBridge.kt            JNI 桥（System.loadLibrary("kada_android") + 静态方法声明）
     RustPanel.kt             S1 面板：报告、触发键清单、导入 / 导出（SAF）、执行日志
+    ShortcutEditor.kt        S1-d 最小配置编辑器：列表 + 编辑对话框 + 录入按键 + 删除确认
+    ShortcutStore.kt         编辑器数据层：唯一落盘入口（先 Rust 校验触发键，再整份 save）
+    TriggerCapture.kt        触发键录入：无障碍回调里截按键，录到的那个键连抬起一起吞
     ActionRunner.kt          把 Rust 返回的「命中条目」变成动作：open_url / text / clipboard / pause / 禁用
     KeyNames.kt              安卓 keycode ↔ core `Key` 名（必须与 core 逐字一致）
     HeartbeatService.kt      前台服务 + 常驻通知 + 心跳日志（S0-4）
@@ -104,6 +107,16 @@ adb shell am start -n com.kada.spike/.MainActivity
   软冲突、告警、`notes`（含吞键策略说明）。
 - **执行日志**：最近命中的快捷键、动作结果、失败原因（报告里 `actions.<id>.lastFailDetail` /
   `lastFailAtMs` 只记失败、成功不覆盖——真机出现「成功过但失败过」时也能看到错在哪）。
+- **快捷键编辑器（S1-d）**：面板末尾 + 顶部「快捷键编辑器」按钮（滚过去）。新建 / 编辑 / 删除一条，
+  字段只有「名称 / 触发键 / 动作类型 / 参数 / 启用」；动作类型只给 `open_url` / `text` /
+  `clipboard` / `semantic` / `pause_ms`，别的类型一律 `ACTION_KEEP`（**改触发键不动动作链**）。
+  - 触发键解析与撞车判定在 **Rust**（`Trigger::parse_loose`：严格规则失败后只补正大小写，
+    `ctrl+alt+k` → `Ctrl+Alt+K`；重复触发键是 core 的**硬冲突**，编辑器拦保存）；
+  - 保存走 `ShortcutStore.save()` → `RustBridge.save` → `sanitize_config` + `config_io`：
+    与桌面同一条落盘路径（原子写 + `.bak`），保存即生效、不用重启；
+  - 「录入按键」在下一次按键时截（`TriggerCapture`），录入期间整条判定跳过、按键全吞——
+    否则录 F8 会先把 F8 原来的快捷键触发一遍；录到后连它的抬起一起吞，安全阀是「新的非修饰键按下即放弃」；
+  - 同一条目有多个触发键时**只改第一个**，其余原样保留（对话框里有提示）。
 
 判定口径（S1-a）：
 
@@ -137,6 +150,13 @@ adb shell am broadcast @ctl --es op resetConfig                # 删配置 + 重
 adb shell am broadcast @ctl --es op import --es file incoming.json --ez merge true
 adb shell am broadcast @ctl --es op exportConfig               # 导出到 files/exported-config.json
 adb shell am broadcast @ctl --es op decide --es key F8 --ez down true --ez reset true --es mods "Ctrl,Alt"
+# S1-d 编辑器（与界面同一份 ShortcutStore；--es 的值不能带空格，带空格会被 adb 拆成多个 token）
+adb shell am broadcast @ctl --es op editorList
+adb shell am broadcast @ctl --es op editorAdd --es name 名字 --es trigger f4 --es action open_url --es value "https://example.com/x"
+adb shell am broadcast @ctl --es op editorAdd --es name 语义 --es trigger F3 --es action semantic --es value notifications
+adb shell am broadcast @ctl --es op editorCheck --es trigger "ctrl+k"     # 校验 + 大小写补正 + 撞车
+adb shell am broadcast @ctl --es op editorDelete --ei index 5
+adb shell am broadcast @ctl --es op editorOpen                          # 主界面滚到编辑器
 # 探针杂项
 adb shell am broadcast @ctl --es op fire --es action screenshot
 adb shell am broadcast @ctl --es op focusField                 # 把光标放进「吞键验证输入框」（自动重试）
@@ -167,9 +187,12 @@ powershell android\tools\verify.ps1 -SkipBuild # 只跑检查
 - `Test-KeyFlow` 对按键类断言**失败重试一次**（模拟器偶发丢一次 `sendevent`），
   真回归会两次都失败；重试成功时打 `[warn]` 留痕。
 
-## 已验证（2026-11-13，emulator-5554 / ihomy34，Android 14）
+## 已验证（2026-11-16，emulator-5554 / ihomy34，Android 14）
 
-`android/tools/verify.ps1` **35/35 通过**（s4 版本，S1 段新增 S1-3 三断言）。
+`android/tools/verify.ps1` **41/41 通过**（s4 版本；S1-3 三条 + S1-4 编辑器七条是新增）。
+编辑器另用 `uiautomator` 真点验过整条路径：顶部「快捷键编辑器」滚到面板末尾、新建对话框字段与下拉渲染、
+「录入按键」按物理 `Ctrl+F6` 回填并显示「✓ 已录入」、切「语义动作」保存后列表变 6 条
+（`#5 [Ctrl+F6] semantic`）、点「删除」弹确认框、确认后回到 5 条。
 
 S0 段（32 项检查里的 S0 部分）：
 
@@ -208,9 +231,18 @@ S1 段：
 | S1-3 语义动作算「本机支持」 | ✅ `{"type":"semantic","operation":"notifications"}` 不进 `unsupported_actions` | 报告 `unsupported_actions=0` |
 | S1-3 F5 → 语义动作 | ✅ 合并导入的 F5 命中，down/up 都吞 | `rust.fires` / `events` |
 | S1-3 语义动作执行成功 | ✅ 通知栏真的拉下来（`ok=True`） | 报告 `actions['rust:F5'].lastOk` |
+| S1-4 编辑器新建（大小写补正） | ✅ 广播带 `f4`（小写）→ 落盘成 `F4`，条数 +1；`sanitize_config` 不再把它当坏触发键丢掉 | 报告 `editor.shortcuts[].triggers` |
+| S1-4 新建条目立即生效 | ✅ 新建的 `F4` 按下就命中（无需重启） | `rust.fires` / `editor.shortcuts` |
+| S1-4 编辑器写语义动作 | ✅ `type=semantic` + `operation=notifications`，列表摘要「语义动作：通知栏」 | 报告 `editor.shortcuts[].actionType/actionSummary` |
+| S1-4 语义动作执行成功 | ✅ F3 命中且 `lastOk=true` | 报告 `actions['rust:F3']` |
+| S1-4 撞车校验 | ✅ `F4` 已被占用时 `duplicates=#6 编辑器测试`（core 硬冲突口径，编辑器拦保存） | 报告 `editor.lastCheck.duplicates` |
+| S1-4 拒绝无效触发键 | ✅ `Foo+K` → `ok=false`，错误「未知按键: Foo」 | 报告 `editor.lastCheck.error` |
+| S1-4 删除条目 | ✅ 条数 −1 且按名字确认已消失 | 报告 `editor.shortcuts` |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去。
-> 本轮 s4 全量跑 **35/35 通过**（S1-3 的三条是新增）；旧的 32 项基线此前连跑两轮一致。
+> 本轮 s4 全量跑 **41/41 通过**；旧的 35 项（S1-3）与 32 项基线此前连跑两轮一致。
+> S1-4 的七条走的是**与界面同一份** `ShortcutStore`（广播只是代替点按），
+> 控件的点击手势、录入按键仍属人工验证（`docs/人工验证清单.md` §90）。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -258,6 +290,14 @@ S1 段：
   打完了，外层却挂到超时才被杀（日志是完整的，只有管道不收尾）。`verify.ps1` 里 Gradle 改走
   「输出落临时文件 → 用 `FileShare.ReadWrite` 读回来回显」，daemon 拿的是文件句柄而不是管道。
   自己手动跑时同理：要留日志就 `> 文件`，别 `| Tee-Object`。
+- **`am broadcast --es` 的值不能带空格**：`--es name "S1 编辑器测试"` 会被 `adb shell` 拆成
+  多个 token，后面所有 extra 跟着错位——现象是 `trigger` 变成空串、报「触发键不能为空」。
+  要么用不带空格的名字，要么自己在远端加引号。
+- **`view.top` 是相对父容器的**：把编辑器插在面板列里之后，`scrollTo(0, view.top)` 会滚到半路；
+  必须 `getLocationInWindow` 拿两个绝对位置相减，换回内容坐标。
+- **`wrap_content` 对话框里 `weight` 会塌成 0**：编辑对话框的高度要按屏高算一个确定值
+  （`heightPixels * 0.62`），否则按钮行被挤没。软键盘弹出后对话框会整体上移，
+  这时 `input tap` 打按屏幕绝对坐标会点到键盘上——先 `input keyevent 4` 收键盘再点按钮。
 
 ## 已知限制 / 下一步
 
@@ -269,6 +309,9 @@ S1 段：
   **真机逐条 op 的表现**（尤其厂商 ROM 对 `GLOBAL_ACTION_*` 的裁剪）见 `docs/人工验证清单.md` §89。
 - S1 的 `text` 动作走「写剪贴板 + `ACTION_PASTE`」：粘贴依赖目标输入框、会覆盖用户剪贴板，
   规划 §4 的方案 ③ 仍待定。
+- **编辑器只做「够用」那一档**：动作类型只有五类（`open_url` / `text` / `clipboard` /
+  `semantic` / `pause_ms`），别的类型保持原样不动；同一条目有多个触发键时只改第一个；
+  没有目录 / 层 / `when` 的编辑（手机屏上做不了桌面的全量编辑器，但也不许「改个触发键把动作改没了」）。
 - `ControlReceiver` 是 `exported=true` 的 adb 控制入口，但配了 `android:permission="android.permission.DUMP"`：
   只有 shell / system 持有该权限，普通应用发不进来（`adb shell am broadcast` 照旧可用）。
 - 模拟器无法验证的三项，2026-11-13 华为 MRO-W00（Android 12 / sdk 31）真机回过一次：

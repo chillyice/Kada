@@ -69,6 +69,20 @@ class KeyFilterService : AccessibilityService() {
         val recvNanos = System.nanoTime()
         val raw = RawKey.from(event, recvNanos)
 
+        // 编辑器录入触发键：整条判定先让路（否则录 F8 会先把 F8 的快捷键触发一遍）。
+        if (TriggerCapture.active || TriggerCapture.pendingRelease) {
+            val swallowed = TriggerCapture.offer(
+                keyName = raw.keyName,
+                modsCsv = KeyNames.modifierCsv(event.metaState),
+                down = raw.isDown,
+                repeat = raw.repeat > 0,
+            )
+            if (swallowed) {
+                SpikeState.noteKey(raw, true, "capture")
+                return true
+            }
+        }
+
         // S1 主线：判定在 Rust（与桌面同一份 kada-core），这里只搬运 + 执行。
         if (SpikeState.useRustEngine && RustBridge.available) {
             val decision = RustBridge.decide(

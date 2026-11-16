@@ -38,14 +38,15 @@ pub use gesture::{
 /// 键模型（C-02 从 lib.rs 搬出）：修饰键 / 按键枚举 / 快捷键解析与匹配。
 mod keys;
 pub use keys::{
-    format_shortcut, key_name, matches, modifier_key, Key, Modifier, ParseError, RawEvent, Shortcut,
+    canonical_key_name, format_shortcut, key_name, matches, modifier_key, Key, Modifier,
+    ParseError, RawEvent, Shortcut,
 };
 
 /// 触发单元（C-02 续）：组合 / 序列 / 和弦的解析与时序，以及热串的键→字符映射。
 mod trigger;
 pub use trigger::{
-    is_hotstring_terminator, key_to_char, ChordAdvance, ChordTracker, SeqAdvance, SequenceTracker,
-    Trigger, DEFAULT_CHORD_TIMEOUT_MS, DEFAULT_SEQUENCE_TIMEOUT_MS,
+    format_trigger, is_hotstring_terminator, key_to_char, ChordAdvance, ChordTracker, SeqAdvance,
+    SequenceTracker, Trigger, DEFAULT_CHORD_TIMEOUT_MS, DEFAULT_SEQUENCE_TIMEOUT_MS,
 };
 
 /// 动作模型（C-03 从 lib.rs 搬出）：各类 Operation / Condition / Action 本体与默认值。

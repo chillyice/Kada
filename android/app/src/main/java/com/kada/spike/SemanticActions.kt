@@ -26,6 +26,8 @@ data class ActionSpec(
     val minSdk: Int,
     val needsInput: Boolean = false,
     val note: String = "",
+    /** `false` = 探针自用（不在 core 的 `SemanticOperation` 里），编辑器不该把它写进配置。 */
+    val coreOp: Boolean = true,
 )
 
 object ActionCatalog {
@@ -35,7 +37,7 @@ object ActionCatalog {
         ActionSpec("cut", "剪切", "ACTION_CUT", 26, needsInput = true),
         ActionSpec("select_all", "全选", "ACTION_SET_SELECTION 0..n", 26, needsInput = true, note = "SDK 没有 ACTION_SELECT_ALL，用选区整个文本模拟"),
         ActionSpec("ime_enter", "提交", "ACTION_IME_ENTER", 30, needsInput = true),
-        ActionSpec("set_text", "写入文本", "ACTION_SET_TEXT", 26, needsInput = true, note = "文本落地实验（探针自用）"),
+        ActionSpec("set_text", "写入文本", "ACTION_SET_TEXT", 26, needsInput = true, note = "文本落地实验（探针自用）", coreOp = false),
         ActionSpec("scroll_backward", "上翻页", "ACTION_SCROLL_BACKWARD", 26),
         ActionSpec("scroll_forward", "下翻页", "ACTION_SCROLL_FORWARD", 26),
         ActionSpec("recents", "最近任务", "GLOBAL_ACTION_RECENTS", 26),
@@ -45,8 +47,11 @@ object ActionCatalog {
         ActionSpec("quick_settings", "控制中心", "GLOBAL_ACTION_QUICK_SETTINGS", 26),
         ActionSpec("lock_screen", "锁屏", "GLOBAL_ACTION_LOCK_SCREEN", 28),
         ActionSpec("screenshot", "截图", "GLOBAL_ACTION_TAKE_SCREENSHOT", 30),
-        ActionSpec("toast", "气泡提示", "Toast（S0 调试）", 26),
+        ActionSpec("toast", "气泡提示", "Toast（S0 调试）", 26, coreOp = false),
     )
+
+    /** 能写进配置的语义动作（= `kada_core::SemanticOperation` 的 14 个 op）。 */
+    val coreOps: List<ActionSpec> = specs.filter { it.coreOp }
 
     fun byId(id: String): ActionSpec? = specs.firstOrNull { it.id == id }
 }

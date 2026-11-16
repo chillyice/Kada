@@ -31,6 +31,45 @@ fn parse_errors() {
     assert!("Ctrl+K+J".parse::<Shortcut>().is_err());
 }
 
+/// 宽松解析只补正大小写（手机上手敲是常态），**不猜别名、不模糊匹配**。
+#[test]
+fn loose_trigger_parse_fixes_case_only() {
+    // 小写键名 → 正式名，三种形态都要覆盖分隔符。
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("ctrl+alt+k").unwrap()),
+        "Ctrl+Alt+K"
+    );
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("f9 space").unwrap()),
+        "F9 Space"
+    );
+    assert_eq!(format_trigger(&Trigger::parse_loose("f&j").unwrap()), "F&J");
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("ctrl+f&j").unwrap()),
+        "Ctrl+F&J"
+    );
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("pageup").unwrap()),
+        "PageUp"
+    );
+
+    // 严格解析能过的，宽松解析结果一致（不改变正常输入）。
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("Ctrl+Alt+K").unwrap()),
+        "Ctrl+Alt+K"
+    );
+
+    // 真错的仍然是错：别名不在键名表里，缺主键也不行。
+    assert!(Trigger::parse_loose("").is_err());
+    assert!(Trigger::parse_loose("foo+k").is_err());
+    assert!(Trigger::parse_loose("pgup").is_err(), "别名不归宽松解析管");
+    // 空段被解析器忽略（与严格解析同口径）：`ctrl+` 就是裸 Ctrl，不是错误。
+    assert_eq!(
+        format_trigger(&Trigger::parse_loose("ctrl+").unwrap()),
+        "Ctrl"
+    );
+}
+
 #[test]
 fn wheel_is_a_mouse_trigger_but_only_when_bound() {
     let mut cfg = Config::default();

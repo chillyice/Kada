@@ -325,6 +325,65 @@ pub fn triggers_json() -> String {
     .unwrap_or_else(|_| "[]".into())
 }
 
+/// 编辑期校验一条候选触发键（Kotlin 侧**不解析触发键**，避免与桌面分叉）。
+///
+/// 用 core 的 `Trigger::parse_loose`（严格规则失败后只补正大小写），回传 `canonical`
+/// 让编辑器把输入框换成正式写法；`duplicates` 是「与哪些已有条目撞同一触发键」
+/// （core 把重复触发键算**硬冲突**，编辑器据此拦保存）。
+/// `exclude_index` = 正在编辑的条目下标（`-1` = 新建），用来跳过「和自己重复」。
+pub fn check_trigger_json(trigger: &str, exclude_index: i32) -> String {
+    with_state(|rt| check_trigger(trigger, exclude_index, &rt.cfg).to_string())
+        .unwrap_or_else(error_json)
+}
+
+fn check_trigger(trigger: &str, exclude_index: i32, cfg: &Config) -> serde_json::Value {
+    let text = trigger.trim();
+    if text.is_empty() {
+        return serde_json::json!({ "ok": false, "trigger": text, "error": "触发键不能为空" });
+    }
+    let parsed = match Trigger::parse_loose(text) {
+        Ok(t) => t,
+        Err(e) => {
+            return serde_json::json!({
+                "ok": false,
+                "trigger": text,
+                "error": e.to_string(),
+            })
+        }
+    };
+    let canonical = kada_core::format_trigger(&parsed);
+
+    // 撞车判定比的是**规范化后的写法**：`ctrl+k` 与 `Ctrl+K` 是同一个触发键。
+    let mut duplicates = Vec::new();
+    for (idx, item) in cfg.shortcuts.iter().enumerate() {
+        if exclude_index >= 0 && idx as i32 == exclude_index {
+            continue;
+        }
+        let hit = item.triggers.iter().any(|t| {
+            Trigger::parse_loose(t)
+                .map(|p| kada_core::format_trigger(&p) == canonical)
+                .unwrap_or(false)
+        });
+        if hit {
+            duplicates.push(serde_json::json!({
+                "item": idx,
+                "name": item.name.clone().unwrap_or_default(),
+                "enabled": item.enabled,
+                "layer": item.layer,
+            }));
+        }
+    }
+
+    serde_json::json!({
+        "ok": true,
+        "trigger": text,
+        "canonical": canonical,
+        "normalized": canonical != text,
+        "kind": trigger_kind(&parsed),
+        "duplicates": duplicates,
+    })
+}
+
 fn trigger_kind(t: &Trigger) -> &'static str {
     match t {
         Trigger::Combo(_) => "combo",
@@ -369,7 +428,7 @@ fn error_json(message: impl AsRef<str>) -> String {
 mod jni_bridge {
     use super::*;
     use jni::objects::{JClass, JString};
-    use jni::sys::{jboolean, jstring};
+    use jni::sys::{jboolean, jint, jstring};
     use jni::JNIEnv;
 
     fn read(env: &mut JNIEnv, s: &JString) -> String {
@@ -468,6 +527,17 @@ mod jni_bridge {
     }
 
     #[no_mangle]
+    pub extern "system" fn Java_com_kada_spike_RustBridge_nativeCheckTrigger<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        trigger: JString<'local>,
+        exclude_index: jint,
+    ) -> jstring {
+        let trigger = read(&mut env, &trigger);
+        write(&mut env, check_trigger_json(&trigger, exclude_index))
+    }
+
+    #[no_mangle]
     pub extern "system" fn Java_com_kada_spike_RustBridge_nativeImport<'local>(
         mut env: JNIEnv<'local>,
         _class: JClass<'local>,
@@ -496,3 +566,6 @@ mod jni_bridge {
         write(&mut env, save_json(&text))
     }
 }
+
+#[cfg(test)]
+mod edit_tests;

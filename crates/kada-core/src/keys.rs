@@ -338,6 +338,17 @@ pub(crate) mod parse {
     }
 }
 
+/// 大小写不敏感地把一个 token 还原成 core 的正式键名（`"ctrl" → "Ctrl"`、
+/// `"pageup" → "PageUp"`）。**只认 [`Key::ALL`] 的正式名，不猜别名**：别名表仍只在
+/// [`parse::key`] 里，别处再抄一份就又成了两个事实来源。
+pub fn canonical_key_name(token: &str) -> Option<&'static str> {
+    let lower = token.to_lowercase();
+    Key::ALL
+        .iter()
+        .map(|k| key_name(*k))
+        .find(|name| name.to_lowercase() == lower)
+}
+
 impl FromStr for Shortcut {
     type Err = ParseError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {

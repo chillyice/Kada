@@ -89,6 +89,59 @@ class ControlReceiver : BroadcastReceiver() {
                 Log.i(SpikeState.TAG, "ctrl op=rust loaded=${RustBridge.available} report=${report.take(600)}")
             }
 
+            // ---- S1-d 编辑器：与界面同一份 ShortcutStore，adb 侧只代替点按 ----
+            "editorAdd" -> {
+                RustBridge.init(context)
+                val result = ShortcutStore.save(
+                    index = null,
+                    name = intent.getStringExtra("name") ?: "",
+                    trigger = intent.getStringExtra("trigger") ?: "",
+                    actionType = intent.getStringExtra("action") ?: "open_url",
+                    actionValue = intent.getStringExtra("value") ?: "",
+                    enabled = intent.getBooleanExtra("enabled", true),
+                )
+                Log.i(SpikeState.TAG, "ctrl op=editorAdd ${ShortcutStore.lastResult} error=${result.error}")
+            }
+
+            "editorDelete" -> {
+                RustBridge.init(context)
+                val result = ShortcutStore.delete(intent.getIntExtra("index", -1))
+                Log.i(SpikeState.TAG, "ctrl op=editorDelete ${ShortcutStore.lastResult} error=${result.error}")
+            }
+
+            "editorCheck" -> {
+                RustBridge.init(context)
+                val check = ShortcutStore.check(intent.getStringExtra("trigger") ?: "", -1)
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=editorCheck ok=${check.ok} canonical=${check.canonical} kind=${check.kind} " +
+                        "normalized=${check.normalized} duplicates=${check.duplicates} error=${check.error}",
+                )
+            }
+
+            "editorList" -> {
+                RustBridge.init(context)
+                val list = ShortcutStore.entries()
+                Log.i(SpikeState.TAG, "ctrl op=editorList n=${list.size}")
+                for (e in list) {
+                    Log.i(
+                        SpikeState.TAG,
+                        "  #${e.index} ${e.name} [${e.triggers.joinToString("|")}] ${e.actionType} " +
+                            "enabled=${e.enabled} ${e.actionSummary}",
+                    )
+                }
+            }
+
+            "editorOpen" -> {
+                val activity = MainActivity.instance
+                if (activity == null) {
+                    Log.i(SpikeState.TAG, "ctrl op=editorOpen activity-not-open")
+                } else {
+                    activity.runOnUiThread { activity.openEditorForTest() }
+                    Log.i(SpikeState.TAG, "ctrl op=editorOpen ok")
+                }
+            }
+
             "decide" -> {
                 val key = intent.getStringExtra("key") ?: "F8"
                 val down = intent.getBooleanExtra("down", true)

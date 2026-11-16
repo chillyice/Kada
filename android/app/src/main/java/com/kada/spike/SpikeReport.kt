@@ -200,6 +200,35 @@ object SpikeReport {
             put("fires", fires)
         })
 
+        // S1-d 编辑器：最近一次编辑 / 校验结果 + 编辑器眼里的条目（adb 断言读这里，
+        // 与界面共用同一份 ShortcutStore，避免「脚本测的是另一条路」）。
+        root.put("editor", JSONObject().apply {
+            put("lastResult", ShortcutStore.lastResult)
+            ShortcutStore.lastCheck?.let { check ->
+                put("lastCheck", JSONObject().apply {
+                    put("ok", check.ok)
+                    put("canonical", check.canonical)
+                    put("kind", check.kind)
+                    put("error", check.error)
+                    put("normalized", check.normalized)
+                    put("duplicates", JSONArray(check.duplicates))
+                })
+            }
+            val list = JSONArray()
+            for (entry in ShortcutStore.entries()) {
+                list.put(JSONObject().apply {
+                    put("index", entry.index)
+                    put("name", entry.name)
+                    put("triggers", JSONArray(entry.triggers))
+                    put("enabled", entry.enabled)
+                    put("actionType", entry.actionType)
+                    put("actionSummary", entry.actionSummary)
+                    put("actionCount", entry.actionCount)
+                })
+            }
+            put("shortcuts", list)
+        })
+
         return root
     }
 

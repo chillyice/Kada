@@ -156,6 +156,12 @@ class MainActivity : Activity() {
                 button("停止心跳") { stopService(Intent(this, HeartbeatService::class.java)) } to 1f,
             ),
         )
+        column.addView(
+            hRow(
+                button("快捷键编辑器") { scrollToEditor() } to 1f,
+                button("导出报告") { exportReport() } to 1f,
+            ),
+        )
 
         column.addView(section("触发实验"))
         column.addView(textView("演示规则", 13f, bold = true).apply { setPadding(0, dp(2), 0, dp(2)) })
@@ -415,8 +421,27 @@ class MainActivity : Activity() {
     // 动作
     // ---------------------------------------------------------------------
 
-    private fun fireAction(id: String) {
-        val service = KeyFilterService.instance
+    /** 顶部的「快捷键编辑器」按钮：滚到 S1 面板末尾的编辑器（省得手滑半天）。 */
+    private fun scrollToEditor() {
+        val view = rustPanel.editorView() ?: return
+        // 编辑器嵌在面板列里，`top` 只是相对父容器的偏移；要跟 ScrollView 的屏幕位置相减，
+        // 才能换成内容坐标（直接拿 view.top 会滚到半路，别问怎么知道的）。
+        val viewLoc = IntArray(2)
+        view.getLocationInWindow(viewLoc)
+        val scrollLoc = IntArray(2)
+        scroll.getLocationInWindow(scrollLoc)
+        val target = scroll.scrollY + (viewLoc[1] - scrollLoc[1])
+        scroll.post { scroll.smoothScrollTo(0, target) }
+        Toast.makeText(this, "已滚到编辑器；列表底部可新建 / 编辑", Toast.LENGTH_SHORT).show()
+    }
+
+    /** 探针用：滚到快捷键编辑器（与界面顶部按钮同一条路径）。 */
+    fun openEditorForTest() {
+        scrollToEditor()
+        rustPanel.editorView()?.let { rustPanel.editorReloadForTest() }
+    }
+
+    private fun fireAction(id: String) {        val service = KeyFilterService.instance
         if (service == null) {
             Toast.makeText(this, "无障碍服务未连接", Toast.LENGTH_SHORT).show()
             return

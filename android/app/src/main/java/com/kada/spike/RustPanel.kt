@@ -36,6 +36,7 @@ class RustPanel(private val activity: Activity) {
     private lateinit var tvTriggers: TextView
     private lateinit var tvLog: TextView
     private lateinit var tvImport: TextView
+    private val editor = ShortcutEditor(activity)
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
     /** 只想选一次文件，选择器回调时靠它区分合并 / 替换。 */
@@ -88,6 +89,9 @@ class RustPanel(private val activity: Activity) {
 
         tvLog = body(11f, mono = true)
         column.addView(tvLog)
+
+        // S1-d 编辑器挂在本面板末尾：列表只在用户动作后重建，不跟着主界面 500ms 重绘跑。
+        column.addView(editor.build())
 
         refresh()
         return column
@@ -181,6 +185,15 @@ class RustPanel(private val activity: Activity) {
             Toast.LENGTH_SHORT,
         ).show()
         refresh()
+        editor.reloadList()
+    }
+
+    /** 主界面「快捷键编辑器」按钮用：把编辑器的根视件交出去，好滚到它。 */
+    fun editorView(): View? = editor.view()
+
+    /** 探针用：外部改完配置后让编辑器列表跟上（不重建整屏）。 */
+    fun editorReloadForTest() {
+        editor.reloadList()
     }
 
     fun pickImport(merge: Boolean) {
@@ -272,6 +285,7 @@ class RustPanel(private val activity: Activity) {
             failed = false,
         )
         refresh()
+        editor.reloadList()
     }
 
     private fun exportTo(uri: Uri) {
@@ -310,6 +324,7 @@ class RustPanel(private val activity: Activity) {
             failed = false,
         )
         refresh()
+        editor.reloadList()
     }
 
     /**

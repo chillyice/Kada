@@ -4,7 +4,8 @@
 use std::collections::BTreeSet;
 
 use crate::keys::{
-    format_shortcut, matches, modifier_key, parse, Key, Modifier, ParseError, RawEvent, Shortcut,
+    canonical_key_name, format_shortcut, matches, modifier_key, parse, Key, Modifier, ParseError,
+    RawEvent, Shortcut,
 };
 // ---------------------------------------------------------------------------
 // 键序列（leader key）触发：触发键从「单次组合」扩展为「组合 或 按键序列」。
@@ -58,6 +59,24 @@ impl Trigger {
         matches!(self, Trigger::Chord(_))
     }
 
+    /// 宽松解析：严格规则失败后，把每个 token 与 core 自己的键名表做**大小写不敏感**
+    /// 比对再试一次（手机上敲 `ctrl+alt+k` / `f5` / `space` 是常态）。
+    ///
+    /// **只补正大小写**：不猜别名、不做模糊匹配，最终仍交给 [`Trigger::parse`] 判定；
+    /// 补正后仍失败就回报**严格解析那条更具体的错误**（「未知按键: foo」比「空」有用）。
+    pub fn parse_loose(s: &str) -> Result<Trigger, ParseError> {
+        match Trigger::parse(s) {
+            Ok(t) => Ok(t),
+            Err(strict) => {
+                let fixed = rewrite_key_case(s);
+                if fixed == s {
+                    return Err(strict);
+                }
+                Trigger::parse(&fixed).map_err(|_| strict)
+            }
+        }
+    }
+
     /// 各步（组合键返回单元素切片，便于统一遍历）。
     pub fn steps(&self) -> &[Shortcut] {
         match self {
@@ -71,6 +90,43 @@ impl Trigger {
     pub fn first(&self) -> &Shortcut {
         &self.steps()[0]
     }
+}
+
+/// 触发键渲染回配置里的写法（`Ctrl+Alt+K` / `F9 Space` / `F&J`），与 [`Trigger::parse`]
+/// 互逆——编辑器「规范化」与报告展示共用，免得各处自己拼分隔符。
+pub fn format_trigger(t: &Trigger) -> String {
+    match t {
+        Trigger::Combo(s) => format_shortcut(s),
+        Trigger::Sequence(steps) => steps
+            .iter()
+            .map(format_shortcut)
+            .collect::<Vec<_>>()
+            .join(" "),
+        Trigger::Chord(members) => members
+            .iter()
+            .map(format_shortcut)
+            .collect::<Vec<_>>()
+            .join("&"),
+    }
+}
+
+/// 按 core 的正式键名重写大小写（`parse_loose` 的补正动作）。
+fn rewrite_key_case(text: &str) -> String {
+    text.split_whitespace()
+        .map(|step| {
+            step.split('&')
+                .map(|member| {
+                    member
+                        .split('+')
+                        .map(|part| canonical_key_name(part).unwrap_or(part).to_string())
+                        .collect::<Vec<_>>()
+                        .join("+")
+                })
+                .collect::<Vec<_>>()
+                .join("&")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// 解析和弦触发键（`&` 分隔同时按住的键，如 `F&J`、`Ctrl+F&J`、`Ctrl+Alt&J`）。

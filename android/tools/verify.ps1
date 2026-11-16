@@ -611,6 +611,68 @@ if ($exported) {
     Check "S1-3 语义动作执行成功" ($semRec -and $semRec.lastOk) "ok=$($semRec.lastOk) detail=$($semRec.lastDetail)"
     Shell "cmd statusbar collapse" | Out-Null
 
+    # S1-4 编辑器（ShortcutStore）：新建 / 校验 / 生效 / 删除。脚本走的是界面同一份数据层，
+    # 只是用广播代替点按——控件的点击手势由 uiautomator 手测（人工验证清单）。
+    $beforeEditor = @($script:lastReport.editor.shortcuts).Count
+
+    # 注意：`am broadcast --es` 的值**不能带空格**——adb shell 会把它拆成多个 token，
+    # 后面所有 extra 都跟着错位（表现成「触发键不能为空」）。要带空格得自己加远端引号。
+    $editorName = "编辑器测试"
+    $semName = "编辑器语义"
+    Bcast "editorAdd" @(
+        "--es", "name", $editorName,
+        "--es", "trigger", "f4",
+        "--es", "action", "open_url",
+        "--es", "value", "https://example.com/editor"
+    )
+    Start-Sleep -Milliseconds 500
+    $script:lastReport = Get-Report
+    $editorList = @($script:lastReport.editor.shortcuts)
+    $added = @($editorList | Where-Object { $_.name -eq $editorName })
+    $addedTrigger = if ($added.Count -eq 1) { @($added[0].triggers)[0] } else { "" }
+    Check "S1-4 编辑器新建（小写 f4 补正成 F4）" (($added.Count -eq 1) -and ($addedTrigger -eq "F4") -and ($editorList.Count -eq $beforeEditor + 1)) "n=$($editorList.Count) trigger=$addedTrigger"
+
+    $f4Ok = Test-KeyFlow -Label "F4 → 编辑器新建" -Send { SendKey 62 40 } -Assert { Rust-Fired "F4" }
+    Check "S1-4 编辑器新建的 F4 立即生效" $f4Ok "$(Event-Digest $script:lastReport)"
+
+    # 语义动作也走同一条路：编辑器写 `semantic` + 短名，执行器按 core 的 op 查表。
+    Bcast "editorAdd" @(
+        "--es", "name", $semName,
+        "--es", "trigger", "F3",
+        "--es", "action", "semantic",
+        "--es", "value", "notifications"
+    )
+    Start-Sleep -Milliseconds 500
+    $script:lastReport = Get-Report
+    $semEntry = @($script:lastReport.editor.shortcuts | Where-Object { $_.name -eq $semName })
+    Check "S1-4 编辑器写入语义动作（type=semantic）" (($semEntry.Count -eq 1) -and ($semEntry[0].actionType -eq "semantic")) "actionType=$($semEntry[0].actionType) summary=$($semEntry[0].actionSummary)"
+
+    $f3Ok = Test-KeyFlow -Label "F3 → 编辑器语义动作" -Send { SendKey 61 40 } -Assert { Rust-Fired "F3" }
+    $f3Rec = $script:lastReport.actions.'rust:F3'
+    Check "S1-4 编辑器新建的语义动作执行成功" ($f3Ok -and $f3Rec -and $f3Rec.lastOk) "ok=$($f3Rec.lastOk) detail=$($f3Rec.lastDetail)"
+    Shell "cmd statusbar collapse" | Out-Null
+
+    # 撞车校验：core 把「同触发键」算硬冲突，编辑器据此拦保存（这里只验校验结果）。
+    Bcast "editorCheck" @("--es", "trigger", "F4")
+    Start-Sleep -Milliseconds 400
+    $script:lastReport = Get-Report
+    $dup = @($script:lastReport.editor.lastCheck.duplicates)
+    Check "S1-4 编辑器撞车校验（F4 已被占用）" (([bool]$script:lastReport.editor.lastCheck.ok) -and ($dup.Count -ge 1)) "duplicates=$($dup -join ',')"
+
+    Bcast "editorCheck" @("--es", "trigger", "Foo+K")
+    Start-Sleep -Milliseconds 400
+    $script:lastReport = Get-Report
+    Check "S1-4 编辑器拒绝无效触发键" (-not [bool]$script:lastReport.editor.lastCheck.ok) "error=$($script:lastReport.editor.lastCheck.error)"
+
+    # 删除：先删语义那条（后加的，下标在末尾），再按名字确认它不在了。
+    $beforeDelete = @($script:lastReport.editor.shortcuts).Count
+    $semIndex = if ($semEntry.Count -eq 1) { $semEntry[0].index } else { -1 }
+    Bcast "editorDelete" @("--ei", "index", "$semIndex")
+    Start-Sleep -Milliseconds 500
+    $script:lastReport = Get-Report
+    $afterDelete = @($script:lastReport.editor.shortcuts)
+    Check "S1-4 编辑器删除条目" (($afterDelete.Count -eq $beforeDelete - 1) -and (@($afterDelete | Where-Object { $_.name -eq $semName }).Count -eq 0)) "n=$($afterDelete.Count)（删除前 $beforeDelete）"
+
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null
     Bcast "import" @("--es", "file", "restore.json", "--ez", "merge", "false")
