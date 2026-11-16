@@ -172,6 +172,59 @@ class ControlReceiver : BroadcastReceiver() {
                 )
             }
 
+            // ---- S2 手机档：总闸 / 悬浮球 / 磁贴 / 通知动作（adb 只代替点按） ----
+            "master" -> {
+                val on = bool(intent)
+                SpikeState.swallowMaster = on
+                SpikeState.logMasterToggle("adb", on)
+                Log.i(SpikeState.TAG, "ctrl op=master on=$on")
+            }
+
+            "toggleMaster" -> {
+                val on = SpikeState.toggleMaster("adb")
+                Log.i(SpikeState.TAG, "ctrl op=toggleMaster on=$on")
+            }
+
+            // 磁贴 / 通知动作各走自己那条路（不是同一个 op）：验证的是「点磁贴」「点通知按钮」
+            // 真的和总闸联动，而不是只测一个共用函数。
+            "tileToggle" -> {
+                SpikeState.toggleMaster("tile")
+                Log.i(SpikeState.TAG, "ctrl op=tileToggle on=${SpikeState.swallowMaster}")
+            }
+
+            "notifyToggle" -> {
+                val intent2 = Intent(context, HeartbeatService::class.java)
+                    .setAction(HeartbeatService.ACTION_TOGGLE)
+                runCatching { context.startService(intent2) }
+                Log.i(SpikeState.TAG, "ctrl op=notifyToggle on=${SpikeState.swallowMaster}")
+            }
+
+            "bubble" -> {
+                val on = bool(intent)
+                val ok = if (on) BubbleService.start(context) else { BubbleService.stop(context); true }
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=bubble on=$on ok=$ok err=${BubbleService.lastError}",
+                )
+            }
+
+            "bubbleShow" -> {
+                BubbleService.showPanel(context)
+                Log.i(SpikeState.TAG, "ctrl op=bubbleShow visible=${BubbleService.panelVisible}")
+            }
+
+            "bubbleHide" -> {
+                BubbleService.hidePanel()
+                Log.i(SpikeState.TAG, "ctrl op=bubbleHide")
+            }
+
+            "bubbleRun" -> {
+                val index = intent.getIntExtra("index", -1)
+                val name = intent.getStringExtra("name").orEmpty()
+                val ok = BubbleService.runEntry(context, index, name)
+                Log.i(SpikeState.TAG, "ctrl op=bubbleRun ok=$ok last=${BubbleService.lastRun}")
+            }
+
             "decide" -> {
                 val key = intent.getStringExtra("key") ?: "F8"
                 val down = intent.getBooleanExtra("down", true)

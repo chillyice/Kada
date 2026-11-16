@@ -163,6 +163,22 @@ adb shell am start -n com.kada.spike/.MainActivity
 | `expansions`（打字触发） | ❌ 报告标记 | 软键盘输入不产生 `KeyEvent` |
 | 其它动作（命令 / 脚本 / 按键注入 / 应用 / 变量 / 条件…） | ❌ 报告标记 | 整条跳过、不占执行记录 |
 
+### S2 段（手机档：悬浮球 / 快捷面板 / 磁贴 / 通知）
+
+手机没有物理键盘，「点一下」才是主入口。四类触发源都走**同一个执行器**（无障碍服务里的动作链），
+磁贴 / 通知 / 面板 / adb 只改**同一个总闸**（`SpikeState.swallowMaster`）。
+
+- **悬浮球 + 快捷面板**（`BubbleService`）：要「显示在其他应用上层」权限，没有就说明原因 + 跳设置页；
+  悬浮球 `TYPE_APPLICATION_OVERLAY`，可拖动、位置持久化；点一下列出**启用中的快捷键**，
+  点条目执行动作链（`text` 插进前台应用当前光标处、`open_url` 拉起浏览器）。
+  面板与球都是 `FLAG_NOT_FOCUSABLE`——**不抢焦点**，目标输入框的输入法不会掉。
+- **快捷设置磁贴**（`KadaTileService`）：亮 = 已接管、灰 = 已暂停；点磁贴翻转总闸。
+- **常驻通知**（`HeartbeatService`）：标题显示「已接管 / 已暂停」，按钮「暂停接管 / 恢复接管」。
+- **暂停 = 原样放行**：`KeyFilterService` 在 **Rust 判定之前**看总闸，关掉时按键一个都不吞、
+  快捷键也不触发（以前总闸只挡 S0 的 `KeyRouter`，Rust 接管时按了没反应——那是最难解释的故障）。
+- **音量键当触发源**：无障碍能收到音量键，配成 `shortcuts` 的触发键后**命中即吞**、音量不变；
+  没绑条目时照常调音量。
+
 ## adb 控制入口（探针专用）
 
 ```powershell
@@ -195,6 +211,16 @@ adb shell am broadcast @ctl --es op editorOpen                          # 主界
 adb shell am broadcast @ctl --es op checkUpdate --es url "file:///sdcard/Android/data/com.kada.spike/files/latest-test.json"
 adb shell am broadcast @ctl --es op downloadUpdate
 adb shell am broadcast @ctl --es op installUpdate               # 未授权时会回报 need_permission
+# S2 手机档（adb 只代替手指；真实拖动 / 遮挡 / ROM 差异要手点，见人工验证清单 §93）
+adb shell appops set com.kada.spike SYSTEM_ALERT_WINDOW allow   # 悬浮球权限（脚本里也这么开）
+adb shell am broadcast @ctl --es op master --ez on true         # 总闸：false = 全部原样放行
+adb shell am broadcast @ctl --es op toggleMaster                # 翻转总闸（ui 口径）
+adb shell am broadcast @ctl --es op bubble --ez on true         # 悬浮球开 / 关（关用 false）
+adb shell am broadcast @ctl --es op bubbleShow                  # 打开快捷面板
+adb shell am broadcast @ctl --es op bubbleHide
+adb shell am broadcast @ctl --es op bubbleRun --es name panelTpl # 等价「点一下」；名字空时用 --ei index
+adb shell am broadcast @ctl --es op tileToggle                  # 磁贴同一切换函数
+adb shell am broadcast @ctl --es op notifyToggle                # 通知按钮同一切换函数
 # 探针杂项
 adb shell am broadcast @ctl --es op fire --es action screenshot
 adb shell am broadcast @ctl --es op focusField                 # 把光标放进「吞键验证输入框」（自动重试）
@@ -227,8 +253,8 @@ powershell android\tools\verify.ps1 -SkipBuild # 只跑检查
 
 ## 已验证（2026-11-16，emulator-5554 / ihomy34，Android 14）
 
-`android/tools/verify.ps1` **49/49 通过**（s5 版本；S1-3 语义动作三条、S1-4 编辑器七条、
-S1-5 文本动作三条、S1-6 侧载自更新五条是新增）。
+`android/tools/verify.ps1` **62/62 通过**（s6 版本；S2-1~S2-5 + 收尾 13 条是新增，其余 49 条与 s5 一致）。
+s5 那次是 49/49（S1-3 语义动作三条、S1-4 编辑器七条、S1-5 文本动作三条、S1-6 侧载自更新五条）。
 编辑器另用 `uiautomator` 真点验过整条路径：顶部「快捷键编辑器」滚到面板末尾、新建对话框字段与下拉渲染、
 「录入按键」按物理 `Ctrl+F6` 回填并显示「✓ 已录入」、切「语义动作」保存后列表变 6 条
 （`#5 [Ctrl+F6] semantic`）、点「删除」弹确认框、确认后回到 5 条。
@@ -286,11 +312,27 @@ S1 段：
 | S1-6 提交安装拉起系统安装器 | ✅ `phase=installing`，前台是 `com.google.android.packageinstaller/…PackageInstallerActivity`（不点「安装」不会真装） | `dumpsys window` 的 `mCurrentFocus` / 报告 `update.phase` |
 | S1-6 坏 sha256 → 失败并删包 | ✅ 清单写全 0 → `phase=failed`、「sha256 不匹配（清单 000000000000… / 实际 c72250606764…），已删掉下载的文件」、`apkBytes=0` | 报告 `update.phase/lastResult/apkBytes` |
 
-> 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去。
-> 本轮 s5 全量跑 **49/49 通过**；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+S2 段（手机档）：
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| S2-1 悬浮球启动（权限 + 前台服务） | ✅ `appops … allow` 后 `bubble on` → `running=True` / `perm=True`，常驻通知出现 | 报告 `phone.bubbleRunning/bubblePermission` |
+| S2-1 面板可打开且不抢焦点 | ✅ `panel=True`；面板弹出后 `mCurrentFocus` 仍是 `com.kada.spike/MainActivity` | 报告 `phone.bubblePanel` / `dumpsys window` |
+| S2-2 面板执行：插入模板 | ✅ 输入框原 `abc` → 点条目后 `abcinsertok`（`ACTION_SET_TEXT` 光标处插入） | 报告 `stats.inputFieldText` / `phone.bubbleLastRun` |
+| S2-2 面板执行：打开网址 | ✅ F11 条目 `lastOk=true`，前台切到 `com.android.chrome` | 报告 `actions['rust:F11']` / `accessibility.foregroundPackage` |
+| S2-3 音量键触发（命中即吞） | ✅ `VolumeUp` 命中并执行语义动作，音量保持 7（没被调） | 报告 `rust.fires` / `cmd media_session volume` |
+| S2-4 磁贴注册与切换 | ✅ `dumpsys package` 见 `KadaTileService` + `BIND_QUICK_SETTINGS_TILE`；`tileToggle` 后总闸翻转（`lastMasterToggle=tile:off@…`） | 报告 `phone.master/lastMasterToggle` |
+| S2-5 通知动作暂停后按键不触发 | ✅ 通知按钮暂停后按 Enter：`fires` 数量不变（3→3），`lastMasterToggle=notify:off@…` | 报告 `rust.fires` / `phone.*` |
+| S2 收尾 | ✅ 关悬浮球、恢复总闸、磁贴移出 QS、测试条目删干净 | 报告 `phone.bubbleRunning=False` / `phone.master=True` |
+
+> 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；S2 段开头申请
+> 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目。
+> 本轮 s6 全量跑 **62/62 通过**（s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
 > S1-4 / S1-5 / S1-6 的十五条走的是**与界面同一份** `ShortcutStore`、执行器与 `Update`
 > （广播只是代替点按），控件的点击手势、录入按键、系统安装器的「安装」按钮仍属人工验证
 > （`docs/人工验证清单.md` §90 / §91 / §92）。
+> S2 的十三条同理：`bubbleRun` / `tileToggle` / `notifyToggle` 走的是面板、磁贴、通知按钮**同一份**函数，
+> 手指拖动、软键盘遮挡、ROM 差异归 `docs/人工验证清单.md` §93。
 
 ## 关键结论（写进规划 §11 的就行）
 

@@ -33,7 +33,7 @@
 | `docs/代码拆分与质量加固计划.md` | 代码拆分（`ui/src/main.ts` / `crates/kada-core/src/lib.rs` / `src-tauri/src/lib.rs` 三个巨型文件）+ 质量基座（fmt / clippy / ESLint / tsc strict / `.gitattributes`）的**跨会话进度账本**：现状实测、铁律、Q/U/C/T/O 编号步骤、每步绿灯清单、风险与回滚、体积优化逐条结论 | 要拆文件、加检查、或评估「还能瘦身吗」时**先读它** |
 | `docs/命令与脚本执行体验计划.md` | 命令 / 外部脚本执行体验的**跨会话进度账本**：批次一（工作目录 / 参数 / 单项超时 / 环境变量 / 退出码 / running 步骤）、批次二（完整日志 / 复制与打开 / 三态弹窗 / `wait=false` / `on_error` / 试运行）、批次三（流式 / `if_running` / `WaitFor` / 结构化结果）；含数据形状、落点、已知坑、验收与开工清单 | 改善命令 / 脚本编辑与执行、接手 §7.2-CS 时**先读它** |
 | `docs/底层输入能力规划.md` | 输入层下探的分档规划：三平台各站在哪一层、两个真实缺口（厂商 divert 按键 / 提权窗口注入）、四个档位（A 环境诊断 / B 提权伴随进程——**两档均已落地** / C HID++ 解锁侧键——下一个 / D 内核驱动评估后不做）、签名与信任成本、轻盈五条不变量、落地顺序 | 想「再往底层走」时先读它；判断某条限制该不该用驱动 / HID++ 解决时 |
-| `docs/安卓版规划.md` | Android 平台的分档规划（**S0 / S1-a 已落地**，工程在 `android/` + `crates/kada-android/`）：三处断裂（无全局钩子 / 无全局注入 / 软键盘不产生 KeyEvent）、一个 APK 三档能力（手机触屏 / 平板外接键盘 / root）、「`remaps` 死、`shortcuts` 活」的产品边界、无障碍语义动作映射表、文件级落点、S0~S4 分期与验收项、进度日志 | 评估「要不要做安卓版」「安卓上能做什么」「安卓侧判定/配置怎么改」时**先读它** |
+| `docs/安卓版规划.md` | Android 平台的分档规划（**S0 / S1 / S2 手机档已落地**，工程在 `android/` + `crates/kada-android/`）：三处断裂（无全局钩子 / 无全局注入 / 软键盘不产生 KeyEvent）、一个 APK 三档能力（手机触屏 / 平板外接键盘 / root）、「`remaps` 死、`shortcuts` 活」的产品边界、无障碍语义动作映射表、文件级落点、S0~S4 分期与验收项、进度日志 | 评估「要不要做安卓版」「安卓上能做什么」「安卓侧判定/配置怎么改」时**先读它** |
 | `docs/人工验证清单.md` | 只能真机 + 真人操作才能确认的验收项：可照做的步骤 + 预期现象 + 判失败（锁屏/唤醒/切窗复位、动作超时与中止、动作失败上报、未保存改动守卫、删除确认与导入合并 / 替换、配置外部修改监听、更新端到端含产物自检）；**顶部有逐条验证状态**（最近一轮 2026-10-10：人工验证清单 §1~§3、§5~§8 通过，§4 休眠唤醒未执行，§9~§14 与附录待真人复跑） | 验收相关改动、发版前 |
 
 ## 代码地图
@@ -79,10 +79,12 @@ crates/kada-android/        # 安卓壳（cdylib + rlib）：JSON/JNI 接口 + �
   src/engine.rs             # 安卓判定：非破坏式吞键（只吞凑齐那一下）、序列/和弦等待窗、前台过滤
   src/action_support.rs     # 动作支持表（唯一事实来源）：open_url / text / clipboard / pause_ms / group / disabled
   src/report.rs             # 配置报告：条数 / 触发键分类 / 本机不支持项 / 软冲突 / 告警
-android/                    # 安卓探针工程（S0 + S1，纯 Kotlin + 无障碍服务；不是产品壳）
+android/                    # 安卓探针工程（S0 + S1 + S2，纯 Kotlin + 无障碍服务；不是产品壳）
   app/src/main/java/com/kada/spike/   # MainActivity / KeyFilterService / RustBridge / RustPanel / SemanticActions …
+    BubbleService.kt        # S2 手机档：悬浮球 + 快捷面板（点一下执行，面板不抢焦点）
+    KadaTileService.kt      # S2 手机档：快捷设置磁贴（暂停 / 恢复接管）
   tools/build-rust.ps1      # cargo-ndk 编 libkada_android.so 进 jniLibs（Gradle 不编 Rust）
-  tools/verify.ps1          # 自动化验收：构建 / 装机 / 开无障碍 / S0+S1 逐条测 / 读报告（sendevent 打真实按键）
+  tools/verify.ps1          # 自动化验收：构建 / 装机 / 开无障碍 / S0+S1+S2 逐条测 / 读报告（sendevent 打真实按键）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # 平台输入层 / SimulatedInject / run() + generate_handler!（命令层与 T-05 各域已拆出）
   src/tests.rs              # 壳层单元测试整块（T-01 从 lib.rs 搬出：键表一致性 / 卡带市场 / 层与和弦 / 录制 / 状态 / 同步存档）

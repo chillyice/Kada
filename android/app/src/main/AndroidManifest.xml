@@ -8,6 +8,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- S2 手机档：悬浮球 / 快捷面板（系统「显示在其他应用上层」授权） -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <!-- S1-f 自更新：拉清单 / 下 APK 走 INTERNET；安装交给 PackageInstaller 会话 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
@@ -52,6 +54,31 @@
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="S0 spike: keep the accessibility key router process alive" />
+        </service>
+
+        <!--
+          S2 手机档：悬浮球 + 快捷面板。前台服务（悬浮窗从后台加会被系统拦），
+          specialUse 与心跳服务同口径：用途是「常驻一个本机快捷入口」，不上传任何数据。
+        -->
+        <service
+            android:name=".BubbleService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="S2 phone: floating shortcut panel (local only)" />
+        </service>
+
+        <!-- S2 手机档：快捷设置磁贴（暂停 / 恢复接管） -->
+        <service
+            android:name=".KadaTileService"
+            android:exported="true"
+            android:icon="@drawable/ic_kada"
+            android:label="Kada"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
         </service>
 
         <!--

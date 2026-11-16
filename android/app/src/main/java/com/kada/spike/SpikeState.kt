@@ -82,6 +82,26 @@ object SpikeState {
         get() = prefs.getBoolean("useRustEngine", true)
         set(value) = persist { it.putBoolean("useRustEngine", value) }
 
+    /** 手机档（S2）：最近一次「暂停 / 恢复」是谁发起的（磁贴 / 通知 / 面板 / adb）。 */
+    @Volatile
+    var lastMasterToggle: String = ""
+
+    /**
+     * 翻转总闸（磁贴 / 通知动作 / 面板共用）。**Rust 判定前也要看这个开关**——
+     * 它以前只挡 S0 的 `KeyRouter`，真接管时按了没反应，那才是最难解释的故障。
+     */
+    fun toggleMaster(source: String = "ui"): Boolean {
+        swallowMaster = !swallowMaster
+        logMasterToggle(source, swallowMaster)
+        return swallowMaster
+    }
+
+    fun logMasterToggle(source: String, enabled: Boolean) {
+        lastMasterToggle = "$source:${if (enabled) "on" else "off"}@${System.currentTimeMillis()}"
+        Log.i(TAG, "master toggle $lastMasterToggle")
+    }
+
+
     // ---------------------------------------------------------------------
     // 服务状态
     // ---------------------------------------------------------------------

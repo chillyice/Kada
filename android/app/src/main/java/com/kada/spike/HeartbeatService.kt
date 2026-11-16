@@ -39,6 +39,11 @@ class HeartbeatService : Service() {
             SpikeState.onHeartbeatStarted()
             handler.post(tick)
         }
+        if (intent?.action == ACTION_TOGGLE) {
+            // S2 通知动作：暂停 / 恢复与磁贴、面板同一个总闸
+            SpikeState.toggleMaster("notify")
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(currentText()))
+        }
         return START_STICKY
     }
 
@@ -63,20 +68,26 @@ class HeartbeatService : Service() {
     private val tick = object : Runnable {
         override fun run() {
             SpikeState.heartbeatTick()
-            val minutes = if (SpikeState.heartbeatStartedElapsed == 0L) 0.0
-            else (SystemClock.elapsedRealtime() - SpikeState.heartbeatStartedElapsed) / 60_000.0
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(currentText()))
             val stats = SpikeState.stats()
             val latency = SpikeState.latencySummary()
-            val text = "已存活 %.1f 分钟 · 键 %d · 吞 %d · 动作 %d"
-                .format(minutes, stats.down, stats.swallowed, stats.actionsFired)
-            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification(text))
             Log.i(
                 SpikeState.TAG,
                 "hb tick=${SpikeState.heartbeatTicks} min=%.1f keys=%d swallowed=%d actions=%d p50=%.2f"
-                    .format(minutes, stats.down, stats.swallowed, stats.actionsFired, latency.p50),
+                    .format(minutes(), stats.down, stats.swallowed, stats.actionsFired, latency.p50),
             )
             handler.postDelayed(this, TICK_MS)
         }
+    }
+
+    private fun minutes(): Double = if (SpikeState.heartbeatStartedElapsed == 0L) 0.0
+    else (SystemClock.elapsedRealtime() - SpikeState.heartbeatStartedElapsed) / 60_000.0
+
+    private fun currentText(): String {
+        val stats = SpikeState.stats()
+        val state = if (SpikeState.swallowMaster) "接管中" else "已暂停"
+        return "已存活 %.1f 分钟 · %s · 键 %d · 吞 %d · 动作 %d"
+            .format(minutes(), state, stats.down, stats.swallowed, stats.actionsFired)
     }
 
     private fun buildNotification(text: String): Notification {
@@ -86,12 +97,23 @@ class HeartbeatService : Service() {
             Intent(this, MainActivity::class.java),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val toggle = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, HeartbeatService::class.java).setAction(ACTION_TOGGLE),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         val stop = PendingIntent.getService(
             this,
             1,
             Intent(this, HeartbeatService::class.java).setAction(ACTION_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
+        val toggleAction = Notification.Action.Builder(
+            Icon.createWithResource(this, R.drawable.ic_kada),
+            if (SpikeState.swallowMaster) "暂停接管" else "恢复接管",
+            toggle,
+        ).build()
         val stopAction = Notification.Action.Builder(
             Icon.createWithResource(this, R.drawable.ic_kada),
             "停止",
@@ -99,9 +121,10 @@ class HeartbeatService : Service() {
         ).build()
         return Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_kada)
-            .setContentTitle("Kada S0 心跳")
+            .setContentTitle(if (SpikeState.swallowMaster) "Kada · 已接管" else "Kada · 已暂停")
             .setContentText(text)
             .setContentIntent(open)
+            .addAction(toggleAction)
             .addAction(stopAction)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
@@ -112,6 +135,7 @@ class HeartbeatService : Service() {
         const val CHANNEL_ID = "kada-s0-heartbeat"
         const val NOTIFICATION_ID = 1001
         const val ACTION_STOP = "com.kada.spike.STOP_HEARTBEAT"
+        const val ACTION_TOGGLE = "com.kada.spike.TOGGLE_MASTER"
         private const val TICK_MS = 30_000L
     }
 }

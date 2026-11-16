@@ -80,6 +80,12 @@ object ShortcutStore {
         }
     }
 
+    /** 手机档面板执行用：取某条目的原始动作链（不解释，交给 `ActionRunner`）。 */
+    fun actionsAt(index: Int): JSONArray? {
+        val arr = config()?.optJSONArray("shortcuts") ?: return null
+        return arr.optJSONObject(index)?.optJSONArray("actions")
+    }
+
     fun check(trigger: String, excludeIndex: Int): Check {
         val obj = RustBridge.checkTrigger(trigger, excludeIndex)
         val check = if (obj == null) {

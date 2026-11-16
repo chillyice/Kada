@@ -23,5 +23,17 @@ class KadaApp : Application() {
             }
             manager.createNotificationChannel(channel)
         }
+        if (manager.getNotificationChannel(BubbleService.CHANNEL_ID) == null) {
+            val channel = NotificationChannel(
+                BubbleService.CHANNEL_ID,
+                "Kada 悬浮球",
+                NotificationManager.IMPORTANCE_LOW,
+            ).apply {
+                description = "悬浮球常驻通知（S2 手机档）"
+                setShowBadge(false)
+                enableVibration(false)
+            }
+            manager.createNotificationChannel(channel)
+        }
     }
 }

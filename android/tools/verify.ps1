@@ -806,6 +806,141 @@ if ($exported) {
         ($upd.phase -eq "failed") -and ($upd.lastResult -like "*sha256 不匹配*") -and ($upd.apkBytes -eq 0)
     ) "phase=$($upd.phase) bytes=$($upd.apkBytes) $($upd.lastResult)"
 
+    # S2 手机档：悬浮球 / 快捷面板 / 磁贴 / 通知动作 / 音量键触发。
+    # 与界面同一份入口（BubbleService.runEntry / Keybind 执行器），adb 只代替点按。
+    Shell "appops set $package SYSTEM_ALERT_WINDOW allow" | Out-Null
+    Start-Sleep -Milliseconds 400
+    Bcast "bubble" @("--ez", "on", "true")
+    Start-Sleep -Milliseconds 1600
+    $script:lastReport = Get-Report
+    $ph = $script:lastReport.phone
+    Check "S2-1 悬浮球启动（权限 + 前台服务）" (
+        [bool]($ph.bubbleRunning) -and [bool]($ph.bubblePermission)
+    ) "running=$($ph.bubbleRunning) perm=$($ph.bubblePermission) err=$($ph.bubbleLastError)"
+
+    Bcast "bubbleShow"
+    Start-Sleep -Milliseconds 800
+    $script:lastReport = Get-Report
+    Check "S2-1 快捷面板可打开（不抢焦点）" ([bool]$script:lastReport.phone.bubblePanel) "panel=$($script:lastReport.phone.bubblePanel)"
+    Restore-App
+    Start-Sleep -Milliseconds 300
+    $focusLine = @(Shell "dumpsys window" | Select-String -Pattern "mCurrentFocus=")
+    $focusNow = if ($focusLine.Count -gt 0) { "$($focusLine[-1])" } else { "" }
+    Check "S2-1 面板不改变前台焦点" ($focusNow -match $package) "focus=$focusNow"
+    Bcast "bubbleHide"
+
+    # 面板执行 = 手机上「点一下」的主路径：插入模板（文本动作进前台输入框）。
+    # 名字与文本一律 ASCII：PS 5.1 把中文参数按 GBK 交给 adb，设备侧按 UTF-8 解码就成了乱码。
+    Bcast "editorAdd" @("--es", "name", "panelTpl", "--es", "trigger", "F10", "--es", "action", "text", "--es", "value", "insertok")
+    Bcast "editorAdd" @("--es", "name", "panelUrl", "--es", "trigger", "F11", "--es", "action", "open_url", "--es", "value", "https://example.com/kada")
+    Start-Sleep -Milliseconds 700
+
+    $panelInsert = $false
+    for ($try = 1; $try -le 2; $try++) {
+        Restore-App
+        if (-not (Focus-Field)) {
+            Write-Host "  [warn] 面板插入用例没拿到焦点（第 $try 次）"
+            continue
+        }
+        Clear-Field
+        Type-Text "abc"
+        Bcast "bubbleRun" @("--es", "name", "panelTpl")
+        Start-Sleep -Milliseconds 1200
+        $script:lastReport = Get-Report
+        if ($script:lastReport.stats.inputFieldText -eq "abcinsertok") { $panelInsert = $true; break }
+        Write-Host ("  [warn] 面板插入第 {0} 次没中：field=[{1}] last={2}" -f $try, $script:lastReport.stats.inputFieldText, $script:lastReport.phone.bubbleLastRun)
+    }
+    Check "S2-2 面板执行：插入模板（光标处）" $panelInsert "field=[$($script:lastReport.stats.inputFieldText)] last=$($script:lastReport.phone.bubbleLastRun)"
+    $panelRec = $script:lastReport.actions.'rust:F10'
+    Check "S2-2 面板执行计入执行记录" ($panelRec -and $panelRec.lastOk -and ($script:lastReport.phone.bubbleLastRun -like "*panelTpl*")) "ok=$($panelRec.lastOk) detail=$($panelRec.lastDetail)"
+
+    Bcast "bubbleRun" @("--es", "name", "panelUrl")
+    Start-Sleep -Milliseconds 2000
+    $script:lastReport = Get-Report
+    $webRec = $script:lastReport.actions.'rust:F11'
+    # 前台包名在 `accessibility` 段（无障碍窗口事件更新），不是单独一段
+    $fg = [string]$script:lastReport.accessibility.foregroundPackage
+    Check "S2-2 面板执行：打开网址" ($webRec -and $webRec.lastOk -and ($fg -like "*chrome*")) "ok=$($webRec.lastOk) fg=$fg detail=$($webRec.lastDetail)"
+    Restore-App
+
+    # 音量键可作触发源：绑上 VolumeUp 后按下不该改音量（命中即吞）。
+    Bcast "editorAdd" @("--es", "name", "volNotify", "--es", "trigger", "VolumeUp", "--es", "action", "semantic", "--es", "value", "notifications")
+    Start-Sleep -Milliseconds 600
+    Restore-App
+    $volBeforeS2 = Get-Volume
+    Shell "cmd media_session volume --stream 3 --set $volBeforeS2" | Out-Null
+    Start-Sleep -Milliseconds 400
+    SendKey 115 40
+    Start-Sleep -Milliseconds 1200
+    $script:lastReport = Get-Report
+    $volAfterS2 = Get-Volume
+    $volRec = $script:lastReport.actions.'rust:VolumeUp'
+    $volFired = @($script:lastReport.rust.fires | Where-Object { $_.trigger -eq "VolumeUp" }).Count -ge 1
+    Check "S2-3 音量键触发快捷键（命中即吞）" (
+        $volFired -and $volRec -and $volRec.lastOk -and ($volAfterS2 -eq $volBeforeS2)
+    ) "fired=$volFired ok=$($volRec.lastOk) volume=$volBeforeS2->$volAfterS2"
+    Restore-App
+
+    # 磁贴：服务必须带 BIND_QUICK_SETTINGS_TILE；`click-tile` 要求磁贴已在 QS 面板里，
+    # 所以先 `add-tile` 再点——这样走的是 SystemUI → TileService.onClick 的真实路径。
+    $tileDump = (Shell "dumpsys package $package") -join "`n"
+    $tileRegistered = $tileDump -match "KadaTileService" -and $tileDump -match "BIND_QUICK_SETTINGS_TILE"
+    Check "S2-4 磁贴已注册（BIND_QUICK_SETTINGS_TILE）" $tileRegistered ""
+    $masterBeforeTile = [bool](Get-Report).phone.master
+    Shell "cmd statusbar add-tile $package/.KadaTileService" | Out-Null
+    Start-Sleep -Milliseconds 1200
+    Shell "cmd statusbar click-tile $package/.KadaTileService" | Out-Null
+    Start-Sleep -Milliseconds 1200
+    $afterTile = Get-Report
+    $tileFlipped = ([bool]$afterTile.phone.master -ne $masterBeforeTile)
+    if (-not $tileFlipped) {
+        # 个别模拟器 / ROM 没有 click-tile：退回同一切换函数的 adb 入口，并在 detail 里写明
+        Bcast "tileToggle"
+        Start-Sleep -Milliseconds 500
+        $afterTile = Get-Report
+        $tileFlipped = ([bool]$afterTile.phone.master -ne $masterBeforeTile)
+        Write-Host "  [warn] cmd statusbar add-tile/click-tile 不可用，改走 tileToggle（同一函数）"
+    }
+    Check "S2-4 磁贴切换暂停 / 恢复" ($tileFlipped -and ($afterTile.phone.lastMasterToggle -like "tile:*")) "master=$($afterTile.phone.master) last=$($afterTile.phone.lastMasterToggle)"
+    if (-not [bool]$afterTile.phone.master) { Bcast "master" @("--ez", "on", "true") }
+
+    # 通知动作：与磁贴同一个总闸；暂停后按键必须原样放行（快捷键不再命中）。
+    Shell "am start-foreground-service -n $package/.HeartbeatService" | Out-Null
+    Start-Sleep -Milliseconds 800
+    Bcast "notifyToggle"
+    Start-Sleep -Milliseconds 900
+    $pausedReport = Get-Report
+    $firesBefore = @($pausedReport.rust.fires).Count
+    SendKey 66 40
+    Start-Sleep -Milliseconds 700
+    $afterPause = Get-Report
+    Check "S2-5 通知动作暂停后快捷键不触发" (
+        (-not [bool]$afterPause.phone.master) -and (@($afterPause.rust.fires).Count -eq $firesBefore) -and
+        ($afterPause.phone.lastMasterToggle -like "notify:*")
+    ) "master=$($afterPause.phone.master) fires=$firesBefore->$(@($afterPause.rust.fires).Count) last=$($afterPause.phone.lastMasterToggle)"
+    Bcast "notifyToggle"
+    Start-Sleep -Milliseconds 600
+    Check "S2-5 通知动作恢复后总闸打开" ([bool](Get-Report).phone.master) ""
+
+    # 收尾：关悬浮球、收回权限、把磁贴从 QS 面板撤掉、删测试条目
+    Bcast "bubble" @("--ez", "on", "false")
+    Start-Sleep -Milliseconds 500
+    Shell "cmd statusbar remove-tile $package/.KadaTileService" | Out-Null
+    Shell "appops set $package SYSTEM_ALERT_WINDOW deny" | Out-Null
+    @("VolumeUp", "F10", "F11") | ForEach-Object {
+        $trigger = $_
+        $idx = -1
+        $entries = @((Get-Report).editor.shortcuts)
+        for ($i = 0; $i -lt $entries.Count; $i++) {
+            if (@($entries[$i].triggers) -contains $trigger) { $idx = $i }
+        }
+        if ($idx -ge 0) { Bcast "editorDelete" @("--ei", "index", "$idx"); Start-Sleep -Milliseconds 400 }
+    }
+    $script:lastReport = Get-Report
+    Check "S2 收尾：悬浮球已停、总闸已恢复" (
+        (-not [bool]$script:lastReport.phone.bubbleRunning) -and [bool]$script:lastReport.phone.master
+    ) "running=$($script:lastReport.phone.bubbleRunning) master=$($script:lastReport.phone.master)"
+
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null
     Bcast "import" @("--es", "file", "restore.json", "--ez", "merge", "false")

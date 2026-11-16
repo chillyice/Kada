@@ -11,8 +11,8 @@ android {
         applicationId = "com.kada.spike"
         minSdk = 26
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.2.0-s5"
+        versionCode = 7
+        versionName = "0.2.0-s6"
     }
 
     buildTypes {

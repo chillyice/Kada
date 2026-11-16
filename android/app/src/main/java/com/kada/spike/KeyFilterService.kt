@@ -83,6 +83,12 @@ class KeyFilterService : AccessibilityService() {
             }
         }
 
+        // 手机档总闸：暂停 = 全部原样放行（磁贴 / 通知动作 / 面板都改这一处）。
+        if (!SpikeState.swallowMaster) {
+            SpikeState.noteKey(raw, false, "master:off")
+            return false
+        }
+
         // S1 主线：判定在 Rust（与桌面同一份 kada-core），这里只搬运 + 执行。
         if (SpikeState.useRustEngine && RustBridge.available) {
             val decision = RustBridge.decide(
@@ -173,6 +179,26 @@ class KeyFilterService : AccessibilityService() {
     /** 探针用：adb / 界面按钮直接触发一条动作（不经过按键）。 */
     fun dispatchForTest(actionId: String) {
         dispatch(actionId, "test", System.nanoTime())
+    }
+
+    /**
+     * 手机档（S2）：执行配置里第 `index` 条的动作链——悬浮球面板、磁贴、通知动作与
+     * 「插入模板 / 打开应用」都走这一个入口（动作执行器只在这份服务实例上）。
+     *
+     * 返回 `false` = 服务没连 / 下标越界 / 没有动作，调用方负责把原因写给人看。
+     */
+    fun runShortcut(index: Int, via: String = "panel"): Boolean {
+        val active = runner ?: return false
+        val entry = ShortcutStore.entries().getOrNull(index) ?: return false
+        val actions = ShortcutStore.actionsAt(index) ?: return false
+        val fired = RustBridge.Fired(
+            name = entry.name,
+            trigger = entry.triggers.firstOrNull()?.ifEmpty { null } ?: "panel",
+            actions = actions,
+            unsupported = emptyList(),
+        )
+        active.run(fired, via)
+        return true
     }
 
     /** 探针用：打印聚焦节点的属性与动作列表（诊断 `performAction` 返回 false 的原因）。 */

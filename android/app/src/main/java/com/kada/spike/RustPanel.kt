@@ -37,6 +37,7 @@ class RustPanel(private val activity: Activity) {
     private lateinit var tvLog: TextView
     private lateinit var tvImport: TextView
     private lateinit var tvUpdate: TextView
+    private lateinit var tvPhone: TextView
     private val editor = ShortcutEditor(activity)
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -92,6 +93,27 @@ class RustPanel(private val activity: Activity) {
         tvUpdate = body(11f)
         column.addView(tvUpdate)
 
+        // S2 手机档：悬浮球 / 快捷面板 / 磁贴 / 通知动作——手机上没有键盘，点一下是主入口。
+        column.addView(title("S2 · 手机档（悬浮球 / 面板 / 磁贴 / 通知）"))
+        column.addView(
+            hint(
+                "没有物理键盘时，「点一下」是唯一顺手的触发源：悬浮球打开快捷面板，" +
+                    "「插入模板」会插进前台应用当前光标处；磁贴 / 通知按钮用于暂停或恢复接管。",
+            ),
+        )
+        column.addView(
+            row(
+                button("悬浮球开/关") { toggleBubble() },
+                button("快捷面板") { showPhonePanel() },
+                button("暂停/恢复") {
+                    SpikeState.toggleMaster("ui")
+                    refresh()
+                },
+            ),
+        )
+        tvPhone = body(11f)
+        column.addView(tvPhone)
+
         tvStatus = body()
         column.addView(tvStatus)
 
@@ -120,6 +142,71 @@ class RustPanel(private val activity: Activity) {
         tvTriggers.text = triggersText()
         tvLog.text = logText()
         if (::tvUpdate.isInitialized) tvUpdate.text = updateText()
+        if (::tvPhone.isInitialized) tvPhone.text = phoneText()
+    }
+
+    /** S2 面板一行字：总闸 / 悬浮球 / 权限 / 最近一次执行。 */
+    private fun phoneText(): String = buildString {
+        append("总闸：${if (SpikeState.swallowMaster) "接管中" else "已暂停"}")
+        append(" · 悬浮球：${if (BubbleService.running) "已启动" else "未启动"}")
+        append(" · 悬浮窗权限：${if (BubbleService.hasPermission(activity)) "有" else "没有（点「悬浮球开/关」去授权）"}")
+        appendLine()
+        val entries = ShortcutStore.entries().count { it.enabled }
+        append("面板可执行 $entries 条（启用的快捷键）")
+        append(" · 上次切换：${SpikeState.lastMasterToggle.ifBlank { "—" }}")
+        if (BubbleService.lastRun.isNotBlank()) {
+            appendLine()
+            append("上次面板执行：${BubbleService.lastRun}")
+        }
+        if (BubbleService.lastError.isNotBlank()) {
+            appendLine()
+            append("悬浮球：${BubbleService.lastError}")
+        }
+    }
+
+    private fun toggleBubble() {
+        if (!BubbleService.hasPermission(activity)) {
+            AlertDialog.Builder(activity)
+                .setTitle("需要「显示在其他应用上层」权限")
+                .setMessage(
+                    "悬浮球要显示在其他应用上面，系统要求单独授权。\n\n" +
+                        "点「去设置」打开本应用的开关，回来后按钮会显示「已启动」。",
+                )
+                .setNegativeButton("取消", null)
+                .setPositiveButton("去设置") { _, _ -> BubbleService.requestPermission(activity) }
+                .show()
+            return
+        }
+        if (BubbleService.running) {
+            BubbleService.stop(activity)
+        } else if (!BubbleService.start(activity)) {
+            Toast.makeText(activity, BubbleService.lastError, Toast.LENGTH_LONG).show()
+        }
+        refresh()
+    }
+
+    /** 应用内也放一份同样的面板（触屏上比先找悬浮球更快；执行走同一个入口）。 */
+    private fun showPhonePanel() {
+        val entries = ShortcutStore.entries().filter { it.enabled }
+        if (entries.isEmpty()) {
+            Toast.makeText(activity, "配置里没有启用的快捷键", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = entries.map { entry ->
+            entry.name.ifBlank { "#${entry.index}（未命名）" } + "\n" + entry.actionSummary
+        }.toTypedArray()
+        AlertDialog.Builder(activity)
+            .setTitle("快捷面板 · ${entries.size} 条")
+            .setItems(labels) { _, which ->
+                val entry = entries[which]
+                val ok = BubbleService.runEntry(activity, entry.index, entry.name)
+                if (!ok) {
+                    Toast.makeText(activity, BubbleService.lastRun, Toast.LENGTH_LONG).show()
+                }
+                refresh()
+            }
+            .setNegativeButton("关闭", null)
+            .show()
     }
 
     /** 更新区的一行字：本机版本 + 最近一次检查 / 下载 / 安装的结果。 */

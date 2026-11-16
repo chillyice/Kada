@@ -251,6 +251,18 @@ object SpikeReport {
             }
         })
 
+        // S2 手机档：总闸 / 悬浮球 / 磁贴 / 通知动作（adb 断言读这里）。
+        root.put("phone", JSONObject().apply {
+            put("master", SpikeState.swallowMaster)
+            put("lastMasterToggle", SpikeState.lastMasterToggle)
+            put("bubbleRunning", BubbleService.running)
+            put("bubblePermission", BubbleService.hasPermission(context))
+            put("bubblePanel", BubbleService.panelVisible)
+            put("bubbleLastRun", BubbleService.lastRun)
+            put("bubbleLastError", BubbleService.lastError)
+            put("bubbleEntries", ShortcutStore.entries().count { it.enabled })
+        })
+
         return root
     }
 
