@@ -76,6 +76,23 @@ adb shell settings put secure accessibility_enabled 1
 adb shell am start -n com.kada.spike/.MainActivity
 ```
 
+## 发布（侧载渠道）
+
+1. **三个 ABI 全编**：`powershell android\tools\build-rust.ps1 -Abi all`（只编 `x86_64` 的包装到真机会
+   `System.loadLibrary` 失败）；再 `cd android; .\gradlew.bat --offline assembleDebug`。
+2. **记账**：`Get-FileHash app\build\outputs\apk\debug\app-debug.apk -Algorithm SHA256` 与字节数；
+   用 `aapt2 dump badging` 确认 `versionCode` / `versionName` 与 `build.gradle.kts` 一致。
+3. **传包**：`scp -P 19068 app\build\outputs\apk\debug\app-debug.apk root@ihomy.top:/opt/ihomy/uploads/kada/kada-android-<版本>-debug.apk`，
+   远端 `chown ihomy:ihomy` + `chmod 644`，**旧的删掉**（同一地址只留最新，靠清单指版本）。
+4. **写清单** `/opt/ihomy/uploads/kada/android/latest.json`（`/files/kada/**` 免登录）：
+   `{"versionName","versionCode","url":"https://ihomy.top/files/kada/kada-android-<版本>-debug.apk","sha256","notes"}`。
+   **清单与 APK 必须同批更新**——sha256 对不上，客户端下载完直接删包。
+5. **验**：`HEAD` 直链 200 + 长度一致、匿名 `GET` 清单可读、旧版本 404；设备上「检查更新」应报
+   `phase=available`（同版本则是 `latest`）。
+
+> ihomy 落地页（`frontend/src/views/Kada.vue`）的 `androidVersion` 与卡片 `meta` 也要同步改；
+> 工作区有并行改动时**别整包重发 dist**，按需定点替换线上 chunk（见 `docs/归档/03-界面与发布.md`）。
+
 ## 界面里能做什么
 
 ### S0 段（硬编码演示规则）
@@ -321,6 +338,11 @@ S1 段：
   打完了，外层却挂到超时才被杀（日志是完整的，只有管道不收尾）。`verify.ps1` 里 Gradle 改走
   「输出落临时文件 → 用 `FileShare.ReadWrite` 读回来回显」，daemon 拿的是文件句柄而不是管道。
   自己手动跑时同理：要留日志就 `> 文件`，别 `| Tee-Object`。
+- **这台机器的模拟器没有外网**：`adb shell ping ihomy.top` → `unknown host`，`ping 8.8.8.8` 也丢包，
+  宿主机却正常（`Test-NetConnection ihomy.top -Port 443` 通）。加 `-dns-server 223.5.5.5` 与重启 AVD
+  都无效，同一台 AVD 还会在开机后一两分钟内整体消失（`device offline` → 进程没了）。所以
+  `Update` 的 **https 分支只能在宿主机 / 真机验**，自动化里用 `file://` 清单；设备上做「检查更新」
+  只能看到失败路径（`phase=failed` + `Unable to resolve host`，这条本身是对的）。
 - **`am broadcast --es` 的值不能带空格**：`--es name "S1 编辑器测试"` 会被 `adb shell` 拆成
   多个 token，后面所有 extra 跟着错位——现象是 `trigger` 变成空串、报「触发键不能为空」。
   要么用不带空格的名字，要么自己在远端加引号。
