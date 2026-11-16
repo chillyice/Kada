@@ -33,6 +33,126 @@ impl DesktopDirection {
     }
 }
 
+/// 系统代理开关的期望状态（[`SystemOperation::SwitchProxy`]）。
+///
+/// 缺省 [`Toggle`](ProxyMode::Toggle)——手工只写 `{"op":"switch_proxy"}` 时也符合
+/// 「切一下代理」的直觉。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProxyMode {
+    /// 开启系统代理（地址留空 = 沿用系统里已经配好的地址）。
+    On,
+    /// 关闭系统代理（不改地址）。
+    Off,
+    /// 当前开着就关、当前关着就开。
+    #[default]
+    Toggle,
+}
+
+#[cfg(feature = "automation")]
+impl ProxyMode {
+    /// 中文短标签（动作摘要 / 界面下拉共用一套说法）。
+    pub fn label(self) -> &'static str {
+        match self {
+            ProxyMode::On => "开启",
+            ProxyMode::Off => "关闭",
+            ProxyMode::Toggle => "切换",
+        }
+    }
+}
+
+/// 代理协议（[`parse_proxy_server`] 的解析结果）：HTTP(S) 代理或 SOCKS5。
+#[cfg(feature = "automation")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProxyScheme {
+    /// HTTP / HTTPS 代理（`http://` / `https://` 前缀，或不写前缀）。
+    Http,
+    /// SOCKS5 代理（`socks://` / `socks5://` / `socks5h://` 前缀）。
+    Socks5,
+}
+
+/// 解析后的代理地址：`scheme://host:port`。
+#[cfg(feature = "automation")]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProxyServer {
+    pub scheme: ProxyScheme,
+    /// 主机名或 IP（IPv6 不带方括号）。
+    pub host: String,
+    pub port: u16,
+}
+
+#[cfg(feature = "automation")]
+impl ProxyServer {
+    /// 回显用的一行文本：`host:port`（SOCKS5 带上协议前缀，免得看不出是哪一类）。
+    pub fn display(&self) -> String {
+        match self.scheme {
+            ProxyScheme::Http => format!("{}:{}", self.host, self.port),
+            ProxyScheme::Socks5 => format!("socks5://{}:{}", self.host, self.port),
+        }
+    }
+}
+
+/// 解析界面上填的代理地址（动作执行 / 校验共用，纯函数）。
+///
+/// 支持 `host:port`、`http://host:port`、`https://host:port`、`socks5://host:port`
+/// （也认 `socks://` / `socks5h://`）；IPv6 写成 `[::1]:7890`。不写协议前缀按 HTTP 代理处理。
+#[cfg(feature = "automation")]
+pub fn parse_proxy_server(raw: &str) -> Result<ProxyServer, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Err("代理地址不能为空".into());
+    }
+    let (scheme, rest) = match raw.split_once("://") {
+        Some((scheme, rest)) => {
+            let scheme = match scheme.trim().to_ascii_lowercase().as_str() {
+                "http" | "https" => ProxyScheme::Http,
+                "socks" | "socks5" | "socks5h" => ProxyScheme::Socks5,
+                other => {
+                    return Err(format!("不认识的代理协议「{other}」：支持 http / socks5"));
+                }
+            };
+            (scheme, rest)
+        }
+        None => (ProxyScheme::Http, raw),
+    };
+    // 容忍末尾斜杠（`http://127.0.0.1:7890/` 是常见写法）。
+    let rest = rest.trim_end_matches('/');
+    let (host, port) = if let Some(after_bracket) = rest.strip_prefix('[') {
+        let (host, tail) = after_bracket
+            .split_once(']')
+            .ok_or_else(|| "IPv6 地址要写成 [::1]:7890".to_string())?;
+        let port = tail
+            .strip_prefix(':')
+            .ok_or_else(|| "代理地址缺少端口（写成 host:port）".to_string())?;
+        (host, port)
+    } else {
+        let (host, port) = rest
+            .rsplit_once(':')
+            .ok_or_else(|| "代理地址要写成 host:port，如 127.0.0.1:7890".to_string())?;
+        if host.contains(':') {
+            return Err("IPv6 地址要写成 [::1]:7890".into());
+        }
+        (host, port)
+    };
+    let host = host.trim();
+    if host.is_empty() {
+        return Err("代理地址缺少主机名".into());
+    }
+    let port: u16 = port
+        .trim()
+        .parse()
+        .map_err(|_| "代理端口要是 1~65535 的数字".to_string())?;
+    if port == 0 {
+        return Err("代理端口要在 1~65535 之间".into());
+    }
+    Ok(ProxyServer {
+        scheme,
+        host: host.to_string(),
+        port,
+    })
+}
+
 /// 文件/目录动作：对文件与目录做复制、剪切、粘贴、删除、新建、压缩、取属性。
 ///
 /// 与 [`SystemOperation`]（操作系统动作）是**两类独立的动作**：界面下拉里一个叫「文件/目录」、
@@ -111,6 +231,18 @@ pub enum SystemOperation {
             skip_serializing_if = "is_default_brightness_step"
         )]
         step: i64,
+    },
+    /// 系统代理开关：开启 / 关闭 / 切换当前用户的系统代理（浏览器等走系统设置的软件随之生效）。
+    ///
+    /// `server` 是开启时写入的地址（`host:port`，可带 `http://` / `socks5://` 前缀，见
+    /// [`parse_proxy_server`]）；**留空 = 沿用系统里已经配好的地址**。关闭时不动地址。
+    /// Windows 改注册表 `Internet Settings` 并广播设置变更；macOS 走 `networksetup`
+    /// （需要管理员权限）；Linux 走 GNOME `gsettings`（其它桌面环境执行报错）。
+    SwitchProxy {
+        #[serde(default)]
+        mode: ProxyMode,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        server: String,
     },
 }
 
@@ -1669,6 +1801,14 @@ impl Action {
                         }
                         Ok(())
                     }
+                    // 代理地址留空合法（沿用系统现有地址），填了就必须能解析。
+                    SwitchProxy { server, .. } => {
+                        if server.trim().is_empty() {
+                            Ok(())
+                        } else {
+                            parse_proxy_server(server).map(|_| ())
+                        }
+                    }
                     SwitchDesktop { .. } | EmptyRecycleBin | MonitorOff | ToggleDesktopIcons => {
                         Ok(())
                     }
@@ -1770,5 +1910,101 @@ impl Default for Action {
             masked: false,
             description: None,
         }
+    }
+}
+
+#[cfg(all(test, feature = "automation"))]
+mod proxy_action_tests {
+    use super::*;
+
+    /// 系统代理开关：`mode` 缺省是「切换」、地址缺省为空（沿用系统现有地址）；
+    /// 地址填了就必须能解析，解析规则钉住常见写法与坏输入。
+    #[test]
+    fn switch_proxy_defaults_validate_and_parse() {
+        let bare: Action =
+            serde_json::from_str(r#"{"type":"system","operation":{"op":"switch_proxy"}}"#).unwrap();
+        assert!(
+            matches!(
+                bare,
+                Action::System {
+                    operation: SystemOperation::SwitchProxy {
+                        mode: ProxyMode::Toggle,
+                        ref server,
+                    },
+                    ..
+                } if server.is_empty()
+            ),
+            "缺省该是「切换」且地址为空: {bare:?}"
+        );
+        assert!(bare.validate().is_ok(), "地址留空合法（沿用系统现有地址）");
+
+        for mode in [ProxyMode::On, ProxyMode::Off, ProxyMode::Toggle] {
+            assert!(Action::System {
+                operation: SystemOperation::SwitchProxy {
+                    mode,
+                    server: String::new(),
+                },
+                description: None,
+            }
+            .validate()
+            .is_ok());
+        }
+
+        let empty = parse_proxy_server("   ").unwrap_err();
+        assert!(empty.contains("不能为空"), "{empty}");
+        let no_port = parse_proxy_server("127.0.0.1").unwrap_err();
+        assert!(no_port.contains("host:port"), "{no_port}");
+        let bad_scheme = parse_proxy_server("ftp://127.0.0.1:21").unwrap_err();
+        assert!(bad_scheme.contains("不认识的代理协议"), "{bad_scheme}");
+        let zero_port = parse_proxy_server("127.0.0.1:0").unwrap_err();
+        assert!(zero_port.contains("1~65535"), "{zero_port}");
+        let bad_ipv6 = parse_proxy_server("::1:7890").unwrap_err();
+        assert!(bad_ipv6.contains("IPv6"), "{bad_ipv6}");
+
+        let plain = parse_proxy_server("127.0.0.1:7890").unwrap();
+        assert_eq!(plain.scheme, ProxyScheme::Http);
+        assert_eq!(plain.host, "127.0.0.1");
+        assert_eq!(plain.port, 7890);
+        assert_eq!(plain.display(), "127.0.0.1:7890");
+
+        let http = parse_proxy_server("http://proxy.local:8080/").unwrap();
+        assert_eq!(http.scheme, ProxyScheme::Http);
+        assert_eq!(http.display(), "proxy.local:8080");
+
+        let socks = parse_proxy_server("socks5://127.0.0.1:1080").unwrap();
+        assert_eq!(socks.scheme, ProxyScheme::Socks5);
+        assert_eq!(socks.host, "127.0.0.1");
+        assert_eq!(socks.port, 1080);
+        assert_eq!(socks.display(), "socks5://127.0.0.1:1080");
+
+        let ipv6 = parse_proxy_server("[::1]:1080").unwrap();
+        assert_eq!(ipv6.host, "::1");
+        assert_eq!(ipv6.port, 1080);
+
+        // 落盘：非默认 mode 与地址都写出来，读回来等价。
+        let action = Action::System {
+            operation: SystemOperation::SwitchProxy {
+                mode: ProxyMode::On,
+                server: "socks5://127.0.0.1:1080".into(),
+            },
+            description: None,
+        };
+        assert!(action.validate().is_ok());
+        let json = serde_json::to_string(&action).unwrap();
+        assert!(json.contains(r#""mode":"on""#), "{json}");
+        assert!(
+            json.contains(r#""server":"socks5://127.0.0.1:1080""#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), action);
+
+        let bad = Action::System {
+            operation: SystemOperation::SwitchProxy {
+                mode: ProxyMode::On,
+                server: "127.0.0.1:abc".into(),
+            },
+            description: None,
+        };
+        assert!(bad.validate().is_err(), "坏端口要在保存前就拦住");
     }
 }

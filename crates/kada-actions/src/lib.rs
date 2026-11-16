@@ -28,6 +28,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 pub mod abort;
 pub mod prompt;
+/// 系统代理开关（`SystemOperation::SwitchProxy`）：三平台实现。
+#[cfg(all(
+    feature = "automation",
+    any(target_os = "windows", target_os = "linux", target_os = "macos")
+))]
+mod proxy;
 /// 内置脚本（7.2-㉟）：Rhai 沙箱执行器。
 #[cfg(feature = "automation")]
 pub mod script;
@@ -42,8 +48,8 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    AppOperation, BrightnessOperation, DesktopDirection, FileObject, IfRunning, OnError,
-    OsOperation, Shell, SystemOperation, WaitTarget, WindowOperation,
+    parse_proxy_server, AppOperation, BrightnessOperation, DesktopDirection, FileObject, IfRunning,
+    OnError, OsOperation, ProxyMode, Shell, SystemOperation, WaitTarget, WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -1019,6 +1025,11 @@ fn action_label(action: &Action) -> &'static str {
             ..
         } => "亮度调节失败",
         #[cfg(feature = "automation")]
+        Action::System {
+            operation: SystemOperation::SwitchProxy { .. },
+            ..
+        } => "系统代理开关失败",
+        #[cfg(feature = "automation")]
         Action::System { .. } => "系统操作失败",
         #[cfg(feature = "automation")]
         Action::If { .. } => "条件判断失败",
@@ -1466,6 +1477,21 @@ fn system_body(op: &SystemOperation, vars: &Vars) -> String {
         SystemOperation::ToggleDesktopIcons => "切换桌面图标".into(),
         SystemOperation::SendTo { target, payload } => send_to_body(target, payload, vars),
         SystemOperation::Brightness { operation, step } => brightness_body(*operation, *step),
+        SystemOperation::SwitchProxy { mode, server } => proxy_body(*mode, server),
+    }
+}
+
+/// 系统代理开关摘要：`开启系统代理（127.0.0.1:7890）` / `切换系统代理`。
+#[cfg(all(
+    any(target_os = "windows", target_os = "linux", target_os = "macos"),
+    feature = "automation"
+))]
+fn proxy_body(mode: ProxyMode, server: &str) -> String {
+    let server = server.trim();
+    if server.is_empty() {
+        format!("{}系统代理", mode.label())
+    } else {
+        format!("{}系统代理（{server}）", mode.label())
     }
 }
 
@@ -2370,6 +2396,31 @@ fn run_system(
                 kind: "brightness".into(),
                 label: "亮度".into(),
                 command: brightness_body(*operation, *step),
+                stdout: msg,
+                stderr: String::new(),
+                exit_code: None,
+                detached: false,
+                log_path: None,
+                stdout_file: None,
+                stderr_file: None,
+                show_output: false,
+                trigger: ctx.t.trigger.into(),
+                name: ctx.t.name.into(),
+                time: chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+                run_id: ctx.run_id,
+            }))
+        }
+        SystemOperation::SwitchProxy { mode, server } => {
+            let parsed = if server.trim().is_empty() {
+                None
+            } else {
+                Some(parse_proxy_server(server).map_err(|e| format!("代理地址有误：{e}"))?)
+            };
+            let msg = proxy::switch(*mode, parsed.as_ref())?;
+            Ok(Some(CommandResult {
+                kind: "proxy".into(),
+                label: "系统代理".into(),
+                command: proxy_body(*mode, server),
                 stdout: msg,
                 stderr: String::new(),
                 exit_code: None,
@@ -5803,6 +5854,56 @@ mod tests {
             description: None,
         };
         assert_eq!(super::action_kind(&file), "os");
+    }
+
+    /// 系统代理开关的摘要：状态要写清、填了地址要带上；动作类型仍是「操作系统」。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn switch_proxy_summary_names_mode_and_server() {
+        let body = |mode, server: &str| {
+            let action = Action::System {
+                operation: SystemOperation::SwitchProxy {
+                    mode,
+                    server: server.into(),
+                },
+                description: None,
+            };
+            assert_eq!(super::action_kind(&action), "system", "该归操作系统动作");
+            super::action_summary(&action, &BTreeMap::new())
+        };
+        assert_eq!(body(ProxyMode::Toggle, ""), "切换系统代理");
+        let on = body(ProxyMode::On, "127.0.0.1:7890");
+        assert!(on.contains("开启") && on.contains("127.0.0.1:7890"), "{on}");
+        let off = body(ProxyMode::Off, "127.0.0.1:7890");
+        assert!(
+            off.contains("关闭") && off.contains("127.0.0.1:7890"),
+            "{off}"
+        );
+    }
+
+    /// 地址填错时在碰系统之前就报错（不会把半套设置写进去）。
+    #[cfg(feature = "automation")]
+    #[test]
+    fn switch_proxy_bad_server_fails_before_touching_system() {
+        let _g = abort::test_lock();
+        let action = Action::System {
+            operation: SystemOperation::SwitchProxy {
+                mode: ProxyMode::On,
+                server: "127.0.0.1:abc".into(),
+            },
+            description: None,
+        };
+        let mut last_copied = None;
+        let err = super::run_action(
+            &action,
+            &ctx(5_000),
+            &mut BTreeMap::new(),
+            &mut last_copied,
+            0,
+            None,
+        )
+        .unwrap_err();
+        assert!(err.contains("代理地址有误"), "{err}");
     }
 
     /// 切桌面的平台键位映射：Windows `Win+Ctrl+←/→`、macOS `⌃←/→`、Linux `Super+PageUp/Down`。

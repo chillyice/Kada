@@ -1,6 +1,8 @@
 // 平台无关的类型定义（从 main.ts 抽出，U-01）。只放 type / interface，别放运行时代码。
 
 export type DesktopDirection = "prev" | "next";
+/** 系统代理开关的期望状态（`system.switch_proxy`）。 */
+export type ProxyMode = "on" | "off" | "toggle";
 /** 文件/目录动作的子操作（动作类型 `os`）。 */
 export type OsOperation =
   | { op: "copy"; source: string; dest: string }
@@ -24,7 +26,9 @@ export type SystemOperation =
   /** 向非前台窗口发按键 / 文本（原独立动作 `send_to`，入口并入操作系统）。 */
   | { op: "send_to"; target: string; payload: SendPayload }
   /** 显示器亮度（原独立动作 `brightness`，入口并入操作系统）。 */
-  | { op: "brightness"; operation: BrightnessOperation; step: number };
+  | { op: "brightness"; operation: BrightnessOperation; step: number }
+  /** 系统代理开关：开启 / 关闭 / 切换；`server` 空 = 沿用系统现有地址。 */
+  | { op: "switch_proxy"; mode: ProxyMode; server: string };
 /** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
 export type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
 /** 剪贴板动作（类型 `clipboard`，EXT-15）：v1 只处理文本。 */

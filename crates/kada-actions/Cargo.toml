@@ -24,10 +24,13 @@ libc = "0.2"
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = [
     "Win32_Foundation",
+    "Win32_Networking_WinInet",
     "Win32_System_Com",
     "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
 ] }
+# 系统代理开关读写当前用户注册表（Internet Settings）。与桌面壳同一个 crate，已在依赖树里。
+windows-registry = "0.6"
 
 [features]
 # 与 kada-core 的 `automation` 对齐：命令 / 文件 / 应用 / 条件 / 脚本 等执行逻辑。

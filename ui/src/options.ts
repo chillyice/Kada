@@ -15,6 +15,7 @@ import type {
   MouseButton,
   MouseOp,
   OsOperation,
+  ProxyMode,
   SemanticOperation,
   SendPayload,
   SystemOperation,
@@ -329,6 +330,14 @@ export const SYSTEM_OPS: { value: SystemOperation["op"]; label: string }[] = [
   { value: "toggle_desktop_icons", label: tr("切换桌面图标") },
   { value: "send_to", label: tr("后台发送（按键 / 文本）") },
   { value: "brightness", label: tr("显示器亮度") },
+  { value: "switch_proxy", label: tr("切换系统代理") },
+];
+
+/** 系统代理开关的三个状态（与 core 的 `ProxyMode` 同款说法）。 */
+export const PROXY_MODES: { value: ProxyMode; label: string }[] = [
+  { value: "toggle", label: tr("切换（开着就关、关着就开）") },
+  { value: "on", label: tr("开启系统代理") },
+  { value: "off", label: tr("关闭系统代理") },
 ];
 
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
@@ -349,6 +358,8 @@ export function newSystemOp(op: SystemOperation["op"]): SystemOperation {
       return { op, target: "", payload: { kind: "keys", keys: [] } };
     case "brightness":
       return { op, operation: "up", step: 10 };
+    case "switch_proxy":
+      return { op, mode: "toggle", server: "" };
   }
   return { op: "switch_desktop", direction: "next" };
 }
@@ -821,6 +832,15 @@ export function systemSummary(o: SystemOperation): string {
       return sendToSummary(o.target, o.payload);
     case "brightness":
       return brightnessSummary(o.operation, o.step);
+    case "switch_proxy": {
+      const state =
+        o.mode === "on"
+          ? tr("开启系统代理")
+          : o.mode === "off"
+            ? tr("关闭系统代理")
+            : tr("切换系统代理");
+      return o.server.trim() ? trt`${state}（${o.server}）` : state;
+    }
   }
   return "";
 }

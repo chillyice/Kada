@@ -16,6 +16,7 @@ import {
   MOUSE_BUTTON_LABELS,
   MOUSE_OPS,
   OS_OPS,
+  PROXY_MODES,
   SEMANTIC_OPS,
   SYSTEM_OPS,
   TRANSFORM_OPS,
@@ -59,6 +60,7 @@ import type {
   MouseButton,
   MouseOp,
   OsOperation,
+  ProxyMode,
   SemanticOperation,
   SendPayload,
   Shell,
@@ -1922,6 +1924,45 @@ export function actionFields(
       }
       body.append(
         el("div", "unit-hint", tr("只调主显示器（DDC/CI，VCP 0x10）。「恢复」用本次运行第一次调节前缓存的原始亮度；显示器不支持时执行会明确报错。目前仅 Windows 支持。")),
+      );
+    } else if (op.op === "switch_proxy") {
+      const modeLine = el("div", "action-line");
+      const modeSel = el("select", "action-input") as HTMLSelectElement;
+      for (const m of PROXY_MODES) {
+        const o = el("option") as HTMLOptionElement;
+        o.value = m.value;
+        o.textContent = m.label;
+        modeSel.append(o);
+      }
+      modeSel.value = op.mode;
+      modeSel.addEventListener("change", () => {
+        op.mode = modeSel.value as ProxyMode;
+        rerender();
+      });
+      modeLine.append(el("span", "unit-label", tr("操作")), modeSel);
+      body.append(modeLine);
+
+      if (op.mode !== "off") {
+        const addrLine = el("div", "action-line");
+        const addr = el("input", "action-input") as HTMLInputElement;
+        addr.type = "text";
+        addr.value = op.server;
+        addr.placeholder = tr("127.0.0.1:7890（可留空）");
+        addr.addEventListener("input", () => {
+          op.server = addr.value.trim();
+        });
+        addrLine.append(
+          el("span", "unit-label", tr("代理地址")),
+          addr,
+          helpIcon(
+            tr("只写 host:port 按 HTTP 代理处理（同时接管 http / https）；SOCKS5 写成 socks5://127.0.0.1:1080。留空 = 沿用系统里已经配好的地址；关闭代理时不会改动这个地址。"),
+          ),
+        );
+        body.append(addrLine);
+      }
+
+      body.append(
+        el("div", "unit-hint", tr("「切换」= 每次触发在开 / 关之间来回切。开启时把地址写进系统代理（留空则用系统现有地址）；关闭只关开关、不改地址。Windows 立即生效；macOS 修改系统代理需要管理员权限；Linux 只支持 GNOME 桌面。")),
       );
     }
   } else if (a.type === "window") {
