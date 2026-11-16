@@ -78,18 +78,10 @@ class ActionRunner(private val service: AccessibilityService) {
             }
 
             "text" -> {
-                // 文本落地：写剪贴板 + 粘贴到当前输入框（规划 §4 方案 ③ 的底座）。
-                val text = action.optString("text")
-                if (text.isEmpty()) {
-                    report.fail("文本动作为空")
-                    return
-                }
-                if (!setClipboard(text)) {
-                    report.fail("写剪贴板失败")
-                    return
-                }
-                val pasted = semantic.perform("paste")
-                if (pasted.ok) report.ok() else report.fail("粘贴失败：${pasted.detail}")
+                // 文本落地（S1-e）：优先在光标处插入（`ACTION_SET_TEXT`，不碰剪贴板），
+                // 节点不接受时退回「写剪贴板 + 粘贴 + 尽量恢复原剪贴板」。
+                val result = semantic.insertText(action.optString("text"))
+                if (result.ok) report.ok() else report.fail("输入文本失败：${result.detail}")
             }
 
             "clipboard" -> {
@@ -101,13 +93,11 @@ class ActionRunner(private val service: AccessibilityService) {
                     }
 
                     "tempstr" -> {
-                        val text = op.optString("text")
-                        if (!setClipboard(text)) {
-                            report.fail("写剪贴板失败")
-                            return
-                        }
-                        val pasted = semantic.perform("paste")
-                        if (pasted.ok) report.ok() else report.fail("粘贴失败：${pasted.detail}")
+                        // 临时文本 = 插完不留痕：桌面版是「写剪贴板 → 粘贴 → 恢复」，
+                        // 这边先走同一条插入路径（SET_TEXT 根本不碰剪贴板），
+                        // 退路才写剪贴板并尽量恢复。
+                        val result = semantic.insertText(op.optString("text"))
+                        if (result.ok) report.ok() else report.fail("临时文本失败：${result.detail}")
                     }
 
                     else -> report.skip("clipboard/${op.optString("op")}")

@@ -1,6 +1,8 @@
 package com.kada.spike
 
 import android.accessibilityservice.AccessibilityService
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.os.Build
 import android.os.Bundle
 import android.view.accessibility.AccessibilityNodeInfo
@@ -215,5 +217,73 @@ class SemanticActions(private val service: AccessibilityService) {
         }
         val result = nodeAction(AccessibilityNodeInfo.ACTION_SET_TEXT, "ACTION_SET_TEXT", args)
         return if (result.ok) result else ActionResult(false, result.detail + "；SET_TEXT 只在可编辑节点上生效")
+    }
+
+    /**
+     * 文本动作落地（`Action::Text`）：在**当前光标处插入**，原有文本与选区之外的内容都保留。
+     *
+     * 首选 `ACTION_SET_TEXT` + 选区参数——节点级写入，不碰剪贴板、不依赖输入法。
+     * 只有节点不接受时才退回「写剪贴板 + 粘贴」：这条会覆盖用户剪贴板，所以粘贴后
+     * **尽量把原剪贴板恢复**（Android 10+ 后台读剪贴板受限，读不到就读不到，如实说明，
+     * 不许假装成功——用户丢了剪贴板还以为没丢，比报错更糟）。
+     *
+     * 只在**聚焦的那个节点**上写 SET_TEXT：父容器即便返回 true，也不是同一段文本，
+     * 拿它的内容拼会写坏（`nodeAction` 的沿父链重试在这个用法上不适用）。
+     */
+    fun insertText(text: String): ActionResult {
+        if (text.isEmpty()) return ActionResult(false, "文本动作为空")
+
+        val focus = focusedNode()
+        if (focus == null) return insertViaClipboard(text, noFocusDetail())
+        if (!focus.isEditable) {
+            return insertViaClipboard(text, "聚焦节点不可编辑（${focus.className ?: "?"}）")
+        }
+
+        val existing = focus.text?.toString() ?: ""
+        val rawStart = focus.textSelectionStart
+        val rawEnd = focus.textSelectionEnd
+        val valid = rawStart in 0..existing.length && rawEnd in 0..existing.length
+        val start = if (valid) minOf(rawStart, rawEnd) else existing.length
+        val end = if (valid) maxOf(rawStart, rawEnd) else existing.length
+        val caret = start + text.length
+        val args = Bundle().apply {
+            putCharSequence(
+                AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE,
+                existing.substring(0, start) + text + existing.substring(end),
+            )
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, caret)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, caret)
+        }
+        if (focus.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)) {
+            return ActionResult(true, "已在光标处插入 ${text.length} 字（ACTION_SET_TEXT，未动剪贴板）")
+        }
+        return insertViaClipboard(text, "ACTION_SET_TEXT 不被节点接受（${focus.className ?: "?"}）")
+    }
+
+    private fun insertViaClipboard(text: String, why: String): ActionResult {
+        val manager = service.getSystemService(ClipboardManager::class.java)
+            ?: return ActionResult(false, "$why；剪贴板不可用")
+        val saved = runCatching { manager.primaryClip }.getOrNull()
+        val wrote = runCatching {
+            manager.setPrimaryClip(ClipData.newPlainText("Kada", text))
+            true
+        }.getOrDefault(false)
+        if (!wrote) return ActionResult(false, "$why；写剪贴板失败")
+
+        val pasted = perform("paste")
+        // 粘贴由目标 app 自己读剪贴板，给它一点时间再恢复，否则会跟它抢同一个值。
+        Thread.sleep(120)
+        val restored = saved != null && runCatching {
+            manager.setPrimaryClip(saved)
+            true
+        }.getOrDefault(false)
+        if (!pasted.ok) return ActionResult(false, "$why；粘贴失败：${pasted.detail}")
+
+        val tail = when {
+            restored -> "原剪贴板已恢复"
+            saved == null -> "原剪贴板读不到（Android 10+ 后台限制），已被覆盖为插入内容"
+            else -> "原剪贴板恢复失败，已被覆盖为插入内容"
+        }
+        return ActionResult(true, "$why；退回剪贴板粘贴（$tail）")
     }
 }

@@ -5,7 +5,8 @@
 //!
 //! 支持口径（S1-a 落地集）：
 //! - `open_url`：系统浏览器打开（`ACTION_VIEW`），无需权限；
-//! - `text`：写剪贴板 + `ACTION_PASTE` 到当前输入框（规划 §4 方案 ③ 的底座）；
+//! - `text`：在光标处插入（无障碍 `ACTION_SET_TEXT` + 选区参数）；节点不接受时退回
+//!   「写剪贴板 + `ACTION_PASTE`」并尽量恢复原剪贴板（S1-e）；
 //! - `clipboard`：写剪贴板（读回变量 / 临时粘贴暂不支持）；
 //! - `semantic`：语义动作（复制 / 返回 / 通知栏…），无障碍的 `ACTION_*` 与 `GLOBAL_ACTION_*`
 //!   ——这正是安卓强于桌面的地方，见 `kada_core::SemanticOperation`；

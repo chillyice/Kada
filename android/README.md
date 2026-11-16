@@ -117,6 +117,11 @@ adb shell am start -n com.kada.spike/.MainActivity
   - 「录入按键」在下一次按键时截（`TriggerCapture`），录入期间整条判定跳过、按键全吞——
     否则录 F8 会先把 F8 原来的快捷键触发一遍；录到后连它的抬起一起吞，安全阀是「新的非修饰键按下即放弃」；
   - 同一条目有多个触发键时**只改第一个**，其余原样保留（对话框里有提示）。
+- **文本动作落地（S1-e）**：`text` 在**当前光标处插入**，原有文本保留——
+  首选 `ACTION_SET_TEXT` + 选区参数（节点级写入，**不碰剪贴板、不依赖输入法**）；
+  节点不接受时才退回「写剪贴板 + `ACTION_PASTE`」，并把原剪贴板**尽量恢复**
+  （Android 10+ 后台读剪贴板受限，读不到就在结果里如实写「已被覆盖」，不假装成功）。
+  `clipboard/tempstr`（临时文本）走同一条插入路径。非可编辑节点 / 没有输入焦点时退回粘贴。
 
 判定口径（S1-a）：
 
@@ -189,7 +194,7 @@ powershell android\tools\verify.ps1 -SkipBuild # 只跑检查
 
 ## 已验证（2026-11-16，emulator-5554 / ihomy34，Android 14）
 
-`android/tools/verify.ps1` **41/41 通过**（s4 版本；S1-3 三条 + S1-4 编辑器七条是新增）。
+`android/tools/verify.ps1` **44/44 通过**（s5 版本；S1-3 语义动作三条、S1-4 编辑器七条、S1-5 文本动作三条是新增）。
 编辑器另用 `uiautomator` 真点验过整条路径：顶部「快捷键编辑器」滚到面板末尾、新建对话框字段与下拉渲染、
 「录入按键」按物理 `Ctrl+F6` 回填并显示「✓ 已录入」、切「语义动作」保存后列表变 6 条
 （`#5 [Ctrl+F6] semantic`）、点「删除」弹确认框、确认后回到 5 条。
@@ -238,10 +243,13 @@ S1 段：
 | S1-4 撞车校验 | ✅ `F4` 已被占用时 `duplicates=#6 编辑器测试`（core 硬冲突口径，编辑器拦保存） | 报告 `editor.lastCheck.duplicates` |
 | S1-4 拒绝无效触发键 | ✅ `Foo+K` → `ok=false`，错误「未知按键: Foo」 | 报告 `editor.lastCheck.error` |
 | S1-4 删除条目 | ✅ 条数 −1 且按名字确认已消失 | 报告 `editor.shortcuts` |
+| S1-5 编辑器写入 text 动作 | ✅ `type=text` + `text=insertme`，摘要「输入文本「insertme」」 | 报告 `editor.shortcuts[].actionType/actionSummary` |
+| S1-5 光标处插入（保留原文） | ✅ 输入框原有 `abc`，F2 后变 `abcinsertme`（`lastOk=true`） | 报告 `stats.inputFieldText` / `actions['rust:F2']` |
+| S1-5 不覆盖剪贴板 | ✅ F1 写 `clipmark` → F2 插文本 → F12 粘贴得到 `abcinsertmeclipmark` | 报告 `stats.inputFieldText` |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去。
-> 本轮 s4 全量跑 **41/41 通过**；旧的 35 项（S1-3）与 32 项基线此前连跑两轮一致。
-> S1-4 的七条走的是**与界面同一份** `ShortcutStore`（广播只是代替点按），
+> 本轮 s5 全量跑 **44/44 通过**；旧的 41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+> S1-4 / S1-5 的十条走的是**与界面同一份** `ShortcutStore` 与执行器（广播只是代替点按），
 > 控件的点击手势、录入按键仍属人工验证（`docs/人工验证清单.md` §90）。
 
 ## 关键结论（写进规划 §11 的就行）
@@ -307,8 +315,9 @@ S1 段：
   见 `需求设计说明书.md` §3.7）：安卓探针的 `ActionCatalog` id 与 core 的 serde 名**逐字相同**，
   `ActionRunner` 直接查表、不留第二张映射表。桌面侧配置合法但执行明确报错 + 冲突 Warn。
   **真机逐条 op 的表现**（尤其厂商 ROM 对 `GLOBAL_ACTION_*` 的裁剪）见 `docs/人工验证清单.md` §89。
-- S1 的 `text` 动作走「写剪贴板 + `ACTION_PASTE`」：粘贴依赖目标输入框、会覆盖用户剪贴板，
-  规划 §4 的方案 ③ 仍待定。
+- `text` 动作已改成「`ACTION_SET_TEXT` 在光标处插入」优先（不动剪贴板）；退回剪贴板粘贴时
+  **原剪贴板可能恢复不了**（Android 10+ 后台应用读不到剪贴板），结果里会写明「已被覆盖」。
+  带格式文本（富文本 / 多段样式）只能退化成纯文本，输入框不接受 `SET_TEXT` 的 App（少见）走粘贴。
 - **编辑器只做「够用」那一档**：动作类型只有五类（`open_url` / `text` / `clipboard` /
   `semantic` / `pause_ms`），别的类型保持原样不动；同一条目有多个触发键时只改第一个；
   没有目录 / 层 / `when` 的编辑（手机屏上做不了桌面的全量编辑器，但也不许「改个触发键把动作改没了」）。

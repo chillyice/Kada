@@ -673,6 +673,47 @@ if ($exported) {
     $afterDelete = @($script:lastReport.editor.shortcuts)
     Check "S1-4 编辑器删除条目" (($afterDelete.Count -eq $beforeDelete - 1) -and (@($afterDelete | Where-Object { $_.name -eq $semName }).Count -eq 0)) "n=$($afterDelete.Count)（删除前 $beforeDelete）"
 
+    # S1-5 文本动作：`text` 走 ACTION_SET_TEXT 在光标处插入（不碰剪贴板），
+    # 节点不接受才退回「写剪贴板 + 粘贴 + 尽量恢复」。三条短路：
+    # F1 写剪贴板标记 / F2 插入文本 / F12 语义粘贴（用后两条验证剪贴板没被动过）。
+    $textName = "编辑器文本"
+    $clipName = "编辑器剪贴"
+    $pasteName = "编辑器粘贴"
+    Bcast "editorAdd" @("--es", "name", $clipName, "--es", "trigger", "F1", "--es", "action", "clipboard", "--es", "value", "clipmark")
+    Bcast "editorAdd" @("--es", "name", $textName, "--es", "trigger", "F2", "--es", "action", "text", "--es", "value", "insertme")
+    Bcast "editorAdd" @("--es", "name", $pasteName, "--es", "trigger", "F12", "--es", "action", "semantic", "--es", "value", "paste")
+    Start-Sleep -Milliseconds 500
+    $script:lastReport = Get-Report
+    $textEntry = @($script:lastReport.editor.shortcuts | Where-Object { $_.name -eq $textName })
+    Check "S1-5 编辑器写入 text 动作" (($textEntry.Count -eq 1) -and ($textEntry[0].actionType -eq "text")) "actionType=$($textEntry[0].actionType) summary=$($textEntry[0].actionSummary)"
+
+    # 焦点 / 输入连接是这条链路唯一脆弱的地方（打字本身已由 S0 验过），失败重试一次。
+    $textFlow = $false
+    for ($try = 1; $try -le 2; $try++) {
+        if (-not (Focus-Field)) {
+            Write-Host "  [warn] 文本插入用例没拿到焦点（第 $try 次）"
+            continue
+        }
+        Clear-Field
+        Type-Text "abc"
+        SendKey 59 40            # F1：剪贴板写成 clipmark
+        Start-Sleep -Milliseconds 300
+        SendKey 60 40            # F2：text 动作
+        Start-Sleep -Milliseconds 800
+        $script:lastReport = Get-Report
+        if ($script:lastReport.stats.inputFieldText -eq "abcinsertme") { $textFlow = $true; break }
+        Write-Host ("  [warn] 文本插入第 {0} 次没中：field=[{1}] {2}" -f $try, $script:lastReport.stats.inputFieldText, (Event-Digest $script:lastReport))
+    }
+    $textRec = $script:lastReport.actions.'rust:F2'
+    Check "S1-5 text 在光标处插入（保留原有文本）" ($textFlow -and $textRec -and $textRec.lastOk) "field=[$($script:lastReport.stats.inputFieldText)] ok=$($textRec.lastOk) detail=$($textRec.lastDetail)"
+
+    # 剪贴板没被文本动作覆盖：随后按 F12 粘贴，得到的仍是 F1 写进去的标记。
+    SendKey 88 40                # F12：semantic(paste)
+    Start-Sleep -Milliseconds 800
+    $script:lastReport = Get-Report
+    $pasted = [string]$script:lastReport.stats.inputFieldText
+    Check "S1-5 text 不覆盖剪贴板（随后粘贴仍是标记）" ($textFlow -and ($pasted -eq "abcinsertmeclipmark")) "field=[$pasted]"
+
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null
     Bcast "import" @("--es", "file", "restore.json", "--ez", "merge", "false")
