@@ -153,6 +153,24 @@ pub fn parse_proxy_server(raw: &str) -> Result<ProxyServer, String> {
     })
 }
 
+/// 解析「排除项」（不走代理的地址 / 域名，纯函数）。
+///
+/// 分号、逗号、换行都算分隔符（中英文标点都认），两端空白丢掉、完全重复的项去重；
+/// **空串返回空列表 = 不设置排除项**（沿用系统里已有的那一套，不擅自清空）。
+/// `<local>` 是 Windows 上「跳过本地地址」的写法，这里原样保留。
+#[cfg(feature = "automation")]
+pub fn parse_proxy_bypass(raw: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split([';', ',', '\n', '\r', '；', '，']) {
+        let part = part.trim();
+        if part.is_empty() || out.iter().any(|existing| existing == part) {
+            continue;
+        }
+        out.push(part.to_string());
+    }
+    out
+}
+
 /// 文件/目录动作：对文件与目录做复制、剪切、粘贴、删除、新建、压缩、取属性。
 ///
 /// 与 [`SystemOperation`]（操作系统动作）是**两类独立的动作**：界面下拉里一个叫「文件/目录」、
@@ -236,13 +254,16 @@ pub enum SystemOperation {
     ///
     /// `server` 是开启时写入的地址（`host:port`，可带 `http://` / `socks5://` 前缀，见
     /// [`parse_proxy_server`]）；**留空 = 沿用系统里已经配好的地址**。关闭时不动地址。
-    /// Windows 改注册表 `Internet Settings` 并广播设置变更；macOS 走 `networksetup`
+    /// `bypass` 是排除项（分号分隔，见 [`parse_proxy_bypass`]）：留空 = 沿用系统里已有的排除项，
+    /// 关闭时也不动。Windows 改注册表 `Internet Settings` 并广播设置变更；macOS 走 `networksetup`
     /// （需要管理员权限）；Linux 走 GNOME `gsettings`（其它桌面环境执行报错）。
     SwitchProxy {
         #[serde(default)]
         mode: ProxyMode,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         server: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        bypass: String,
     },
 }
 
@@ -1917,7 +1938,7 @@ impl Default for Action {
 mod proxy_action_tests {
     use super::*;
 
-    /// 系统代理开关：`mode` 缺省是「切换」、地址缺省为空（沿用系统现有地址）；
+    /// 系统代理开关：`mode` 缺省是「切换」、地址 / 排除项缺省为空（沿用系统现有设置）；
     /// 地址填了就必须能解析，解析规则钉住常见写法与坏输入。
     #[test]
     fn switch_proxy_defaults_validate_and_parse() {
@@ -1930,11 +1951,12 @@ mod proxy_action_tests {
                     operation: SystemOperation::SwitchProxy {
                         mode: ProxyMode::Toggle,
                         ref server,
+                        ref bypass,
                     },
                     ..
-                } if server.is_empty()
+                } if server.is_empty() && bypass.is_empty()
             ),
-            "缺省该是「切换」且地址为空: {bare:?}"
+            "缺省该是「切换」且地址 / 排除项为空: {bare:?}"
         );
         assert!(bare.validate().is_ok(), "地址留空合法（沿用系统现有地址）");
 
@@ -1943,6 +1965,7 @@ mod proxy_action_tests {
                 operation: SystemOperation::SwitchProxy {
                     mode,
                     server: String::new(),
+                    bypass: String::new(),
                 },
                 description: None,
             }
@@ -1981,11 +2004,12 @@ mod proxy_action_tests {
         assert_eq!(ipv6.host, "::1");
         assert_eq!(ipv6.port, 1080);
 
-        // 落盘：非默认 mode 与地址都写出来，读回来等价。
+        // 落盘：非默认 mode 与地址 / 排除项都写出来，读回来等价。
         let action = Action::System {
             operation: SystemOperation::SwitchProxy {
                 mode: ProxyMode::On,
                 server: "socks5://127.0.0.1:1080".into(),
+                bypass: "localhost;192.168.*".into(),
             },
             description: None,
         };
@@ -1996,15 +2020,42 @@ mod proxy_action_tests {
             json.contains(r#""server":"socks5://127.0.0.1:1080""#),
             "{json}"
         );
+        assert!(json.contains(r#""bypass":"localhost;192.168.*""#), "{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), action);
 
         let bad = Action::System {
             operation: SystemOperation::SwitchProxy {
                 mode: ProxyMode::On,
                 server: "127.0.0.1:abc".into(),
+                bypass: String::new(),
             },
             description: None,
         };
         assert!(bad.validate().is_err(), "坏端口要在保存前就拦住");
+    }
+
+    /// 排除项解析：中英文分号 / 逗号 / 换行都当分隔符，去空白、去重；空串 = 不设置。
+    #[test]
+    fn proxy_bypass_splits_and_dedupes() {
+        assert!(parse_proxy_bypass("   ").is_empty(), "留空 = 不设置排除项");
+        assert!(
+            parse_proxy_bypass(";;\n，").is_empty(),
+            "只有分隔符也算没填"
+        );
+
+        assert_eq!(
+            parse_proxy_bypass("localhost; 127.* ;*.local"),
+            vec!["localhost", "127.*", "*.local"]
+        );
+        // 换行与中文标点也认（从别处粘贴一份列表过来不至于整条变成一项）。
+        assert_eq!(
+            parse_proxy_bypass("localhost\n10.*，192.168.*；<local>"),
+            vec!["localhost", "10.*", "192.168.*", "<local>"]
+        );
+        // 完全重复的项只留一份，顺序不变。
+        assert_eq!(
+            parse_proxy_bypass("localhost;localhost;*.local"),
+            vec!["localhost", "*.local"]
+        );
     }
 }

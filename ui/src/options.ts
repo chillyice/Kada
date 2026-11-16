@@ -340,6 +340,18 @@ export const PROXY_MODES: { value: ProxyMode; label: string }[] = [
   { value: "off", label: tr("关闭系统代理") },
 ];
 
+/** 排除项拆分：与 core 的 `parse_proxy_bypass` 同口径——中英文分号 / 逗号 / 换行分隔，
+ * 去两端空白、完全重复的项只留一份；空串返回空列表（= 沿用系统已有的排除项）。 */
+export function proxyBypassList(raw: string | undefined): string[] {
+  const out: string[] = [];
+  for (const part of (raw ?? "").split(/[;,\n\r，；]/)) {
+    const item = part.trim();
+    if (!item || out.includes(item)) continue;
+    out.push(item);
+  }
+  return out;
+}
+
 /** 虚拟桌面方向的文案（与 core 的 `DesktopDirection::label` 同款说法）。 */
 export const DESKTOP_DIRECTIONS: { value: DesktopDirection; label: string }[] = [
   { value: "prev", label: tr("上一个（左）") },
@@ -359,7 +371,7 @@ export function newSystemOp(op: SystemOperation["op"]): SystemOperation {
     case "brightness":
       return { op, operation: "up", step: 10 };
     case "switch_proxy":
-      return { op, mode: "toggle", server: "" };
+      return { op, mode: "toggle", server: "", bypass: "" };
   }
   return { op: "switch_desktop", direction: "next" };
 }
@@ -839,7 +851,17 @@ export function systemSummary(o: SystemOperation): string {
           : o.mode === "off"
             ? tr("关闭系统代理")
             : tr("切换系统代理");
-      return o.server.trim() ? trt`${state}（${o.server}）` : state;
+      const server = o.server.trim();
+      // 关闭那条路不写排除项，摘要里也不报；排除项列表可能很长，只报项数。
+      const ignored = o.mode === "off" ? 0 : proxyBypassList(o.bypass).length;
+      const detail = server
+        ? ignored
+          ? trt`${server}，排除 ${ignored} 项`
+          : server
+        : ignored
+          ? trt`排除 ${ignored} 项`
+          : "";
+      return detail ? trt`${state}（${detail}）` : state;
     }
   }
   return "";

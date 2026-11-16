@@ -1959,10 +1959,27 @@ export function actionFields(
           ),
         );
         body.append(addrLine);
+
+        const bypassLine = el("div", "action-line");
+        const bypass = el("input", "action-input") as HTMLInputElement;
+        bypass.type = "text";
+        bypass.value = op.bypass ?? "";
+        bypass.placeholder = tr("localhost;127.*;*.local;192.168.*（可留空）");
+        bypass.addEventListener("input", () => {
+          op.bypass = bypass.value;
+        });
+        bypassLine.append(
+          el("span", "unit-label", tr("排除项")),
+          bypass,
+          helpIcon(
+            tr("不走代理的地址 / 域名，用分号分隔（Windows 的 <local> 表示跳过本地地址）。留空 = 沿用系统里已有的排除项；关闭代理时不会改动它。"),
+          ),
+        );
+        body.append(bypassLine);
       }
 
       body.append(
-        el("div", "unit-hint", tr("「切换」= 每次触发在开 / 关之间来回切。开启时把地址写进系统代理（留空则用系统现有地址）；关闭只关开关、不改地址。Windows 立即生效；macOS 修改系统代理需要管理员权限；Linux 只支持 GNOME 桌面。")),
+        el("div", "unit-hint", tr("「切换」= 每次触发在开 / 关之间来回切。开启时把地址 / 排除项写进系统代理（留空则沿用系统现有设置）；关闭只关开关、不改地址与排除项。Windows 立即生效；macOS 修改系统代理需要管理员权限；Linux 只支持 GNOME 桌面。")),
       );
     }
   } else if (a.type === "window") {

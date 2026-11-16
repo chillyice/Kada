@@ -48,8 +48,9 @@ use kada_core::{MouseButton, MouseOp};
 
 #[cfg(feature = "automation")]
 use kada_core::{
-    parse_proxy_server, AppOperation, BrightnessOperation, DesktopDirection, FileObject, IfRunning,
-    OnError, OsOperation, ProxyMode, Shell, SystemOperation, WaitTarget, WindowOperation,
+    parse_proxy_bypass, parse_proxy_server, AppOperation, BrightnessOperation, DesktopDirection,
+    FileObject, IfRunning, OnError, OsOperation, ProxyMode, Shell, SystemOperation, WaitTarget,
+    WindowOperation,
 };
 
 #[cfg(target_os = "linux")]
@@ -1477,21 +1478,32 @@ fn system_body(op: &SystemOperation, vars: &Vars) -> String {
         SystemOperation::ToggleDesktopIcons => "切换桌面图标".into(),
         SystemOperation::SendTo { target, payload } => send_to_body(target, payload, vars),
         SystemOperation::Brightness { operation, step } => brightness_body(*operation, *step),
-        SystemOperation::SwitchProxy { mode, server } => proxy_body(*mode, server),
+        SystemOperation::SwitchProxy {
+            mode,
+            server,
+            bypass,
+        } => proxy_body(*mode, server, bypass),
     }
 }
 
-/// 系统代理开关摘要：`开启系统代理（127.0.0.1:7890）` / `切换系统代理`。
+/// 系统代理开关摘要：`开启系统代理（127.0.0.1:7890，排除 3 项）` / `切换系统代理`。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
-fn proxy_body(mode: ProxyMode, server: &str) -> String {
+fn proxy_body(mode: ProxyMode, server: &str, bypass: &str) -> String {
     let server = server.trim();
-    if server.is_empty() {
-        format!("{}系统代理", mode.label())
+    // 关闭那条路不写排除项，摘要里也就不报（否则「关闭系统代理（排除 3 项）」看着像会动它）。
+    let ignored = if matches!(mode, ProxyMode::Off) {
+        0
     } else {
-        format!("{}系统代理（{server}）", mode.label())
+        parse_proxy_bypass(bypass).len()
+    };
+    match (server.is_empty(), ignored) {
+        (true, 0) => format!("{}系统代理", mode.label()),
+        (false, 0) => format!("{}系统代理（{server}）", mode.label()),
+        (true, n) => format!("{}系统代理（排除 {n} 项）", mode.label()),
+        (false, n) => format!("{}系统代理（{server}，排除 {n} 项）", mode.label()),
     }
 }
 
@@ -2410,17 +2422,22 @@ fn run_system(
                 run_id: ctx.run_id,
             }))
         }
-        SystemOperation::SwitchProxy { mode, server } => {
+        SystemOperation::SwitchProxy {
+            mode,
+            server,
+            bypass,
+        } => {
             let parsed = if server.trim().is_empty() {
                 None
             } else {
                 Some(parse_proxy_server(server).map_err(|e| format!("代理地址有误：{e}"))?)
             };
-            let msg = proxy::switch(*mode, parsed.as_ref())?;
+            let ignored = parse_proxy_bypass(bypass);
+            let msg = proxy::switch(*mode, parsed.as_ref(), &ignored)?;
             Ok(Some(CommandResult {
                 kind: "proxy".into(),
                 label: "系统代理".into(),
-                command: proxy_body(*mode, server),
+                command: proxy_body(*mode, server, bypass),
                 stdout: msg,
                 stderr: String::new(),
                 exit_code: None,
@@ -5856,29 +5873,35 @@ mod tests {
         assert_eq!(super::action_kind(&file), "os");
     }
 
-    /// 系统代理开关的摘要：状态要写清、填了地址要带上；动作类型仍是「操作系统」。
+    /// 系统代理开关的摘要：状态要写清、填了地址要带上、有排除项报项数；动作类型仍是「操作系统」。
     #[cfg(feature = "automation")]
     #[test]
     fn switch_proxy_summary_names_mode_and_server() {
-        let body = |mode, server: &str| {
+        let body = |mode, server: &str, bypass: &str| {
             let action = Action::System {
                 operation: SystemOperation::SwitchProxy {
                     mode,
                     server: server.into(),
+                    bypass: bypass.into(),
                 },
                 description: None,
             };
             assert_eq!(super::action_kind(&action), "system", "该归操作系统动作");
             super::action_summary(&action, &BTreeMap::new())
         };
-        assert_eq!(body(ProxyMode::Toggle, ""), "切换系统代理");
-        let on = body(ProxyMode::On, "127.0.0.1:7890");
+        assert_eq!(body(ProxyMode::Toggle, "", ""), "切换系统代理");
+        let on = body(ProxyMode::On, "127.0.0.1:7890", "");
         assert!(on.contains("开启") && on.contains("127.0.0.1:7890"), "{on}");
-        let off = body(ProxyMode::Off, "127.0.0.1:7890");
+        let off = body(ProxyMode::Off, "127.0.0.1:7890", "");
         assert!(
             off.contains("关闭") && off.contains("127.0.0.1:7890"),
             "{off}"
         );
+        // 排除项只报项数（列表可能很长，塞进摘要会挤满列表页）。
+        let with_bypass = body(ProxyMode::On, "127.0.0.1:7890", "localhost;192.168.*");
+        assert!(with_bypass.contains("排除 2 项"), "{with_bypass}");
+        let only_bypass = body(ProxyMode::Toggle, "", "localhost");
+        assert!(only_bypass.contains("排除 1 项"), "{only_bypass}");
     }
 
     /// 地址填错时在碰系统之前就报错（不会把半套设置写进去）。
@@ -5890,6 +5913,7 @@ mod tests {
             operation: SystemOperation::SwitchProxy {
                 mode: ProxyMode::On,
                 server: "127.0.0.1:abc".into(),
+                bypass: String::new(),
             },
             description: None,
         };

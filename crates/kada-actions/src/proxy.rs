@@ -2,12 +2,13 @@
 //!
 //! 三平台各走各的系统接口：
 //!
-//! - **Windows**：读写当前用户注册表 `Internet Settings` 的 `ProxyEnable` / `ProxyServer`，
-//!   再广播 `InternetSetOption` 通知 WinINET 立即生效。
-//! - **macOS**：调 `networksetup`，对「已启用的网络服务」逐个开关（HTTP / HTTPS / SOCKS 三类）。
-//!   修改系统网络设置需要管理员权限；失败时把系统给的原文带回去，不静默。
-//! - **Linux**：调 GNOME 的 `gsettings`（`org.gnome.system.proxy`）。其它桌面环境没有
-//!   统一接口，gsettings 不可用时明确报错。
+//! - **Windows**：读写当前用户注册表 `Internet Settings` 的 `ProxyEnable` / `ProxyServer` /
+//!   `ProxyOverride`（排除项），再广播 `InternetSetOption` 通知 WinINET 立即生效。
+//! - **macOS**：调 `networksetup`，对「已启用的网络服务」逐个开关（HTTP / HTTPS / SOCKS 三类）
+//!   并写排除域名（`-setproxybypassdomains`）。修改系统网络设置需要管理员权限；失败时把系统
+//!   给的原文带回去，不静默。
+//! - **Linux**：调 GNOME 的 `gsettings`（`org.gnome.system.proxy`，排除项是 `ignore-hosts`
+//!   字符串数组）。其它桌面环境没有统一接口，gsettings 不可用时明确报错。
 //!
 //! 这里只负责「改系统状态」，动作模型 / 摘要 / 执行记录都在上层。
 
@@ -23,24 +24,36 @@ fn desired(mode: ProxyMode, current: bool) -> bool {
 }
 
 /// 开关系统代理，返回一句可进消息中心的结果说明。
-pub(super) fn switch(mode: ProxyMode, server: Option<&ProxyServer>) -> Result<String, String> {
+///
+/// `bypass` 是排除项（已拆分去重，见 `kada_core::parse_proxy_bypass`）：**空列表 = 不动
+/// 系统里已有的排除项**（跟 `server` 留空沿用现有地址同理），避免一个「开 / 关」热键顺手
+/// 把用户手工配好的例外清掉。
+pub(super) fn switch(
+    mode: ProxyMode,
+    server: Option<&ProxyServer>,
+    bypass: &[String],
+) -> Result<String, String> {
     #[cfg(windows)]
     {
-        windows::switch(mode, server)
+        windows::switch(mode, server, bypass)
     }
     #[cfg(target_os = "macos")]
     {
-        macos::switch(mode, server)
+        macos::switch(mode, server, bypass)
     }
     #[cfg(target_os = "linux")]
     {
-        linux::switch(mode, server)
+        linux::switch(mode, server, bypass)
     }
 }
 
-/// 结果说明：开启时带上地址，关闭时只报状态。
-fn enabled_message(server: &str) -> String {
-    format!("系统代理已开启（{server}）")
+/// 结果说明：开启时带上地址（填了排除项再报一句项数），关闭时只报状态。
+fn enabled_message(server: &str, bypass: usize) -> String {
+    if bypass == 0 {
+        format!("系统代理已开启（{server}）")
+    } else {
+        format!("系统代理已开启（{server}，{bypass} 项排除）")
+    }
 }
 
 fn disabled_message() -> String {
@@ -56,7 +69,11 @@ mod windows {
     /// WinINET 的当前用户代理设置（「设置 → 网络和 Internet → 代理」写的就是这里）。
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
-    pub(super) fn switch(mode: ProxyMode, server: Option<&ProxyServer>) -> Result<String, String> {
+    pub(super) fn switch(
+        mode: ProxyMode,
+        server: Option<&ProxyServer>,
+        bypass: &[String],
+    ) -> Result<String, String> {
         let key = CURRENT_USER
             .create(KEY)
             .map_err(|e| format!("打开系统代理设置失败: {e}"))?;
@@ -77,6 +94,11 @@ mod windows {
                         .into(),
                 );
             }
+            // 排除项留空就不碰系统里已有的 `ProxyOverride`（别把用户手工配好的例外清掉）。
+            if !bypass.is_empty() {
+                key.set_string("ProxyOverride", override_value(bypass))
+                    .map_err(|e| format!("写入代理排除项失败: {e}"))?;
+            }
         }
 
         key.set_u32("ProxyEnable", u32::from(want))
@@ -84,7 +106,10 @@ mod windows {
         refresh();
 
         Ok(if want {
-            enabled_message(shown.as_deref().unwrap_or("沿用系统里已有的地址"))
+            enabled_message(
+                shown.as_deref().unwrap_or("沿用系统里已有的地址"),
+                bypass.len(),
+            )
         } else {
             disabled_message()
         })
@@ -118,6 +143,11 @@ mod windows {
         }
     }
 
+    /// 写进 `ProxyOverride` 的字符串：WinINET 用分号分隔，`<local>` 表示跳过本地（不带点）地址。
+    fn override_value(bypass: &[String]) -> String {
+        bypass.join(";")
+    }
+
     /// 通知 WinINET「设置变了」，否则已打开的程序（浏览器）可能还拿旧设置。
     fn refresh() {
         use windows::Win32::Networking::WinInet::{
@@ -131,7 +161,7 @@ mod windows {
 
     #[cfg(test)]
     mod tests {
-        use super::registry_value;
+        use super::{override_value, registry_value};
         use kada_core::{ProxyScheme, ProxyServer};
 
         #[test]
@@ -152,6 +182,14 @@ mod windows {
                 port: 1080,
             };
             assert_eq!(registry_value(&socks), "socks=[::1]:1080");
+        }
+
+        #[test]
+        fn override_value_is_semicolon_separated() {
+            assert_eq!(
+                override_value(&["localhost".into(), "192.168.*".into(), "<local>".into()]),
+                "localhost;192.168.*;<local>"
+            );
         }
     }
 }
@@ -178,9 +216,44 @@ fn parse_networksetup_proxy(text: &str) -> (bool, String, String) {
     (enabled, server, port)
 }
 
+/// `networksetup -setproxybypassdomains <服务> <域名…>` 的参数串（纯函数，好单测）。
+///
+/// 空列表不该走到这里（调用方先判空、不碰系统里已有的排除项）。
+#[cfg(any(target_os = "macos", test))]
+fn bypass_args(service: &str, bypass: &[String]) -> Vec<String> {
+    let mut args = vec!["-setproxybypassdomains".to_string(), service.to_string()];
+    args.extend(bypass.iter().cloned());
+    args
+}
+
+/// GNOME 的 `ignore-hosts` 是字符串数组（GVariant `as`）：拼成 `['a', 'b']`。
+///
+/// 只转义单引号与反斜杠——这两个不转义会把 GVariant 字面量拼坏，其余字符原样进去。
+#[cfg(any(target_os = "linux", test))]
+fn ignore_hosts_gvariant(bypass: &[String]) -> String {
+    let mut out = String::from("[");
+    for (i, item) in bypass.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push('\'');
+        for c in item.chars() {
+            if matches!(c, '\'' | '\\') {
+                out.push('\\');
+            }
+            out.push(c);
+        }
+        out.push('\'');
+    }
+    out.push(']');
+    out
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
-    use super::{desired, disabled_message, enabled_message, parse_networksetup_proxy};
+    use super::{
+        bypass_args, desired, disabled_message, enabled_message, parse_networksetup_proxy,
+    };
     use kada_core::{ProxyMode, ProxyScheme, ProxyServer};
     use std::process::Command;
 
@@ -201,7 +274,11 @@ mod macos {
         ),
     ];
 
-    pub(super) fn switch(mode: ProxyMode, server: Option<&ProxyServer>) -> Result<String, String> {
+    pub(super) fn switch(
+        mode: ProxyMode,
+        server: Option<&ProxyServer>,
+        bypass: &[String],
+    ) -> Result<String, String> {
         let services = services()?;
         let current = services.iter().any(|service| {
             KINDS
@@ -214,8 +291,9 @@ mod macos {
             if let Some(server) = server {
                 for service in &services {
                     apply_server(service, server)?;
+                    apply_bypass(service, bypass)?;
                 }
-                return Ok(enabled_message(&server.display()));
+                return Ok(enabled_message(&server.display(), bypass.len()));
             }
             // 没填地址：把系统里已经配好地址的那几类打开；一个都没有就明确报错。
             let mut any = false;
@@ -234,7 +312,10 @@ mod macos {
                         .into(),
                 );
             }
-            return Ok(enabled_message("沿用系统里已有的地址"));
+            for service in &services {
+                apply_bypass(service, bypass)?;
+            }
+            return Ok(enabled_message("沿用系统里已有的地址", bypass.len()));
         }
 
         for service in &services {
@@ -288,6 +369,16 @@ mod macos {
         Ok(())
     }
 
+    /// 写排除域名（`-setproxybypassdomains` 后面跟一串域名）。留空 = 不动系统里已有的排除项。
+    fn apply_bypass(service: &str, bypass: &[String]) -> Result<(), String> {
+        if bypass.is_empty() {
+            return Ok(());
+        }
+        let args = bypass_args(service, bypass);
+        let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        run(&refs).map(|_| ())
+    }
+
     fn run(args: &[&str]) -> Result<String, String> {
         let out = Command::new(NETWORKSETUP)
             .args(args)
@@ -315,14 +406,18 @@ mod macos {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{desired, disabled_message, enabled_message};
+    use super::{desired, disabled_message, enabled_message, ignore_hosts_gvariant};
     use kada_core::{ProxyMode, ProxyScheme, ProxyServer};
     use std::process::Command;
 
     /// GNOME 的系统代理 schema（Cinnamon / MATE 等沿用 GNOME 接口的桌面也能读）。
     const SCHEMA: &str = "org.gnome.system.proxy";
 
-    pub(super) fn switch(mode: ProxyMode, server: Option<&ProxyServer>) -> Result<String, String> {
+    pub(super) fn switch(
+        mode: ProxyMode,
+        server: Option<&ProxyServer>,
+        bypass: &[String],
+    ) -> Result<String, String> {
         let current = !matches!(get("mode")?.trim_matches('\''), "none");
         let want = desired(mode, current);
 
@@ -334,8 +429,9 @@ mod linux {
         match server {
             Some(server) => {
                 apply_server(server)?;
+                apply_bypass(bypass)?;
                 set("mode", "manual")?;
-                Ok(enabled_message(&server.display()))
+                Ok(enabled_message(&server.display(), bypass.len()))
             }
             None => {
                 if !has_configured_server()? {
@@ -344,10 +440,19 @@ mod linux {
                             .into(),
                     );
                 }
+                apply_bypass(bypass)?;
                 set("mode", "manual")?;
-                Ok(enabled_message("沿用系统里已有的地址"))
+                Ok(enabled_message("沿用系统里已有的地址", bypass.len()))
             }
         }
+    }
+
+    /// 写排除项（`ignore-hosts` 字符串数组）。留空 = 不动系统里已有的排除项。
+    fn apply_bypass(bypass: &[String]) -> Result<(), String> {
+        if bypass.is_empty() {
+            return Ok(());
+        }
+        set("ignore-hosts", &ignore_hosts_gvariant(bypass))
     }
 
     /// 写入地址：HTTP 代理同时接管 http / https，SOCKS5 只配 socks；另一类清空。
@@ -440,7 +545,35 @@ mod tests {
 
     #[test]
     fn messages_name_the_result() {
-        assert!(enabled_message("127.0.0.1:7890").contains("127.0.0.1:7890"));
+        assert!(enabled_message("127.0.0.1:7890", 0).contains("127.0.0.1:7890"));
+        let with_bypass = enabled_message("127.0.0.1:7890", 3);
+        assert!(with_bypass.contains("127.0.0.1:7890"), "{with_bypass}");
+        assert!(with_bypass.contains('3'), "{with_bypass}");
         assert!(disabled_message().contains("已关闭"));
+    }
+
+    /// macOS 的排除项参数串：一次调用带全部域名，空白项已在解析阶段丢掉。
+    #[test]
+    fn bypass_args_carry_every_domain() {
+        let args = bypass_args("Wi-Fi", &["localhost".into(), "*.local".into()]);
+        assert_eq!(
+            args,
+            vec![
+                "-setproxybypassdomains".to_string(),
+                "Wi-Fi".to_string(),
+                "localhost".to_string(),
+                "*.local".to_string()
+            ]
+        );
+    }
+
+    /// GNOME 的 `ignore-hosts` 是 GVariant 字符串数组，单引号 / 反斜杠必须转义。
+    #[test]
+    fn ignore_hosts_is_a_gvariant_array() {
+        assert_eq!(
+            ignore_hosts_gvariant(&["localhost".into(), "192.168.*".into()]),
+            "['localhost', '192.168.*']"
+        );
+        assert_eq!(ignore_hosts_gvariant(&["it's".into()]), "['it\\'s']");
     }
 }
