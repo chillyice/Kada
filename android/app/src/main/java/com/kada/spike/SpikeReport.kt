@@ -229,6 +229,28 @@ object SpikeReport {
             put("shortcuts", list)
         })
 
+        // S1-f 自更新：本机版本 + 最近一次检查 / 下载 / 安装的状态（adb 断言读这里）。
+        root.put("update", JSONObject().apply {
+            put("currentVersion", Update.currentName(context))
+            put("currentCode", Update.currentCode(context))
+            put("manifestUrl", Update.MANIFEST_URL)
+            put("phase", Update.phase)
+            put("lastResult", Update.lastResult)
+            put("newer", Update.newer)
+            put("progressKb", Update.progressKb)
+            put("canInstall", Update.canInstall(context))
+            put("apkBytes", Update.localApk(context)?.length() ?: 0)
+            Update.lastCheck?.let { info ->
+                put("lastCheck", JSONObject().apply {
+                    put("versionName", info.versionName)
+                    put("versionCode", info.versionCode)
+                    put("url", info.url)
+                    put("sha256", info.sha256)
+                    put("notes", info.notes)
+                })
+            }
+        })
+
         return root
     }
 

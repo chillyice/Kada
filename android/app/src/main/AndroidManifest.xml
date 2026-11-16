@@ -8,6 +8,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- S1-f 自更新：拉清单 / 下 APK 走 INTERNET；安装交给 PackageInstaller 会话 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- 语义动作表里 ACTION_SET_TEXT / 复制粘贴走无障碍节点，不需要额外权限 -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
 
@@ -63,6 +66,18 @@
             android:permission="android.permission.DUMP">
             <intent-filter>
                 <action android:name="com.kada.spike.CONTROL" />
+            </intent-filter>
+        </receiver>
+
+        <!--
+          S1-f：系统安装器（PackageInstaller 会话）的回执。只收自己发起的 PendingIntent，
+          不 exported（同 app 内广播），也不给任何 action 过滤暴露的余地。
+        -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.kada.spike.INSTALL_STATUS" />
             </intent-filter>
         </receiver>
     </application>

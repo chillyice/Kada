@@ -142,6 +142,36 @@ class ControlReceiver : BroadcastReceiver() {
                 }
             }
 
+            // ---- S1-f 自更新：检查 / 下载 / 安装（adb 只代替点按，网络与安装走同一条路） ----
+            "checkUpdate" -> {
+                val url = intent.getStringExtra("url") ?: Update.MANIFEST_URL
+                Thread {
+                    Update.check(context, url)
+                    Log.i(SpikeState.TAG, "ctrl op=checkUpdate phase=${Update.phase} ${Update.lastResult}")
+                }.start()
+            }
+
+            "downloadUpdate" -> {
+                val info = Update.lastCheck
+                if (info == null) {
+                    Log.i(SpikeState.TAG, "ctrl op=downloadUpdate no-manifest（先 checkUpdate）")
+                } else {
+                    Thread {
+                        Update.download(context, info)
+                        Log.i(SpikeState.TAG, "ctrl op=downloadUpdate phase=${Update.phase} ${Update.lastResult}")
+                    }.start()
+                }
+            }
+
+            "installUpdate" -> {
+                val result = Update.install(context)
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=installUpdate phase=${Update.phase} ${Update.lastResult} " +
+                        "error=${result.exceptionOrNull()?.message}",
+                )
+            }
+
             "decide" -> {
                 val key = intent.getStringExtra("key") ?: "F8"
                 val down = intent.getBooleanExtra("down", true)

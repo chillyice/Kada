@@ -36,6 +36,7 @@ class RustPanel(private val activity: Activity) {
     private lateinit var tvTriggers: TextView
     private lateinit var tvLog: TextView
     private lateinit var tvImport: TextView
+    private lateinit var tvUpdate: TextView
     private val editor = ShortcutEditor(activity)
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -81,6 +82,16 @@ class RustPanel(private val activity: Activity) {
         tvImport = body(11f)
         column.addView(tvImport)
 
+        // S1-f 自更新：侧载版没有商店，只能清单检查 + 下载 + 系统安装器确认。
+        column.addView(
+            row(
+                button("检查更新") { checkUpdate() },
+                button("安装已下载") { installUpdate() },
+            ),
+        )
+        tvUpdate = body(11f)
+        column.addView(tvUpdate)
+
         tvStatus = body()
         column.addView(tvStatus)
 
@@ -108,6 +119,96 @@ class RustPanel(private val activity: Activity) {
         }
         tvTriggers.text = triggersText()
         tvLog.text = logText()
+        if (::tvUpdate.isInitialized) tvUpdate.text = updateText()
+    }
+
+    /** 更新区的一行字：本机版本 + 最近一次检查 / 下载 / 安装的结果。 */
+    private fun updateText(): String = buildString {
+        append("版本 ${Update.currentName(activity)}（code ${Update.currentCode(activity)}）")
+        append(" · 安装权限：${if (Update.canInstall(activity)) "允许" else "未允许"}")
+        appendLine()
+        append("[${Update.phase}] ${Update.lastResult.ifBlank { if (Update.phase == "idle") "还没检查过更新" else Update.phase }}")
+        Update.localApk(activity)?.let {
+            appendLine()
+            append("本地安装包：${it.length() / 1024} KB（${it.name}）")
+        }
+        Update.lastCheck?.let { info ->
+            appendLine()
+            append("清单：${info.versionName}（code ${info.versionCode}）${if (Update.newer) " · 有新版本" else ""}")
+        }
+    }
+
+    private fun checkUpdate() {
+        tvUpdate.text = "检查中…"
+        Thread {
+            val result = Update.check(activity)
+            activity.runOnUiThread {
+                tvUpdate.text = updateText()
+                val info = result.getOrNull()
+                when {
+                    result.isFailure || info == null ->
+                        Toast.makeText(activity, Update.lastResult, Toast.LENGTH_LONG).show()
+
+                    !Update.newer ->
+                        Toast.makeText(activity, Update.lastResult, Toast.LENGTH_SHORT).show()
+
+                    else -> confirmDownload(info)
+                }
+            }
+        }.start()
+    }
+
+    private fun confirmDownload(info: Update.Info) {
+        AlertDialog.Builder(activity)
+            .setTitle("发现新版本 ${info.versionName}")
+            .setMessage(
+                buildString {
+                    append("当前：${Update.currentName(activity)}（code ${Update.currentCode(activity)}）\n")
+                    append("新版本：${info.versionName}（code ${info.versionCode}）\n")
+                    if (info.notes.isNotBlank()) append("\n${info.notes}\n")
+                    append("\n下载后由系统安装器确认；没授权「安装未知应用」会先引导去设置。")
+                },
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("下载并安装") { _, _ -> downloadAndInstall(info) }
+            .show()
+    }
+
+    private fun downloadAndInstall(info: Update.Info) {
+        tvUpdate.text = "下载中…"
+        Thread {
+            val result = Update.download(activity, info)
+            activity.runOnUiThread {
+                tvUpdate.text = updateText()
+                if (result.isFailure) {
+                    Toast.makeText(activity, Update.lastResult, Toast.LENGTH_LONG).show()
+                } else {
+                    installUpdate()
+                }
+            }
+        }.start()
+    }
+
+    private fun installUpdate() {
+        val result = Update.install(activity)
+        if (::tvUpdate.isInitialized) tvUpdate.text = updateText()
+        if (result.isFailure && Update.phase == "need_permission") {
+            askInstallPermission()
+        } else if (result.isFailure) {
+            Toast.makeText(activity, Update.lastResult, Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun askInstallPermission() {
+        AlertDialog.Builder(activity)
+            .setTitle("需要允许安装未知应用")
+            .setMessage(
+                "系统不允许应用自己装自己：要先在设置里给 Kada 打开「安装未知应用」。\n\n" +
+                    "点「去设置」跳到那一页，打开开关后回来再点「安装已下载」。",
+            )
+            .setNegativeButton("取消", null)
+            .setPositiveButton("去设置") { _, _ -> Update.openInstallPermission(activity) }
+            .show()
     }
 
     private fun statusText(report: JSONObject): String {

@@ -690,6 +690,7 @@ if ($exported) {
     # 焦点 / 输入连接是这条链路唯一脆弱的地方（打字本身已由 S0 验过），失败重试一次。
     $textFlow = $false
     for ($try = 1; $try -le 2; $try++) {
+        Restore-App
         if (-not (Focus-Field)) {
             Write-Host "  [warn] 文本插入用例没拿到焦点（第 $try 次）"
             continue
@@ -713,6 +714,97 @@ if ($exported) {
     $script:lastReport = Get-Report
     $pasted = [string]$script:lastReport.stats.inputFieldText
     Check "S1-5 text 不覆盖剪贴板（随后粘贴仍是标记）" ($textFlow -and ($pasted -eq "abcinsertmeclipmark")) "field=[$pasted]"
+
+    # S1-6 自更新（侧载）：清单 → 下载（sha256 校验）→ 交给系统安装器。
+    # 清单走 `file://`：生产是 https，但解析 / 比较 / 下载 / 校验是同一条代码路径，
+    # 把网络这一层摘掉是为了脚本不依赖外网与真实发布。
+    $probeApkRemote = "update-probe.apk"
+    $probeApkLocal = Join-Path $env:TEMP "kada-update-probe.apk"
+    Adb @("push", $apkPath, "$extDir/$probeApkRemote") | Out-Null
+    $apkBytes = (Get-Item $apkPath).Length
+    $apkSha = (Get-FileHash $apkPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $probeApkUrl = "file://$extDir/$probeApkRemote"
+
+    $manifestLocal = Join-Path $env:TEMP "kada-latest.json"
+    $goodManifest = [pscustomobject]@{
+        versionName = "0.2.0-s99"
+        versionCode = 99
+        url         = $probeApkUrl
+        sha256      = $apkSha
+        notes       = "verify.ps1 自更新用例"
+    }
+    [System.IO.File]::WriteAllText(
+        $manifestLocal,
+        ($goodManifest | ConvertTo-Json -Depth 5),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Adb @("push", $manifestLocal, "$extDir/latest-test.json") | Out-Null
+
+    Bcast "checkUpdate" @("--es", "url", "file://$extDir/latest-test.json")
+    Start-Sleep -Milliseconds 1200
+    $script:lastReport = Get-Report
+    $upd = $script:lastReport.update
+    Check "S1-6 检查更新（清单解析 + versionCode 比较）" (
+        ($upd.phase -eq "available") -and [bool]($upd.newer) -and ($upd.lastCheck.versionCode -eq 99)
+    ) "phase=$($upd.phase) current=$($upd.currentVersion)/$($upd.currentCode) manifest=$($upd.lastCheck.versionName)"
+
+    Bcast "downloadUpdate"
+    Start-Sleep -Milliseconds 4000
+    $script:lastReport = Get-Report
+    $upd = $script:lastReport.update
+    Check "S1-6 下载并校验 sha256" (
+        ($upd.phase -eq "ready") -and ($upd.apkBytes -eq $apkBytes) -and ($upd.lastResult -like "*已校验*")
+    ) "phase=$($upd.phase) bytes=$($upd.apkBytes)/$apkBytes $($upd.lastResult)"
+
+    # 没授权「安装未知应用」时必须明确回报，不许静默失败 / 假装已装
+    Shell "appops set $package REQUEST_INSTALL_PACKAGES deny" | Out-Null
+    Start-Sleep -Milliseconds 400
+    Bcast "installUpdate"
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    $upd = $script:lastReport.update
+    Check "S1-6 未授权安装时不假装安装" (($upd.phase -eq "need_permission") -and (-not [bool]($upd.canInstall))) "phase=$($upd.phase) canInstall=$($upd.canInstall) $($upd.lastResult)"
+
+    # 授权后提交安装：系统安装器会接过前台（用户不点「安装」就不会真的装）
+    Shell "appops set $package REQUEST_INSTALL_PACKAGES allow" | Out-Null
+    Start-Sleep -Milliseconds 400
+    Bcast "installUpdate"
+    Start-Sleep -Milliseconds 1800
+    $script:lastReport = Get-Report
+    $upd = $script:lastReport.update
+    $focusLine = @(Shell "dumpsys window" | Select-String -Pattern "mCurrentFocus=")
+    $focus = if ($focusLine.Count -gt 0) { "$($focusLine[-1])" } else { "" }
+    Check "S1-6 提交安装拉起系统安装器" (
+        ($upd.phase -eq "installing") -and ($focus -match "packageinstaller|PackageInstaller")
+    ) "phase=$($upd.phase) focus=$focus"
+
+    # 取消安装（返回键），把应用拉回前台，别把后续步骤卡在系统对话框上
+    Shell "input keyevent 4" | Out-Null
+    Start-Sleep -Milliseconds 1500
+    Restore-App
+
+    # sha256 不匹配：必须失败，并且把下载的文件删掉（不许留个坏包在那儿）
+    $badManifest = [pscustomobject]@{
+        versionName = "0.2.0-s99"
+        versionCode = 99
+        url         = $probeApkUrl
+        sha256      = ("0" * 64)
+    }
+    [System.IO.File]::WriteAllText(
+        $manifestLocal,
+        ($badManifest | ConvertTo-Json -Depth 5),
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    Adb @("push", $manifestLocal, "$extDir/latest-bad.json") | Out-Null
+    Bcast "checkUpdate" @("--es", "url", "file://$extDir/latest-bad.json")
+    Start-Sleep -Milliseconds 1200
+    Bcast "downloadUpdate"
+    Start-Sleep -Milliseconds 4000
+    $script:lastReport = Get-Report
+    $upd = $script:lastReport.update
+    Check "S1-6 sha256 不匹配 → 失败并删包" (
+        ($upd.phase -eq "failed") -and ($upd.lastResult -like "*sha256 不匹配*") -and ($upd.apkBytes -eq 0)
+    ) "phase=$($upd.phase) bytes=$($upd.apkBytes) $($upd.lastResult)"
 
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null

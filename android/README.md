@@ -21,6 +21,8 @@ android/
     ShortcutEditor.kt        S1-d 最小配置编辑器：列表 + 编辑对话框 + 录入按键 + 删除确认
     ShortcutStore.kt         编辑器数据层：唯一落盘入口（先 Rust 校验触发键，再整份 save）
     TriggerCapture.kt        触发键录入：无障碍回调里截按键，录到的那个键连抬起一起吞
+    Update.kt                S1-f 侧载自更新：清单 → 下载 + sha256 校验 → PackageInstaller 会话
+    UpdateReceiver.kt        系统安装器回执（成功 / 被取消 / 失败原因）转给 Update
     ActionRunner.kt          把 Rust 返回的「命中条目」变成动作：open_url / text / clipboard / pause / 禁用
     KeyNames.kt              安卓 keycode ↔ core `Key` 名（必须与 core 逐字一致）
     HeartbeatService.kt      前台服务 + 常驻通知 + 心跳日志（S0-4）
@@ -122,6 +124,16 @@ adb shell am start -n com.kada.spike/.MainActivity
   节点不接受时才退回「写剪贴板 + `ACTION_PASTE`」，并把原剪贴板**尽量恢复**
   （Android 10+ 后台读剪贴板受限，读不到就在结果里如实写「已被覆盖」，不假装成功）。
   `clipboard/tempstr`（临时文本）走同一条插入路径。非可编辑节点 / 没有输入焦点时退回粘贴。
+- **自更新（S1-f，侧载）**：面板里「检查更新 / 安装已下载」两个按钮 + 一行状态。
+  - **清单**是唯一事实来源：`https://ihomy.top/files/kada/android/latest.json`
+    （`versionName` / `versionCode` / `url` / `sha256` / `notes`）；版本比较只用 `versionCode`，
+    缺字段直接报错——**不猜默认值**（缺 `versionCode` 的清单会永远「没有新版本」）。
+  - **下载必须校验**：清单给了 `sha256` 就逐字节算 SHA-256 比对，不匹配**删包 + 失败**；
+    没给就在结果里写「未校验」，不假装验过。
+  - **安装走 `PackageInstaller` 会话**（不自己拼 `file://` Intent，避开 `FileUriExposedException`）：
+    提交后由系统安装器弹确认框，用户点「安装」才生效；没授权「安装未知应用」时回报
+    `need_permission` 并引导去设置——**不许静默失败**。写会话在后台线程做（30 MB 拷进会话会 ANR）。
+  - 回执（成功 / 被取消 / 失败原因）由 `UpdateReceiver` 收进状态行，报告里也有 `update` 段。
 
 判定口径（S1-a）：
 
@@ -162,6 +174,10 @@ adb shell am broadcast @ctl --es op editorAdd --es name 语义 --es trigger F3 -
 adb shell am broadcast @ctl --es op editorCheck --es trigger "ctrl+k"     # 校验 + 大小写补正 + 撞车
 adb shell am broadcast @ctl --es op editorDelete --ei index 5
 adb shell am broadcast @ctl --es op editorOpen                          # 主界面滚到编辑器
+# S1-f 自更新（清单可用 file:// 覆盖，脚本没外网也能跑）
+adb shell am broadcast @ctl --es op checkUpdate --es url "file:///sdcard/Android/data/com.kada.spike/files/latest-test.json"
+adb shell am broadcast @ctl --es op downloadUpdate
+adb shell am broadcast @ctl --es op installUpdate               # 未授权时会回报 need_permission
 # 探针杂项
 adb shell am broadcast @ctl --es op fire --es action screenshot
 adb shell am broadcast @ctl --es op focusField                 # 把光标放进「吞键验证输入框」（自动重试）
@@ -194,7 +210,8 @@ powershell android\tools\verify.ps1 -SkipBuild # 只跑检查
 
 ## 已验证（2026-11-16，emulator-5554 / ihomy34，Android 14）
 
-`android/tools/verify.ps1` **44/44 通过**（s5 版本；S1-3 语义动作三条、S1-4 编辑器七条、S1-5 文本动作三条是新增）。
+`android/tools/verify.ps1` **49/49 通过**（s5 版本；S1-3 语义动作三条、S1-4 编辑器七条、
+S1-5 文本动作三条、S1-6 侧载自更新五条是新增）。
 编辑器另用 `uiautomator` 真点验过整条路径：顶部「快捷键编辑器」滚到面板末尾、新建对话框字段与下拉渲染、
 「录入按键」按物理 `Ctrl+F6` 回填并显示「✓ 已录入」、切「语义动作」保存后列表变 6 条
 （`#5 [Ctrl+F6] semantic`）、点「删除」弹确认框、确认后回到 5 条。
@@ -246,11 +263,17 @@ S1 段：
 | S1-5 编辑器写入 text 动作 | ✅ `type=text` + `text=insertme`，摘要「输入文本「insertme」」 | 报告 `editor.shortcuts[].actionType/actionSummary` |
 | S1-5 光标处插入（保留原文） | ✅ 输入框原有 `abc`，F2 后变 `abcinsertme`（`lastOk=true`） | 报告 `stats.inputFieldText` / `actions['rust:F2']` |
 | S1-5 不覆盖剪贴板 | ✅ F1 写 `clipmark` → F2 插文本 → F12 粘贴得到 `abcinsertmeclipmark` | 报告 `stats.inputFieldText` |
+| S1-6 检查更新（清单 + 版本比较） | ✅ 本机 `0.2.0-s5`/code 6，清单 `0.2.0-s99`/code 99 → `phase=available`、`newer=true` | 报告 `update.phase/newer/lastCheck` |
+| S1-6 下载并校验 sha256 | ✅ 8,221,943 B 全部落盘（`apkBytes` 与源文件一致），结果「已下载 8029 KB（sha256 已校验）」 | 报告 `update.apkBytes/lastResult` |
+| S1-6 未授权安装不假装成功 | ✅ `appops … deny` 后点安装 → `phase=need_permission`、`canInstall=false`，文案「需要先允许安装未知应用」 | 报告 `update.phase/canInstall` |
+| S1-6 提交安装拉起系统安装器 | ✅ `phase=installing`，前台是 `com.google.android.packageinstaller/…PackageInstallerActivity`（不点「安装」不会真装） | `dumpsys window` 的 `mCurrentFocus` / 报告 `update.phase` |
+| S1-6 坏 sha256 → 失败并删包 | ✅ 清单写全 0 → `phase=failed`、「sha256 不匹配（清单 000000000000… / 实际 c72250606764…），已删掉下载的文件」、`apkBytes=0` | 报告 `update.phase/lastResult/apkBytes` |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去。
-> 本轮 s5 全量跑 **44/44 通过**；旧的 41 项（S1-d）与 35 项（S1-3）此前连跑一致。
-> S1-4 / S1-5 的十条走的是**与界面同一份** `ShortcutStore` 与执行器（广播只是代替点按），
-> 控件的点击手势、录入按键仍属人工验证（`docs/人工验证清单.md` §90）。
+> 本轮 s5 全量跑 **49/49 通过**；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+> S1-4 / S1-5 / S1-6 的十五条走的是**与界面同一份** `ShortcutStore`、执行器与 `Update`
+> （广播只是代替点按），控件的点击手势、录入按键、系统安装器的「安装」按钮仍属人工验证
+> （`docs/人工验证清单.md` §90 / §91 / §92）。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -321,6 +344,10 @@ S1 段：
 - **编辑器只做「够用」那一档**：动作类型只有五类（`open_url` / `text` / `clipboard` /
   `semantic` / `pause_ms`），别的类型保持原样不动；同一条目有多个触发键时只改第一个；
   没有目录 / 层 / `when` 的编辑（手机屏上做不了桌面的全量编辑器，但也不许「改个触发键把动作改没了」）。
+- **自更新只覆盖侧载版**：清单地址是代码常量（`Update.MANIFEST_URL`，测试才用 adb 传 `file://` 覆盖），
+  改发布域名要重编；Play / 国内商店渠道走商店自己的更新，不走这套。**安装必须用户在系统安装器里
+  点「安装」**——应用不能替用户确认，这是系统限制，也不该绕过；「安装未知应用」得用户自己去设置里开。
+  清单与 APK 都走 https，目前**没有签名校验**（只比 sha256），发布链路的 `latest.json` 与 APK 必须同批更新。
 - `ControlReceiver` 是 `exported=true` 的 adb 控制入口，但配了 `android:permission="android.permission.DUMP"`：
   只有 shell / system 持有该权限，普通应用发不进来（`adb shell am broadcast` 照旧可用）。
 - 模拟器无法验证的三项，2026-11-13 华为 MRO-W00（Android 12 / sdk 31）真机回过一次：
