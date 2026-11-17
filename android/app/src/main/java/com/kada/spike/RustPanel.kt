@@ -124,13 +124,19 @@ class RustPanel(private val activity: Activity) {
         column.addView(
             hint(
                 "长按悬浮球打开画板：画一个符号（○ ◇ ☆ ✓ △▽◁▷ V Z S L C U M W N），抬手执行绑定的快捷键。" +
-                    "同一形状画歪 ±35° 内仍算命中；四个方向的三角靠旋转角区分，画在 45° 附近时宁可不猜。",
+                    "同一形状画歪 ±35° 内仍算命中；四个方向的三角靠旋转角区分，画在 45° 附近时宁可不猜。" +
+                    "「录自定义」可以教它认自己的符号（单笔画、不判方向）。",
             ),
         )
         column.addView(
             row(
                 button("试画") { openDrawBoard() },
+                button("录自定义") { openLearnDialog() },
                 button("自检") { runDrawSelfTest() },
+            ),
+        )
+        column.addView(
+            row(
                 button("刷新列表") { rebuildDrawRows() },
                 button("清空绑定") { clearDrawBindings() },
             ),
@@ -241,7 +247,7 @@ class RustPanel(private val activity: Activity) {
     // S2b 画符号
     // ------------------------------------------------------------------
 
-    /** 重建「符号 → 快捷键」绑定表：配置变了（新增 / 删除条目）时手动刷新一次。 */
+    /** 重建「符号 → 快捷键」绑定表：配置变了（新增 / 删除条目）、录 / 删自定义符号时手动刷新一次。 */
     private fun rebuildDrawRows() {
         if (!::drawRows.isInitialized) return
         drawRows.removeAllViews()
@@ -251,7 +257,8 @@ class RustPanel(private val activity: Activity) {
         for (entry in entries) names.add(entry.name.ifBlank { "#${entry.index}" })
 
         val bound = DrawStore.bindings()
-        for (symbol in DrawStore.symbols) {
+        for (symbol in DrawStore.allSymbols()) {
+            val custom = symbol.id.startsWith("u:")
             val line = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
@@ -285,6 +292,9 @@ class RustPanel(private val activity: Activity) {
                         id: Long,
                     ) {
                         val picked = options[position]
+                        // 程序自己 setSelection 也会回调一次：值与当时设进去的一样就不是用户动作，
+                        // 否则面板重建 / 配置刷新会把用户刚绑的项悄悄解绑（踩过）。
+                        if (picked == shown) return
                         when {
                             picked == UNBOUND -> DrawStore.unbind(symbol.id)
                             picked.endsWith("（已失效）") -> Unit
@@ -297,9 +307,93 @@ class RustPanel(private val activity: Activity) {
                 }
             }
             line.addView(spinner, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            if (custom) {
+                line.addView(
+                    TextView(activity).apply {
+                        text = "删"
+                        textSize = 13f
+                        setTextColor(0xFFD9534F.toInt())
+                        setPadding(dp(10), dp(6), dp(4), dp(6))
+                        setOnClickListener { confirmForget(symbol) }
+                    },
+                )
+            }
             drawRows.addView(line)
         }
         refreshDrawText()
+    }
+
+    /** 删自定义符号要确认：那条笔画是用户自己画的，删掉就没了。 */
+    private fun confirmForget(symbol: DrawStore.Symbol) {
+        AlertDialog.Builder(activity)
+            .setTitle("删掉「${symbol.label}」？")
+            .setMessage("这条自定义符号的笔画与它的绑定会一起删掉。")
+            .setNegativeButton("取消", null)
+            .setPositiveButton("删除") { _, _ ->
+                DrawStore.forget(symbol.id)
+                if (DrawStore.lastError.isNotBlank()) {
+                    Toast.makeText(activity, DrawStore.lastError, Toast.LENGTH_SHORT).show()
+                }
+                rebuildDrawRows()
+            }
+            .show()
+    }
+
+    /**
+     * 录一个自定义符号：画一次 + 起个名字。
+     *
+     * 与识别走同一条 [DrawStore.learn]（`drawLearn` 广播也调它），所以手指录的
+     * 与 adb 喂的坐标串是同一份逻辑；`wrap_content` 对话框里不放 `weight`
+     * （会塌成 0），画板边长按屏宽算一个确定值。
+     */
+    private fun openLearnDialog() {
+        val side = (activity.resources.displayMetrics.widthPixels * 0.6f).toInt()
+            .coerceAtMost(dp(320))
+            .coerceAtLeast(dp(200))
+        var captured: List<DollarOne.Pt> = emptyList()
+
+        val pad = DrawPadView(activity).apply {
+            layoutParams = LinearLayout.LayoutParams(side, side)
+            hintText = "在这里画一次要记的符号"
+            onStroke = { points -> captured = points }
+        }
+        val labelInput = android.widget.EditText(activity).apply {
+            hint = "名字（可空，默认「自定义 N」）"
+            setSingleLine()
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+        }
+        val column = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            addView(pad)
+            addView(labelInput)
+        }
+
+        val dialog = AlertDialog.Builder(activity)
+            .setTitle("录一个自定义符号")
+            .setView(column)
+            .setNegativeButton("取消", null)
+            .setPositiveButton("保存", null)
+            .create()
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (captured.size < 2) {
+                    Toast.makeText(activity, "先画一笔再保存", Toast.LENGTH_SHORT).show()
+                    return@setOnClickListener
+                }
+                val id = DrawStore.learn(captured, labelInput.text.toString())
+                if (id.isEmpty()) {
+                    Toast.makeText(activity, DrawStore.lastError.ifBlank { "没记下来" }, Toast.LENGTH_LONG).show()
+                    pad.clear()
+                    captured = emptyList()
+                    return@setOnClickListener
+                }
+                Toast.makeText(activity, "已记住：${labelInput.text.ifBlank { "自定义" }}", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
+                rebuildDrawRows()
+            }
+        }
+        dialog.show()
     }
 
     private fun clearDrawBindings() {
@@ -345,10 +439,13 @@ class RustPanel(private val activity: Activity) {
         if (!::tvDraw.isInitialized) return
         val bindings = DrawStore.bindings()
         tvDraw.text = buildString {
-            append("预设 ${DrawStore.symbols.size} 个符号 · 已绑定 ${bindings.size} 条")
+            append(
+                "预设 ${DrawStore.symbols.size} 个 · 自定义 ${DrawStore.custom().size} 个 · " +
+                    "已绑定 ${bindings.size} 条",
+            )
             if (bindings.isEmpty()) append("（先在下面挑一条快捷键）")
             appendLine()
-            val last = DrawStore.symbolsById[DrawStore.lastSymbol]
+            val last = DrawStore.symbolById(DrawStore.lastSymbol)
             if (last != null) {
                 append("上次识别：${last.glyph} ${last.label}")
                 append(String.format(Locale.US, "（%.2f）", DrawStore.lastScore))

@@ -96,7 +96,7 @@ class DrawBoardView(context: Context, private val onClose: () -> Unit) : FrameLa
             return "还没绑定符号：去应用内「画符号」区，把符号绑到一条快捷键"
         }
         return bindings.entries.joinToString(" · ") { (id, name) ->
-            val glyph = DrawStore.symbolsById[id]?.glyph ?: id
+            val glyph = DrawStore.symbolById(id)?.glyph ?: id
             "$glyph $name"
         }
     }

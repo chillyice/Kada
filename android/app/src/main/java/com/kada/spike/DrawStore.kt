@@ -6,6 +6,7 @@ import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.math.cos
+import kotlin.math.hypot
 import kotlin.math.roundToInt
 import kotlin.math.sin
 import kotlin.random.Random
@@ -22,12 +23,12 @@ import kotlin.random.Random
  * 3. 界面（[DrawPadView] / [DrawBoardView]）只收手指轨迹，执行走
  *    `KeyFilterService.runShortcut`——和面板、音量键**同一条动作链**。
  *
- * 绑定先存本机（`SharedPreferences("kada-draw")`），不进 `Config`：
- * 进配置要动 core 的模型与卡带格式，先把「画完能执行」跑通，P2 再迁。
+ * 绑定与自定义画法先存本机（`SharedPreferences("kada-draw")`），不进 `Config`：
+ * 进配置要动 core 的模型与卡带格式，先把「画完能执行」「教它认自己的符号」跑通，再迁。
  */
 object DrawStore {
 
-    /** 一个可绑定的符号：`cls` + `bucket` 唯一确定它在模板表里的位置。 */
+    /** 一个可绑定的符号：预设是 `cls` + `bucket` 唯一确定，自定义符号则自己就是一类。 */
     data class Symbol(
         val id: String,
         val label: String,
@@ -35,6 +36,23 @@ object DrawStore {
         val cls: String,
         val bucket: Int,
     )
+
+    /**
+     * 用户自己录的符号（P2）：模板就是他画的那一笔，**不判方向**。
+     *
+     * 为什么存原始笔画而不是归一化后的 32 点：归一化算法以后可能调（点数 / 缩放口径），
+     * 存原始点意味着老的自定义符号能跟着新算法重新归一化；代价是文件大一点（一笔最多几百点）。
+     */
+    data class Custom(
+        val id: String,
+        val label: String,
+        val points: List<DollarOne.Pt>,
+        val closed: Boolean,
+    ) {
+        val glyph: String get() = label.trim().take(1).ifBlank { "✎" }
+
+        fun toSymbol(): Symbol = Symbol(id, label, glyph, id, 0)
+    }
 
     data class Outcome(
         val symbol: Symbol?,
@@ -46,6 +64,13 @@ object DrawStore {
 
     private const val PREFS = "kada-draw"
     private const val KEY_BINDINGS = "bindings"
+    private const val KEY_CUSTOM = "custom"
+
+    /** 自定义符号上限：再多就该用面板了，也防止有人误操作把识别拖慢到一帧一次重算。 */
+    private const val MAX_CUSTOM = 24
+
+    /** 自定义符号的 id 前缀：与 13 个预设类别名（circle / triangle / …）天然不撞。 */
+    private const val CUSTOM_PREFIX = "u:"
 
     /** 低于这个分数就不执行（0.80 ≈ 平均点距 28/200，画歪一点仍算数）。 */
     private const val MIN_SCORE = 0.80
@@ -118,7 +143,7 @@ object DrawStore {
         "en" to path(0.10, 0.92, 0.10, 0.08, 0.90, 0.92, 0.90, 0.08),
     )
 
-    private val templates: List<DollarOne.Template> by lazy {
+    private val presetTemplates: List<DollarOne.Template> by lazy {
         canonicalPaths.mapNotNull { (cls, pts) ->
             DollarOne.template(
                 cls = cls,
@@ -127,6 +152,40 @@ object DrawStore {
                 closed = cls in closedClasses,
             )
         }
+    }
+
+    /** 自定义符号缓存：录 / 删 / 临时自检符号都会让它整份失效。 */
+    private var customCache: List<Custom>? = null
+    private var templateCache: List<DollarOne.Template>? = null
+
+    /** 自检用的临时符号：不落盘，跑完立刻清掉。 */
+    @Volatile
+    private var ephemeral: List<Custom> = emptyList()
+
+    @Synchronized
+    fun custom(): List<Custom> {
+        customCache?.let { return it }
+        val loaded = loadCustom()
+        customCache = loaded
+        return loaded
+    }
+
+    /** 预设模板 + 自定义模板；自定义一律 `directional = false`（θ 不稳定，也不该判方向）。 */
+    @Synchronized
+    private fun allTemplates(): List<DollarOne.Template> {
+        templateCache?.let { return it }
+        val customTemplates = custom().mapNotNull { c ->
+            DollarOne.template(c.id, directional = false, path = c.points, closed = c.closed)
+        }
+        val all = presetTemplates + customTemplates
+        templateCache = all
+        return all
+    }
+
+    @Synchronized
+    private fun invalidate() {
+        customCache = null
+        templateCache = null
     }
 
     // ------------------------------------------------------------------
@@ -164,7 +223,7 @@ object DrawStore {
             val obj = JSONObject(raw)
             val out = LinkedHashMap<String, String>()
             for (key in obj.keys()) {
-                if (key !in symbolsById) continue
+                if (symbolById(key) == null) continue
                 val value = obj.optString(key).trim()
                 if (value.isNotEmpty()) out[key] = value
             }
@@ -173,7 +232,7 @@ object DrawStore {
     }
 
     fun bind(symbolId: String, shortcutName: String): Boolean {
-        val symbol = symbolsById[symbolId] ?: return fail("没有这个符号：$symbolId")
+        val symbol = symbolById(symbolId) ?: return fail("没有这个符号：$symbolId")
         val name = shortcutName.trim()
         if (name.isEmpty()) return unbind(symbolId)
         if (name !in ShortcutStore.entries().filter { it.enabled }.map { it.name }) {
@@ -202,11 +261,120 @@ object DrawStore {
     }
 
     // ------------------------------------------------------------------
+    // 自定义画法（P2）：用户教它认自己的符号
+    // ------------------------------------------------------------------
+
+    /** 预设 + 自定义，界面按这个顺序列表（预设在前，自定义在后）。 */
+    fun allSymbols(): List<Symbol> = symbols + custom().map { it.toSymbol() }
+
+    fun symbolById(id: String): Symbol? = symbolsById[id] ?: custom().firstOrNull { it.id == id }?.toSymbol()
+
+    /** 记住一条笔画。返回新符号的 id；失败返回空串并写 [lastError]。 */
+    fun learn(points: List<DollarOne.Pt>, label: String): String {
+        val clean = points.filter { it.x.isFinite() && it.y.isFinite() }
+        if (clean.size < 2) return learnFail("笔画太短：至少画一条线段")
+        if (DollarOne.normalize(clean) == null) return learnFail("笔画太短：至少画一条线段")
+        val existing = custom()
+        if (existing.size >= MAX_CUSTOM) return learnFail("自定义符号最多 $MAX_CUSTOM 个，先删几个")
+
+        // 与已有符号「几乎一样」就别收了：两份都留着只会让每次识别都在边界上抖。
+        val result = DollarOne.recognize(clean, allTemplates(), TOLERANCE_DEG)
+        val best = result?.ranked?.firstOrNull()
+        if (best != null && best.score >= 0.90) {
+            return learnFail("和「${labelOfClass(best.cls)}」几乎一样（${fmt(best.score)}），换个画法")
+        }
+
+        val id = CUSTOM_PREFIX + System.currentTimeMillis().toString(36)
+        val name = label.trim().ifEmpty { "自定义 ${existing.size + 1}" }.take(12)
+        val first = clean.first()
+        val last = clean.last()
+        val total = clean.zipWithNext().sumOf { (a, b) -> hypot(b.x - a.x, b.y - a.y) }
+        val closed = total > 1e-9 && hypot(last.x - first.x, last.y - first.y) <= total * 0.15
+
+        val list = existing + Custom(id, name, clean.map { DollarOne.Pt(round4(it.x), round4(it.y)) }, closed)
+        persistCustom(list)
+        invalidate()
+        lastError = ""
+        Log.i(SpikeState.TAG, "draw learn $id ${name} closed=$closed points=${clean.size}")
+        return id
+    }
+
+    /** 删掉一个自定义符号（绑定一起清掉，否则会留下取不出来的键）。 */
+    fun forget(symbolId: String): Boolean {
+        if (!symbolId.startsWith(CUSTOM_PREFIX)) return fail("只能删自定义符号：$symbolId")
+        val list = custom()
+        if (list.none { it.id == symbolId }) return fail("没有这个自定义符号：$symbolId")
+        unbind(symbolId)
+        persistCustom(list.filter { it.id != symbolId })
+        invalidate()
+        lastError = ""
+        Log.i(SpikeState.TAG, "draw forget $symbolId")
+        return true
+    }
+
+    private fun loadCustom(): List<Custom> {
+        val raw = prefs()?.getString(KEY_CUSTOM, "")?.takeIf { it.isNotBlank() } ?: return ephemeral
+        val parsed = runCatching {
+            val arr = JSONArray(raw)
+            val out = ArrayList<Custom>(arr.length())
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                val id = obj.optString("id").trim().takeIf { it.startsWith(CUSTOM_PREFIX) } ?: continue
+                val pts = ArrayList<DollarOne.Pt>()
+                val arrPts = obj.optJSONArray("points") ?: continue
+                for (j in 0 until arrPts.length()) {
+                    val pair = arrPts.optJSONArray(j) ?: continue
+                    if (pair.length() != 2) continue
+                    pts.add(DollarOne.Pt(pair.optDouble(0), pair.optDouble(1)))
+                }
+                if (pts.size < 2) continue
+                out.add(
+                    Custom(
+                        id = id,
+                        label = obj.optString("label").ifBlank { "自定义" }.take(12),
+                        points = pts,
+                        closed = obj.optBoolean("closed", false),
+                    ),
+                )
+            }
+            out
+        }.getOrDefault(ArrayList())
+        return parsed + ephemeral
+    }
+
+    private fun persistCustom(list: List<Custom>) {
+        val arr = JSONArray()
+        for (c in list) {
+            val pts = JSONArray()
+            for (p in c.points) {
+                pts.put(JSONArray().put(round4(p.x)).put(round4(p.y)))
+            }
+            arr.put(
+                JSONObject().apply {
+                    put("id", c.id)
+                    put("label", c.label)
+                    put("closed", c.closed)
+                    put("points", pts)
+                },
+            )
+        }
+        prefs()?.edit()?.putString(KEY_CUSTOM, arr.toString())?.apply()
+    }
+
+    private fun learnFail(message: String): String {
+        lastError = message
+        Log.i(SpikeState.TAG, "draw learn failed: $message")
+        return ""
+    }
+
+    private fun round4(value: Double): Double = Math.round(value * 10000.0) / 10000.0
+
+    // ------------------------------------------------------------------
     // 识别 / 执行
     // ------------------------------------------------------------------
 
     fun recognize(points: List<DollarOne.Pt>): Outcome {
-        val result = DollarOne.recognize(points, templates, TOLERANCE_DEG)
+        val result = DollarOne.recognize(points, allTemplates(), TOLERANCE_DEG)
             ?: return Outcome(null, "笔画太短：至少画一条线段", 0.0)
 
         // 只让「这个方向真的有预设符号」的候选参与竞争：Z 转 90° 很像 N，但 N 只有 0°
@@ -271,7 +439,7 @@ object DrawStore {
 
     /** 执行某个符号绑定的快捷键。返回 false 时 [lastError] 一定有话说。 */
     fun runSymbol(symbolId: String, source: String = "draw"): Boolean {
-        val symbol = symbolsById[symbolId] ?: return fail("没有这个符号：$symbolId")
+        val symbol = symbolById(symbolId) ?: return fail("没有这个符号：$symbolId")
         val name = bindings()[symbolId]
         if (name.isNullOrBlank()) return fail("「${symbol.label}」还没绑定快捷键")
         val entry = ShortcutStore.entries().firstOrNull { it.name == name && it.enabled }
@@ -328,7 +496,7 @@ object DrawStore {
             }
             if (!ok) {
                 // 失败时把前几名连同 θ / 扇区一起写进报告：真机上调阈值全靠这几行
-                val raw = DollarOne.recognize(points, templates, TOLERANCE_DEG)
+                val raw = DollarOne.recognize(points, allTemplates(), TOLERANCE_DEG)
                 if (raw != null) {
                     val top = (raw.ranked + raw.edgeRejected).sortedByDescending { it.score }.take(4)
                     val rank = JSONArray()
@@ -380,22 +548,40 @@ object DrawStore {
         add("scribble", null, path(0.10, 0.20, 0.80, 0.10, 0.20, 0.70, 0.90, 0.60, 0.15, 0.90, 0.60, 0.35, 0.85, 0.85, 0.30, 0.45))
         add("too-short", null, path(0.5, 0.5, 0.5, 0.5, 0.5005, 0.5))
 
+        // 7) 自定义画法：走与「用户录一个符号」同一条路（模板从 Custom 建，只是不落盘）。
+        //    形状选「楼梯」——13 个预设里没有，避免这条用例被预设抢走而失去意义。
+        val stairs = path(0.10, 0.85, 0.10, 0.50, 0.45, 0.50, 0.45, 0.15, 0.90, 0.15)
+        ephemeral = listOf(Custom("$CUSTOM_PREFIX selftest", "自检楼梯", stairs, closed = false))
+        invalidate()
+        try {
+            add("custom:hit", "$CUSTOM_PREFIX selftest", jitter(stairs, 0.012, 77))
+            // 自定义符号不判方向：转 30° 仍该认出来（预设的三角在这里会被 45° 边界拒掉）
+            add("custom:tilt", "$CUSTOM_PREFIX selftest", rotatePath(stairs, 30.0))
+            add("custom:miss", null, path(0.10, 0.20, 0.80, 0.10, 0.20, 0.70, 0.90, 0.60))
+        } finally {
+            ephemeral = emptyList()
+            invalidate()
+        }
+
         val json = JSONObject().apply {
             put("total", cases.length())
             put("failed", failed)
-            put("templates", templates.size)
+            put("templates", presetTemplates.size)
             put("symbols", symbols.size)
+            put("custom", custom().size)
             put("cases", cases)
             put("generatedAt", System.currentTimeMillis())
         }
         lastSelfTest = json
-        Log.i(SpikeState.TAG, "draw selfTest total=${cases.length()} failed=$failed templates=${templates.size}")
+        Log.i(SpikeState.TAG, "draw selfTest total=${cases.length()} failed=$failed preset=${presetTemplates.size}")
         return json
     }
 
     fun reportJson(): JSONObject = JSONObject().apply {
         put("symbols", symbols.size)
-        put("templates", templates.size)
+        put("templates", presetTemplates.size)
+        put("custom", custom().size)
+        put("customIds", JSONArray(custom().map { it.id }))
         put("bindings", JSONObject(bindings() as Map<*, *>))
         put("lastSymbol", lastSymbol)
         put("lastScore", round3(lastScore))
@@ -425,10 +611,13 @@ object DrawStore {
     }
 
     private fun labelOfClass(cls: String): String =
-        symbols.firstOrNull { it.cls == cls }?.label ?: cls
+        symbols.firstOrNull { it.cls == cls }?.label
+            ?: custom().firstOrNull { it.id == cls }?.label
+            ?: cls
 
     private fun symbolFor(cls: String, bucket: Int): Symbol? =
         symbols.firstOrNull { it.cls == cls && it.bucket == bucket }
+            ?: custom().firstOrNull { it.id == cls }?.toSymbol()
 
     private fun fmt(value: Double): String = String.format(java.util.Locale.US, "%.2f", value)
 

@@ -84,7 +84,7 @@ android/                    # 安卓探针工程（S0 + S1 + S2 / S2b，纯 Kotl
     BubbleService.kt        # S2 手机档：悬浮球 + 快捷面板（点一下执行，面板不抢焦点；S2b 长按开画板）
     KadaTileService.kt      # S2 手机档：快捷设置磁贴（暂停 / 恢复接管）
     DollarOne.kt            # S2b 画符号：$1 识别器（重采样 / 等比归一化 / 旋转 + 方向扇区）
-    DrawStore.kt            # S2b 画符号：符号表 / 绑定 / 执行 / 自检（预设 17 个符号）
+    DrawStore.kt            # S2b 画符号：符号表 / 绑定 / 执行 / 自检（预设 17 个符号 + 自定义画法，上限 24）
     DrawPadView.kt          # S2b 画符号：画板收轨迹，抬手归一化到 0~1
     DrawBoardView.kt        # S2b 画符号：长按悬浮球弹出的画板浮层
   tools/build-rust.ps1      # cargo-ndk 编 libkada_android.so 进 jniLibs（Gradle 不编 Rust）

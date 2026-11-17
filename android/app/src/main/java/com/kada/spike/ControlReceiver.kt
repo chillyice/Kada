@@ -253,6 +253,36 @@ class ControlReceiver : BroadcastReceiver() {
                 Log.i(SpikeState.TAG, "ctrl op=drawList n=${bindings.size} $bindings")
             }
 
+            // 录自定义画法：与界面「录自定义」按钮调同一个 learn()，adb 只是代替手指
+            "drawLearn" -> {
+                val points = DrawStore.parsePath(intent.getStringExtra("path").orEmpty())
+                val label = intent.getStringExtra("label").orEmpty()
+                val id = DrawStore.learn(points, label)
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=drawLearn points=${points.size} label=$label id=$id " +
+                        "custom=${DrawStore.custom().size} err=${DrawStore.lastError}",
+                )
+            }
+
+            "drawForget" -> {
+                val symbol = intent.getStringExtra("symbol").orEmpty()
+                val ok = DrawStore.forget(symbol)
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=drawForget symbol=$symbol ok=$ok custom=${DrawStore.custom().size} err=${DrawStore.lastError}",
+                )
+            }
+
+            "drawCustom" -> {
+                val list = DrawStore.custom()
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=drawCustom n=${list.size} " +
+                        list.joinToString("; ") { "${it.id}=${it.label} closed=${it.closed} pts=${it.points.size}" },
+                )
+            }
+
             "drawRun" -> {
                 val points = DrawStore.parsePath(intent.getStringExtra("path").orEmpty())
                 val outcome = DrawStore.runPath(points, "draw")

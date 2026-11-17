@@ -994,6 +994,70 @@ if ($exported) {
     Start-Sleep -Milliseconds 500
     Check "S2b-5 画板可收起" (-not [bool](Get-Report).phone.bubbleBoard) ""
 
+    # 自定义画法（P2）：13 个预设之外，让用户教它认自己的符号。
+    # 形状挑「楼梯」——预设里没有，能被认出来只可能来自刚录的那一份模板。
+    # 与 `drawRun` 同样：`--es path` 里的分号必须由设备侧 shell 当引号内容吃下，走 `Shell` 传整串。
+    $stairsPath = "0.10,0.85;0.10,0.50;0.45,0.50;0.45,0.15;0.90,0.15"
+    $customBefore = @((Get-Report).phone.draw.customIds)
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawLearn --es label stairs --es path '$stairsPath'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    $customAfter = @($script:lastReport.phone.draw.customIds)
+    $newIds = @($customAfter | Where-Object { $customBefore -notcontains $_ })
+    $newId = if ($newIds.Count -eq 1) { [string]$newIds[0] } else { "" }
+    Check "S2b-6 录自定义符号（楼梯，落盘一条）" (
+        ($newId -like "u:*") -and ($customAfter.Count -eq $customBefore.Count + 1) -and
+        ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
+    ) "custom=$($customBefore.Count)->$($customAfter.Count) new=$newId err=$($script:lastReport.phone.draw.lastError)"
+
+    # 绑定 + 画它：走的是与预设完全相同的一条链（识别表里只是多了一份模板）。
+    Bcast "editorAdd" @("--es", "name", "drawCust", "--es", "trigger", "Ctrl+Alt+J", "--es", "action", "text", "--es", "value", "stairsok")
+    Start-Sleep -Milliseconds 700
+    if ($newId -ne "") { Bcast "drawBind" @("--es", "symbol", $newId, "--es", "name", "drawCust") }
+    $custFlow = $false
+    for ($try = 1; $try -le 2; $try++) {
+        Restore-App
+        if (-not (Focus-Field)) {
+            Write-Host "  [warn] 自定义画法用例没拿到焦点（第 $try 次）"
+            continue
+        }
+        Clear-Field
+        Type-Text "xy"
+        # 与模板不完全重合（每条边挪 0.01）：验的是识别而不是字符串相等
+        Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '0.11,0.86;0.11,0.51;0.46,0.51;0.46,0.16;0.91,0.16'" | Out-Null
+        Start-Sleep -Milliseconds 1000
+        $script:lastReport = Get-Report
+        if ($script:lastReport.stats.inputFieldText -eq "xystairsok") { $custFlow = $true; break }
+        Write-Host ("  [warn] 画自定义符号第 {0} 次没命中：field=[{1}] symbol={2} lastRun={3} err={4}" -f $try, $script:lastReport.stats.inputFieldText, $script:lastReport.phone.draw.lastSymbol, $script:lastReport.phone.draw.lastRun, $script:lastReport.phone.draw.lastError)
+    }
+    Check "S2b-7 画自定义符号执行绑定快捷键" (
+        $custFlow -and ([string]$script:lastReport.phone.draw.lastSymbol -eq $newId) -and
+        ($newId -ne "")
+    ) "field=[$($script:lastReport.stats.inputFieldText)] symbol=$($script:lastReport.phone.draw.lastSymbol) lastRun=$($script:lastReport.phone.draw.lastRun) err=$($script:lastReport.phone.draw.lastError)"
+
+    # 与已有符号「几乎一样」的笔画必须拒收：两份模板都留着，每次识别都会在边界上抖。
+    # 这里画的就是标准三角，错误文案要点名「三角」。
+    $customKeep = @((Get-Report).phone.draw.customIds)
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawLearn --es label duptri --es path '0.5,0.05;0.95,0.95;0.05,0.95;0.5,0.05'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    $customDup = @($script:lastReport.phone.draw.customIds)
+    Check "S2b-8 与预设几乎一样的画法被拒收" (
+        ($customDup.Count -eq $customKeep.Count) -and
+        (([string]$script:lastReport.phone.draw.lastError) -like "*几乎一样*")
+    ) "custom=$($customKeep.Count)->$($customDup.Count) err=$($script:lastReport.phone.draw.lastError)"
+
+    # 删除自定义符号要连绑定一起带走：留下取不出来的键，下次导出就是脏数据。
+    if ($newId -ne "") { Bcast "drawForget" @("--es", "symbol", $newId) }
+    Start-Sleep -Milliseconds 600
+    $script:lastReport = Get-Report
+    $customLeft = @($script:lastReport.phone.draw.customIds)
+    $boundNames = @($script:lastReport.phone.draw.bindings.PSObject.Properties.Name)
+    Check "S2b-9 删自定义符号并带走绑定" (
+        ($newId -ne "") -and ($customLeft -notcontains $newId) -and ($boundNames -notcontains $newId) -and
+        ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
+    ) "custom=$($customLeft.Count) bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress) err=$($script:lastReport.phone.draw.lastError)"
+
     # 收尾：关悬浮球、收回权限、把磁贴从 QS 面板撤掉、删测试条目
     Bcast "bubble" @("--ez", "on", "false")
     Start-Sleep -Milliseconds 500
@@ -1001,7 +1065,7 @@ if ($exported) {
     Shell "appops set $package SYSTEM_ALERT_WINDOW deny" | Out-Null
     # 画符号绑定存在 SharedPreferences 里（不进配置），删条目不会带走它——必须显式解绑
     Bcast "drawUnbind" @("--es", "symbol", "triangle")
-    @("VolumeUp", "F10", "F11", "F6") | ForEach-Object {
+    @("VolumeUp", "F10", "F11", "F6", "Ctrl+Alt+J") | ForEach-Object {
         $trigger = $_
         $idx = -1
         $entries = @((Get-Report).editor.shortcuts)
