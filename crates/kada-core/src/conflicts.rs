@@ -586,6 +586,43 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
         });
     }
 
+    // 9) 画符号（安卓 P2b）：绑定指向不存在 / 已停用的快捷键。手机上画出来只会提示
+    //    「已失效」、不执行任何动作——配置本身合法，故只报 Warn（桌面上也照报：
+    //    这条多半是「桌面改了条目名 / 删了条目」，同步回去之后手机上就哑了）。
+    if let Some(draw) = &cfg.draw {
+        for (id, target) in &draw.bindings {
+            let label = draw
+                .symbols
+                .iter()
+                .find(|s| &s.id == id)
+                .and_then(|s| s.name.clone())
+                .unwrap_or_else(|| id.clone());
+            match cfg
+                .shortcuts
+                .iter()
+                .find(|s| s.name.as_deref() == Some(target.as_str()))
+            {
+                Some(s) if s.enabled => {}
+                Some(_) => out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: false,
+                    message: format!(
+                        "画符号「{label}」绑定的快捷键「{target}」已停用：手机上画出来不会执行任何动作"
+                    ),
+                    name: label,
+                }),
+                None => out.push(Conflict {
+                    severity: Severity::Warn,
+                    platform: false,
+                    message: format!(
+                        "画符号「{label}」绑定的快捷键「{target}」不在配置里：手机上画出来不会执行任何动作"
+                    ),
+                    name: label,
+                }),
+            }
+        }
+    }
+
     out
 }
 

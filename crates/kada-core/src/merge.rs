@@ -30,6 +30,8 @@ pub struct MergeReport {
     pub touchpad_gestures: usize,
     pub hot_corners: usize,
     pub wheel_edges: usize,
+    /// 画符号（安卓 P2b）：新增的自定义符号条数。
+    pub draw_symbols: usize,
     /// 跳过的条目说明（逐条带名称/触发键，只报个数的话用户查不出是哪条没进来）。
     pub skipped: Vec<String>,
 }
@@ -46,6 +48,7 @@ impl MergeReport {
             + self.touchpad_gestures
             + self.hot_corners
             + self.wheel_edges
+            + self.draw_symbols
     }
 }
 
@@ -229,6 +232,52 @@ pub fn merge_configs(current: &Config, incoming: &Config) -> (Config, MergeRepor
         }
         out.wheel_edges.push(we.clone());
         report.wheel_edges += 1;
+    }
+
+    // 画符号（安卓 P2b）：符号按 id 去重（id 相同就是同一个，保留本机那份）；绑定只在
+    // 「本机还没绑 + 符号确实进来了 + 目标条目在合并结果里真的存在」时才导入——
+    // 否则导入一份配置就凭空多出一串「绑定的快捷键不存在」的告警。
+    if let Some(incoming_draw) = &incoming.draw {
+        let mut draw = out.draw.take().unwrap_or_default();
+        for s in &incoming_draw.symbols {
+            if draw.symbols.iter().any(|x| x.id == s.id) {
+                continue;
+            }
+            let label = s.name.clone().unwrap_or_else(|| s.id.clone());
+            if draw.symbols.len() >= crate::DRAW_SYMBOLS_MAX {
+                report.skipped.push(format!(
+                    "画符号「{label}」未导入：本机自定义符号已满 {} 个",
+                    crate::DRAW_SYMBOLS_MAX
+                ));
+                continue;
+            }
+            draw.symbols.push(s.clone());
+            report.draw_symbols += 1;
+        }
+        for (id, target) in &incoming_draw.bindings {
+            if draw.bindings.contains_key(id) {
+                continue;
+            }
+            // 自定义符号没跟着进来（本机已满 24 个、或 id 撞车被去重）就别导这条绑定——
+            // 导进去只会是一条指向不存在符号的死绑定。预设 id（`triangle` 等，不带 `u:`）
+            // 写死在安卓侧，不进 `draw.symbols`，照常导。
+            if id.starts_with("u:") && !draw.symbols.iter().any(|s| &s.id == id) {
+                continue;
+            }
+            if !out
+                .shortcuts
+                .iter()
+                .any(|c| c.name.as_deref() == Some(target.as_str()))
+            {
+                continue;
+            }
+            draw.bindings.insert(id.clone(), target.clone());
+        }
+        out.draw = if draw.symbols.is_empty() && draw.bindings.is_empty() {
+            None
+        } else {
+            Some(draw)
+        };
     }
 
     (out, report)

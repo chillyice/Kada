@@ -187,6 +187,34 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
         .filter(|l| layer_ids.contains(&l.id))
         .cloned()
         .collect();
+
+    // 画符号（安卓 P2b）：卡带带走「被摘走的快捷键」所绑定的符号——否则对方拿到
+    // 一条只能按键盘触发的快捷键，手机上画不出来。绑定键是**条目名**，所以按名字对。
+    // 预设符号（`triangle` 等）在安卓侧写死，配置里只有绑定没有符号，那就只带绑定。
+    if let Some(draw) = &cfg.draw {
+        let names: BTreeSet<String> = out
+            .shortcuts
+            .iter()
+            .filter_map(|s| s.name.clone())
+            .filter(|n| !n.trim().is_empty())
+            .collect();
+        if !names.is_empty() {
+            let mut part = crate::DrawConfig::default();
+            for (id, target) in &draw.bindings {
+                if !names.contains(target) {
+                    continue;
+                }
+                if let Some(symbol) = draw.symbols.iter().find(|s| &s.id == id) {
+                    part.symbols.push(symbol.clone());
+                }
+                part.bindings.insert(id.clone(), target.clone());
+            }
+            if !part.bindings.is_empty() {
+                out.draw = Some(part);
+            }
+        }
+    }
+
     out
 }
 
@@ -718,6 +746,54 @@ mod tests {
         assert!(snippet(&cfg, &[pick(PickKind::Touchpad, 9)])
             .touchpad_gestures
             .is_empty());
+    }
+
+    #[test]
+    fn snippet_carries_draw_symbols_bound_to_picked_shortcut() {
+        let mut cfg = base();
+        cfg.draw = Some(crate::DrawConfig {
+            symbols: vec![
+                crate::DrawSymbol {
+                    id: "u:backup".into(),
+                    name: Some("备份星".into()),
+                    closed: false,
+                    points: vec![[100, 900], [500, 100], [900, 900]],
+                },
+                crate::DrawSymbol {
+                    id: "u:other".into(),
+                    name: Some("没人要".into()),
+                    closed: false,
+                    points: vec![[100, 100], [900, 900]],
+                },
+            ],
+            bindings: [
+                ("u:backup".to_string(), "备份".to_string()),
+                ("u:other".to_string(), "CapsLock".to_string()),
+                // 预设符号在安卓侧写死、配置里没有对应 `symbols` 条目：只带绑定。
+                ("triangle".to_string(), "备份".to_string()),
+            ]
+            .into_iter()
+            .collect(),
+        });
+
+        let part = snippet(&cfg, &[pick(PickKind::Shortcut, 0)]);
+        let draw = part.draw.as_ref().expect("绑到被摘走条目的符号要一起走");
+        assert_eq!(draw.symbols.len(), 1, "没被点名的符号不带");
+        assert_eq!(draw.symbols[0].id, "u:backup");
+        assert_eq!(draw.bindings.len(), 2);
+        assert_eq!(
+            draw.bindings.get("u:backup").map(String::as_str),
+            Some("备份")
+        );
+        assert_eq!(
+            draw.bindings.get("triangle").map(String::as_str),
+            Some("备份"),
+            "预设符号没有模板要带，但绑定得跟着走（否则对方画三角没反应）"
+        );
+
+        // 只挑改键（没有快捷键）时，画符号一律不带。
+        let only_remap = snippet(&cfg, &[pick(PickKind::Remap, 0)]);
+        assert!(only_remap.draw.is_none());
     }
 
     #[test]

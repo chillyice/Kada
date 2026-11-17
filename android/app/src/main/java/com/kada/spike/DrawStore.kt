@@ -23,8 +23,9 @@ import kotlin.random.Random
  * 3. 界面（[DrawPadView] / [DrawBoardView]）只收手指轨迹，执行走
  *    `KeyFilterService.runShortcut`——和面板、音量键**同一条动作链**。
  *
- * 绑定与自定义画法先存本机（`SharedPreferences("kada-draw")`），不进 `Config`：
- * 进配置要动 core 的模型与卡带格式，先把「画完能执行」「教它认自己的符号」跑通，再迁。
+ * 绑定与自定义符号存**配置**的 `draw` 段（P2b）：`draw.symbols` 是原始笔画、`draw.bindings` 是
+ * 「符号 id → 快捷键条目名」。走 `RustBridge.save` 与桌面同一条原子写 + 清洗路径，换机 / 导入
+ * 卡带都能带走；P2a 落在 `SharedPreferences("kada-draw")` 的旧数据在首次读取时自动搬进来。
  */
 object DrawStore {
 
@@ -65,6 +66,13 @@ object DrawStore {
     private const val PREFS = "kada-draw"
     private const val KEY_BINDINGS = "bindings"
     private const val KEY_CUSTOM = "custom"
+
+    /** 配置里画符号的落点：`draw.symbols` / `draw.bindings`（`kada_core::DrawConfig`）。 */
+    private const val KEY_DRAW = "draw"
+    private const val KEY_SYMBOLS = "symbols"
+
+    /** 点坐标量化尺度：与 core 的 `DRAW_POINTS_SCALE` 一致（0~1000 覆盖画板长边）。 */
+    private const val POINT_SCALE = 1000.0
 
     /** 自定义符号上限：再多就该用面板了，也防止有人误操作把识别拖慢到一帧一次重算。 */
     private const val MAX_CUSTOM = 24
@@ -154,9 +162,19 @@ object DrawStore {
         }
     }
 
-    /** 自定义符号缓存：录 / 删 / 临时自检符号都会让它整份失效。 */
+    /**
+     * 自定义符号缓存，**键是配置里 `draw` 段的原文**。
+     *
+     * 不能只靠 `invalidate()`：配置会被**不经过本类**的路径整份换掉（导入、恢复出厂示例、
+     * 外部编辑 / 桌面同步），那时候 `learn` / `forget` 一次都没跑过，缓存里还躺着一份旧符号表——
+     * 现象是配置里已经没有 `draw` 段了，面板仍列着旧符号、报告里 `custom` 还是 1。
+     */
     private var customCache: List<Custom>? = null
+    private var customCacheKey: String = ""
+
+    /** 模板缓存跟着符号列表的**实例**走：符号列表被重算过，模板也得重算。 */
     private var templateCache: List<DollarOne.Template>? = null
+    private var templateSource: List<Custom>? = null
 
     /** 自检用的临时符号：不落盘，跑完立刻清掉。 */
     @Volatile
@@ -164,28 +182,40 @@ object DrawStore {
 
     @Synchronized
     fun custom(): List<Custom> {
-        customCache?.let { return it }
+        // P2a 的数据在 SharedPreferences 里，P2b 起进配置：第一次读到就搬一次（搬完清旧键）。
+        // 必须在取缓存键之前跑——它本身就会改配置。
+        migrateLegacy()
+        val key = drawSection()?.toString().orEmpty()
+        if (key == customCacheKey) {
+            customCache?.let { return it }
+        }
         val loaded = loadCustom()
         customCache = loaded
+        customCacheKey = key
         return loaded
     }
 
     /** 预设模板 + 自定义模板；自定义一律 `directional = false`（θ 不稳定，也不该判方向）。 */
     @Synchronized
     private fun allTemplates(): List<DollarOne.Template> {
-        templateCache?.let { return it }
-        val customTemplates = custom().mapNotNull { c ->
+        val list = custom()
+        val cached = templateCache
+        if (cached != null && templateSource === list) return cached
+        val all = presetTemplates + list.mapNotNull { c ->
             DollarOne.template(c.id, directional = false, path = c.points, closed = c.closed)
         }
-        val all = presetTemplates + customTemplates
         templateCache = all
+        templateSource = list
         return all
     }
 
+    /** 自己刚改过配置：下一读必然换一份列表，缓存键这时对不上也是白对，直接作废更省事。 */
     @Synchronized
     private fun invalidate() {
         customCache = null
+        customCacheKey = ""
         templateCache = null
+        templateSource = null
     }
 
     // ------------------------------------------------------------------
@@ -208,6 +238,11 @@ object DrawStore {
     var lastError: String = ""
         private set
 
+    /** 最近一次写盘的结果（面板与报告用：写没写进去、core 忽略了什么）。 */
+    @Volatile
+    var lastSave: String = ""
+        private set
+
     @Volatile
     private var lastSelfTest: JSONObject? = null
 
@@ -218,17 +253,14 @@ object DrawStore {
     // ------------------------------------------------------------------
 
     fun bindings(): LinkedHashMap<String, String> {
-        val raw = prefs()?.getString(KEY_BINDINGS, "")?.takeIf { it.isNotBlank() } ?: return LinkedHashMap()
-        return runCatching {
-            val obj = JSONObject(raw)
-            val out = LinkedHashMap<String, String>()
-            for (key in obj.keys()) {
-                if (symbolById(key) == null) continue
-                val value = obj.optString(key).trim()
-                if (value.isNotEmpty()) out[key] = value
-            }
-            out
-        }.getOrDefault(LinkedHashMap())
+        val obj = drawSection()?.optJSONObject(KEY_BINDINGS) ?: return LinkedHashMap()
+        val out = LinkedHashMap<String, String>()
+        for (key in obj.keys()) {
+            if (symbolById(key) == null) continue
+            val value = obj.optString(key).trim()
+            if (value.isNotEmpty()) out[key] = value
+        }
+        return out
     }
 
     fun bind(symbolId: String, shortcutName: String): Boolean {
@@ -240,7 +272,7 @@ object DrawStore {
         }
         val map = bindings()
         map[symbolId] = name
-        persist(map)
+        persistBindings(map)
         lastError = ""
         Log.i(SpikeState.TAG, "draw bind ${symbol.label} -> $name")
         return true
@@ -249,14 +281,14 @@ object DrawStore {
     fun unbind(symbolId: String): Boolean {
         val map = bindings()
         if (map.remove(symbolId) == null) return true
-        persist(map)
+        persistBindings(map)
         lastError = ""
         Log.i(SpikeState.TAG, "draw unbind $symbolId")
         return true
     }
 
     fun clearBindings() {
-        persist(LinkedHashMap())
+        persistBindings(LinkedHashMap())
         lastError = ""
     }
 
@@ -274,7 +306,7 @@ object DrawStore {
         val clean = points.filter { it.x.isFinite() && it.y.isFinite() }
         if (clean.size < 2) return learnFail("笔画太短：至少画一条线段")
         if (DollarOne.normalize(clean) == null) return learnFail("笔画太短：至少画一条线段")
-        val existing = custom()
+        val existing = persistedCustom()
         if (existing.size >= MAX_CUSTOM) return learnFail("自定义符号最多 $MAX_CUSTOM 个，先删几个")
 
         // 与已有符号「几乎一样」就别收了：两份都留着只会让每次识别都在边界上抖。
@@ -291,21 +323,22 @@ object DrawStore {
         val total = clean.zipWithNext().sumOf { (a, b) -> hypot(b.x - a.x, b.y - a.y) }
         val closed = total > 1e-9 && hypot(last.x - first.x, last.y - first.y) <= total * 0.15
 
-        val list = existing + Custom(id, name, clean.map { DollarOne.Pt(round4(it.x), round4(it.y)) }, closed)
-        persistCustom(list)
+        val list = persistedCustom() + Custom(id, name, clean.map { DollarOne.Pt(round4(it.x), round4(it.y)) }, closed)
+        if (!persistDraw(symbols = list, bindings = bindings())) return ""
         invalidate()
         lastError = ""
-        Log.i(SpikeState.TAG, "draw learn $id ${name} closed=$closed points=${clean.size}")
+        Log.i(SpikeState.TAG, "draw learn $id $name closed=$closed points=${clean.size}")
         return id
     }
 
-    /** 删掉一个自定义符号（绑定一起清掉，否则会留下取不出来的键）。 */
+    /** 删掉一个自定义符号（绑定一起清掉，否则会留下取不出来的键）。**一次写盘**做完两件事。 */
     fun forget(symbolId: String): Boolean {
         if (!symbolId.startsWith(CUSTOM_PREFIX)) return fail("只能删自定义符号：$symbolId")
-        val list = custom()
+        val list = persistedCustom()
         if (list.none { it.id == symbolId }) return fail("没有这个自定义符号：$symbolId")
-        unbind(symbolId)
-        persistCustom(list.filter { it.id != symbolId })
+        val map = bindings()
+        map.remove(symbolId)
+        if (!persistDraw(symbols = list.filter { it.id != symbolId }, bindings = map)) return false
         invalidate()
         lastError = ""
         Log.i(SpikeState.TAG, "draw forget $symbolId")
@@ -313,8 +346,170 @@ object DrawStore {
     }
 
     private fun loadCustom(): List<Custom> {
-        val raw = prefs()?.getString(KEY_CUSTOM, "")?.takeIf { it.isNotBlank() } ?: return ephemeral
-        val parsed = runCatching {
+        val arr = drawSection()?.optJSONArray(KEY_SYMBOLS)
+        val parsed = ArrayList<Custom>()
+        if (arr != null) {
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                // 只认 `u:` 前缀：安卓自己发的 id，桌面端只透传（那边没有识别器）。
+                val id = obj.optString("id").trim().takeIf { it.startsWith(CUSTOM_PREFIX) } ?: continue
+                val pts = ArrayList<DollarOne.Pt>()
+                val arrPts = obj.optJSONArray("points") ?: continue
+                for (j in 0 until arrPts.length()) {
+                    val pair = arrPts.optJSONArray(j) ?: continue
+                    if (pair.length() != 2) continue
+                    pts.add(DollarOne.Pt(pair.optInt(0) / POINT_SCALE, pair.optInt(1) / POINT_SCALE))
+                }
+                if (pts.size < 2) continue
+                parsed.add(
+                    Custom(
+                        id = id,
+                        label = obj.optString("name").ifBlank { "自定义" },
+                        points = pts,
+                        closed = obj.optBoolean("closed", false),
+                    ),
+                )
+            }
+        }
+        return parsed + ephemeral
+    }
+
+    /**
+     * 写回「符号 + 绑定」两半（同一份 `draw` 段，**一次原子写**）。
+     *
+     * 走 `RustBridge.save` 而不是自己拼 JSON 落盘：清洗、原子写、`.bak`、同步存档都在 core
+     * 那一侧（`config_io` / `sanitize_config`），安卓壳别另开一条写盘路径。
+     */
+    private fun persistDraw(
+        symbols: List<Custom>,
+        bindings: Map<String, String>,
+    ): Boolean {
+        val cfg = configObject() ?: return saveFail("Rust 未加载，画符号写不进配置")
+        val draw = JSONObject()
+        if (symbols.isNotEmpty()) {
+            val arr = JSONArray()
+            for (c in symbols) arr.put(customJson(c))
+            draw.put(KEY_SYMBOLS, arr)
+        }
+        if (bindings.isNotEmpty()) {
+            draw.put(KEY_BINDINGS, JSONObject(bindings as Map<*, *>))
+        }
+        if (draw.length() == 0) cfg.remove(KEY_DRAW) else cfg.put(KEY_DRAW, draw)
+        return saveConfig(cfg, "画符号")
+    }
+
+    /** 一条自定义符号的 JSON 形态（点坐标量化成 0~1000 的整数，与 core 的 `DRAW_POINTS_SCALE` 同口径）。 */
+    private fun customJson(c: Custom): JSONObject {
+        val pts = JSONArray()
+        for (p in c.points) {
+            pts.put(JSONArray().put(quantize(p.x)).put(quantize(p.y)))
+        }
+        return JSONObject().apply {
+            put("id", c.id)
+            put("name", c.label)
+            put("closed", c.closed)
+            put("points", pts)
+        }
+    }
+
+    private fun persistBindings(map: Map<String, String>) {
+        persistDraw(symbols = persistedCustom(), bindings = map)
+    }
+
+    /** 配置里真有的自定义符号（自检用的临时模板不落盘）。 */
+    private fun persistedCustom(): List<Custom> = custom().filter { c -> ephemeral.none { it.id == c.id } }
+
+    private fun drawSection(): JSONObject? = configObject()?.optJSONObject(KEY_DRAW)
+
+    private fun configObject(): JSONObject? = runCatching { JSONObject(RustBridge.exportText()) }.getOrNull()
+
+    private fun saveConfig(cfg: JSONObject, what: String): Boolean {
+        val report = RustBridge.save(cfg.toString()) ?: return saveFail("Rust 未加载，画符号没保存")
+        if (!report.optBoolean("ok", false)) {
+            return saveFail(report.optString("error").ifBlank { "保存失败" })
+        }
+        val ignored = report.optJSONArray("ignored")?.length() ?: 0
+        lastSave = if (ignored == 0) "$what：已保存" else "$what：已保存，Rust 忽略 $ignored 处"
+        Log.i(SpikeState.TAG, "draw save $what ignored=$ignored")
+        invalidate()
+        return true
+    }
+
+    private fun saveFail(message: String): Boolean {
+        lastError = message
+        lastSave = "画符号保存失败：$message"
+        Log.i(SpikeState.TAG, "draw save failed: $message")
+        return false
+    }
+
+    private fun quantize(value: Double): Int =
+        Math.round(value * POINT_SCALE).toInt().coerceIn(0, POINT_SCALE.toInt())
+
+    /**
+     * P2a 的符号 / 绑定存在 `SharedPreferences("kada-draw")` 里；P2b 起搬进配置。
+     *
+     * **按「补空缺」合并，不是「有 draw 段就整体跳过」**——升级后用户完全可能先绑了一个
+     * 预设符号（配置里已经有 `draw.bindings` 了）才第一次打开画板；按「有段就跳过」处理，
+     * 他 P2a 录的符号会被静默丢掉（真踩过：绑定先落盘 → 迁移判定「已搬过」→ 清 prefs）。
+     * 配置是新的真相：同 id 的符号、同符号的绑定都以配置为准，旧数据只补空缺；
+     * 补完清掉旧键（一个都没补进去也清——说明配置里已经都有了）。
+     */
+    private fun migrateLegacy() {
+        val prefs = prefs() ?: return
+        val rawCustom = prefs.getString(KEY_CUSTOM, "").orEmpty()
+        val rawBindings = prefs.getString(KEY_BINDINGS, "").orEmpty()
+        if (rawCustom.isBlank() && rawBindings.isBlank()) return
+        val cfg = configObject() ?: return
+        val legacySymbols = parseLegacyCustom(rawCustom)
+        val legacyBindings = runCatching { JSONObject(rawBindings) }.getOrDefault(JSONObject())
+        if (legacySymbols.isEmpty() && legacyBindings.length() == 0) {
+            prefs.edit().remove(KEY_CUSTOM).remove(KEY_BINDINGS).apply()
+            return
+        }
+
+        val draw = cfg.optJSONObject(KEY_DRAW) ?: JSONObject()
+        val symbols = draw.optJSONArray(KEY_SYMBOLS) ?: JSONArray()
+        val known = LinkedHashSet<String>()
+        for (i in 0 until symbols.length()) {
+            symbols.optJSONObject(i)?.optString("id")?.trim()?.let { if (it.isNotEmpty()) known.add(it) }
+        }
+        var addedSymbols = 0
+        for (c in legacySymbols) {
+            if (c.id in known) continue
+            if (symbols.length() >= MAX_CUSTOM) break
+            known.add(c.id)
+            symbols.put(customJson(c))
+            addedSymbols++
+        }
+        if (symbols.length() > 0) draw.put(KEY_SYMBOLS, symbols)
+
+        val bindings = draw.optJSONObject(KEY_BINDINGS) ?: JSONObject()
+        var addedBindings = 0
+        for (key in legacyBindings.keys()) {
+            if (bindings.has(key)) continue
+            val value = legacyBindings.optString(key).trim()
+            if (value.isEmpty()) continue
+            // 自定义 id 必须真有模板（配置里的或刚搬进来的）；预设 id 不带 `u:`，直接认。
+            if (key.startsWith(CUSTOM_PREFIX) && key !in known) continue
+            bindings.put(key, value)
+            addedBindings++
+        }
+        if (bindings.length() > 0) draw.put(KEY_BINDINGS, bindings)
+
+        if (addedSymbols == 0 && addedBindings == 0) {
+            prefs.edit().remove(KEY_CUSTOM).remove(KEY_BINDINGS).apply()
+            return
+        }
+        cfg.put(KEY_DRAW, draw)
+        if (saveConfig(cfg, "迁移旧画符号")) {
+            prefs.edit().remove(KEY_CUSTOM).remove(KEY_BINDINGS).apply()
+            Log.i(SpikeState.TAG, "draw legacy prefs migrated symbols=$addedSymbols bindings=$addedBindings")
+        }
+    }
+
+    private fun parseLegacyCustom(raw: String): List<Custom> {
+        if (raw.isBlank()) return emptyList()
+        return runCatching {
             val arr = JSONArray(raw)
             val out = ArrayList<Custom>(arr.length())
             for (i in 0 until arr.length()) {
@@ -331,34 +526,14 @@ object DrawStore {
                 out.add(
                     Custom(
                         id = id,
-                        label = obj.optString("label").ifBlank { "自定义" }.take(12),
+                        label = obj.optString("label").ifBlank { "自定义" },
                         points = pts,
                         closed = obj.optBoolean("closed", false),
                     ),
                 )
             }
             out
-        }.getOrDefault(ArrayList())
-        return parsed + ephemeral
-    }
-
-    private fun persistCustom(list: List<Custom>) {
-        val arr = JSONArray()
-        for (c in list) {
-            val pts = JSONArray()
-            for (p in c.points) {
-                pts.put(JSONArray().put(round4(p.x)).put(round4(p.y)))
-            }
-            arr.put(
-                JSONObject().apply {
-                    put("id", c.id)
-                    put("label", c.label)
-                    put("closed", c.closed)
-                    put("points", pts)
-                },
-            )
-        }
-        prefs()?.edit()?.putString(KEY_CUSTOM, arr.toString())?.apply()
+        }.getOrDefault(emptyList())
     }
 
     private fun learnFail(message: String): String {
@@ -583,6 +758,9 @@ object DrawStore {
         put("custom", custom().size)
         put("customIds", JSONArray(custom().map { it.id }))
         put("bindings", JSONObject(bindings() as Map<*, *>))
+        // P2b：画符号现在存在配置的 `draw` 段里（不再是 SharedPreferences）
+        put("store", "config")
+        put("lastSave", lastSave)
         put("lastSymbol", lastSymbol)
         put("lastScore", round3(lastScore))
         put("lastRun", lastRun)
@@ -596,13 +774,6 @@ object DrawStore {
 
     private fun prefs(): SharedPreferences? =
         SpikeState.appContext?.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-
-    private fun persist(map: Map<String, String>) {
-        val editor = prefs()?.edit() ?: return
-        val obj = JSONObject()
-        for ((key, value) in map) obj.put(key, value)
-        editor.putString(KEY_BINDINGS, obj.toString()).apply()
-    }
 
     private fun fail(message: String): Boolean {
         lastError = message

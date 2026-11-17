@@ -147,6 +147,37 @@ function Get-Report {
     Get-Content $dest -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+# 设备上的配置原文。走 `exec-out` 而不是 `adb shell`：后者经 pty 会把换行改成 CRLF，
+# 中文也会多绕一层；`exec-out` 是原始字节，按脚本开头设的 UTF-8 解出来就能直接解析。
+# `run-as` 的当前目录是应用数据目录，所以路径相对 `files/config.json`。
+function Get-ConfigText {
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        (& $adb @adbBase exec-out run-as $package cat files/config.json 2>$null) -join "`n"
+    } finally {
+        $ErrorActionPreference = $prev
+    }
+}
+
+# 解析不出就返回 $null（被删 / 半截写入时，断言该失败而不是脚本崩）。
+# 注意 PS 5.1 的 ConvertFrom-Json 把单元素数组解成对象，调用方一律用 @() 收。
+function Get-ConfigJson {
+    $text = Get-ConfigText
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    try { return ($text | ConvertFrom-Json) } catch { return $null }
+}
+
+# JSON 对象的某个键（键名带 `u:` 这类字符时不能用 `.foo` 取，只能翻 PSObject.Properties）。
+function Get-JsonField {
+    param($Obj, [string]$Name)
+    if (-not $Obj) { return $null }
+    foreach ($p in @($Obj.PSObject.Properties)) {
+        if ($p.Name -eq $Name) { return $p.Value }
+    }
+    return $null
+}
+
 # 当前是否有窗口焦点（`dumpsys window` 的 mCurrentFocus 是不是本应用）。
 # 通知栏 / 其它 app 抢到前台时，Activity 会丢窗口焦点：此时 EditText 的 view 焦点还在，
 # 但按键不会再交给它——「打字全是空」就是这么来的。
@@ -1010,6 +1041,20 @@ if ($exported) {
         ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
     ) "custom=$($customBefore.Count)->$($customAfter.Count) new=$newId err=$($script:lastReport.phone.draw.lastError)"
 
+    # P2b：符号必须落在**配置**的 `draw.symbols` 里（P2a 那份 SharedPreferences 已不是存法），
+    # 点坐标是 0~1000 的整数（core 的 `DRAW_POINTS_SCALE` 口径，与触摸板模板同一套）。
+    $cfg = Get-ConfigJson
+    $cfgSymbols = @()
+    if ($cfg -and $cfg.draw) { $cfgSymbols = @($cfg.draw.symbols | Where-Object { $null -ne $_ }) }
+    $cfgSymbol = @($cfgSymbols | Where-Object { $_.id -eq $newId })
+    $cfgPoints = if ($cfgSymbol.Count -eq 1) { @($cfgSymbol[0].points) } else { @() }
+    $ptsBad = @($cfgPoints | Where-Object { @($_).Count -ne 2 -or $_[0] -lt 0 -or $_[0] -gt 1000 -or $_[1] -lt 0 -or $_[1] -gt 1000 })
+    $ptsFirst = if ($cfgPoints.Count -gt 0) { "$($cfgPoints[0][0]),$($cfgPoints[0][1])" } else { "" }
+    Check "S2b-6b 自定义符号写进配置 draw.symbols" (
+        ($newId -ne "") -and ($cfgSymbol.Count -eq 1) -and ($cfgPoints.Count -ge 2) -and
+        ($ptsBad.Count -eq 0) -and ([string]$script:lastReport.phone.draw.store -eq "config")
+    ) "store=$($script:lastReport.phone.draw.store) symbol=$newId points=$($cfgPoints.Count) first=$ptsFirst bad=$($ptsBad.Count) lastSave=$($script:lastReport.phone.draw.lastSave)"
+
     # 绑定 + 画它：走的是与预设完全相同的一条链（识别表里只是多了一份模板）。
     Bcast "editorAdd" @("--es", "name", "drawCust", "--es", "trigger", "Ctrl+Alt+J", "--es", "action", "text", "--es", "value", "stairsok")
     Start-Sleep -Milliseconds 700
@@ -1035,6 +1080,13 @@ if ($exported) {
         ($newId -ne "")
     ) "field=[$($script:lastReport.stats.inputFieldText)] symbol=$($script:lastReport.phone.draw.lastSymbol) lastRun=$($script:lastReport.phone.draw.lastRun) err=$($script:lastReport.phone.draw.lastError)"
 
+    # 绑定也进配置：`draw.bindings[符号 id] = 条目名`。存名字不存下标——删一条条目不会串位。
+    $cfg = Get-ConfigJson
+    $cfgBind = if ($cfg -and $cfg.draw) { [string](Get-JsonField $cfg.draw.bindings $newId) } else { "" }
+    Check "S2b-7b 绑定写进配置 draw.bindings（→ 条目名）" (
+        ($newId -ne "") -and ($cfgBind -eq "drawCust")
+    ) "bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress) config=[$cfgBind] lastSave=$($script:lastReport.phone.draw.lastSave)"
+
     # 与已有符号「几乎一样」的笔画必须拒收：两份模板都留着，每次识别都会在边界上抖。
     # 这里画的就是标准三角，错误文案要点名「三角」。
     $customKeep = @((Get-Report).phone.draw.customIds)
@@ -1058,12 +1110,72 @@ if ($exported) {
         ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
     ) "custom=$($customLeft.Count) bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress) err=$($script:lastReport.phone.draw.lastError)"
 
+    # 删符号与清绑定是**同一次写盘**：配置里该 id 一个字节都不该剩（`triangle` 的绑定不受影响）。
+    $cfgText = Get-ConfigText
+    $cfgHasId = if ($newId -ne "") { $cfgText -match [regex]::Escape($newId) } else { $true }
+    $cfgStillTriangle = $cfgText -match '"triangle"'
+    Check "S2b-9b 删除同时清掉配置里的符号与绑定" (
+        ($newId -ne "") -and (-not $cfgHasId) -and $cfgStillTriangle
+    ) "config_has_id=$cfgHasId triangle_kept=$cfgStillTriangle lastSave=$($script:lastReport.phone.draw.lastSave)"
+
+    # 升级迁移（P2a → P2b）：老版本的符号 / 绑定存在 `SharedPreferences("kada-draw")` 里。
+    # 只往 prefs 里塞一份「P2a 格式」的数据再重启，断言搬到配置、旧键清空——否则老用户
+    # 升级后自己录的符号凭空消失，那是**静默丢数据**。
+    $legacyXml = @'
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="bindings">{&quot;u:legacy1&quot;:&quot;drawTpl&quot;}</string>
+    <string name="custom">[{&quot;id&quot;:&quot;u:legacy1&quot;,&quot;label&quot;:&quot;legacy&quot;,&quot;closed&quot;:false,&quot;points&quot;:[[0.1,0.85],[0.1,0.5],[0.45,0.5],[0.45,0.15],[0.9,0.15]]}]</string>
+</map>
+'@
+    # 上一轮跑崩 / 手工测过可能留下同名符号：先清掉，才是「升级前什么都没有」的状态。
+    $cfgText = Get-ConfigText
+    if ($cfgText -match '"u:legacy1"') {
+        Bcast "drawForget" @("--es", "symbol", "u:legacy1")
+        Start-Sleep -Milliseconds 700
+    }
+    $legacyPath = Join-Path $env:TEMP "kada-legacy-draw.xml"
+    [System.IO.File]::WriteAllText($legacyPath, $legacyXml, (New-Object System.Text.UTF8Encoding($false)))
+    Adb @("push", $legacyPath, "/data/local/tmp/kada-legacy-draw.xml") | Out-Null
+    Shell "run-as $package cp /data/local/tmp/kada-legacy-draw.xml shared_prefs/kada-draw.xml" | Out-Null
+    Shell "rm -f /data/local/tmp/kada-legacy-draw.xml" | Out-Null
+    # force-stop 会连无障碍服务一起杀，起来之后重新登记一次（别把设备留在「服务未连接」）
+    Shell "am force-stop $package" | Out-Null
+    Start-Sleep -Milliseconds 800
+    Shell "am start -n $package/.MainActivity" | Out-Null
+    Start-Sleep -Seconds 2
+    Shell "settings put secure enabled_accessibility_services $package/$package.KeyFilterService" | Out-Null
+    Shell "settings put secure accessibility_enabled 1" | Out-Null
+    Start-Sleep -Milliseconds 800
+    $script:lastReport = Get-Report
+    $cfg = Get-ConfigJson
+    $legacySymbol = @()
+    $legacyBind = ""
+    $legacyFirst = ""
+    if ($cfg -and $cfg.draw) {
+        $legacySymbol = @(@($cfg.draw.symbols) | Where-Object { $_ -and $_.id -eq "u:legacy1" })
+        $legacyBind = [string](Get-JsonField $cfg.draw.bindings "u:legacy1")
+        if ($legacySymbol.Count -eq 1) {
+            $legacyPts = @($legacySymbol[0].points)
+            if ($legacyPts.Count -gt 0) { $legacyFirst = "$($legacyPts[0][0]),$($legacyPts[0][1])" }
+        }
+    }
+    $prefsText = (Shell "run-as $package cat shared_prefs/kada-draw.xml") -join "`n"
+    $prefsClean = ($prefsText -match "<map\s*/>") -and ($prefsText -notmatch "u:legacy1")
+    Check "S2b-10 旧 prefs 迁移进配置（符号 + 绑定，旧键清空）" (
+        ($legacySymbol.Count -eq 1) -and ($legacyBind -eq "drawTpl") -and
+        ($legacyFirst -eq "100,850") -and $prefsClean -and
+        ([string]$script:lastReport.phone.draw.store -eq "config")
+    ) "symbol=$($legacySymbol.Count) first=$legacyFirst bind=[$legacyBind] prefs_clean=$prefsClean lastSave=$($script:lastReport.phone.draw.lastSave)"
+
     # 收尾：关悬浮球、收回权限、把磁贴从 QS 面板撤掉、删测试条目
     Bcast "bubble" @("--ez", "on", "false")
     Start-Sleep -Milliseconds 500
     Shell "cmd statusbar remove-tile $package/.KadaTileService" | Out-Null
     Shell "appops set $package SYSTEM_ALERT_WINDOW deny" | Out-Null
-    # 画符号绑定存在 SharedPreferences 里（不进配置），删条目不会带走它——必须显式解绑
+    # 画符号绑定现在存在配置的 `draw` 段里，但**清洗不会因为目标条目没了就删绑定**——
+    # 那是「已失效」，面板要看得出来（由 `detect_conflicts` 报 Warn）。所以测试仍要显式解绑，
+    # 别把「绑定的快捷键不在配置里」的告警留在设备上。
     Bcast "drawUnbind" @("--es", "symbol", "triangle")
     @("VolumeUp", "F10", "F11", "F6", "Ctrl+Alt+J") | ForEach-Object {
         $trigger = $_
@@ -1082,6 +1194,18 @@ if ($exported) {
     # 收尾：把基线配置换回来，别把测试条目留在设备上
     Adb @("push", $exportLocal, "$extDir/restore.json") | Out-Null
     Bcast "import" @("--es", "file", "restore.json", "--ez", "merge", "false")
+    Start-Sleep -Milliseconds 800
+
+    # 这次整份替换导入不经过 `DrawStore`（导入走 `RustBridge.importFrom`），正好是
+    # 「配置被别的路径换掉」的场景：符号表缓存不能还认旧值。曾经的现象是配置里已经没有
+    # `draw` 段了，面板仍列着旧符号、报告里 `custom` 还是 1（陈旧缓存）。
+    $script:lastReport = Get-Report
+    $cfgText = Get-ConfigText
+    $cfgHasDraw = $cfgText -match '"draw"'
+    Check "S2b-11 整份替换配置后符号表跟着清（缓存不认旧值）" (
+        ([int]$script:lastReport.phone.draw.custom -eq 0) -and (-not $cfgHasDraw) -and
+        ($cfgText -notmatch "u:legacy1")
+    ) "custom=$($script:lastReport.phone.draw.custom) config_draw=$cfgHasDraw bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress)"
 } else {
     Check "S1-2 合并导入" $false "导出文件没拿到"
 }

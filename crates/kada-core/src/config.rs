@@ -1,6 +1,8 @@
 // 配置模型（C-03 从 lib.rs 搬出）：目录 / 层 / 条目 / 改键 / 文本扩展 / 浮窗与角动作设置 / Config。
 // 配置是跨平台同步介质，直接以 JSON 落盘/交换；快捷键以 "Ctrl+Alt+K" 文本存放，加载时解析校验。
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::gesture::{Gesture, TouchpadGesture};
@@ -1202,6 +1204,54 @@ impl Default for Settings {
     }
 }
 
+/// 画符号点坐标的量化尺度：0~[`DRAW_POINTS_SCALE`] 覆盖画板长边（与触摸板模板同一口径）。
+///
+/// 存整数而不是浮点有两个原因：① 配置结构一路 `PartialEq + Eq`（浮点拿不到 `Eq`，
+/// 得把整条链改成只 `PartialEq`）；② 1/1000 的精度对「一笔几百点再重采样到 32 点」的
+/// 识别器完全够用，还省得两份实现的舍入口径不一致。
+pub const DRAW_POINTS_SCALE: i16 = 1000;
+
+/// 一条自定义符号最多存多少个笔画点（手写 JSON 塞几万个点会让每次识别都卡一帧）。
+pub const DRAW_SYMBOL_MAX_POINTS: usize = 512;
+
+/// 自定义符号最多几条（与安卓「录自定义」的上限一致；多过这个数就该用面板了）。
+pub const DRAW_SYMBOLS_MAX: usize = 24;
+
+/// 一条自定义画法（安卓 P2b 的「录自定义」）：模板就是用户当场画的那一笔。
+///
+/// 与触摸板的形状模板不同，这里**不判方向**（随手画的形状旋转角本就不稳），
+/// `closed` 只影响识别器要不要做「循环移位」（开放折线移位后是另一条乱线）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DrawSymbol {
+    /// 稳定标识（安卓侧是 `u:` + 时间戳 base36；桌面只透传，不改）。
+    pub id: String,
+    /// 显示名（列表与提示里用；空 = 只有符号首字）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// 起笔与收笔几乎重合 = 闭合回路（识别器据此做循环移位）。
+    #[serde(default)]
+    pub closed: bool,
+    /// 原始笔画：`[x, y]`，0~[`DRAW_POINTS_SCALE`]（屏幕坐标系，y 向下）。
+    #[serde(default)]
+    pub points: Vec<[i16; 2]>,
+}
+
+/// 画符号（安卓 P2b）：自定义符号与「符号 → 快捷键」绑定。
+///
+/// 桌面端不执行画符号，但**必须原样保留这一段**——配置是跨平台同步介质，
+/// 桌面改完再同步回去，手机上录的符号与绑定不能丢（`merge` / `snippet` 也照此处理）。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DrawConfig {
+    /// 自定义符号（预设的 17 个在安卓侧写死，不进配置）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub symbols: Vec<DrawSymbol>,
+    /// 符号 id → 快捷键**条目名**（与安卓面板下拉一致；存名字不存下标，删条目不会串位）。
+    /// 键有两种：自定义符号的 `u:` + 时间戳（必须出现在 [`Self::symbols`] 里）、
+    /// 以及安卓写死的 17 个预设符号 id（`triangle` / `circle` …，**不进** `symbols`）。
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub bindings: BTreeMap<String, String>,
+}
+
 /// 根配置。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct Config {
@@ -1230,6 +1280,9 @@ pub struct Config {
     /// 边缘滚动（EXT-11）：光标贴屏幕四边滚动滚轮执行动作。同位置可有多条，取第一条启用的。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub wheel_edges: Vec<WheelEdgeRule>,
+    /// 画符号（安卓 P2b）：自定义符号 + 绑定。桌面只透传不执行。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub draw: Option<DrawConfig>,
     #[serde(default)]
     pub settings: Settings,
 }

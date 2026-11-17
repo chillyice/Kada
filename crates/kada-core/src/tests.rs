@@ -194,6 +194,7 @@ mod config_tests {
             touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
+            draw: None,
             settings: Settings::default(),
         };
         let json = serde_json::to_string_pretty(&cfg).unwrap();
@@ -943,6 +944,7 @@ mod os_and_sanitize_tests {
             touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
+            draw: None,
             settings: Settings::default(),
         };
         let (clean, ignored) = sanitize_config(&cfg);
@@ -1866,6 +1868,7 @@ mod os_and_sanitize_tests {
             touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
+            draw: None,
             settings: Settings {
                 wake_key: Some("Alt".into()),
                 ..Default::default()
@@ -5867,5 +5870,218 @@ mod hot_corner_tests {
         assert_eq!(clean.wheel_edges[0].name.as_deref(), Some("桌面"));
         assert_eq!(clean.wheel_edges[0].actions.len(), 1);
         assert!(ignored.iter().any(|m| m.contains("边缘滚动")));
+    }
+}
+
+/// 画符号（安卓 P2b）：自定义符号与「符号 → 快捷键条目名」绑定在 core 里的四项行为——
+/// 序列化（空则不出键）、清洗（坏符号 / 断引用）、软冲突（绑到不存在或停用的快捷键）、
+/// 合并（按 id 去重，且不给本机凭空造告警）。卡带那条在 `snippet.rs` 自己的测试里。
+mod draw_config_tests {
+    use crate::*;
+
+    fn shortcut(name: &str, trigger: &str, enabled: bool) -> ShortcutItem {
+        ShortcutItem {
+            name: Some(name.into()),
+            triggers: vec![trigger.into()],
+            actions: vec![Action::Text {
+                text: "x".into(),
+                mode: TextMode::Input,
+                masked: false,
+                description: None,
+            }],
+            enabled,
+            ..Default::default()
+        }
+    }
+
+    fn symbol(id: &str, name: &str) -> DrawSymbol {
+        DrawSymbol {
+            id: id.into(),
+            name: Some(name.into()),
+            closed: false,
+            points: vec![[100, 900], [500, 100], [900, 900]],
+        }
+    }
+
+    fn cfg_with_draw(bindings: &[(&str, &str)]) -> Config {
+        Config {
+            shortcuts: vec![shortcut("备份", "Ctrl+Alt+B", true)],
+            draw: Some(DrawConfig {
+                symbols: vec![symbol("u:a", "星")],
+                bindings: bindings
+                    .iter()
+                    .map(|(id, target)| ((*id).to_string(), (*target).to_string()))
+                    .collect(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn empty_draw_is_not_serialized_at_all() {
+        let text = serde_json::to_string(&Config::default()).unwrap();
+        assert!(
+            !text.contains("\"draw\""),
+            "空配置不该多出一个 draw 键：{text}"
+        );
+
+        let cfg = cfg_with_draw(&[("u:a", "备份")]);
+        let text = serde_json::to_string(&cfg).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, cfg, "json:\n{text}");
+        assert!(text.contains("u:a") && text.contains("备份"));
+    }
+
+    #[test]
+    fn sanitize_drops_bad_symbols_and_dangling_bindings() {
+        let mut cfg = cfg_with_draw(&[
+            ("u:a", " 备份 "),
+            ("u:gone", "备份"),
+            // 预设符号（安卓写死、不进 `draw.symbols`）的绑定必须留着——按「符号必须存在」
+            // 一刀切会把这类绑定悄悄洗掉，画三角就变成「还没绑定」。
+            ("triangle", "备份"),
+        ]);
+        let draw = cfg.draw.as_mut().unwrap();
+        // 没 id / 只有一个点 / id 重复：都丢掉，但合法那条不受影响。
+        draw.symbols.push(DrawSymbol {
+            id: "  ".into(),
+            name: Some("没 id".into()),
+            ..Default::default()
+        });
+        draw.symbols.push(DrawSymbol {
+            id: "u:short".into(),
+            name: Some("一个点".into()),
+            points: vec![[500, 500]],
+            ..Default::default()
+        });
+        draw.symbols.push(symbol("u:a", "重复"));
+        // 坐标越界：钳进 0~1000，不整条丢。
+        draw.symbols.push(DrawSymbol {
+            id: "u:big".into(),
+            name: Some(" 越界 ".into()),
+            points: vec![[-50, 1200], [500, 500]],
+            ..Default::default()
+        });
+
+        let (clean, ignored) = sanitize_config(&cfg);
+        let draw = clean.draw.as_ref().unwrap();
+        let ids: Vec<&str> = draw.symbols.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, vec!["u:a", "u:big"], "ignored: {}", ignored.join("; "));
+        assert_eq!(draw.symbols[1].points[0], [0, 1000], "坐标要钳进 0~1000");
+        assert_eq!(draw.symbols[1].name.as_deref(), Some("越界"), "名字去空白");
+        assert_eq!(
+            draw.bindings.get("u:a").map(String::as_str),
+            Some("备份"),
+            "绑定值去空白"
+        );
+        assert!(
+            !draw.bindings.contains_key("u:gone"),
+            "断引用的自定义绑定要清掉"
+        );
+        assert_eq!(
+            draw.bindings.get("triangle").map(String::as_str),
+            Some("备份"),
+            "预设符号的绑定不能被当成「符号不存在」洗掉"
+        );
+        assert!(ignored
+            .iter()
+            .any(|m| m.contains("u:gone") || m.contains("不存在")));
+    }
+
+    #[test]
+    fn conflicts_warn_when_draw_target_is_missing_or_disabled() {
+        let caps = PlatformCaps::default();
+
+        let ok = detect_conflicts(&cfg_with_draw(&[("u:a", "备份")]), &caps);
+        assert!(
+            !ok.iter().any(|c| c.message.contains("画符号")),
+            "绑到启用的条目不该报冲突：{ok:?}"
+        );
+
+        let missing = detect_conflicts(&cfg_with_draw(&[("u:a", "没有这条")]), &caps);
+        let hit = missing
+            .iter()
+            .find(|c| c.message.contains("画符号"))
+            .expect("绑到不存在的条目要报软冲突");
+        assert_eq!(hit.severity, Severity::Warn, "配置合法，只提示不拦保存");
+        assert!(hit.message.contains("不在配置里"));
+
+        let mut cfg = cfg_with_draw(&[("u:a", "备份")]);
+        cfg.shortcuts[0].enabled = false;
+        let disabled = detect_conflicts(&cfg, &caps);
+        assert!(
+            disabled
+                .iter()
+                .any(|c| c.message.contains("画符号") && c.message.contains("已停用")),
+            "绑到停用的条目要报「已停用」：{disabled:?}"
+        );
+    }
+
+    #[test]
+    fn merge_adds_draw_symbols_once_and_only_for_real_targets() {
+        let current = cfg_with_draw(&[("u:a", "备份")]);
+        let mut incoming = Config {
+            shortcuts: vec![
+                shortcut("新条目", "Ctrl+Alt+N", true),
+                // 与现有触发键撞车 → 这条不会被导入，绑它的符号也不该带来绑定。
+                shortcut("没进来", "Ctrl+Alt+B", true),
+            ],
+            draw: Some(DrawConfig {
+                symbols: vec![
+                    symbol("u:a", "本机已存在"),
+                    symbol("u:new", "新符号"),
+                    symbol("u:skip", "目标没进来"),
+                ],
+                bindings: [
+                    ("u:a".to_string(), "新条目".to_string()),
+                    ("u:new".to_string(), "新条目".to_string()),
+                    ("u:skip".to_string(), "没进来".to_string()),
+                    // 预设符号的绑定（配置里没有模板）照常导：画三角在对方机器上也能用。
+                    ("triangle".to_string(), "新条目".to_string()),
+                ]
+                .into_iter()
+                .collect(),
+            }),
+            ..Default::default()
+        };
+        incoming
+            .draw
+            .as_mut()
+            .unwrap()
+            .symbols
+            .push(symbol("u:new", "重复 id"));
+
+        let (merged, report) = merge_configs(&current, &incoming);
+        let draw = merged.draw.as_ref().unwrap();
+        let ids: Vec<&str> = draw.symbols.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["u:a", "u:new", "u:skip"],
+            "按 id 去重（重复的 u:new 只进一条）、保留本机那条"
+        );
+        assert_eq!(
+            draw.symbols[0].name.as_deref(),
+            Some("星"),
+            "本机同名符号不被改写"
+        );
+        assert_eq!(
+            draw.bindings.get("u:new").map(String::as_str),
+            Some("新条目")
+        );
+        assert_eq!(
+            draw.bindings.get("u:a").map(String::as_str),
+            Some("备份"),
+            "本机已有的绑定不被导入覆盖"
+        );
+        assert!(
+            !draw.bindings.contains_key("u:skip"),
+            "目标条目没进合并结果，就别导入这条绑定（否则凭空多一条告警）"
+        );
+        assert_eq!(
+            draw.bindings.get("triangle").map(String::as_str),
+            Some("新条目"),
+            "预设符号的绑定不需要模板，照常导入"
+        );
+        assert!(report.draw_symbols >= 1 && report.skipped.iter().any(|s| s.contains("没进来")));
     }
 }

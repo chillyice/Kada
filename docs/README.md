@@ -46,7 +46,7 @@ crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/�
   src/keys.rs               # 键模型：Modifier / Key（含 ALL）/ RawEvent / Shortcut / 解析（mod parse）/ format_shortcut / matches
   src/trigger.rs            # 触发单元：组合 / 序列 / 和弦的解析与时序（Tracker）、热串的键→字符映射
   src/action.rs             # 动作模型：各类 Operation / Condition / 设备与前台上下文 / Action 本体 + validate
-  src/config.rs             # 配置模型：目录 / 层 / 条目 / 改键 / 文本扩展 / 浮窗与角动作 / Settings / Config
+  src/config.rs             # 配置模型：目录 / 层 / 条目 / 改键 / 文本扩展 / 浮窗与角动作 / 画符号（draw）/ Settings / Config
   src/vars.rs               # 变量模型：文件属性 / 文本值 / 变量表与 `{变量}` 替换（纯叶子，无 crate 内依赖）
   src/conflicts.rs          # 冲突检测：Severity / Conflict / PlatformCaps / 平台与输入环境诊断（硬冲突与软警告）
   src/migrate.rs            # 配置 / 动作迁移：旧版动作归一化 + 设置越界值钳制（加载时只跑它、不跑清洗）
@@ -84,7 +84,7 @@ android/                    # 安卓探针工程（S0 + S1 + S2 / S2b，纯 Kotl
     BubbleService.kt        # S2 手机档：悬浮球 + 快捷面板（点一下执行，面板不抢焦点；S2b 长按开画板）
     KadaTileService.kt      # S2 手机档：快捷设置磁贴（暂停 / 恢复接管）
     DollarOne.kt            # S2b 画符号：$1 识别器（重采样 / 等比归一化 / 旋转 + 方向扇区）
-    DrawStore.kt            # S2b 画符号：符号表 / 绑定 / 执行 / 自检（预设 17 个符号 + 自定义画法，上限 24）
+    DrawStore.kt            # S2b 画符号：符号表 / 绑定 / 执行 / 自检（预设 17 个 + 自定义 24 个；符号与绑定存配置的 draw 段，P2a 的 prefs 会自动迁移）
     DrawPadView.kt          # S2b 画符号：画板收轨迹，抬手归一化到 0~1
     DrawBoardView.kt        # S2b 画符号：长按悬浮球弹出的画板浮层
   tools/build-rust.ps1      # cargo-ndk 编 libkada_android.so 进 jniLibs（Gradle 不编 Rust）

@@ -1,7 +1,7 @@
 // 配置清洗（C-04 从 lib.rs 搬出）：保存 / 导入前剔掉不可用条目并说明忽略原因。
 // 加载路径不跑清洗（见 说明书 §5.6）。
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::*;
 
@@ -614,6 +614,91 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             }
         }
         out.wheel_edges.push(item);
+    }
+
+    // 画符号（安卓 P2b）：id 必填且唯一、笔画至少两点、坐标钳进 0~1000、条数与点数都有上限。
+    // 绑定只保留指向**存在符号**的键；指向已删 / 已停用快捷键的绑定**不在这里删**——
+    // 那是「已失效」，面板要看得见（不能默默解绑），由冲突检测报 Warn。
+    if let Some(draw) = &cfg.draw {
+        let mut symbols: Vec<DrawSymbol> = Vec::new();
+        for s in &draw.symbols {
+            let id = s.id.trim().to_string();
+            if id.is_empty() {
+                ignored.push("画符号已忽略：缺少 id".to_string());
+                continue;
+            }
+            let label = s.name.clone().unwrap_or_else(|| id.clone());
+            if symbols.iter().any(|x| x.id == id) {
+                ignored.push(format!("画符号「{label}」已忽略：id 与前面的符号重复"));
+                continue;
+            }
+            if symbols.len() >= DRAW_SYMBOLS_MAX {
+                ignored.push(format!(
+                    "画符号「{label}」已忽略：最多 {DRAW_SYMBOLS_MAX} 个自定义符号"
+                ));
+                continue;
+            }
+            if s.points.len() < 2 {
+                ignored.push(format!("画符号「{label}」已忽略：笔画不足两个点"));
+                continue;
+            }
+            let mut points: Vec<[i16; 2]> = s
+                .points
+                .iter()
+                .map(|p| {
+                    [
+                        p[0].clamp(0, DRAW_POINTS_SCALE),
+                        p[1].clamp(0, DRAW_POINTS_SCALE),
+                    ]
+                })
+                .collect();
+            if points.len() > DRAW_SYMBOL_MAX_POINTS {
+                points.truncate(DRAW_SYMBOL_MAX_POINTS);
+                ignored.push(format!(
+                    "画符号「{label}」的笔画超过 {DRAW_SYMBOL_MAX_POINTS} 点，多余的点已忽略"
+                ));
+            }
+            let name = s
+                .name
+                .as_deref()
+                .map(|n| n.trim().to_string())
+                .filter(|n| !n.is_empty())
+                .map(|n| n.chars().take(24).collect::<String>());
+            symbols.push(DrawSymbol {
+                id,
+                name,
+                closed: s.closed,
+                points,
+            });
+        }
+
+        let mut bindings: BTreeMap<String, String> = BTreeMap::new();
+        for (id, target) in &draw.bindings {
+            let target = target.trim().to_string();
+            if target.is_empty() {
+                continue;
+            }
+            // **只校验自定义符号的引用**：安卓侧把自定义符号生成成 `u:` + 时间戳
+            // （`DrawStore.CUSTOM_PREFIX`），另外 17 个预设符号的 id（`triangle` 等）
+            // 写死在安卓侧、core 不复制那张表——按「符号必须存在」一刀切，会把
+            // `triangle → 某条目` 这类**预设绑定悄悄删掉**（真踩过：绑定存进去，
+            // 下次保存就被清洗掉，画三角变成「还没绑定」）。
+            if id.starts_with("u:") && !symbols.iter().any(|s| &s.id == id) {
+                ignored.push(format!(
+                    "画符号绑定「{target}」已忽略：自定义符号「{id}」不存在"
+                ));
+                continue;
+            }
+            let label = symbols
+                .iter()
+                .find(|s| &s.id == id)
+                .and_then(|s| s.name.clone())
+                .unwrap_or_else(|| id.clone());
+            if bindings.insert(id.clone(), target.clone()).is_some() {
+                ignored.push(format!("画符号「{label}」有多条绑定，保留最后一条"));
+            }
+        }
+        out.draw = Some(DrawConfig { symbols, bindings });
     }
 
     // 唤醒键：无法解析成单键时清空（关闭快速唤醒），不拖垮整份配置。

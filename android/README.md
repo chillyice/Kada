@@ -203,14 +203,19 @@ adb shell am start -n com.kada.spike/.MainActivity
   △▽◁▷ 四向三角、V、Z、S、L、C、U、M、W、N。**方向只在有多个符号的形状上有意义**
   （圆 / 菱形 / 星 / 勾的 θ 不稳定，不判方向）。
 - **绑定**：符号 → **现有快捷键的条目名**（不新建动作链，复用面板 / 音量键那条执行链）。
-  绑定落本机 `SharedPreferences("kada-draw")`，**暂不进 `Config`**（进配置要动 core 的模型与卡带格式）。
-- **自定义画法**（P2，面板「录自定义」）：13 个预设不够用时，用户可以**教它认自己的符号**——
+  只接受**启用中**的条目名；绑定值存名字不存下标，删条目不会让别的绑定串位。
+- **落盘**（P2b）：符号与绑定进**配置**的 `draw` 段（`kada_core::DrawConfig`）——
+  `draw.symbols` 存原始笔画（点坐标量化成 `[i16;2]`、0~1000，`DRAW_POINTS_SCALE`；
+  上限 512 点 / 24 个符号）、`draw.bindings` 是「符号 id → 条目名」。
+  写盘走 `RustBridge.save`（`kada_core::sanitize_config` + `config_io` 原子写），
+  **不另开写盘路径**；因此换机 / 导出 / 卡带都能带走，桌面端原样透传（不执行、界面无入口）。
+  P2a 落在 `SharedPreferences("kada-draw")` 的旧数据，在首次读符号时按「补空缺」合并进配置再清旧键。
+- **自定义画法**（P2a，面板「录自定义」）：13 个预设不够用时，用户可以**教它认自己的符号**——
   画一次 + 起个名，模板就是他画的那一笔。三条取舍：
   1. 存**原始笔画**（0~1、四位小数）而不是归一化后的 32 点，以后改归一化口径老符号能跟着走；
   2. 自定义符号**不判方向**（θ 对随手画的形状不稳，也没必要），所以匹配只比形状；
   3. 与已有符号「几乎一样」（分 ≥ 0.90）的笔画**直接拒收**——两份模板都留着，每次识别都会在边界上抖。
-  上限 24 个，id 前缀 `u:`（与 13 个预设类别名不撞）；删除时**连绑定一起删**，否则留下取不出来的键。
-  自定义与绑定同一个 `SharedPreferences` 键空间（`custom` / `bindings`），**仍不进 `Config`**。
+  上限 24 个，id 前缀 `u:`（与 13 个预设类别名不撞）；删除时**连绑定一起删**（同一次写盘）。
 - **阈值**（都得真跑一遍才作数，所以自检在设备上跑）：匹配分 ≥ 0.80、前两名差距 ≥ 0.04、
   方向容差 ±35°。只有「该方向真的有预设符号」的候选才参与竞争——否则 Z 转 90° 会被 N 挤掉。
 - **自检**（`op drawSelfTest` → 报告 `phone.draw.selfTest`）：31 项——17 个预设各自带 1.2% 抖动
@@ -262,6 +267,7 @@ adb shell am broadcast @ctl --es op bubbleRun --es name panelTpl # 等价「点�
 adb shell am broadcast @ctl --es op tileToggle                  # 磁贴同一切换函数
 adb shell am broadcast @ctl --es op notifyToggle                # 通知按钮同一切换函数
 # S2b 画符号（`--es path` 里的分号会被 adb shell 当命令分隔符——远端要加引号，见「坑」）
+# 这些 op 写的是同一份配置的 `draw` 段（走 RustBridge.save），`drawBind` 只收**启用中**的条目名。
 adb shell am broadcast @ctl --es op drawSelfTest                # 识别器自检（31 项）→ 报告 phone.draw.selfTest
 adb shell am broadcast @ctl --es op drawBind --es symbol triangle --es name panelTpl
 adb shell am broadcast @ctl --es op drawUnbind --es symbol triangle
@@ -270,7 +276,10 @@ adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlRece
 # 自定义画法：drawLearn 与「录自定义」按钮调同一个 learn()，id 形如 u:mwk9tk1b
 adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver --es op drawLearn --es label stairs --es path '0.10,0.85;0.10,0.50;0.45,0.50;0.45,0.15;0.90,0.15'"
 adb shell am broadcast @ctl --es op drawCustom                  # 列出已录的自定义符号（id / 名字 / 闭合 / 点数）
-adb shell am broadcast @ctl --es op drawForget --es symbol u:mwk9tk1b  # 删符号并带走绑定
+adb shell am broadcast @ctl --es op drawForget --es symbol u:mwk9tk1b  # 删符号并带走绑定（同一次写盘）
+# 升级迁移：P2a 的 prefs 数据在首次读符号时补进配置的 `draw` 段（搬完清旧键）
+adb shell "run-as com.kada.spike cat shared_prefs/kada-draw.xml"  # P2b 之后应为 <map />
+adb shell "run-as com.kada.spike cat files/config.json" | Select-String '"draw"'
 adb shell am broadcast @ctl --es op drawBoard                   # 打开画板浮层（与长按悬浮球同一入口）
 adb shell am broadcast @ctl --es op drawHide
 # 探针杂项
@@ -386,24 +395,30 @@ S2b 段（画符号）：
 | S2b-3 画三角执行绑定条目 | ✅ 输入框原 `abc` → 画三角后 `abcdrawok`，`symbol=triangle score=1` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol` |
 | S2b-4 44° 三角被拒绝 | ✅ `symbol=[]`、输入框前后一致（`abcdrawok` 未变）、`lastError=方向不明确（约 -44°…）` | 报告 `phone.draw.lastSymbol/lastError` |
 | S2b-5 画板浮层可开 / 可收 | ✅ `board=True` 且 `mCurrentFocus` 仍是 `com.kada.spike/MainActivity`（不抢焦点）；`drawHide` 后 `board=False` | 报告 `phone.bubbleBoard` / `dumpsys window` |
-| S2b-6 录自定义符号 | ✅ `drawLearn label=stairs` → `custom=0->1`、`new=u:mwk9tk1b`、`lastError` 空（原始笔画落盘 `prefs/custom`） | 报告 `phone.draw.customIds` / `run-as … cat shared_prefs/kada-draw.xml` |
+| S2b-6 录自定义符号 | ✅ `drawLearn label=stairs` → `custom=0->1`、`new=u:mwk9tk1b`、`lastError` 空 | 报告 `phone.draw.customIds` |
+| S2b-6b 符号写进配置 `draw.symbols` | ✅ 同一个 id 出现在 `config.json` 的 `draw.symbols` 里，`points` 5 个、首点 `100,850`（0~1000 整数）、`store=config` | `exec-out run-as … cat files/config.json` / 报告 `phone.draw.store` |
 | S2b-7 画自定义符号执行绑定 | ✅ 绑到新条目（`Ctrl+Alt+J` → text `stairsok`）后，输入框原 `xy` → 画楼梯（每条边挪 0.01）后 `xystairsok`，`lastRun=draw:stairs→drawCust` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol/lastRun` |
+| S2b-7b 绑定写进配置 `draw.bindings` | ✅ `draw.bindings[<新 id>] = "drawCust"`（存条目名，不存下标）；`triangle → drawTpl` 同时还在 | `cat files/config.json` / 报告 `phone.draw.bindings` |
 | S2b-8 与预设几乎一样的画法被拒收 | ✅ 再画标准三角 → `custom=1->1`（没多录），`lastError=和「三角」几乎一样（1.00），换个画法` | 报告 `phone.draw.customIds/lastError` |
-| S2b-9 删自定义符号带走绑定 | ✅ `drawForget u:mwk9tk1b` → `customIds` 里没有了、`bindings` 里也没有这个键（`triangle → drawTpl` 不受影响） | 报告 `phone.draw.customIds/bindings` |
-| S2b 收尾 | ✅ 显式解绑 `triangle`（绑定在 `SharedPreferences`，删条目带不走它）+ 删 `F6` / `Ctrl+Alt+J` 测试条目（自定义符号在 S2b-9 已删） | 报告 `phone.draw.bindings={}` |
+| S2b-9 删自定义符号带走绑定 | ✅ `drawForget <id>` → `customIds` 里没有了、`bindings` 里也没有这个键（`triangle → drawTpl` 不受影响） | 报告 `phone.draw.customIds/bindings` |
+| S2b-9b 删除同时清掉配置里的两半 | ✅ 配置原文里再也搜不到那个 id，`triangle` 的绑定还在（预设符号不在 `draw.symbols` 里） | `cat files/config.json` / 报告 `phone.draw.lastSave` |
+| S2b-10 旧 prefs 迁移进配置 | ✅ 只往 `shared_prefs/kada-draw.xml` 写一份 P2a 格式（`custom` + `bindings`）→ force-stop → 重启 → 配置里出现 `u:legacy1`（首点 `100,850`）与 `u:legacy1 → drawTpl`，`prefs` 变 `<map />`，`lastSave=迁移旧画符号：已保存` | `cat files/config.json` / `cat shared_prefs/kada-draw.xml` |
+| S2b-11 整份替换配置后符号表跟着清 | ✅ 收尾那次「导入 → 替换」不经过 `DrawStore`，之后报告 `custom=0`、`config.json` 无 `draw` 段——符号表缓存**不认旧值**（曾经配置里已经没有 `draw` 了，面板仍列着旧符号、`custom` 还是 1） | 报告 `phone.draw.custom/bindings` / 收尾后 `config.json` |
+| S2b 收尾 | ✅ 显式解绑 `triangle`（清洗**不会**因为目标条目没了就删绑定——那是「已失效」，留给软冲突提示）+ 删 `F6` / `Ctrl+Alt+J` 测试条目（自定义符号在 S2b-9 已删），最后整份替换回基线配置（`draw` 段随之清空，由 S2b-11 断言） | 报告 `phone.draw.bindings` / 收尾后 `config.json` 无 `draw` |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；S2 段开头申请
-> 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目；S2b 段额外要显式解绑
-> （绑定存在 `SharedPreferences`，删条目带不走它）与删掉当轮录的自定义符号。
-> 本轮 s7 全量跑 **72/72 通过**（S2b 前一版 68/68，s6 是 62/62，s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+> 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目；S2b 段额外要显式解绑、
+> 删掉当轮录的自定义符号，迁移用例会 force-stop 一次应用（结束时重新登记无障碍服务）。
+> 本轮全量跑 **77/77 通过**（P2a 时 72/72，S2b 前一版 68/68，s6 是 62/62，s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
 > S1-4 / S1-5 / S1-6 的十五条走的是**与界面同一份** `ShortcutStore`、执行器与 `Update`
 > （广播只是代替点按），控件的点击手势、录入按键、系统安装器的「安装」按钮仍属人工验证
 > （`docs/人工验证清单.md` §90 / §91 / §92）。
 > S2 的十三条同理：`bubbleRun` / `tileToggle` / `notifyToggle` 走的是面板、磁贴、通知按钮**同一份**函数，
 > 手指拖动、软键盘遮挡、ROM 差异归 `docs/人工验证清单.md` §93。
-> S2b 的十条走的是长按悬浮球弹出的**那个**画板（`BubbleService.ACTION_SHOW_BOARD` → `DrawBoardView`）
-> 与「录自定义」按钮背后**同一个** `DrawStore.learn`；`drawRun` / `drawLearn` 只是把坐标串喂给同一份逻辑，
-> 真手指的笔顺、录符号时的手感与认错频率归 `docs/人工验证清单.md` §94。
+> S2b 的十五条走的是长按悬浮球弹出的**那个**画板（`BubbleService.ACTION_SHOW_BOARD` → `DrawBoardView`）
+> 与「录自定义」按钮背后**同一个** `DrawStore.learn`；`drawRun` / `drawLearn` / `drawBind` / `drawForget`
+> 只是把坐标串与名字喂给同一份逻辑、写的是同一份配置，真手指的笔顺、录符号时的手感与认错频率
+> 归 `docs/人工验证清单.md` §94。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -478,6 +493,23 @@ S2b 段（画符号）：
   值」，相同就 return——`Spinner` 没有「用户主动改」的独立信号。
 - **自定义符号存原始笔画，不存归一化后的 32 点**：归一化口径（点数 / 缩放 / 重采样）以后还会调，
   存原始点意味着老符号能跟着新算法重新归一化；一条笔画几百点，落盘代价可以忽略。
+- **core 清洗不能「符号必须存在才留绑定」**：17 个预设符号的 id（`triangle` / `circle` …）写死在
+  安卓侧、不进 `draw.symbols`，一刀切会把它们悄悄洗掉——现象是刚绑好就「还没绑定」、`draw save
+  ignored=1`。清洗只对 `u:` 前缀的自定义 id 校验存在性（`sanitize.rs`），merge / 卡带同理。
+- **迁移不能「配置里已经有 `draw` 段就跳过」**：升级后用户很可能先绑了个预设符号（配置里已经有
+  `draw.bindings`）才第一次打开画板；按「有段就跳过」处理，他 P2a 录的符号会被静默丢掉（prefs
+  还被清空）。正确口径是**按 id / 按绑定键补空缺**，配置优先，搬完清旧键。
+- **`run-as … cp` 写 prefs 之后必须 force-stop 再起**：`SharedPreferences` 是按进程缓存的，
+  跑着的应用会拿内存里那份旧值；而且 force-stop 会把无障碍服务一起杀，脚本里要重新登记
+  `enabled_accessibility_services`，否则后续按键类用例全是「服务未连接」。
+- **符号表缓存别只靠「录 / 删时作废」**：配置会被**不经过 `DrawStore`** 的路径整份换掉
+  （导入、恢复出厂示例、桌面同步），那时一次 `learn` / `forget` 都没跑过，缓存里还躺着旧符号表——
+  现象是配置里已经没有 `draw` 段了，面板仍列着旧符号、报告里 `custom` 还是 1。现在缓存键是
+  **`draw` 段的原文**（`customCacheKey`），模板缓存跟着符号列表的实例走。
+- **同一台模拟器连跑几个小时后会「按键重复 / 文本插不进」**：`verify.ps1` 曾在这台机器上先红
+  4 条（插入落到 `android.widget.Button`、`field=[]`）、再跑红 9 条（`field=[hhhhellllloo]`，
+  每个字符重复 3~4 次，`open_url` 的前台变成输入法），`uptime` 负载 3~12；`adb reboot`
+  之后同一份 APK / 脚本一次 **77/77**。这类现象先怀疑模拟器状态，别去改判定或重试次数。
 
 ## 已知限制 / 下一步
 
@@ -494,10 +526,9 @@ S2b 段（画符号）：
   `semantic` / `pause_ms`），别的类型保持原样不动；同一条目有多个触发键时只改第一个；
   没有目录 / 层 / `when` 的编辑（手机屏上做不了桌面的全量编辑器，但也不许「改个触发键把动作改没了」）。
 - **画符号只做第一批**：单笔画、17 个**预设**符号 + **自己录的符号**（上限 24，不判方向）、
-  绑定到**现有**快捷键；绑定与自定义笔画都存在本机 `SharedPreferences("kada-draw")`，
-  **不进 `Config`、不同步、卡带里也没有**。还没做：把绑定与自定义符号搬进配置（P2b）、
-  多笔画（如「圆 + 竖」）。圈选截图那种「画圈再点一下」的复合手势也不在这套里
-  （那是桌面右键手势的家庭）。
+  绑定到**现有**快捷键。符号与绑定进配置的 `draw` 段（P2b），**换机 / 导出 / 卡带都能带走**；
+  桌面端只原样透传（不执行、界面也没有入口）。还没做：多笔画（如「圆 + 竖」）。
+  圈选截图那种「画圈再点一下」的复合手势也不在这套里（那是桌面右键手势的家庭）。
 - **自更新只覆盖侧载版**：清单地址是代码常量（`Update.MANIFEST_URL`，测试才用 adb 传 `file://` 覆盖），
   改发布域名要重编；Play / 国内商店渠道走商店自己的更新，不走这套。**安装必须用户在系统安装器里
   点「安装」**——应用不能替用户确认，这是系统限制，也不该绕过；「安装未知应用」得用户自己去设置里开。
