@@ -44,6 +44,7 @@ class BubbleService : Service() {
     private lateinit var windowManager: WindowManager
     private var bubble: View? = null
     private var panel: View? = null
+    private var board: View? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
 
     private var downRawX = 0f
@@ -51,6 +52,10 @@ class BubbleService : Service() {
     private var startX = 0
     private var startY = 0
     private var moved = false
+
+    /** 长按判定（S2b）：按住不动 400ms = 开画板，拖动就作废。 */
+    private var longPressTask: Runnable? = null
+    private var longPressed = false
 
     override fun onCreate() {
         super.onCreate()
@@ -73,17 +78,20 @@ class BubbleService : Service() {
             }
 
             ACTION_SHOW_PANEL -> showPanel()
+            ACTION_SHOW_BOARD -> showBoard()
         }
         return START_STICKY
     }
 
     override fun onDestroy() {
         hidePanel()
+        hideBoard()
         bubble?.let { runCatching { windowManager.removeView(it) } }
         bubble = null
         bubbleParams = null
         running = false
         panelVisible = false
+        boardVisible = false
         instance = null
         Log.i(SpikeState.TAG, "bubble stopped")
         super.onDestroy()
@@ -143,13 +151,26 @@ class BubbleService : Service() {
                 startX = params.x
                 startY = params.y
                 moved = false
+                longPressed = false
+                // 长按 = 画符号（S2b）：点一下是面板，长按才是画板——两个入口不抢
+                val task = Runnable {
+                    if (!moved && board == null) {
+                        longPressed = true
+                        showBoard()
+                    }
+                }
+                longPressTask = task
+                view.postDelayed(task, LONG_PRESS_MS)
                 return true
             }
 
             MotionEvent.ACTION_MOVE -> {
                 val dx = (event.rawX - downRawX).toInt()
                 val dy = (event.rawY - downRawY).toInt()
-                if (!moved && (abs(dx) > dp(6) || abs(dy) > dp(6))) moved = true
+                if (!moved && (abs(dx) > dp(6) || abs(dy) > dp(6))) {
+                    moved = true
+                    cancelLongPress()
+                }
                 if (moved) {
                     params.x = (startX + dx).coerceAtLeast(0)
                     params.y = (startY + dy).coerceAtLeast(0)
@@ -159,16 +180,28 @@ class BubbleService : Service() {
                 return true
             }
 
-            MotionEvent.ACTION_UP -> {
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                cancelLongPress()
+                if (event.actionMasked == MotionEvent.ACTION_CANCEL) {
+                    moved = false
+                    longPressed = false
+                    return true
+                }
                 if (moved) {
                     prefs().edit().putInt(KEY_X, params.x).putInt(KEY_Y, params.y).apply()
-                } else {
+                } else if (!longPressed) {
                     view.performClick()
                 }
+                longPressed = false
                 return true
             }
         }
         return false
+    }
+
+    private fun cancelLongPress() {
+        longPressTask?.let { bubble?.removeCallbacks(it) }
+        longPressTask = null
     }
 
     // ------------------------------------------------------------------
@@ -297,6 +330,40 @@ class BubbleService : Service() {
     }
 
     // ------------------------------------------------------------------
+    // 画板（S2b：长按悬浮球）
+    // ------------------------------------------------------------------
+
+    private fun showBoard() {
+        if (board != null) return
+        hidePanel()
+        val view = DrawBoardView(this) { hideBoard() }
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+        }
+        runCatching { windowManager.addView(view, params) }
+            .onFailure {
+                lastError = "画板添加失败：${it.message}"
+                Log.e(SpikeState.TAG, lastError)
+                return
+            }
+        board = view
+        boardVisible = true
+        Log.i(SpikeState.TAG, "draw board shown")
+    }
+
+    private fun hideBoard() {
+        board?.let { runCatching { windowManager.removeView(it) } }
+        board = null
+        boardVisible = false
+    }
+
+    // ------------------------------------------------------------------
     // 前台通知 / 工具
     // ------------------------------------------------------------------
 
@@ -316,7 +383,7 @@ class BubbleService : Service() {
         val notification: Notification = Notification.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_kada)
             .setContentTitle("Kada 悬浮球已开启")
-            .setContentText("点一下打开快捷面板 · 拖动可移动")
+            .setContentText("点一下打开面板 · 长按画符号 · 拖动可移动")
             .setContentIntent(open)
             .addAction(
                 Notification.Action.Builder(
@@ -352,8 +419,14 @@ class BubbleService : Service() {
         const val ACTION_STOP = "com.kada.spike.STOP_BUBBLE"
         const val ACTION_SHOW_PANEL = "com.kada.spike.SHOW_BUBBLE_PANEL"
 
+        /** S2b：画板也走 service intent，躲开「冷启动时 instance 还是 null」的竞态。 */
+        const val ACTION_SHOW_BOARD = "com.kada.spike.SHOW_DRAW_BOARD"
+
         private const val KEY_X = "bubbleX"
         private const val KEY_Y = "bubbleY"
+
+        /** 长按多久开画板（毫秒）：太短会和拖动 / 点击抢，太长手感又黏。 */
+        const val LONG_PRESS_MS = 400L
 
         @Volatile
         var running = false
@@ -361,6 +434,11 @@ class BubbleService : Service() {
 
         @Volatile
         var panelVisible = false
+            private set
+
+        /** 画板浮层是否在显示（报告 / adb 断言读）。 */
+        @Volatile
+        var boardVisible = false
             private set
 
         /** 最近一次从面板执行的结果（报告 / adb 断言读这里）。 */
@@ -410,6 +488,30 @@ class BubbleService : Service() {
 
         fun hidePanel() {
             instance?.hidePanel()
+        }
+
+        /**
+         * 打开画板（S2b）：长按悬浮球走的是同一条路，adb / 应用内「试画」也走这里，
+         * 这样脚本验的就是手指按出来的那个浮层，不是另一份实现。
+         *
+         * 为什么走 service intent 而不是直接 `instance?.showBoard()`：冷启动时
+         * `startForegroundService` 是**异步**的，广播线程返回时 `instance` 还是 null，
+         * 直接调就会「返回成功但什么也没弹」。交给 `onStartCommand` 就没有这个竞态
+         * ——`onCreate` 一定先跑完。
+         */
+        fun showBoard(context: Context): Boolean {
+            if (!hasPermission(context)) {
+                lastError = "没有悬浮窗权限：去「设置 → 应用 → Kada → 显示在其他应用上层」打开"
+                return false
+            }
+            val intent = Intent(context, BubbleService::class.java).setAction(ACTION_SHOW_BOARD)
+            val ok = runCatching { context.startForegroundService(intent) }.isSuccess
+            lastError = if (ok) "" else "画板打不开：悬浮球服务起不来"
+            return ok
+        }
+
+        fun hideBoard() {
+            instance?.hideBoard()
         }
 
         /**

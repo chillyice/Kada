@@ -9,9 +9,12 @@ import android.provider.Settings
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.CheckBox
 import android.widget.LinearLayout
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONArray
@@ -38,6 +41,8 @@ class RustPanel(private val activity: Activity) {
     private lateinit var tvImport: TextView
     private lateinit var tvUpdate: TextView
     private lateinit var tvPhone: TextView
+    private lateinit var tvDraw: TextView
+    private lateinit var drawRows: LinearLayout
     private val editor = ShortcutEditor(activity)
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.US)
 
@@ -114,6 +119,28 @@ class RustPanel(private val activity: Activity) {
         tvPhone = body(11f)
         column.addView(tvPhone)
 
+        // S2b 画符号：手机上没有键，画一个符号是单手指能做到、又能记住的入口。
+        column.addView(title("S2b · 画符号（单笔画手势）"))
+        column.addView(
+            hint(
+                "长按悬浮球打开画板：画一个符号（○ ◇ ☆ ✓ △▽◁▷ V Z S L C U M W N），抬手执行绑定的快捷键。" +
+                    "同一形状画歪 ±35° 内仍算命中；四个方向的三角靠旋转角区分，画在 45° 附近时宁可不猜。",
+            ),
+        )
+        column.addView(
+            row(
+                button("试画") { openDrawBoard() },
+                button("自检") { runDrawSelfTest() },
+                button("刷新列表") { rebuildDrawRows() },
+                button("清空绑定") { clearDrawBindings() },
+            ),
+        )
+        tvDraw = body(11f)
+        column.addView(tvDraw)
+        drawRows = LinearLayout(activity).apply { orientation = LinearLayout.VERTICAL }
+        column.addView(drawRows)
+        rebuildDrawRows()
+
         tvStatus = body()
         column.addView(tvStatus)
 
@@ -143,6 +170,7 @@ class RustPanel(private val activity: Activity) {
         tvLog.text = logText()
         if (::tvUpdate.isInitialized) tvUpdate.text = updateText()
         if (::tvPhone.isInitialized) tvPhone.text = phoneText()
+        refreshDrawText()
     }
 
     /** S2 面板一行字：总闸 / 悬浮球 / 权限 / 最近一次执行。 */
@@ -207,6 +235,154 @@ class RustPanel(private val activity: Activity) {
             }
             .setNegativeButton("关闭", null)
             .show()
+    }
+
+    // ------------------------------------------------------------------
+    // S2b 画符号
+    // ------------------------------------------------------------------
+
+    /** 重建「符号 → 快捷键」绑定表：配置变了（新增 / 删除条目）时手动刷新一次。 */
+    private fun rebuildDrawRows() {
+        if (!::drawRows.isInitialized) return
+        drawRows.removeAllViews()
+        val entries = ShortcutStore.entries().filter { it.enabled }
+        val names = ArrayList<String>()
+        names.add(UNBOUND)
+        for (entry in entries) names.add(entry.name.ifBlank { "#${entry.index}" })
+
+        val bound = DrawStore.bindings()
+        for (symbol in DrawStore.symbols) {
+            val line = LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            line.addView(
+                TextView(activity).apply {
+                    text = "${symbol.glyph} ${symbol.label}"
+                    textSize = 13f
+                    setPadding(0, dp(6), dp(10), dp(6))
+                    width = dp(96)
+                },
+            )
+            val options = ArrayList(names)
+            val current = bound[symbol.id]
+            // 绑定的那条被删 / 停用：仍然显示，但标「失效」——别默默变成「不绑定」
+            val stale = current != null && current !in options
+            if (stale) options.add("$current（已失效）")
+            val shown = when {
+                current == null -> UNBOUND
+                stale -> "$current（已失效）"
+                else -> current
+            }
+            val spinner = Spinner(activity).apply {
+                adapter = ArrayAdapter(activity, android.R.layout.simple_spinner_dropdown_item, options)
+                setSelection(options.indexOf(shown).coerceAtLeast(0))
+                onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                    override fun onItemSelected(
+                        parent: AdapterView<*>?,
+                        view: View?,
+                        position: Int,
+                        id: Long,
+                    ) {
+                        val picked = options[position]
+                        when {
+                            picked == UNBOUND -> DrawStore.unbind(symbol.id)
+                            picked.endsWith("（已失效）") -> Unit
+                            else -> DrawStore.bind(symbol.id, picked)
+                        }
+                        refreshDrawText()
+                    }
+
+                    override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+                }
+            }
+            line.addView(spinner, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+            drawRows.addView(line)
+        }
+        refreshDrawText()
+    }
+
+    private fun clearDrawBindings() {
+        DrawStore.clearBindings()
+        rebuildDrawRows()
+    }
+
+    /** 打开与「长按悬浮球」同一个画板浮层（没开悬浮球时先起服务）。 */
+    private fun openDrawBoard() {
+        if (!BubbleService.hasPermission(activity)) {
+            AlertDialog.Builder(activity)
+                .setTitle("需要「显示在其他应用上层」权限")
+                .setMessage("画板是浮层，要先允许「显示在其他应用上层」。\n\n授权回来后长按悬浮球，或点这里再试一次。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("去设置") { _, _ -> BubbleService.requestPermission(activity) }
+                .show()
+            return
+        }
+        if (!BubbleService.showBoard(activity)) {
+            Toast.makeText(
+                activity,
+                BubbleService.lastError.ifBlank { "画板打不开" },
+                Toast.LENGTH_LONG,
+            ).show()
+        }
+        refresh()
+    }
+
+    private fun runDrawSelfTest() {
+        val result = DrawStore.selfTest()
+        refreshDrawText()
+        val total = result.optInt("total")
+        val failed = result.optInt("failed")
+        Toast.makeText(
+            activity,
+            if (failed == 0) "识别器自检通过：$total 项" else "自检失败 $failed/$total 项，见下方",
+            Toast.LENGTH_SHORT,
+        ).show()
+    }
+
+    /** 画符号区的一行字：绑定条数 + 上次识别 / 执行 + 自检结果。 */
+    private fun refreshDrawText() {
+        if (!::tvDraw.isInitialized) return
+        val bindings = DrawStore.bindings()
+        tvDraw.text = buildString {
+            append("预设 ${DrawStore.symbols.size} 个符号 · 已绑定 ${bindings.size} 条")
+            if (bindings.isEmpty()) append("（先在下面挑一条快捷键）")
+            appendLine()
+            val last = DrawStore.symbolsById[DrawStore.lastSymbol]
+            if (last != null) {
+                append("上次识别：${last.glyph} ${last.label}")
+                append(String.format(Locale.US, "（%.2f）", DrawStore.lastScore))
+                append(" · ${DrawStore.lastRun}")
+            } else {
+                append("上次识别：—")
+            }
+            if (DrawStore.lastError.isNotBlank()) {
+                appendLine()
+                append("上次问题：${DrawStore.lastError}")
+            }
+            DrawStore.lastSelfTestJson()?.let { test ->
+                appendLine()
+                val total = test.optInt("total")
+                val failed = test.optInt("failed")
+                append("自检：${total - failed}/$total 通过")
+                val cases = test.optJSONArray("cases")
+                if (cases != null) {
+                    val bad = (0 until cases.length()).mapNotNull { i ->
+                        val c = cases.optJSONObject(i) ?: return@mapNotNull null
+                        if (c.optBoolean("ok")) {
+                            null
+                        } else {
+                            "${c.optString("name")}（要 ${c.optString("want").ifBlank { "不执行" }} / " +
+                                "得 ${c.optString("got").ifBlank { "不执行" }}）"
+                        }
+                    }
+                    if (bad.isNotEmpty()) {
+                        appendLine()
+                        append("失败：${bad.joinToString("；")}")
+                    }
+                }
+            }
+        }
     }
 
     /** 更新区的一行字：本机版本 + 最近一次检查 / 下载 / 安装的结果。 */
@@ -593,6 +769,9 @@ class RustPanel(private val activity: Activity) {
         private const val CONFIG_NAME = "config.json"
         private const val PRE_RESET_MARK = "pre-reset"
         private const val PRE_IMPORT_MARK = "pre-import"
+
+        /** 绑定下拉里的「不绑定」：与任何快捷键名都不会撞（名字里带括号）。 */
+        private const val UNBOUND = "（不绑定）"
         private val ARCHIVE_STAMP = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
     }
 }

@@ -11,8 +11,8 @@ android {
         applicationId = "com.kada.spike"
         minSdk = 26
         targetSdk = 36
-        versionCode = 7
-        versionName = "0.2.0-s6"
+        versionCode = 8
+        versionName = "0.2.0-s7"
     }
 
     buildTypes {
@@ -30,7 +30,7 @@ android {
     }
 
     lint {
-        // S0 是探针工程，不当成发布包要求
+        // S0 鏄帰閽堝伐绋嬶紝涓嶅綋鎴愬彂甯冨寘瑕佹眰
         abortOnError = false
     }
 }

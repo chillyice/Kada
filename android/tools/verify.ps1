@@ -922,12 +922,86 @@ if ($exported) {
     Start-Sleep -Milliseconds 600
     Check "S2-5 通知动作恢复后总闸打开" ([bool](Get-Report).phone.master) ""
 
+    # S2b 画符号：手机上没有键，单手指画一个符号就是触发源。
+    # 识别器是纯计算 + 几处「只有真跑一遍才作数」的阈值（旋转方向、扇区容差），
+    # 所以自检跑在设备上（drawSelfTest → phone.draw.selfTest），脚本只断言结果。
+    Bcast "drawSelfTest"
+    Start-Sleep -Milliseconds 600
+    $script:lastReport = Get-Report
+    $drawTest = $script:lastReport.phone.draw.selfTest
+    $drawCases = @($drawTest.cases)
+    $drawBad = @($drawCases | Where-Object { -not $_.ok })
+    Check "S2b-1 识别器自检全过（$($drawTest.total) 项）" (
+        ($drawTest.failed -eq 0) -and ($drawCases.Count -eq $drawTest.total) -and ($drawCases.Count -ge 28)
+    ) "failed=$($drawTest.failed)/$($drawTest.total) symbols=$($script:lastReport.phone.draw.symbols) bad=$(($drawBad | ForEach-Object { $_.name }) -join ',')"
+
+    # 绑定：符号 → 现有快捷键。F6 在本段之前是空的（S1-2 那条随替换导入一起没了）；
+    # 别用 F5——S1-3 合并进来的「S1 语义动作」一直留到最后，会撞车。
+    Bcast "editorAdd" @("--es", "name", "drawTpl", "--es", "trigger", "F6", "--es", "action", "text", "--es", "value", "drawok")
+    Start-Sleep -Milliseconds 700
+    Bcast "drawBind" @("--es", "symbol", "triangle", "--es", "name", "drawTpl")
+    Start-Sleep -Milliseconds 500
+    $script:lastReport = Get-Report
+    $drawEntry = @($script:lastReport.editor.shortcuts | Where-Object { $_.name -eq "drawTpl" })
+    Check "S2b-2 符号绑定到快捷键（triangle → drawTpl）" (
+        ($drawEntry.Count -eq 1) -and ([string]$script:lastReport.phone.draw.bindings.triangle -eq "drawTpl")
+    ) "entry=$($drawEntry.Count) bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress) err=$($script:lastReport.phone.draw.lastError)"
+
+    # 画三角 = 触发那条快捷键：与前两段同一条执行链（KeyFilterService.runShortcut）。
+    # 路径坐标是 0~1 归一化的折线，`--es path` 里的分号必须由设备侧 shell 当引号内容吃下，
+    # 所以走 `Shell` 传整串（Bcast 直接拼参数会被 `;` 拆成两条命令）。
+    $drawFlow = $false
+    for ($try = 1; $try -le 2; $try++) {
+        Restore-App
+        if (-not (Focus-Field)) {
+            Write-Host "  [warn] 画符号用例没拿到焦点（第 $try 次）"
+            continue
+        }
+        Clear-Field
+        Type-Text "abc"
+        Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '0.5,0.05;0.95,0.95;0.05,0.95;0.5,0.05'" | Out-Null
+        Start-Sleep -Milliseconds 1000
+        $script:lastReport = Get-Report
+        if ($script:lastReport.stats.inputFieldText -eq "abcdrawok") { $drawFlow = $true; break }
+        Write-Host ("  [warn] 画三角第 {0} 次没命中：field=[{1}] symbol={2} err={3}" -f $try, $script:lastReport.stats.inputFieldText, $script:lastReport.phone.draw.lastSymbol, $script:lastReport.phone.draw.lastError)
+    }
+    Check "S2b-3 画三角执行绑定快捷键（插入文本）" (
+        $drawFlow -and [string]$script:lastReport.phone.draw.lastSymbol -eq "triangle"
+    ) "field=[$($script:lastReport.stats.inputFieldText)] symbol=$($script:lastReport.phone.draw.lastSymbol) score=$($script:lastReport.phone.draw.lastScore)"
+
+    # 45° 附近不猜方向：宁可没反应，也不能执行错的快捷键。
+    # 这条三角绕中心转了 44°，方向落在两个扇区中间——识别器必须拒绝，输入框一个字都不许多。
+    $beforeEdge = [string]$script:lastReport.stats.inputFieldText
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '0.8126,0.1763;0.5111,1.1363;-0.1363,0.5111;0.8126,0.1763'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    Check "S2b-4 44 度三角不执行（方向不明确）" (
+        [string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastSymbol) -and
+        ([string]$script:lastReport.stats.inputFieldText -eq $beforeEdge) -and
+        (([string]$script:lastReport.phone.draw.lastError).Length -gt 0)
+    ) "field=[$($script:lastReport.stats.inputFieldText)] before=[$beforeEdge] symbol=[$($script:lastReport.phone.draw.lastSymbol)] err=$($script:lastReport.phone.draw.lastError)"
+
+    # 画板浮层：与「长按悬浮球」同一个入口（BubbleService.showBoard），必须不抢前台焦点。
+    Restore-App
+    Bcast "drawBoard"
+    Start-Sleep -Milliseconds 1500
+    $script:lastReport = Get-Report
+    $boardOn = [bool]$script:lastReport.phone.bubbleBoard
+    $boardFocus = @(Shell "dumpsys window" | Select-String -Pattern "mCurrentFocus=")
+    $boardFocusNow = if ($boardFocus.Count -gt 0) { "$($boardFocus[-1])" } else { "" }
+    Check "S2b-5 画板浮层可打开（不抢焦点）" ($boardOn -and ($boardFocusNow -match $package)) "board=$boardOn focus=$boardFocusNow"
+    Bcast "drawHide"
+    Start-Sleep -Milliseconds 500
+    Check "S2b-5 画板可收起" (-not [bool](Get-Report).phone.bubbleBoard) ""
+
     # 收尾：关悬浮球、收回权限、把磁贴从 QS 面板撤掉、删测试条目
     Bcast "bubble" @("--ez", "on", "false")
     Start-Sleep -Milliseconds 500
     Shell "cmd statusbar remove-tile $package/.KadaTileService" | Out-Null
     Shell "appops set $package SYSTEM_ALERT_WINDOW deny" | Out-Null
-    @("VolumeUp", "F10", "F11") | ForEach-Object {
+    # 画符号绑定存在 SharedPreferences 里（不进配置），删条目不会带走它——必须显式解绑
+    Bcast "drawUnbind" @("--es", "symbol", "triangle")
+    @("VolumeUp", "F10", "F11", "F6") | ForEach-Object {
         $trigger = $_
         $idx = -1
         $entries = @((Get-Report).editor.shortcuts)

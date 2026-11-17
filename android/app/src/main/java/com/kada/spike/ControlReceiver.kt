@@ -225,6 +225,55 @@ class ControlReceiver : BroadcastReceiver() {
                 Log.i(SpikeState.TAG, "ctrl op=bubbleRun ok=$ok last=${BubbleService.lastRun}")
             }
 
+            // ---- S2b 画符号：识别器自检 / 绑定 / 按坐标串执行（adb 只代替手指） ----
+            "drawSelfTest" -> {
+                val result = DrawStore.selfTest()
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=drawSelfTest total=${result.optInt("total")} " +
+                        "failed=${result.optInt("failed")} templates=${result.optInt("templates")}",
+                )
+            }
+
+            "drawBind" -> {
+                val symbol = intent.getStringExtra("symbol").orEmpty()
+                val name = intent.getStringExtra("name").orEmpty()
+                val ok = DrawStore.bind(symbol, name)
+                Log.i(SpikeState.TAG, "ctrl op=drawBind symbol=$symbol name=$name ok=$ok err=${DrawStore.lastError}")
+            }
+
+            "drawUnbind" -> {
+                val symbol = intent.getStringExtra("symbol").orEmpty()
+                val ok = DrawStore.unbind(symbol)
+                Log.i(SpikeState.TAG, "ctrl op=drawUnbind symbol=$symbol ok=$ok")
+            }
+
+            "drawList" -> {
+                val bindings = DrawStore.bindings()
+                Log.i(SpikeState.TAG, "ctrl op=drawList n=${bindings.size} $bindings")
+            }
+
+            "drawRun" -> {
+                val points = DrawStore.parsePath(intent.getStringExtra("path").orEmpty())
+                val outcome = DrawStore.runPath(points, "draw")
+                Log.i(
+                    SpikeState.TAG,
+                    "ctrl op=drawRun points=${points.size} symbol=${DrawStore.lastSymbol} " +
+                        "score=${DrawStore.lastScore} ok=${outcome.runOk} " +
+                        "reason=${outcome.reason} last=${DrawStore.lastRun} err=${DrawStore.lastError}",
+                )
+            }
+
+            "drawBoard" -> {
+                val ok = BubbleService.showBoard(context)
+                Log.i(SpikeState.TAG, "ctrl op=drawBoard ok=$ok visible=${BubbleService.boardVisible} err=${BubbleService.lastError}")
+            }
+
+            "drawHide" -> {
+                BubbleService.hideBoard()
+                Log.i(SpikeState.TAG, "ctrl op=drawHide visible=${BubbleService.boardVisible}")
+            }
+
             "decide" -> {
                 val key = intent.getStringExtra("key") ?: "F8"
                 val down = intent.getBooleanExtra("down", true)

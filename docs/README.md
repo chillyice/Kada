@@ -79,12 +79,16 @@ crates/kada-android/        # 安卓壳（cdylib + rlib）：JSON/JNI 接口 + �
   src/engine.rs             # 安卓判定：非破坏式吞键（只吞凑齐那一下）、序列/和弦等待窗、前台过滤
   src/action_support.rs     # 动作支持表（唯一事实来源）：open_url / text / clipboard / pause_ms / group / disabled
   src/report.rs             # 配置报告：条数 / 触发键分类 / 本机不支持项 / 软冲突 / 告警
-android/                    # 安卓探针工程（S0 + S1 + S2，纯 Kotlin + 无障碍服务；不是产品壳）
+android/                    # 安卓探针工程（S0 + S1 + S2 / S2b，纯 Kotlin + 无障碍服务；不是产品壳）
   app/src/main/java/com/kada/spike/   # MainActivity / KeyFilterService / RustBridge / RustPanel / SemanticActions …
-    BubbleService.kt        # S2 手机档：悬浮球 + 快捷面板（点一下执行，面板不抢焦点）
+    BubbleService.kt        # S2 手机档：悬浮球 + 快捷面板（点一下执行，面板不抢焦点；S2b 长按开画板）
     KadaTileService.kt      # S2 手机档：快捷设置磁贴（暂停 / 恢复接管）
+    DollarOne.kt            # S2b 画符号：$1 识别器（重采样 / 等比归一化 / 旋转 + 方向扇区）
+    DrawStore.kt            # S2b 画符号：符号表 / 绑定 / 执行 / 自检（预设 17 个符号）
+    DrawPadView.kt          # S2b 画符号：画板收轨迹，抬手归一化到 0~1
+    DrawBoardView.kt        # S2b 画符号：长按悬浮球弹出的画板浮层
   tools/build-rust.ps1      # cargo-ndk 编 libkada_android.so 进 jniLibs（Gradle 不编 Rust）
-  tools/verify.ps1          # 自动化验收：构建 / 装机 / 开无障碍 / S0+S1+S2 逐条测 / 读报告（sendevent 打真实按键）
+  tools/verify.ps1          # 自动化验收：构建 / 装机 / 开无障碍 / S0+S1+S2+S2b 逐条测 / 读报告（sendevent 打真实按键）
 src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/lib.rs                # 平台输入层 / SimulatedInject / run() + generate_handler!（命令层与 T-05 各域已拆出）
   src/tests.rs              # 壳层单元测试整块（T-01 从 lib.rs 搬出：键表一致性 / 卡带市场 / 层与和弦 / 录制 / 状态 / 同步存档）

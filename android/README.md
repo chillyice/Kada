@@ -1,9 +1,11 @@
-# Kada Android 探针（S0 + S1）
+# Kada Android 探针（S0 + S1 + S2）
 
-Android 版前两个阶段的**探针工程**（docs/安卓版规划.md §6 / §7 的 S0 / S1）：
+Android 版前几个阶段的**探针工程**（docs/安卓版规划.md §6 / §7 的 S0 / S1 / S2 / S2b）：
 
 - **S0**：纯 Kotlin + 无障碍服务 + 前台服务，把「安卓上到底能不能收键 / 吞键 / 判定 / 常驻」用真机数据证伪或证实。
 - **S1**：判定搬进 Rust（`crates/kada-android` 复用 `kada-core`，与桌面同一份规则），配置落盘复用 `kada_core::config_io`，导入 / 导出走 SAF。
+- **S2**：手机档——悬浮球 / 快捷面板 / 磁贴 / 通知 + 音量键，四类触发源共用一个总闸与一条动作执行链。
+- **S2b**：画符号——长按悬浮球画一笔（17 个预设符号），识别后执行绑定的快捷键。
 
 目的仍然不是做产品，而是把每一条「安卓能不能」的结论钉在证据上。
 
@@ -25,6 +27,12 @@ android/
     UpdateReceiver.kt        系统安装器回执（成功 / 被取消 / 失败原因）转给 Update
     ActionRunner.kt          把 Rust 返回的「命中条目」变成动作：open_url / text / clipboard / pause / 禁用
     KeyNames.kt              安卓 keycode ↔ core `Key` 名（必须与 core 逐字一致）
+    BubbleService.kt         S2 悬浮球 + 快捷面板（+ S2b 长按开画板）
+    DollarOne.kt             S2b $1 识别器（重采样 / 归一化 / 旋转 + 方向扇区 / 起点与笔顺不敏感）
+    DrawStore.kt             S2b 符号表 / 绑定 / 执行 / 自检（预设 17 个符号，13 个形状类别）
+    DrawPadView.kt           S2b 画板（收手指轨迹，抬手归一化到 0~1）
+    DrawBoardView.kt         S2b 画板浮层（长按悬浮球弹出，点空白取消）
+    KadaTileService.kt       S2 快捷设置磁贴（亮 = 接管 / 灰 = 暂停）
     HeartbeatService.kt      前台服务 + 常驻通知 + 心跳日志（S0-4）
     TierProbe.kt             档位探测（root / /dev/uinput / 物理键盘）
     SpikeState.kt            进程内状态（开关 / 统计 / 事件环 / 延迟 / 动作结果 / 焦点）
@@ -179,6 +187,30 @@ adb shell am start -n com.kada.spike/.MainActivity
 - **音量键当触发源**：无障碍能收到音量键，配成 `shortcuts` 的触发键后**命中即吞**、音量不变；
   没绑条目时照常调音量。
 
+### S2b 段（画符号：单笔画手势当触发源）
+
+面板能列出的条目有限，手机上「想马上用一个不常用动作」还要滑面板。画符号是单手指能做到、
+又能一眼记住的入口：**长按悬浮球 → 画一笔 → 抬手执行**。
+
+- **识别器**（`DollarOne`）：$1 Unistroke Recognizer 的 Kotlin 版（纯计算、零依赖、单笔画）。
+  与论文原版三处差异都是为「四个方向的三角」这类需求服务的：
+  1. 旋转搜索放到**整圈**（原版只在 ±45° 内微调），再拿最优旋转角 θ 判方向；
+  2. 起点 / 笔顺不敏感——**反向**对全部形状生效，**循环移位**只对闭合回路（圆 / 菱形 / 星 / 三角）
+     生效（开放折线移位后是另一条乱线）；
+  3. 方向按 **90° 扇区**量化，θ 落在扇区中心 ±35° 内才算数；落在两扇区中间（约 45°）
+     直接返回「方向不明确」——**猜错方向比不识别更糟**。
+- **符号表**（`DrawStore`）：17 个预设符号 / 13 个形状类别：○ 圆、◇ 菱形、☆ 五角星、✓ 勾、
+  △▽◁▷ 四向三角、V、Z、S、L、C、U、M、W、N。**方向只在有多个符号的形状上有意义**
+  （圆 / 菱形 / 星 / 勾的 θ 不稳定，不判方向）。
+- **绑定**：符号 → **现有快捷键的条目名**（不新建动作链，复用面板 / 音量键那条执行链）。
+  绑定落本机 `SharedPreferences("kada-draw")`，**暂不进 `Config`**（进配置要动 core 的模型与卡带格式）。
+- **阈值**（都得真跑一遍才作数，所以自检在设备上跑）：匹配分 ≥ 0.80、前两名差距 ≥ 0.04、
+  方向容差 ±35°。只有「该方向真的有预设符号」的候选才参与竞争——否则 Z 转 90° 会被 N 挤掉。
+- **自检**（`op drawSelfTest` → 报告 `phone.draw.selfTest`）：28 项——17 个预设各自带 1.2% 抖动
+  认回自己、±20° 歪画仍算同向、44° 必须拒绝、四向三角用**手写坐标**独立构造（不复用旋转函数，
+  免得把符号约定错在同一个地方）、换起笔点 / 反着画的圆仍命中、乱涂与过短笔画拒绝。
+  故意不引 Gradle 测试依赖（离线跑不了）：这些断言的正是「旋转方向 / 阈值」这种只有真跑才作数的东西。
+
 ## adb 控制入口（探针专用）
 
 ```powershell
@@ -221,6 +253,14 @@ adb shell am broadcast @ctl --es op bubbleHide
 adb shell am broadcast @ctl --es op bubbleRun --es name panelTpl # 等价「点一下」；名字空时用 --ei index
 adb shell am broadcast @ctl --es op tileToggle                  # 磁贴同一切换函数
 adb shell am broadcast @ctl --es op notifyToggle                # 通知按钮同一切换函数
+# S2b 画符号（`--es path` 里的分号会被 adb shell 当命令分隔符——远端要加引号，见「坑」）
+adb shell am broadcast @ctl --es op drawSelfTest                # 识别器自检（28 项）→ 报告 phone.draw.selfTest
+adb shell am broadcast @ctl --es op drawBind --es symbol triangle --es name panelTpl
+adb shell am broadcast @ctl --es op drawUnbind --es symbol triangle
+adb shell am broadcast @ctl --es op drawList                    # 把绑定表打进 logcat
+adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver --es op drawRun --es path '0.5,0.05;0.95,0.95;0.05,0.95;0.5,0.05'"
+adb shell am broadcast @ctl --es op drawBoard                   # 打开画板浮层（与长按悬浮球同一入口）
+adb shell am broadcast @ctl --es op drawHide
 # 探针杂项
 adb shell am broadcast @ctl --es op fire --es action screenshot
 adb shell am broadcast @ctl --es op focusField                 # 把光标放进「吞键验证输入框」（自动重试）
@@ -325,14 +365,28 @@ S2 段（手机档）：
 | S2-5 通知动作暂停后按键不触发 | ✅ 通知按钮暂停后按 Enter：`fires` 数量不变（3→3），`lastMasterToggle=notify:off@…` | 报告 `rust.fires` / `phone.*` |
 | S2 收尾 | ✅ 关悬浮球、恢复总闸、磁贴移出 QS、测试条目删干净 | 报告 `phone.bubbleRunning=False` / `phone.master=True` |
 
+S2b 段（画符号）：
+
+| 项 | 结果 | 证据 |
+|---|---|---|
+| S2b-1 识别器自检 28 项 | ✅ `failed=0/28`、`symbols=17`；含 17 个预设带 1.2% 抖动认回自己、±20° 歪画仍同向、44° 必须拒绝、四向三角用独立手写坐标、换起笔点 / 反着画的圆仍命中、乱涂与过短笔画拒绝 | 报告 `phone.draw.selfTest.cases` |
+| S2b-2 符号绑定到快捷键 | ✅ 建条目（`F6` → text `drawok`）后 `drawBind triangle drawTpl` → `bindings={"triangle":"drawTpl"}` | 报告 `phone.draw.bindings` / `editor.shortcuts` |
+| S2b-3 画三角执行绑定条目 | ✅ 输入框原 `abc` → 画三角后 `abcdrawok`，`symbol=triangle score=1` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol` |
+| S2b-4 44° 三角被拒绝 | ✅ `symbol=[]`、输入框前后一致（`abcdrawok` 未变）、`lastError=方向不明确（约 -44°…）` | 报告 `phone.draw.lastSymbol/lastError` |
+| S2b-5 画板浮层可开 / 可收 | ✅ `board=True` 且 `mCurrentFocus` 仍是 `com.kada.spike/MainActivity`（不抢焦点）；`drawHide` 后 `board=False` | 报告 `phone.bubbleBoard` / `dumpsys window` |
+| S2b 收尾 | ✅ 显式解绑 `triangle`（绑定在 `SharedPreferences`，删条目带不走它）+ 删 `F6` 测试条目 | 报告 `phone.draw.bindings={}` |
+
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；S2 段开头申请
-> 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目。
-> 本轮 s6 全量跑 **62/62 通过**（s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+> 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目；S2b 段额外要显式解绑
+> （绑定存在 `SharedPreferences`，删条目带不走它）。
+> 本轮 s7 全量跑 **68/68 通过**（s6 是 62/62，s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
 > S1-4 / S1-5 / S1-6 的十五条走的是**与界面同一份** `ShortcutStore`、执行器与 `Update`
 > （广播只是代替点按），控件的点击手势、录入按键、系统安装器的「安装」按钮仍属人工验证
 > （`docs/人工验证清单.md` §90 / §91 / §92）。
 > S2 的十三条同理：`bubbleRun` / `tileToggle` / `notifyToggle` 走的是面板、磁贴、通知按钮**同一份**函数，
 > 手指拖动、软键盘遮挡、ROM 差异归 `docs/人工验证清单.md` §93。
+> S2b 的六条走的是长按悬浮球弹出的**那个**画板（`BubbleService.ACTION_SHOW_BOARD` → `DrawBoardView`），
+> `drawRun` 只是把坐标串喂给同一个 `DrawStore`；真手指的笔顺与认错频率归 `docs/人工验证清单.md` §94。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -393,6 +447,15 @@ S2 段（手机档）：
 - **`wrap_content` 对话框里 `weight` 会塌成 0**：编辑对话框的高度要按屏高算一个确定值
   （`heightPixels * 0.62`），否则按钮行被挤没。软键盘弹出后对话框会整体上移，
   这时 `input tap` 打按屏幕绝对坐标会点到键盘上——先 `input keyevent 4` 收键盘再点按钮。
+- **`--es` 的值里有 `;` 会被设备侧 shell 拆开**：`drawRun` 的 `path` 是 `x,y;x,y;…`，
+  直接用 `Bcast` 拼参数只会送进第一段。远端必须带引号：
+  `adb shell "am broadcast … --es path '0.5,0.05;0.95,0.95'"`（`verify.ps1` 里走 `Shell` 传整串）。
+- **画符号的「循环移位」只能给闭合回路**：开放折线（V / Z / N / L / C / U / M）起笔换了就是另一条线，
+  对它们做移位会让「乱涂」也命中模板。`DollarOne.Template.closed` 就是这道闸。
+- **180° 旋转对称的形状（Z / N / S）必须并二次比较**：反着画与正着画距离几乎一样，
+  取到哪个解全看浮点先后——分辨率不是「差 0.02」，而是「θ 差了 180°」，于是方向扇区落空、
+  好好的 Z 被判成「这个方向没有预设符号」。`bestAlign` 因此在距离接近（相对 2%）时
+  **取转角小的解**，让「正着画」稳定拿回 θ≈0。
 
 ## 已知限制 / 下一步
 
@@ -408,6 +471,10 @@ S2 段（手机档）：
 - **编辑器只做「够用」那一档**：动作类型只有五类（`open_url` / `text` / `clipboard` /
   `semantic` / `pause_ms`），别的类型保持原样不动；同一条目有多个触发键时只改第一个；
   没有目录 / 层 / `when` 的编辑（手机屏上做不了桌面的全量编辑器，但也不许「改个触发键把动作改没了」）。
+- **画符号只做第一批**：单笔画、17 个**预设**符号、绑定到**现有**快捷键；绑定存在本机
+  `SharedPreferences("kada-draw")`，**不进 `Config`、不同步、卡带里也没有**。还没做：
+  录自定义画法（用户教它认自己的符号）、多笔画（如「圆 + 竖」）、以及把绑定搬进配置。
+  圈选截图那种「画圈再点一下」的复合手势也不在这套里（那是桌面右键手势的家庭）。
 - **自更新只覆盖侧载版**：清单地址是代码常量（`Update.MANIFEST_URL`，测试才用 adb 传 `file://` 覆盖），
   改发布域名要重编；Play / 国内商店渠道走商店自己的更新，不走这套。**安装必须用户在系统安装器里
   点「安装」**——应用不能替用户确认，这是系统限制，也不该绕过；「安装未知应用」得用户自己去设置里开。

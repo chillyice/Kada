@@ -258,9 +258,12 @@ object SpikeReport {
             put("bubbleRunning", BubbleService.running)
             put("bubblePermission", BubbleService.hasPermission(context))
             put("bubblePanel", BubbleService.panelVisible)
+            put("bubbleBoard", BubbleService.boardVisible)
             put("bubbleLastRun", BubbleService.lastRun)
             put("bubbleLastError", BubbleService.lastError)
             put("bubbleEntries", ShortcutStore.entries().count { it.enabled })
+            // S2b 画符号：识别器自检 + 绑定表 + 最近一次识别 / 执行
+            put("draw", DrawStore.reportJson())
         })
 
         return root
