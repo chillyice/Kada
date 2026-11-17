@@ -255,13 +255,13 @@ class ControlReceiver : BroadcastReceiver() {
 
             // 录自定义画法：与界面「录自定义」按钮调同一个 learn()，adb 只是代替手指
             "drawLearn" -> {
-                val points = DrawStore.parsePath(intent.getStringExtra("path").orEmpty())
+                val strokes = DrawStore.parseStrokes(intent.getStringExtra("path").orEmpty())
                 val label = intent.getStringExtra("label").orEmpty()
-                val id = DrawStore.learn(points, label)
+                val id = DrawStore.learn(strokes, label)
                 Log.i(
                     SpikeState.TAG,
-                    "ctrl op=drawLearn points=${points.size} label=$label id=$id " +
-                        "custom=${DrawStore.custom().size} err=${DrawStore.lastError}",
+                    "ctrl op=drawLearn strokes=${strokes.size} points=${strokes.sumOf { it.size }} " +
+                        "label=$label id=$id custom=${DrawStore.custom().size} err=${DrawStore.lastError}",
                 )
             }
 
@@ -279,17 +279,17 @@ class ControlReceiver : BroadcastReceiver() {
                 Log.i(
                     SpikeState.TAG,
                     "ctrl op=drawCustom n=${list.size} " +
-                        list.joinToString("; ") { "${it.id}=${it.label} closed=${it.closed} pts=${it.points.size}" },
+                        list.joinToString("; ") { "${it.id}=${it.label} strokes=${it.strokeCount} pts=${it.pointCount}" },
                 )
             }
 
             "drawRun" -> {
-                val points = DrawStore.parsePath(intent.getStringExtra("path").orEmpty())
-                val outcome = DrawStore.runPath(points, "draw")
+                val strokes = DrawStore.parseStrokes(intent.getStringExtra("path").orEmpty())
+                val outcome = DrawStore.runPath(strokes, "draw")
                 Log.i(
                     SpikeState.TAG,
-                    "ctrl op=drawRun points=${points.size} symbol=${DrawStore.lastSymbol} " +
-                        "score=${DrawStore.lastScore} ok=${outcome.runOk} " +
+                    "ctrl op=drawRun strokes=${strokes.size} points=${strokes.sumOf { it.size }} " +
+                        "symbol=${DrawStore.lastSymbol} score=${DrawStore.lastScore} ok=${outcome.runOk} " +
                         "reason=${outcome.reason} last=${DrawStore.lastRun} err=${DrawStore.lastError}",
                 )
             }

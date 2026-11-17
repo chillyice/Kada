@@ -46,6 +46,12 @@ object DollarOne {
      */
     private const val TIE = 0.02
 
+    /**
+     * 多笔画符号的**单笔下限**：总分是各笔平均，只卡总分的话「一笔完美 + 一笔乱涂」
+     * 也能靠平均分混过去。0.72 与总分门槛 0.80 同档（画歪一点仍算数，乱涂不行）。
+     */
+    private const val STROKE_FLOOR = 0.72
+
     data class Pt(val x: Double, val y: Double)
 
     /** 一个形状模板：`cls` = 类别，`directional` = 方向是否有意义，`norm` = 归一化后的点。 */
@@ -55,6 +61,19 @@ object DollarOne {
         val norm: List<Pt>,
         /** 闭合形状才允许「换个起笔点」（循环移位）；开放折线移位后是另一条乱线。 */
         val closed: Boolean = false,
+    )
+
+    /**
+     * 一个符号的模板：预设符号都是单笔画，自定义符号可以有 1~3 笔。
+     *
+     * 多笔画**按画的先后顺序**比（「圆 + 竖」与「竖 + 圆」是两个符号），每笔各自归一化，
+     * 所以只比形状与顺序、不比相对位置和大小——随手画的时候人对位置的控制最差，
+     * 拿位置当特征只会让同一符号每次都抖。
+     */
+    data class Shape(
+        val cls: String,
+        val directional: Boolean,
+        val strokes: List<Template>,
     )
 
     data class Score(
@@ -93,42 +112,106 @@ object DollarOne {
         return Template(cls, directional, norm, closed)
     }
 
+    /** 单笔画的形状（预设符号都走这条）。 */
+    fun shape(cls: String, directional: Boolean, path: List<Pt>, closed: Boolean = false): Shape? =
+        template(cls, directional, path, closed)?.let { Shape(cls, directional, listOf(it)) }
+
+    /** 起笔与收笔几乎重合（不超过总长 15%）= 闭合回路，识别时允许换个起笔点。 */
+    fun isClosed(points: List<Pt>): Boolean {
+        val clean = points.filter { it.x.isFinite() && it.y.isFinite() }
+        if (clean.size < 3) return false
+        var total = 0.0
+        for (i in 1 until clean.size) {
+            total += hypot(clean[i].x - clean[i - 1].x, clean[i].y - clean[i - 1].y)
+        }
+        if (total < 1e-9) return false
+        val first = clean.first()
+        val last = clean.last()
+        return hypot(last.x - first.x, last.y - first.y) <= total * 0.15
+    }
+
     /**
-     * 识别一条笔画。`templates` 由调用方建好（归一化只做一次）。
+     * 识别一串笔画（1~3 笔，按画的先后顺序）。`shapes` 由调用方建好（归一化只做一次）。
      *
-     * 返回 null = 笔画退化（点太少 / 长度为零），**不是**「认出来了但方向不对」——
+     * - **单笔画预设**要求「只画了一笔」：多笔画手势不拿第一笔去猜三角——宁可没反应。
+     * - **自定义符号**要求笔数相同，逐笔比形状，总分取各笔平均；另加单笔下限
+     *   [STROKE_FLOOR]——否则「一笔画得完美 + 一笔乱涂」也能靠平均分混过去。
+     * - 退化成点的笔画（误触的小点）直接丢掉，不算一笔。
+     *
+     * 返回 null = 没有一笔能用（点太少 / 长度为零），**不是**「认出来了但方向不对」——
      * 后者仍然返回 Result，`ranked` 为空、`edgeRejected` 非空。
      */
     fun recognize(
-        points: List<Pt>,
-        templates: List<Template>,
+        strokes: List<List<Pt>>,
+        shapes: List<Shape>,
         toleranceDeg: Double = 35.0,
     ): Result? {
-        val cand = normalize(points) ?: return null
-        val scores = ArrayList<Score>(templates.size)
-        for (t in templates) {
-            if (t.norm.size != N) continue
-            val align = bestAlign(cand, t.norm, t.closed) ?: continue
-            val deg = degrees(align.theta)
-            // 无方向形状（圆 / 菱形 / 星 / 勾）的 θ 不稳定：不判方向、恒算扇区 0
-            val bucket = if (t.directional) bucketOf(deg) else 0
-            val residual = if (t.directional) residualOf(deg, bucket) else 0.0
-            scores.add(
-                Score(
-                    cls = t.cls,
-                    score = 1.0 - align.distance / HALF_DIAGONAL,
-                    thetaDeg = deg,
-                    bucket = bucket,
-                    residualDeg = residual,
-                    directional = t.directional,
-                    valid = !t.directional || abs(residual) <= toleranceDeg,
-                ),
-            )
+        val drawn = strokes.mapNotNull { normalize(it) }
+        if (drawn.isEmpty()) return null
+        val scores = ArrayList<Score>(shapes.size)
+        for (s in shapes) {
+            if (s.strokes.size == 1) {
+                // 单笔画符号（全部预设 + 用户录的一笔画）：多笔画手势不拿第一笔去猜，
+                // 否则「圆 + 竖」的第一笔就被当成圆执行了。
+                if (drawn.size != 1) continue
+                val t = s.strokes[0]
+                if (t.norm.size != N) continue
+                val align = bestAlign(drawn[0], t.norm, t.closed) ?: continue
+                val deg = degrees(align.theta)
+                // 无方向形状（圆 / 菱形 / 星 / 勾）的 θ 不稳定：不判方向、恒算扇区 0
+                val bucket = if (s.directional) bucketOf(deg) else 0
+                val residual = if (s.directional) residualOf(deg, bucket) else 0.0
+                scores.add(
+                    Score(
+                        cls = t.cls,
+                        score = 1.0 - align.distance / HALF_DIAGONAL,
+                        thetaDeg = deg,
+                        bucket = bucket,
+                        residualDeg = residual,
+                        directional = s.directional,
+                        valid = !s.directional || abs(residual) <= toleranceDeg,
+                    ),
+                )
+            } else {
+                if (drawn.size != s.strokes.size) continue
+                val parts = drawn.indices.mapNotNull { i -> strokeScore(drawn[i], s.strokes[i]) }
+                if (parts.size != drawn.size) continue
+                scores.add(
+                    Score(
+                        cls = s.cls,
+                        score = parts.average(),
+                        thetaDeg = 0.0,
+                        bucket = 0,
+                        residualDeg = 0.0,
+                        directional = false,
+                        valid = parts.min() >= STROKE_FLOOR,
+                    ),
+                )
+            }
         }
         val ranked = scores.filter { it.valid }.sortedByDescending { it.score }
         val edge = scores.filter { !it.valid }.sortedByDescending { it.score }
         val best = ranked.firstOrNull() ?: return null
         return Result(best.cls, best.bucket, best.score, best.thetaDeg, ranked, edge)
+    }
+
+    /**
+     * 单笔画的便捷入口（自检、面板里的单笔用例都走它）。
+     *
+     * 名字不能也叫 `recognize`：`List<Pt>` 与 `List<List<Pt>>` 在 JVM 上都擦成 `List`，
+     * 同名重载会撞签名（Kotlin 会报 Platform declaration clash）。
+     */
+    fun recognizeOne(
+        points: List<Pt>,
+        shapes: List<Shape>,
+        toleranceDeg: Double = 35.0,
+    ): Result? = recognize(listOf(points), shapes, toleranceDeg)
+
+    /** 一笔与一个模板的分数；点太少 / 对齐失败返回 null。 */
+    internal fun strokeScore(drawn: List<Pt>, t: Template): Double? {
+        if (t.norm.size != N) return null
+        val align = bestAlign(drawn, t.norm, t.closed) ?: return null
+        return 1.0 - align.distance / HALF_DIAGONAL
     }
 
     /**

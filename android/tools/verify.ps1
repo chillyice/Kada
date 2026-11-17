@@ -1041,19 +1041,29 @@ if ($exported) {
         ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
     ) "custom=$($customBefore.Count)->$($customAfter.Count) new=$newId err=$($script:lastReport.phone.draw.lastError)"
 
-    # P2b：符号必须落在**配置**的 `draw.symbols` 里（P2a 那份 SharedPreferences 已不是存法），
+    # P2b/P3：符号必须落在**配置**的 `draw.symbols` 里（P2a 那份 SharedPreferences 已不是存法），
     # 点坐标是 0~1000 的整数（core 的 `DRAW_POINTS_SCALE` 口径，与触摸板模板同一套）。
+    # P3 起笔画是嵌套数组 `strokes: [[[x,y],…], …]`——一笔的符号就是只有一个元素的数组。
     $cfg = Get-ConfigJson
     $cfgSymbols = @()
     if ($cfg -and $cfg.draw) { $cfgSymbols = @($cfg.draw.symbols | Where-Object { $null -ne $_ }) }
     $cfgSymbol = @($cfgSymbols | Where-Object { $_.id -eq $newId })
-    $cfgPoints = if ($cfgSymbol.Count -eq 1) { @($cfgSymbol[0].points) } else { @() }
-    $ptsBad = @($cfgPoints | Where-Object { @($_).Count -ne 2 -or $_[0] -lt 0 -or $_[0] -gt 1000 -or $_[1] -lt 0 -or $_[1] -gt 1000 })
+    $cfgStrokes = @()
+    if ($cfgSymbol.Count -eq 1) { $cfgStrokes = @($cfgSymbol[0].strokes | Where-Object { $null -ne $_ }) }
+    $cfgPoints = @()
+    $ptsBad = @()
+    foreach ($st in $cfgStrokes) {
+        $line = @($st)
+        $cfgPoints += $line
+        if ($line.Count -lt 2) { $ptsBad += "stroke<2" }
+        $ptsBad += @($line | Where-Object { @($_).Count -ne 2 -or $_[0] -lt 0 -or $_[0] -gt 1000 -or $_[1] -lt 0 -or $_[1] -gt 1000 })
+    }
     $ptsFirst = if ($cfgPoints.Count -gt 0) { "$($cfgPoints[0][0]),$($cfgPoints[0][1])" } else { "" }
-    Check "S2b-6b 自定义符号写进配置 draw.symbols" (
-        ($newId -ne "") -and ($cfgSymbol.Count -eq 1) -and ($cfgPoints.Count -ge 2) -and
-        ($ptsBad.Count -eq 0) -and ([string]$script:lastReport.phone.draw.store -eq "config")
-    ) "store=$($script:lastReport.phone.draw.store) symbol=$newId points=$($cfgPoints.Count) first=$ptsFirst bad=$($ptsBad.Count) lastSave=$($script:lastReport.phone.draw.lastSave)"
+    Check "S2b-6b 自定义符号写进配置 draw.symbols（strokes 嵌套）" (
+        ($newId -ne "") -and ($cfgSymbol.Count -eq 1) -and ($cfgStrokes.Count -eq 1) -and
+        ($cfgPoints.Count -ge 2) -and ($ptsBad.Count -eq 0) -and
+        ([string]$script:lastReport.phone.draw.store -eq "config")
+    ) "store=$($script:lastReport.phone.draw.store) symbol=$newId strokes=$($cfgStrokes.Count) points=$($cfgPoints.Count) first=$ptsFirst bad=$($ptsBad.Count) lastSave=$($script:lastReport.phone.draw.lastSave)"
 
     # 绑定 + 画它：走的是与预设完全相同的一条链（识别表里只是多了一份模板）。
     Bcast "editorAdd" @("--es", "name", "drawCust", "--es", "trigger", "Ctrl+Alt+J", "--es", "action", "text", "--es", "value", "stairsok")
@@ -1118,6 +1128,97 @@ if ($exported) {
         ($newId -ne "") -and (-not $cfgHasId) -and $cfgStillTriangle
     ) "config_has_id=$cfgHasId triangle_kept=$cfgStillTriangle lastSave=$($script:lastReport.phone.draw.lastSave)"
 
+    # P3 多笔画：一个符号可以是 1~3 笔，**笔数与画的先后顺序**都是身份（「圆 + 竖」≠「竖 + 圆」）。
+    # 这里录「圆 + 竖」：两笔都不陌生，能被认出来且顺序敏感才说明多笔画真的通了。
+    $circleStroke = "0.50,0.05;0.82,0.18;0.95,0.50;0.82,0.82;0.50,0.95;0.18,0.82;0.05,0.50;0.18,0.18;0.50,0.05"
+    $barStroke = "0.50,0.10;0.50,0.90"
+    Bcast "editorAdd" @("--es", "name", "drawMulti", "--es", "trigger", "Ctrl+Alt+M", "--es", "action", "text", "--es", "value", "multiok")
+    Start-Sleep -Milliseconds 700
+    $script:lastReport = Get-Report
+    $multiEntry = @($script:lastReport.editor.shortcuts | Where-Object { $_.name -eq "drawMulti" })
+    Check "S2b-12a 多笔画测试条目建好（Ctrl+Alt+M）" (
+        ($multiEntry.Count -eq 1) -and (@($multiEntry[0].triggers) -contains "Ctrl+Alt+M")
+    ) "entry=$($multiEntry.Count) triggers=$(@($multiEntry[0].triggers) -join ',')"
+    $customBefore2 = @((Get-Report).phone.draw.customIds)
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawLearn --es label circbar --es path '$circleStroke|$barStroke'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    $customAfter2 = @($script:lastReport.phone.draw.customIds)
+    $multiIds = @($customAfter2 | Where-Object { $customBefore2 -notcontains $_ })
+    $multiId = if ($multiIds.Count -eq 1) { [string]$multiIds[0] } else { "" }
+    Check "S2b-12 录多笔画符号（圆 + 竖）" (
+        ($multiId -like "u:*") -and ($customAfter2.Count -eq $customBefore2.Count + 1) -and
+        ([string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastError))
+    ) "custom=$($customBefore2.Count)->$($customAfter2.Count) new=$multiId err=$($script:lastReport.phone.draw.lastError)"
+
+    # 落盘形态：`strokes` 必须是**两条**，且第二笔的 y 跨度明显大于 x（竖线）——
+    # 只断言数量会被「两笔都截成同样形状」的 bug 骗过去。
+    $cfg = Get-ConfigJson
+    $cfgSymbols = @()
+    if ($cfg -and $cfg.draw) { $cfgSymbols = @($cfg.draw.symbols | Where-Object { $null -ne $_ }) }
+    $cfgMulti = @($cfgSymbols | Where-Object { $_.id -eq $multiId })
+    $multiStrokes = @()
+    if ($cfgMulti.Count -eq 1) { $multiStrokes = @($cfgMulti[0].strokes | Where-Object { $null -ne $_ }) }
+    $multiBad = @()
+    foreach ($st in $multiStrokes) {
+        $line = @($st)
+        if ($line.Count -lt 2) { $multiBad += "stroke<2" }
+        $multiBad += @($line | Where-Object { @($_).Count -ne 2 -or $_[0] -lt 0 -or $_[0] -gt 1000 -or $_[1] -lt 0 -or $_[1] -gt 1000 })
+    }
+    $multiInfo = @($script:lastReport.phone.draw.customList | Where-Object { $_.id -eq $multiId })
+    Check "S2b-12b 多笔画在配置里存成两笔（先圆后竖）" (
+        ($multiId -ne "") -and ($multiStrokes.Count -eq 2) -and ($multiBad.Count -eq 0) -and
+        ($multiInfo.Count -eq 1) -and ([int]$multiInfo[0].strokes -eq 2)
+    ) "symbol=$multiId strokes=$($multiStrokes.Count) report_strokes=$(if ($multiInfo.Count -eq 1) { $multiInfo[0].strokes } else { '-' }) bad=$($multiBad.Count) lastSave=$($script:lastReport.phone.draw.lastSave)"
+
+    # 绑定 + 画它：第二笔稍微错位（+0.01 / +0.02），验的是形状与顺序而不是字符串相等。
+    if ($multiId -ne "") { Bcast "drawBind" @("--es", "symbol", $multiId, "--es", "name", "drawMulti") }
+    $multiFlow = $false
+    for ($try = 1; $try -le 2; $try++) {
+        Restore-App
+        if (-not (Focus-Field)) {
+            Write-Host "  [warn] 多笔画用例没拿到焦点（第 $try 次）"
+            continue
+        }
+        Clear-Field
+        Type-Text "mn"
+        Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '0.51,0.06;0.83,0.19;0.96,0.51;0.83,0.83;0.51,0.96;0.19,0.83;0.06,0.51;0.19,0.19;0.51,0.06|0.52,0.11;0.52,0.91'" | Out-Null
+        Start-Sleep -Milliseconds 1000
+        $script:lastReport = Get-Report
+        if ($script:lastReport.stats.inputFieldText -eq "mnmultiok") { $multiFlow = $true; break }
+        Write-Host ("  [warn] 画多笔画符号第 {0} 次没命中：field=[{1}] symbol={2} lastRun={3} err={4}" -f $try, $script:lastReport.stats.inputFieldText, $script:lastReport.phone.draw.lastSymbol, $script:lastReport.phone.draw.lastRun, $script:lastReport.phone.draw.lastError)
+    }
+    Check "S2b-13 画多笔画符号执行绑定快捷键" (
+        $multiFlow -and ([string]$script:lastReport.phone.draw.lastSymbol -eq $multiId) -and ($multiId -ne "")
+    ) "field=[$($script:lastReport.stats.inputFieldText)] symbol=$($script:lastReport.phone.draw.lastSymbol) lastRun=$($script:lastReport.phone.draw.lastRun) err=$($script:lastReport.phone.draw.lastError)"
+
+    # 只画第一笔：多笔画符号不参与竞争，回到「圆」这个单笔画预设（**不能**抢着执行圆 + 竖）。
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '$circleStroke'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    Check "S2b-14 只画第一笔仍按单笔画「圆」识别" (
+        ([string]$script:lastReport.phone.draw.lastSymbol -eq "circle")
+    ) "symbol=$($script:lastReport.phone.draw.lastSymbol) score=$($script:lastReport.phone.draw.lastScore) err=$($script:lastReport.phone.draw.lastError)"
+
+    # 顺序反了 = 另一个符号（不存在 → 不执行）。顺序就是身份，反着画必须认不出来。
+    Shell "am broadcast -a com.kada.spike.CONTROL -n $receiver --es op drawRun --es path '$barStroke|$circleStroke'" | Out-Null
+    Start-Sleep -Milliseconds 900
+    $script:lastReport = Get-Report
+    Check "S2b-15 笔画顺序反了不命中" (
+        [string]::IsNullOrEmpty([string]$script:lastReport.phone.draw.lastSymbol) -and
+        (([string]$script:lastReport.phone.draw.lastError).Length -gt 0)
+    ) "symbol=[$($script:lastReport.phone.draw.lastSymbol)] err=$($script:lastReport.phone.draw.lastError)"
+
+    # 收尾删掉，别让 S2b-11（整份替换配置后 custom=0）被这一轮新录的符号带崩。
+    if ($multiId -ne "") { Bcast "drawForget" @("--es", "symbol", $multiId) }
+    Start-Sleep -Milliseconds 600
+    $script:lastReport = Get-Report
+    $boundNames = @($script:lastReport.phone.draw.bindings.PSObject.Properties.Name)
+    Check "S2b-16 删多笔画符号并带走绑定" (
+        ($multiId -ne "") -and (@($script:lastReport.phone.draw.customIds) -notcontains $multiId) -and
+        ($boundNames -notcontains $multiId)
+    ) "custom=$(@($script:lastReport.phone.draw.customIds).Count) bindings=$($script:lastReport.phone.draw.bindings | ConvertTo-Json -Compress) err=$($script:lastReport.phone.draw.lastError)"
+
     # 升级迁移（P2a → P2b）：老版本的符号 / 绑定存在 `SharedPreferences("kada-draw")` 里。
     # 只往 prefs 里塞一份「P2a 格式」的数据再重启，断言搬到配置、旧键清空——否则老用户
     # 升级后自己录的符号凭空消失，那是**静默丢数据**。
@@ -1156,7 +1257,9 @@ if ($exported) {
         $legacySymbol = @(@($cfg.draw.symbols) | Where-Object { $_ -and $_.id -eq "u:legacy1" })
         $legacyBind = [string](Get-JsonField $cfg.draw.bindings "u:legacy1")
         if ($legacySymbol.Count -eq 1) {
-            $legacyPts = @($legacySymbol[0].points)
+            # P3 起符号是 `strokes` 嵌套数组；P2a 的单笔画搬进来就是一层。
+            $legacyStrokes = @($legacySymbol[0].strokes | Where-Object { $null -ne $_ })
+            $legacyPts = if ($legacyStrokes.Count -ge 1) { @($legacyStrokes[0]) } else { @() }
             if ($legacyPts.Count -gt 0) { $legacyFirst = "$($legacyPts[0][0]),$($legacyPts[0][1])" }
         }
     }
@@ -1177,7 +1280,7 @@ if ($exported) {
     # 那是「已失效」，面板要看得出来（由 `detect_conflicts` 报 Warn）。所以测试仍要显式解绑，
     # 别把「绑定的快捷键不在配置里」的告警留在设备上。
     Bcast "drawUnbind" @("--es", "symbol", "triangle")
-    @("VolumeUp", "F10", "F11", "F6", "Ctrl+Alt+J") | ForEach-Object {
+    @("VolumeUp", "F10", "F11", "F6", "Ctrl+Alt+J", "Ctrl+Alt+M") | ForEach-Object {
         $trigger = $_
         $idx = -1
         $entries = @((Get-Report).editor.shortcuts)

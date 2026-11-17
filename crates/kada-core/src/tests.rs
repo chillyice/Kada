@@ -5898,8 +5898,7 @@ mod draw_config_tests {
         DrawSymbol {
             id: id.into(),
             name: Some(name.into()),
-            closed: false,
-            points: vec![[100, 900], [500, 100], [900, 900]],
+            strokes: vec![vec![[100, 900], [500, 100], [900, 900]]],
         }
     }
 
@@ -5933,6 +5932,105 @@ mod draw_config_tests {
     }
 
     #[test]
+    fn legacy_single_stroke_points_still_load() {
+        // P2b（单笔画）写的是符号级 `points` + `closed`；P3 改成 `strokes` 后老配置必须照读，
+        // 否则清洗会把这个符号连同它的绑定一起丢掉——用户视角就是「升级后符号没了」。
+        let text = r#"{
+            "draw": {
+                "symbols": [
+                    {"id": "u:old", "name": "老符号", "closed": true,
+                     "points": [[100, 900], [500, 100], [900, 900]]}
+                ],
+                "bindings": {"u:old": "备份"}
+            }
+        }"#;
+        let cfg: Config = serde_json::from_str(text).unwrap();
+        let draw = cfg.draw.as_ref().unwrap();
+        assert_eq!(draw.symbols.len(), 1);
+        assert_eq!(draw.symbols[0].strokes.len(), 1, "老的单笔画要并成一条");
+        assert_eq!(draw.symbols[0].strokes[0].len(), 3);
+
+        let (clean, ignored) = sanitize_config(&cfg);
+        let draw = clean.draw.as_ref().unwrap();
+        assert_eq!(
+            draw.symbols[0].id,
+            "u:old",
+            "ignored: {}",
+            ignored.join("; ")
+        );
+        assert_eq!(
+            draw.bindings.get("u:old").map(String::as_str),
+            Some("备份"),
+            "符号留下了，绑定也得留"
+        );
+    }
+
+    #[test]
+    fn multi_stroke_symbols_roundtrip_and_limits() {
+        let mut cfg = Config {
+            draw: Some(DrawConfig {
+                symbols: vec![DrawSymbol {
+                    id: "u:two".into(),
+                    name: Some("圆竖".into()),
+                    strokes: vec![
+                        vec![[100, 500], [500, 100], [900, 500], [100, 500]],
+                        vec![[500, 200], [500, 900]],
+                    ],
+                }],
+                bindings: [("u:two".to_string(), "备份".to_string())]
+                    .into_iter()
+                    .collect(),
+            }),
+            ..Default::default()
+        };
+        let text = serde_json::to_string(&cfg).unwrap();
+        let back: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, cfg, "json:\n{text}");
+        assert_eq!(
+            back.draw.as_ref().unwrap().symbols[0].strokes.len(),
+            2,
+            "笔画的先后顺序就是符号身份，不能被打乱"
+        );
+
+        // 坏的一笔单独丢、超出上限的笔丢；好笔保持原顺序。
+        let draw = cfg.draw.as_mut().unwrap();
+        draw.symbols[0].strokes = vec![
+            vec![[0, 0], [10, 10]],
+            vec![[20, 20]], // 只有一个点 → 丢
+            vec![[30, 30], [40, 40]],
+            vec![[50, 50], [60, 60]], // 第 4 笔 → 超出上限
+        ];
+        let (clean, ignored) = sanitize_config(&cfg);
+        let s = &clean.draw.as_ref().unwrap().symbols[0];
+        assert_eq!(
+            s.strokes.len(),
+            DRAW_SYMBOL_MAX_STROKES,
+            "ignored: {}",
+            ignored.join("; ")
+        );
+        assert_eq!(
+            s.strokes[1],
+            vec![[30, 30], [40, 40]],
+            "坏笔丢掉后剩下的笔顺序不能乱"
+        );
+
+        // 一笔都不合法 → 整个符号丢，连带它的绑定（不留取不出来的键）。
+        let draw = cfg.draw.as_mut().unwrap();
+        draw.symbols[0].strokes = vec![vec![[1, 1]], vec![[2, 2]]];
+        let (clean, ignored) = sanitize_config(&cfg);
+        let cleaned = clean.draw.as_ref().unwrap();
+        assert!(
+            cleaned.symbols.is_empty(),
+            "ignored: {}",
+            ignored.join("; ")
+        );
+        assert!(
+            !cleaned.bindings.contains_key("u:two"),
+            "符号没了，绑定也不能留"
+        );
+    }
+
+    #[test]
     fn sanitize_drops_bad_symbols_and_dangling_bindings() {
         let mut cfg = cfg_with_draw(&[
             ("u:a", " 备份 "),
@@ -5946,28 +6044,30 @@ mod draw_config_tests {
         draw.symbols.push(DrawSymbol {
             id: "  ".into(),
             name: Some("没 id".into()),
-            ..Default::default()
+            strokes: Vec::new(),
         });
         draw.symbols.push(DrawSymbol {
             id: "u:short".into(),
             name: Some("一个点".into()),
-            points: vec![[500, 500]],
-            ..Default::default()
+            strokes: vec![vec![[500, 500]]],
         });
         draw.symbols.push(symbol("u:a", "重复"));
         // 坐标越界：钳进 0~1000，不整条丢。
         draw.symbols.push(DrawSymbol {
             id: "u:big".into(),
             name: Some(" 越界 ".into()),
-            points: vec![[-50, 1200], [500, 500]],
-            ..Default::default()
+            strokes: vec![vec![[-50, 1200], [500, 500]]],
         });
 
         let (clean, ignored) = sanitize_config(&cfg);
         let draw = clean.draw.as_ref().unwrap();
         let ids: Vec<&str> = draw.symbols.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec!["u:a", "u:big"], "ignored: {}", ignored.join("; "));
-        assert_eq!(draw.symbols[1].points[0], [0, 1000], "坐标要钳进 0~1000");
+        assert_eq!(
+            draw.symbols[1].strokes[0][0],
+            [0, 1000],
+            "坐标要钳进 0~1000"
+        );
         assert_eq!(draw.symbols[1].name.as_deref(), Some("越界"), "名字去空白");
         assert_eq!(
             draw.bindings.get("u:a").map(String::as_str),

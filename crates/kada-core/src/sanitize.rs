@@ -616,9 +616,9 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         out.wheel_edges.push(item);
     }
 
-    // 画符号（安卓 P2b）：id 必填且唯一、笔画至少两点、坐标钳进 0~1000、条数与点数都有上限。
-    // 绑定只保留指向**存在符号**的键；指向已删 / 已停用快捷键的绑定**不在这里删**——
-    // 那是「已失效」，面板要看得见（不能默默解绑），由冲突检测报 Warn。
+    // 画符号（安卓 P3）：id 必填且唯一、每笔至少两点、笔数与每笔点数都有上限、
+    // 坐标钳进 0~1000。绑定只保留指向**存在符号**的键；指向已删 / 已停用快捷键的绑定
+    // **不在这里删**——那是「已失效」，面板要看得见（不能默默解绑），由冲突检测报 Warn。
     if let Some(draw) = &cfg.draw {
         let mut symbols: Vec<DrawSymbol> = Vec::new();
         for s in &draw.symbols {
@@ -638,25 +638,46 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 ));
                 continue;
             }
-            if s.points.len() < 2 {
-                ignored.push(format!("画符号「{label}」已忽略：笔画不足两个点"));
-                continue;
+            // 逐笔清洗：坏的一笔单独丢（并报出来），别把整个符号判死——除非一笔都不剩。
+            let mut strokes: Vec<Vec<[i16; 2]>> = Vec::new();
+            for (index, stroke) in s.strokes.iter().enumerate() {
+                if strokes.len() >= DRAW_SYMBOL_MAX_STROKES {
+                    ignored.push(format!(
+                        "画符号「{label}」的第 {} 笔已忽略：最多 {DRAW_SYMBOL_MAX_STROKES} 笔",
+                        index + 1
+                    ));
+                    continue;
+                }
+                if stroke.len() < 2 {
+                    ignored.push(format!(
+                        "画符号「{label}」的第 {} 笔已忽略：不足两个点",
+                        index + 1
+                    ));
+                    continue;
+                }
+                let mut points: Vec<[i16; 2]> = stroke
+                    .iter()
+                    .map(|p| {
+                        [
+                            p[0].clamp(0, DRAW_POINTS_SCALE),
+                            p[1].clamp(0, DRAW_POINTS_SCALE),
+                        ]
+                    })
+                    .collect();
+                if points.len() > DRAW_STROKE_MAX_POINTS {
+                    points.truncate(DRAW_STROKE_MAX_POINTS);
+                    ignored.push(format!(
+                        "画符号「{label}」的第 {} 笔超过 {DRAW_STROKE_MAX_POINTS} 点，多余的点已忽略",
+                        index + 1
+                    ));
+                }
+                strokes.push(points);
             }
-            let mut points: Vec<[i16; 2]> = s
-                .points
-                .iter()
-                .map(|p| {
-                    [
-                        p[0].clamp(0, DRAW_POINTS_SCALE),
-                        p[1].clamp(0, DRAW_POINTS_SCALE),
-                    ]
-                })
-                .collect();
-            if points.len() > DRAW_SYMBOL_MAX_POINTS {
-                points.truncate(DRAW_SYMBOL_MAX_POINTS);
+            if strokes.is_empty() {
                 ignored.push(format!(
-                    "画符号「{label}」的笔画超过 {DRAW_SYMBOL_MAX_POINTS} 点，多余的点已忽略"
+                    "画符号「{label}」已忽略：没有一条含两个点以上的笔画"
                 ));
+                continue;
             }
             let name = s
                 .name
@@ -664,12 +685,7 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
                 .map(|n| n.trim().to_string())
                 .filter(|n| !n.is_empty())
                 .map(|n| n.chars().take(24).collect::<String>());
-            symbols.push(DrawSymbol {
-                id,
-                name,
-                closed: s.closed,
-                points,
-            });
+            symbols.push(DrawSymbol { id, name, strokes });
         }
 
         let mut bindings: BTreeMap<String, String> = BTreeMap::new();

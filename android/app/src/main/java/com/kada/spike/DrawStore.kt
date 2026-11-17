@@ -39,18 +39,22 @@ object DrawStore {
     )
 
     /**
-     * 用户自己录的符号（P2）：模板就是他画的那一笔，**不判方向**。
+     * 用户自己录的符号（P2 / P3）：模板就是他当场画的那几笔，**不判方向**。
      *
      * 为什么存原始笔画而不是归一化后的 32 点：归一化算法以后可能调（点数 / 缩放口径），
      * 存原始点意味着老的自定义符号能跟着新算法重新归一化；代价是文件大一点（一笔最多几百点）。
+     * 多笔画**按画的先后顺序**存——顺序就是符号身份。
      */
     data class Custom(
         val id: String,
         val label: String,
-        val points: List<DollarOne.Pt>,
-        val closed: Boolean,
+        val strokes: List<List<DollarOne.Pt>>,
     ) {
         val glyph: String get() = label.trim().take(1).ifBlank { "✎" }
+
+        val strokeCount: Int get() = strokes.size
+
+        val pointCount: Int get() = strokes.sumOf { it.size }
 
         fun toSymbol(): Symbol = Symbol(id, label, glyph, id, 0)
     }
@@ -77,6 +81,9 @@ object DrawStore {
     /** 自定义符号上限：再多就该用面板了，也防止有人误操作把识别拖慢到一帧一次重算。 */
     private const val MAX_CUSTOM = 24
 
+    /** 一个符号最多几笔：与 core 的 `DRAW_SYMBOL_MAX_STROKES` 一致。 */
+    const val MAX_STROKES = 3
+
     /** 自定义符号的 id 前缀：与 13 个预设类别名（circle / triangle / …）天然不撞。 */
     private const val CUSTOM_PREFIX = "u:"
 
@@ -88,6 +95,9 @@ object DrawStore {
 
     /** 方向容差：扇区中心 ±35°，45° 附近一定落在两扇区之间 → 拒绝。 */
     private const val TOLERANCE_DEG = 35.0
+
+    /** 前一笔记画板判断「还可能接成更长的符号」的门槛（只决定要不要多等 0.7 秒，不影响执行）。 */
+    private const val CONTINUE_SCORE = 0.80
 
     // ------------------------------------------------------------------
     // 预设符号表
@@ -151,9 +161,9 @@ object DrawStore {
         "en" to path(0.10, 0.92, 0.10, 0.08, 0.90, 0.92, 0.90, 0.08),
     )
 
-    private val presetTemplates: List<DollarOne.Template> by lazy {
+    private val presetTemplates: List<DollarOne.Shape> by lazy {
         canonicalPaths.mapNotNull { (cls, pts) ->
-            DollarOne.template(
+            DollarOne.shape(
                 cls = cls,
                 directional = cls !in orientationFree,
                 path = pts,
@@ -173,7 +183,7 @@ object DrawStore {
     private var customCacheKey: String = ""
 
     /** 模板缓存跟着符号列表的**实例**走：符号列表被重算过，模板也得重算。 */
-    private var templateCache: List<DollarOne.Template>? = null
+    private var templateCache: List<DollarOne.Shape>? = null
     private var templateSource: List<Custom>? = null
 
     /** 自检用的临时符号：不落盘，跑完立刻清掉。 */
@@ -195,14 +205,23 @@ object DrawStore {
         return loaded
     }
 
-    /** 预设模板 + 自定义模板；自定义一律 `directional = false`（θ 不稳定，也不该判方向）。 */
+    /**
+     * 预设模板 + 自定义模板；自定义一律 `directional = false`（θ 不稳定，也不该判方向）。
+     *
+     * 自定义符号按**笔数**建 Shape：单笔画与以前一样，多笔画按画的先后顺序逐笔比。
+     * 每笔的「闭合」由点自己算（[DollarOne.isClosed]）——配置里不存这个字段。
+     */
     @Synchronized
-    private fun allTemplates(): List<DollarOne.Template> {
+    private fun allTemplates(): List<DollarOne.Shape> {
         val list = custom()
         val cached = templateCache
         if (cached != null && templateSource === list) return cached
         val all = presetTemplates + list.mapNotNull { c ->
-            DollarOne.template(c.id, directional = false, path = c.points, closed = c.closed)
+            val strokes = c.strokes.mapNotNull { path ->
+                DollarOne.template(c.id, false, path, DollarOne.isClosed(path))
+            }
+            // 有一笔归一化不出来（点太少）就整条跳过：半份模板只会认错。
+            if (strokes.size == c.strokes.size) DollarOne.Shape(c.id, false, strokes) else null
         }
         templateCache = all
         templateSource = list
@@ -301,15 +320,23 @@ object DrawStore {
 
     fun symbolById(id: String): Symbol? = symbolsById[id] ?: custom().firstOrNull { it.id == id }?.toSymbol()
 
-    /** 记住一条笔画。返回新符号的 id；失败返回空串并写 [lastError]。 */
-    fun learn(points: List<DollarOne.Pt>, label: String): String {
-        val clean = points.filter { it.x.isFinite() && it.y.isFinite() }
-        if (clean.size < 2) return learnFail("笔画太短：至少画一条线段")
-        if (DollarOne.normalize(clean) == null) return learnFail("笔画太短：至少画一条线段")
+    /**
+     * 记住一串笔画（1~[MAX_STROKES] 笔，**按画的先后顺序**）。
+     * 返回新符号的 id；失败返回空串并写 [lastError]。
+     */
+    fun learn(strokes: List<List<DollarOne.Pt>>, label: String): String {
+        val clean = strokes
+            .map { stroke -> stroke.filter { it.x.isFinite() && it.y.isFinite() } }
+            .filter { it.size >= 2 && DollarOne.normalize(it) != null }
+        if (clean.isEmpty()) return learnFail("笔画太短：至少画一条线段")
+        if (clean.size > MAX_STROKES) {
+            return learnFail("最多记 $MAX_STROKES 笔，这次画了 ${clean.size} 笔")
+        }
         val existing = persistedCustom()
         if (existing.size >= MAX_CUSTOM) return learnFail("自定义符号最多 $MAX_CUSTOM 个，先删几个")
 
         // 与已有符号「几乎一样」就别收了：两份都留着只会让每次识别都在边界上抖。
+        // 多笔画要求笔数相同，所以这条对多笔画同样成立（不会拿一笔的圆挡住「圆 + 竖」）。
         val result = DollarOne.recognize(clean, allTemplates(), TOLERANCE_DEG)
         val best = result?.ranked?.firstOrNull()
         if (best != null && best.score >= 0.90) {
@@ -318,17 +345,36 @@ object DrawStore {
 
         val id = CUSTOM_PREFIX + System.currentTimeMillis().toString(36)
         val name = label.trim().ifEmpty { "自定义 ${existing.size + 1}" }.take(12)
-        val first = clean.first()
-        val last = clean.last()
-        val total = clean.zipWithNext().sumOf { (a, b) -> hypot(b.x - a.x, b.y - a.y) }
-        val closed = total > 1e-9 && hypot(last.x - first.x, last.y - first.y) <= total * 0.15
-
-        val list = persistedCustom() + Custom(id, name, clean.map { DollarOne.Pt(round4(it.x), round4(it.y)) }, closed)
+        val stored = clean.map { stroke -> stroke.map { DollarOne.Pt(round4(it.x), round4(it.y)) } }
+        val list = persistedCustom() + Custom(id, name, stored)
         if (!persistDraw(symbols = list, bindings = bindings())) return ""
         invalidate()
         lastError = ""
-        Log.i(SpikeState.TAG, "draw learn $id $name closed=$closed points=${clean.size}")
+        Log.i(
+            SpikeState.TAG,
+            "draw learn $id $name strokes=${stored.size} points=${clean.sumOf { it.size }}",
+        )
         return id
+    }
+
+    /**
+     * 这一串笔画还可能接成更长的符号吗（画板据此决定「抬手就执行」还是「等一下」）。
+     *
+     * 没有多笔画符号时恒为 false——单笔画手势保持「抬手即执行」，一分延迟都不加；
+     * 有更长的符号且前几笔对得上，就值得等 0.7 秒：等错只是慢一拍，认错却是执行错的快捷键。
+     */
+    @Synchronized
+    fun mayContinue(strokes: List<List<DollarOne.Pt>>): Boolean {
+        if (strokes.isEmpty() || strokes.size >= MAX_STROKES) return false
+        val drawn = strokes.mapNotNull { DollarOne.normalize(it) }
+        if (drawn.size != strokes.size) return false
+        return custom().any { c ->
+            c.strokes.size > drawn.size && drawn.indices.all { i ->
+                val path = c.strokes[i]
+                val t = DollarOne.template(c.id, false, path, DollarOne.isClosed(path))
+                t != null && (DollarOne.strokeScore(drawn[i], t) ?: 0.0) >= CONTINUE_SCORE
+            }
+        }
     }
 
     /** 删掉一个自定义符号（绑定一起清掉，否则会留下取不出来的键）。**一次写盘**做完两件事。 */
@@ -353,20 +399,25 @@ object DrawStore {
                 val obj = arr.optJSONObject(i) ?: continue
                 // 只认 `u:` 前缀：安卓自己发的 id，桌面端只透传（那边没有识别器）。
                 val id = obj.optString("id").trim().takeIf { it.startsWith(CUSTOM_PREFIX) } ?: continue
-                val pts = ArrayList<DollarOne.Pt>()
-                val arrPts = obj.optJSONArray("points") ?: continue
-                for (j in 0 until arrPts.length()) {
-                    val pair = arrPts.optJSONArray(j) ?: continue
-                    if (pair.length() != 2) continue
-                    pts.add(DollarOne.Pt(pair.optInt(0) / POINT_SCALE, pair.optInt(1) / POINT_SCALE))
+                val strokes = ArrayList<List<DollarOne.Pt>>()
+                val arrStrokes = obj.optJSONArray("strokes")
+                if (arrStrokes != null) {
+                    for (k in 0 until arrStrokes.length()) {
+                        val stroke = parsePointArray(arrStrokes.optJSONArray(k), POINT_SCALE, intCoords = true)
+                            ?: continue
+                        strokes.add(stroke)
+                    }
+                } else {
+                    // P2b（单笔画）写的是符号级 `points`：读成一条笔画，别把老符号丢掉。
+                    parsePointArray(obj.optJSONArray("points"), POINT_SCALE, intCoords = true)
+                        ?.let { strokes.add(it) }
                 }
-                if (pts.size < 2) continue
+                if (strokes.isEmpty()) continue
                 parsed.add(
                     Custom(
                         id = id,
                         label = obj.optString("name").ifBlank { "自定义" },
-                        points = pts,
-                        closed = obj.optBoolean("closed", false),
+                        strokes = strokes,
                     ),
                 )
             }
@@ -398,18 +449,43 @@ object DrawStore {
         return saveConfig(cfg, "画符号")
     }
 
-    /** 一条自定义符号的 JSON 形态（点坐标量化成 0~1000 的整数，与 core 的 `DRAW_POINTS_SCALE` 同口径）。 */
+    /** 一条自定义符号的 JSON 形态（笔画的点量化成 0~1000 的整数，与 core 的 `DRAW_POINTS_SCALE` 同口径）。 */
     private fun customJson(c: Custom): JSONObject {
-        val pts = JSONArray()
-        for (p in c.points) {
-            pts.put(JSONArray().put(quantize(p.x)).put(quantize(p.y)))
+        val strokes = JSONArray()
+        for (stroke in c.strokes) {
+            val pts = JSONArray()
+            for (p in stroke) {
+                pts.put(JSONArray().put(quantize(p.x)).put(quantize(p.y)))
+            }
+            strokes.put(pts)
         }
         return JSONObject().apply {
             put("id", c.id)
             put("name", c.label)
-            put("closed", c.closed)
-            put("points", pts)
+            put("strokes", strokes)
         }
+    }
+
+    /**
+     * 一组点 → 点序列。`scale` = 坐标的除数：配置里是 0~1000 的整数（[POINT_SCALE]），
+     * P2a 的 prefs 里是 0~1 的浮点（1.0）。少于两个点返回 null（不成笔画）。
+     */
+    private fun parsePointArray(
+        arr: JSONArray?,
+        scale: Double,
+        intCoords: Boolean,
+    ): List<DollarOne.Pt>? {
+        if (arr == null) return null
+        val out = ArrayList<DollarOne.Pt>(arr.length())
+        for (i in 0 until arr.length()) {
+            val pair = arr.optJSONArray(i) ?: continue
+            if (pair.length() != 2) continue
+            val x = if (intCoords) pair.optInt(0) / scale else pair.optDouble(0, Double.NaN) / scale
+            val y = if (intCoords) pair.optInt(1) / scale else pair.optDouble(1, Double.NaN) / scale
+            if (!x.isFinite() || !y.isFinite()) continue
+            out.add(DollarOne.Pt(x, y))
+        }
+        return if (out.size >= 2) out else null
     }
 
     private fun persistBindings(map: Map<String, String>) {
@@ -515,20 +591,13 @@ object DrawStore {
             for (i in 0 until arr.length()) {
                 val obj = arr.optJSONObject(i) ?: continue
                 val id = obj.optString("id").trim().takeIf { it.startsWith(CUSTOM_PREFIX) } ?: continue
-                val pts = ArrayList<DollarOne.Pt>()
-                val arrPts = obj.optJSONArray("points") ?: continue
-                for (j in 0 until arrPts.length()) {
-                    val pair = arrPts.optJSONArray(j) ?: continue
-                    if (pair.length() != 2) continue
-                    pts.add(DollarOne.Pt(pair.optDouble(0), pair.optDouble(1)))
-                }
-                if (pts.size < 2) continue
+                // P2a 的 prefs 里是单笔画（浮点 0~1）：搬进配置就是一条笔画。
+                val points = parsePointArray(obj.optJSONArray("points"), 1.0, intCoords = false) ?: continue
                 out.add(
                     Custom(
                         id = id,
                         label = obj.optString("label").ifBlank { "自定义" },
-                        points = pts,
-                        closed = obj.optBoolean("closed", false),
+                        strokes = listOf(points),
                     ),
                 )
             }
@@ -548,9 +617,17 @@ object DrawStore {
     // 识别 / 执行
     // ------------------------------------------------------------------
 
-    fun recognize(points: List<DollarOne.Pt>): Outcome {
-        val result = DollarOne.recognize(points, allTemplates(), TOLERANCE_DEG)
-            ?: return Outcome(null, "笔画太短：至少画一条线段", 0.0)
+    fun recognize(strokes: List<List<DollarOne.Pt>>): Outcome {
+        val result = DollarOne.recognize(strokes, allTemplates(), TOLERANCE_DEG)
+        if (result == null) {
+            val usable = strokes.count { DollarOne.normalize(it) != null }
+            val reason = if (usable == 0) {
+                "笔画太短：至少画一条线段"
+            } else {
+                "认不出这 $usable 笔（没有形状对得上的符号）"
+            }
+            return Outcome(null, reason, 0.0)
+        }
 
         // 只让「这个方向真的有预设符号」的候选参与竞争：Z 转 90° 很像 N，但 N 只有 0°
         // 这一档——转 90° 的 N 不该把 Z 挤下去（每类只有一个符号时这条尤其重要）。
@@ -596,9 +673,9 @@ object DrawStore {
         return Outcome(symbol, "", best.score)
     }
 
-    /** 识别 + 执行一条绑定；返回的 [Outcome.symbol] 非空即代表认出来了（执行结果看 [Outcome.runOk]）。 */
-    fun runPath(points: List<DollarOne.Pt>, source: String = "draw"): Outcome {
-        val outcome = recognize(points)
+    /** 识别 + 执行一串笔画；返回的 [Outcome.symbol] 非空即代表认出来了（执行结果看 [Outcome.runOk]）。 */
+    fun runPath(strokes: List<List<DollarOne.Pt>>, source: String = "draw"): Outcome {
+        val outcome = recognize(strokes)
         val symbol = outcome.symbol
         if (symbol == null) {
             lastSymbol = ""
@@ -627,16 +704,25 @@ object DrawStore {
         return true
     }
 
-    /** adb 用：`0.1,0.2;0.5,0.9`（0~1 归一化坐标）→ 点序列。 */
-    fun parsePath(raw: String): List<DollarOne.Pt> {
-        val out = ArrayList<DollarOne.Pt>()
-        for (chunk in raw.split(';')) {
-            if (chunk.isBlank()) continue
-            val xy = chunk.split(',')
-            if (xy.size != 2) continue
-            val x = xy[0].trim().toDoubleOrNull() ?: continue
-            val y = xy[1].trim().toDoubleOrNull() ?: continue
-            out.add(DollarOne.Pt(x, y))
+    /**
+     * adb 用：`0.1,0.2;0.5,0.9|0.5,0.1;0.5,0.9`（0~1 归一化坐标）→ 笔画列表。
+     *
+     * `|` 分隔笔画、`;` 分隔点——P3 起一次手势可以是多笔，顺序就是符号身份。
+     * 设备侧 shell 会把未加引号的 `;` 当命令分隔符，因此广播里必须整串加引号。
+     */
+    fun parseStrokes(raw: String): List<List<DollarOne.Pt>> {
+        val out = ArrayList<List<DollarOne.Pt>>()
+        for (part in raw.split('|')) {
+            val stroke = ArrayList<DollarOne.Pt>()
+            for (chunk in part.split(';')) {
+                if (chunk.isBlank()) continue
+                val xy = chunk.split(',')
+                if (xy.size != 2) continue
+                val x = xy[0].trim().toDoubleOrNull() ?: continue
+                val y = xy[1].trim().toDoubleOrNull() ?: continue
+                stroke.add(DollarOne.Pt(x, y))
+            }
+            if (stroke.isNotEmpty()) out.add(stroke)
         }
         return out
     }
@@ -655,8 +741,8 @@ object DrawStore {
         val cases = JSONArray()
         var failed = 0
 
-        fun add(name: String, want: String?, points: List<DollarOne.Pt>) {
-            val outcome = recognize(points)
+        fun addStrokes(name: String, want: String?, strokes: List<List<DollarOne.Pt>>) {
+            val outcome = recognize(strokes)
             val got = outcome.symbol?.id.orEmpty()
             val expect = want.orEmpty()
             val ok = got == expect
@@ -666,12 +752,13 @@ object DrawStore {
                 put("want", expect)
                 put("got", got)
                 put("ok", ok)
+                put("strokes", strokes.size)
                 put("score", round3(outcome.score))
                 put("reason", outcome.reason)
             }
             if (!ok) {
                 // 失败时把前几名连同 θ / 扇区一起写进报告：真机上调阈值全靠这几行
-                val raw = DollarOne.recognize(points, allTemplates(), TOLERANCE_DEG)
+                val raw = DollarOne.recognize(strokes, allTemplates(), TOLERANCE_DEG)
                 if (raw != null) {
                     val top = (raw.ranked + raw.edgeRejected).sortedByDescending { it.score }.take(4)
                     val rank = JSONArray()
@@ -693,6 +780,10 @@ object DrawStore {
             }
             cases.put(item)
         }
+
+        /** 单笔画用例的便捷写法（绝大多数预设用例都是它）。 */
+        fun add(name: String, want: String?, points: List<DollarOne.Pt>) =
+            addStrokes(name, want, listOf(points))
 
         // 1) 每个预设符号：把模板转到它自己的方向，加 1.2% 抖动 —— 必须认回自己
         symbols.forEachIndexed { index, symbol ->
@@ -726,13 +817,30 @@ object DrawStore {
         // 7) 自定义画法：走与「用户录一个符号」同一条路（模板从 Custom 建，只是不落盘）。
         //    形状选「楼梯」——13 个预设里没有，避免这条用例被预设抢走而失去意义。
         val stairs = path(0.10, 0.85, 0.10, 0.50, 0.45, 0.50, 0.45, 0.15, 0.90, 0.15)
-        ephemeral = listOf(Custom("$CUSTOM_PREFIX selftest", "自检楼梯", stairs, closed = false))
+        // 8) 多笔画：圆 + 竖。两笔都不陌生，但**顺序**与**笔数**才是身份。
+        val circleStroke = circlePath()
+        val barStroke = path(0.50, 0.05, 0.50, 0.95)
+        val circleBar = listOf(circleStroke, barStroke)
+        ephemeral = listOf(
+            Custom("$CUSTOM_PREFIX selftest", "自检楼梯", listOf(stairs)),
+            Custom("$CUSTOM_PREFIX selftest2", "自检圆竖", circleBar),
+        )
         invalidate()
         try {
             add("custom:hit", "$CUSTOM_PREFIX selftest", jitter(stairs, 0.012, 77))
             // 自定义符号不判方向：转 30° 仍该认出来（预设的三角在这里会被 45° 边界拒掉）
             add("custom:tilt", "$CUSTOM_PREFIX selftest", rotatePath(stairs, 30.0))
             add("custom:miss", null, path(0.10, 0.20, 0.80, 0.10, 0.20, 0.70, 0.90, 0.60))
+            // 多笔画：逐笔配、顺序即身份。
+            addStrokes(
+                "multi:hit",
+                "$CUSTOM_PREFIX selftest2",
+                circleBar.mapIndexed { i, stroke -> jitter(stroke, 0.012, 91 + i) },
+            )
+            // 只画第一笔：多笔画符号不参与，应该回到「圆」这个单笔画预设
+            addStrokes("multi:single", "circle", listOf(jitter(circleStroke, 0.012, 93)))
+            // 顺序反了 = 另一个符号（没有这个符号 → 不执行）
+            addStrokes("multi:reversed", null, listOf(barStroke, circleStroke))
         } finally {
             ephemeral = emptyList()
             invalidate()
@@ -757,6 +865,20 @@ object DrawStore {
         put("templates", presetTemplates.size)
         put("custom", custom().size)
         put("customIds", JSONArray(custom().map { it.id }))
+        // P3：多笔画符号的笔数与总点数（verify.ps1 断言「圆 + 竖」确实存成两笔）
+        put(
+            "customList",
+            JSONArray(
+                custom().map { c ->
+                    JSONObject().apply {
+                        put("id", c.id)
+                        put("label", c.label)
+                        put("strokes", c.strokeCount)
+                        put("points", c.pointCount)
+                    }
+                },
+            ),
+        )
         put("bindings", JSONObject(bindings() as Map<*, *>))
         // P2b：画符号现在存在配置的 `draw` 段里（不再是 SharedPreferences）
         put("store", "config")

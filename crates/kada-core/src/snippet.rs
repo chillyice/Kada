@@ -756,14 +756,12 @@ mod tests {
                 crate::DrawSymbol {
                     id: "u:backup".into(),
                     name: Some("备份星".into()),
-                    closed: false,
-                    points: vec![[100, 900], [500, 100], [900, 900]],
+                    strokes: vec![vec![[100, 900], [500, 100], [900, 900]]],
                 },
                 crate::DrawSymbol {
                     id: "u:other".into(),
                     name: Some("没人要".into()),
-                    closed: false,
-                    points: vec![[100, 100], [900, 900]],
+                    strokes: vec![vec![[100, 100], [900, 900]]],
                 },
             ],
             bindings: [

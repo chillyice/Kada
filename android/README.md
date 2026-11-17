@@ -5,7 +5,7 @@ Android 版前几个阶段的**探针工程**（docs/安卓版规划.md §6 / §
 - **S0**：纯 Kotlin + 无障碍服务 + 前台服务，把「安卓上到底能不能收键 / 吞键 / 判定 / 常驻」用真机数据证伪或证实。
 - **S1**：判定搬进 Rust（`crates/kada-android` 复用 `kada-core`，与桌面同一份规则），配置落盘复用 `kada_core::config_io`，导入 / 导出走 SAF。
 - **S2**：手机档——悬浮球 / 快捷面板 / 磁贴 / 通知 + 音量键，四类触发源共用一个总闸与一条动作执行链。
-- **S2b**：画符号——长按悬浮球画一笔（17 个预设符号 + 自己录的符号），识别后执行绑定的快捷键。
+- **S2b**：画符号——长按悬浮球画 1~3 笔（17 个预设符号 + 自己录的符号），识别后执行绑定的快捷键。
 
 目的仍然不是做产品，而是把每一条「安卓能不能」的结论钉在证据上。
 
@@ -28,10 +28,10 @@ android/
     ActionRunner.kt          把 Rust 返回的「命中条目」变成动作：open_url / text / clipboard / pause / 禁用
     KeyNames.kt              安卓 keycode ↔ core `Key` 名（必须与 core 逐字一致）
     BubbleService.kt         S2 悬浮球 + 快捷面板（+ S2b 长按开画板）
-    DollarOne.kt             S2b $1 识别器（重采样 / 归一化 / 旋转 + 方向扇区 / 起点与笔顺不敏感）
-    DrawStore.kt             S2b 符号表 / 绑定 / 执行 / 自检（预设 17 个符号，13 个形状类别；+ 自定义画法 max 24）
-    DrawPadView.kt           S2b 画板（收手指轨迹，抬手归一化到 0~1）
-    DrawBoardView.kt         S2b 画板浮层（长按悬浮球弹出，点空白取消）
+    DollarOne.kt             S2b $1 识别器（重采样 / 归一化 / 旋转 + 方向扇区 / 起点与笔顺不敏感 / 多笔画逐笔配）
+    DrawStore.kt             S2b 符号表 / 绑定 / 执行 / 自检（预设 17 个符号，13 个形状类别；+ 自定义画法 1~3 笔，max 24）
+    DrawPadView.kt           S2b 画板（收手指轨迹，累积 1~3 笔，抬手归一化到 0~1）
+    DrawBoardView.kt         S2b 画板浮层（长按悬浮球弹出，多笔画等 0.7 秒，点空白取消）
     KadaTileService.kt       S2 快捷设置磁贴（亮 = 接管 / 灰 = 暂停）
     HeartbeatService.kt      前台服务 + 常驻通知 + 心跳日志（S0-4）
     TierProbe.kt             档位探测（root / /dev/uinput / 物理键盘）
@@ -187,41 +187,55 @@ adb shell am start -n com.kada.spike/.MainActivity
 - **音量键当触发源**：无障碍能收到音量键，配成 `shortcuts` 的触发键后**命中即吞**、音量不变；
   没绑条目时照常调音量。
 
-### S2b 段（画符号：单笔画手势当触发源）
+### S2b 段（画符号：手势当触发源；P3 起一个符号 1~3 笔）
 
 面板能列出的条目有限，手机上「想马上用一个不常用动作」还要滑面板。画符号是单手指能做到、
-又能一眼记住的入口：**长按悬浮球 → 画一笔 → 抬手执行**。
+又能一眼记住的入口：**长按悬浮球 → 画 1~3 笔 → 抬手执行**。
 
-- **识别器**（`DollarOne`）：$1 Unistroke Recognizer 的 Kotlin 版（纯计算、零依赖、单笔画）。
+- **识别器**（`DollarOne`）：$1 Unistroke Recognizer 的 Kotlin 版（纯计算、零依赖）。
   与论文原版三处差异都是为「四个方向的三角」这类需求服务的：
   1. 旋转搜索放到**整圈**（原版只在 ±45° 内微调），再拿最优旋转角 θ 判方向；
   2. 起点 / 笔顺不敏感——**反向**对全部形状生效，**循环移位**只对闭合回路（圆 / 菱形 / 星 / 三角）
      生效（开放折线移位后是另一条乱线）；
   3. 方向按 **90° 扇区**量化，θ 落在扇区中心 ±35° 内才算数；落在两扇区中间（约 45°）
      直接返回「方向不明确」——**猜错方向比不识别更糟**。
+- **多笔画**（P3）：一个符号可以有 **1~3 笔**，**笔数与画的先后顺序就是身份**（「圆 + 竖」≠「竖 + 圆」）。
+  每笔各自归一化，只比形状与顺序、不比相对位置 / 大小。匹配规则：
+  - **单笔画符号**（全部预设 + 用户录的一笔画）只接受「只画了一笔」的手势——多笔画手势
+    不拿第一笔去猜三角，宁可没反应；
+  - **多笔画符号**要求笔数相同、逐笔配，总分取各笔平均；另加**单笔下限** `STROKE_FLOOR = 0.72`
+    （只卡总分的话「一笔完美 + 一笔乱涂」会靠平均混过去）；
+  - 画板抬手时若 `DrawStore.mayContinue` 说「还有更长的符号对得上」（存在更长符号且前几笔
+    得分 ≥ `CONTINUE_SCORE = 0.80`），**等 700ms** 再提交，期间起新笔就取消定时器；
+    没有多笔画符号时恒为立即提交——单笔画体验零回归。
 - **符号表**（`DrawStore`）：17 个预设符号 / 13 个形状类别：○ 圆、◇ 菱形、☆ 五角星、✓ 勾、
   △▽◁▷ 四向三角、V、Z、S、L、C、U、M、W、N。**方向只在有多个符号的形状上有意义**
   （圆 / 菱形 / 星 / 勾的 θ 不稳定，不判方向）。
 - **绑定**：符号 → **现有快捷键的条目名**（不新建动作链，复用面板 / 音量键那条执行链）。
   只接受**启用中**的条目名；绑定值存名字不存下标，删条目不会让别的绑定串位。
-- **落盘**（P2b）：符号与绑定进**配置**的 `draw` 段（`kada_core::DrawConfig`）——
-  `draw.symbols` 存原始笔画（点坐标量化成 `[i16;2]`、0~1000，`DRAW_POINTS_SCALE`；
-  上限 512 点 / 24 个符号）、`draw.bindings` 是「符号 id → 条目名」。
+- **落盘**（P2b / P3）：符号与绑定进**配置**的 `draw` 段（`kada_core::DrawConfig`）——
+  `draw.symbols[].strokes` 是**嵌套数组**（`[[[x,y],…], …]`，按画的先后顺序；点坐标量化成
+  `[i16;2]`、0~1000，`DRAW_POINTS_SCALE`；每笔上限 512 点 `DRAW_STROKE_MAX_POINTS`、
+  每符号上限 3 笔 `DRAW_SYMBOL_MAX_STROKES`、共 24 个符号）、`draw.bindings` 是「符号 id → 条目名」。
   写盘走 `RustBridge.save`（`kada_core::sanitize_config` + `config_io` 原子写），
   **不另开写盘路径**；因此换机 / 导出 / 卡带都能带走，桌面端原样透传（不执行、界面无入口）。
+  P2b 的单笔画格式（符号级 `points` + `closed`）照样读得进来（并成一条笔画）；
   P2a 落在 `SharedPreferences("kada-draw")` 的旧数据，在首次读符号时按「补空缺」合并进配置再清旧键。
-- **自定义画法**（P2a，面板「录自定义」）：13 个预设不够用时，用户可以**教它认自己的符号**——
-  画一次 + 起个名，模板就是他画的那一笔。三条取舍：
+- **自定义画法**（P2a / P3，面板「录自定义」）：13 个预设不够用时，用户可以**教它认自己的符号**——
+  画 1~3 笔 + 起个名，模板就是他画的那几笔。三条取舍：
   1. 存**原始笔画**（0~1、四位小数）而不是归一化后的 32 点，以后改归一化口径老符号能跟着走；
-  2. 自定义符号**不判方向**（θ 对随手画的形状不稳，也没必要），所以匹配只比形状；
+  2. 自定义符号**不判方向**（θ 对随手画的形状不稳，也没必要），所以匹配只比形状与笔顺；
   3. 与已有符号「几乎一样」（分 ≥ 0.90）的笔画**直接拒收**——两份模板都留着，每次识别都会在边界上抖。
+  「闭合回路」不落盘，由点自己算（起笔与收笔距 ≤ 总长 15%，`DollarOne.isClosed`）。
   上限 24 个，id 前缀 `u:`（与 13 个预设类别名不撞）；删除时**连绑定一起删**（同一次写盘）。
 - **阈值**（都得真跑一遍才作数，所以自检在设备上跑）：匹配分 ≥ 0.80、前两名差距 ≥ 0.04、
-  方向容差 ±35°。只有「该方向真的有预设符号」的候选才参与竞争——否则 Z 转 90° 会被 N 挤掉。
-- **自检**（`op drawSelfTest` → 报告 `phone.draw.selfTest`）：31 项——17 个预设各自带 1.2% 抖动
+  方向容差 ±35°、多笔画单笔下限 0.72。只有「该方向真的有预设符号」的候选才参与竞争——
+  否则 Z 转 90° 会被 N 挤掉。
+- **自检**（`op drawSelfTest` → 报告 `phone.draw.selfTest`）：**34 项**——17 个预设各自带 1.2% 抖动
   认回自己、±20° 歪画仍算同向、44° 必须拒绝、四向三角用**手写坐标**独立构造（不复用旋转函数，
   免得把符号约定错在同一个地方）、换起笔点 / 反着画的圆仍命中、乱涂与过短笔画拒绝；
-  外加 3 项自定义画法（临时「楼梯」模板，不落盘：抖动后命中、转 30° 仍命中、乱涂不命中）。
+  外加 3 项自定义画法（临时「楼梯」模板，不落盘：抖动后命中、转 30° 仍命中、乱涂不命中）
+  与 3 项多笔画（临时「圆 + 竖」模板：两笔抖动后命中、只画第一笔仍认成圆、顺序反了不命中）。
   故意不引 Gradle 测试依赖（离线跑不了）：这些断言的正是「旋转方向 / 阈值」这种只有真跑才作数的东西。
 
 ## adb 控制入口（探针专用）
@@ -266,16 +280,19 @@ adb shell am broadcast @ctl --es op bubbleHide
 adb shell am broadcast @ctl --es op bubbleRun --es name panelTpl # 等价「点一下」；名字空时用 --ei index
 adb shell am broadcast @ctl --es op tileToggle                  # 磁贴同一切换函数
 adb shell am broadcast @ctl --es op notifyToggle                # 通知按钮同一切换函数
-# S2b 画符号（`--es path` 里的分号会被 adb shell 当命令分隔符——远端要加引号，见「坑」）
+# S2b 画符号（`--es path` 里的 `;` / `|` 会被 adb shell 当分隔符——远端整串要加引号，见「坑」）
+# path 语法：`;` 分隔点、`|` 分隔笔（P3 起 1~3 笔，顺序即符号身份）。
 # 这些 op 写的是同一份配置的 `draw` 段（走 RustBridge.save），`drawBind` 只收**启用中**的条目名。
-adb shell am broadcast @ctl --es op drawSelfTest                # 识别器自检（31 项）→ 报告 phone.draw.selfTest
+adb shell am broadcast @ctl --es op drawSelfTest                # 识别器自检（34 项）→ 报告 phone.draw.selfTest
 adb shell am broadcast @ctl --es op drawBind --es symbol triangle --es name panelTpl
 adb shell am broadcast @ctl --es op drawUnbind --es symbol triangle
 adb shell am broadcast @ctl --es op drawList                    # 把绑定表打进 logcat
 adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver --es op drawRun --es path '0.5,0.05;0.95,0.95;0.05,0.95;0.5,0.05'"
 # 自定义画法：drawLearn 与「录自定义」按钮调同一个 learn()，id 形如 u:mwk9tk1b
 adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver --es op drawLearn --es label stairs --es path '0.10,0.85;0.10,0.50;0.45,0.50;0.45,0.15;0.90,0.15'"
-adb shell am broadcast @ctl --es op drawCustom                  # 列出已录的自定义符号（id / 名字 / 闭合 / 点数）
+# 多笔画：圆 + 竖（`|` 前是第一笔）
+adb shell "am broadcast -a com.kada.spike.CONTROL -n com.kada.spike/.ControlReceiver --es op drawLearn --es label circbar --es path '0.50,0.05;0.95,0.50;0.50,0.95;0.05,0.50;0.50,0.05|0.50,0.10;0.50,0.90'"
+adb shell am broadcast @ctl --es op drawCustom                  # 列出已录的自定义符号（id / 名字 / 笔数 / 总点数）
 adb shell am broadcast @ctl --es op drawForget --es symbol u:mwk9tk1b  # 删符号并带走绑定（同一次写盘）
 # 升级迁移：P2a 的 prefs 数据在首次读符号时补进配置的 `draw` 段（搬完清旧键）
 adb shell "run-as com.kada.spike cat shared_prefs/kada-draw.xml"  # P2b 之后应为 <map />
@@ -390,35 +407,42 @@ S2b 段（画符号）：
 
 | 项 | 结果 | 证据 |
 |---|---|---|
-| S2b-1 识别器自检 31 项 | ✅ `failed=0/31`、`symbols=17`；含 17 个预设带 1.2% 抖动认回自己、±20° 歪画仍同向、44° 必须拒绝、四向三角用独立手写坐标、换起笔点 / 反着画的圆仍命中、乱涂与过短笔画拒绝、自定义符号抖动命中 / 转 30° 仍命中 / 乱涂不命中 | 报告 `phone.draw.selfTest.cases` |
+| S2b-1 识别器自检 34 项 | ✅ `failed=0/34`、`symbols=17`；含 17 个预设带 1.2% 抖动认回自己、±20° 歪画仍同向、44° 必须拒绝、四向三角用独立手写坐标、换起笔点 / 反着画的圆仍命中、乱涂与过短笔画拒绝、自定义符号抖动命中 / 转 30° 仍命中 / 乱涂不命中、多笔画「圆 + 竖」命中 / 只画第一笔仍认成圆 / 顺序反了不命中 | 报告 `phone.draw.selfTest.cases` |
 | S2b-2 符号绑定到快捷键 | ✅ 建条目（`F6` → text `drawok`）后 `drawBind triangle drawTpl` → `bindings={"triangle":"drawTpl"}` | 报告 `phone.draw.bindings` / `editor.shortcuts` |
 | S2b-3 画三角执行绑定条目 | ✅ 输入框原 `abc` → 画三角后 `abcdrawok`，`symbol=triangle score=1` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol` |
 | S2b-4 44° 三角被拒绝 | ✅ `symbol=[]`、输入框前后一致（`abcdrawok` 未变）、`lastError=方向不明确（约 -44°…）` | 报告 `phone.draw.lastSymbol/lastError` |
 | S2b-5 画板浮层可开 / 可收 | ✅ `board=True` 且 `mCurrentFocus` 仍是 `com.kada.spike/MainActivity`（不抢焦点）；`drawHide` 后 `board=False` | 报告 `phone.bubbleBoard` / `dumpsys window` |
 | S2b-6 录自定义符号 | ✅ `drawLearn label=stairs` → `custom=0->1`、`new=u:mwk9tk1b`、`lastError` 空 | 报告 `phone.draw.customIds` |
-| S2b-6b 符号写进配置 `draw.symbols` | ✅ 同一个 id 出现在 `config.json` 的 `draw.symbols` 里，`points` 5 个、首点 `100,850`（0~1000 整数）、`store=config` | `exec-out run-as … cat files/config.json` / 报告 `phone.draw.store` |
+| S2b-6b 符号写进配置 `draw.symbols` | ✅ 同一个 id 出现在 `config.json` 的 `draw.symbols` 里，`strokes` 1 笔 / 5 点、首点 `100,850`（0~1000 整数）、`store=config`（P3 起笔画是嵌套数组） | `exec-out run-as … cat files/config.json` / 报告 `phone.draw.store` |
 | S2b-7 画自定义符号执行绑定 | ✅ 绑到新条目（`Ctrl+Alt+J` → text `stairsok`）后，输入框原 `xy` → 画楼梯（每条边挪 0.01）后 `xystairsok`，`lastRun=draw:stairs→drawCust` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol/lastRun` |
 | S2b-7b 绑定写进配置 `draw.bindings` | ✅ `draw.bindings[<新 id>] = "drawCust"`（存条目名，不存下标）；`triangle → drawTpl` 同时还在 | `cat files/config.json` / 报告 `phone.draw.bindings` |
 | S2b-8 与预设几乎一样的画法被拒收 | ✅ 再画标准三角 → `custom=1->1`（没多录），`lastError=和「三角」几乎一样（1.00），换个画法` | 报告 `phone.draw.customIds/lastError` |
 | S2b-9 删自定义符号带走绑定 | ✅ `drawForget <id>` → `customIds` 里没有了、`bindings` 里也没有这个键（`triangle → drawTpl` 不受影响） | 报告 `phone.draw.customIds/bindings` |
 | S2b-9b 删除同时清掉配置里的两半 | ✅ 配置原文里再也搜不到那个 id，`triangle` 的绑定还在（预设符号不在 `draw.symbols` 里） | `cat files/config.json` / 报告 `phone.draw.lastSave` |
-| S2b-10 旧 prefs 迁移进配置 | ✅ 只往 `shared_prefs/kada-draw.xml` 写一份 P2a 格式（`custom` + `bindings`）→ force-stop → 重启 → 配置里出现 `u:legacy1`（首点 `100,850`）与 `u:legacy1 → drawTpl`，`prefs` 变 `<map />`，`lastSave=迁移旧画符号：已保存` | `cat files/config.json` / `cat shared_prefs/kada-draw.xml` |
+| S2b-12 录多笔画符号（圆 + 竖） | ✅ `drawLearn label=circbar path='<圆>|<竖>'` → `custom=0->1`、新 id 形如 `u:…`、`lastError` 空 | 报告 `phone.draw.customIds` |
+| S2b-12a 多笔画测试条目建好 | ✅ `editorAdd drawMulti / Ctrl+Alt+M` 后报告里能按名字查到该条目（触发键不再与基线的 `Ctrl+Alt+K` 撞车） | 报告 `editor.shortcuts` |
+| S2b-12b 多笔画在配置里存成两笔 | ✅ 配置 `draw.symbols[<id>].strokes` 恰好 2 条、每个点都是 0~1000 的 `[x,y]`；报告 `customList` 里同 id 的 `strokes=2` | `cat files/config.json` / 报告 `phone.draw.customList` |
+| S2b-13 画多笔画符号执行绑定 | ✅ 两笔各错位一点（`+0.01` / `+0.02`）→ 输入框原 `mn` 变 `mnmultiok`，`lastSymbol=<多笔画 id>`、`lastRun=draw:circbar→drawMulti` | 报告 `stats.inputFieldText` / `phone.draw.lastSymbol/lastRun` |
+| S2b-14 只画第一笔仍按「圆」识别 | ✅ 多笔画符号在表里时只画第一笔：`symbol=circle score≈0.98`（不抢着走多笔画符号；圆没绑条目，所以不插入文本） | 报告 `phone.draw.lastSymbol/lastScore/lastError` |
+| S2b-15 笔画顺序反了不命中 | ✅ 先竖后圆：`symbol=[]`、`lastError=认不出这 2 笔…` | 报告 `phone.draw.lastSymbol/lastError` |
+| S2b-16 删多笔画符号带走绑定 | ✅ `drawForget <id>` → `customIds` 与 `bindings` 里都没有它（`triangle → drawTpl` 不受影响） | 报告 `phone.draw.customIds/bindings` |
+| S2b-10 旧 prefs 迁移进配置 | ✅ 只往 `shared_prefs/kada-draw.xml` 写一份 P2a 格式（`custom` + `bindings`）→ force-stop → 重启 → 配置里出现 `u:legacy1`（`strokes` 1 笔、首点 `100,850`）与 `u:legacy1 → drawTpl`，`prefs` 变 `<map />`，`lastSave=迁移旧画符号：已保存` | `cat files/config.json` / `cat shared_prefs/kada-draw.xml` |
 | S2b-11 整份替换配置后符号表跟着清 | ✅ 收尾那次「导入 → 替换」不经过 `DrawStore`，之后报告 `custom=0`、`config.json` 无 `draw` 段——符号表缓存**不认旧值**（曾经配置里已经没有 `draw` 了，面板仍列着旧符号、`custom` 还是 1） | 报告 `phone.draw.custom/bindings` / 收尾后 `config.json` |
-| S2b 收尾 | ✅ 显式解绑 `triangle`（清洗**不会**因为目标条目没了就删绑定——那是「已失效」，留给软冲突提示）+ 删 `F6` / `Ctrl+Alt+J` 测试条目（自定义符号在 S2b-9 已删），最后整份替换回基线配置（`draw` 段随之清空，由 S2b-11 断言） | 报告 `phone.draw.bindings` / 收尾后 `config.json` 无 `draw` |
+| S2b 收尾 | ✅ 显式解绑 `triangle`（清洗**不会**因为目标条目没了就删绑定——那是「已失效」，留给软冲突提示）+ 删 `F6` / `Ctrl+Alt+J` / `Ctrl+Alt+M` 测试条目（自定义符号在 S2b-9 / S2b-16 已删），最后整份替换回基线配置（`draw` 段随之清空，由 S2b-11 断言） | 报告 `phone.draw.bindings` / 收尾后 `config.json` 无 `draw` |
 
 > 可重跑：S1 段以 `resetConfig`（恢复出厂示例）起跑，结束时把基线配置替换回去；S2 段开头申请
 > 悬浮窗权限、结尾关球 + 恢复总闸 + 把磁贴移出 QS 面板 + 删掉测试条目；S2b 段额外要显式解绑、
 > 删掉当轮录的自定义符号，迁移用例会 force-stop 一次应用（结束时重新登记无障碍服务）。
-> 本轮全量跑 **77/77 通过**（P2a 时 72/72，S2b 前一版 68/68，s6 是 62/62，s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
+> 本轮全量跑 **84/84 通过**（P2b 时 77/77，P2a 时 72/72，S2b 前一版 68/68，s6 是 62/62，s5 是 49/49）；旧的 44 项（S1-e）、41 项（S1-d）与 35 项（S1-3）此前连跑一致。
 > S1-4 / S1-5 / S1-6 的十五条走的是**与界面同一份** `ShortcutStore`、执行器与 `Update`
 > （广播只是代替点按），控件的点击手势、录入按键、系统安装器的「安装」按钮仍属人工验证
 > （`docs/人工验证清单.md` §90 / §91 / §92）。
 > S2 的十三条同理：`bubbleRun` / `tileToggle` / `notifyToggle` 走的是面板、磁贴、通知按钮**同一份**函数，
 > 手指拖动、软键盘遮挡、ROM 差异归 `docs/人工验证清单.md` §93。
-> S2b 的十五条走的是长按悬浮球弹出的**那个**画板（`BubbleService.ACTION_SHOW_BOARD` → `DrawBoardView`）
+> S2b 的二十二条走的是长按悬浮球弹出的**那个**画板（`BubbleService.ACTION_SHOW_BOARD` → `DrawBoardView`）
 > 与「录自定义」按钮背后**同一个** `DrawStore.learn`；`drawRun` / `drawLearn` / `drawBind` / `drawForget`
-> 只是把坐标串与名字喂给同一份逻辑、写的是同一份配置，真手指的笔顺、录符号时的手感与认错频率
-> 归 `docs/人工验证清单.md` §94。
+> 只是把坐标串（`;` 分隔点、`|` 分隔笔）与名字喂给同一份逻辑、写的是同一份配置，
+> 真手指的笔顺、多笔画之间抬手落手的节奏、录符号时的手感与认错频率归 `docs/人工验证清单.md` §94。
 
 ## 关键结论（写进规划 §11 的就行）
 
@@ -479,9 +503,20 @@ S2b 段（画符号）：
 - **`wrap_content` 对话框里 `weight` 会塌成 0**：编辑对话框的高度要按屏高算一个确定值
   （`heightPixels * 0.62`），否则按钮行被挤没。软键盘弹出后对话框会整体上移，
   这时 `input tap` 打按屏幕绝对坐标会点到键盘上——先 `input keyevent 4` 收键盘再点按钮。
-- **`--es` 的值里有 `;` 会被设备侧 shell 拆开**：`drawRun` 的 `path` 是 `x,y;x,y;…`，
-  直接用 `Bcast` 拼参数只会送进第一段。远端必须带引号：
+- **`--es` 的值里有 `;` / `|` 会被设备侧 shell 拆开**：`drawRun` 的 `path` 是 `x,y;x,y|…`
+  （`;` 分隔点、`|` 分隔笔），直接用 `Bcast` 拼参数只会送进第一段。远端必须带引号：
   `adb shell "am broadcast … --es path '0.5,0.05;0.95,0.95'"`（`verify.ps1` 里走 `Shell` 传整串）。
+- **Kotlin 同名的单 / 多笔画 `recognize` 会撞 JVM 签名**：`List<Pt>` 与 `List<List<Pt>>` 都擦成
+  `List`，重载直接报 `Platform declaration clash`。单笔画的便捷入口因此叫 `DollarOne.recognizeOne`。
+- **一个符号 = 1~3 笔，顺序就是身份**：多笔画逐笔配、总分取平均，再加单笔下限 0.72——
+  只卡总分的话「一笔完美 + 一笔乱涂」能靠平均混过去。单笔画预设只接受「只画了一笔」的手势，
+  多笔画手势不拿第一笔去猜圆/三角（宁可没反应）。
+- **画板多笔画要「等一拍」**：抬手时若还有更长的符号对得上（`DrawStore.mayContinue`，前几笔 ≥ 0.80）
+  就等 700ms 再提交，期间起新笔取消定时器；没有多笔画符号时恒为立即提交——单笔画体验不变。
+  浮层关掉时必须在 `onDetachedFromWindow` 里取消定时器，否则会对着已消失的画板执行快捷键。
+- **`editorAdd` 撞了已有触发键会静默失败**：脚本里给多笔画测试条目用了 `Ctrl+Alt+K`，而基线里
+  那条是「和弦 Ctrl+Alt+K」——条目没建出来，后面 `drawBind` 只报「还没绑定快捷键」，看起来像
+  识别失败。测试条目一律挑基线没用的触发键（现在用 `Ctrl+Alt+M`），并单独断言条目建成功。
 - **画符号的「循环移位」只能给闭合回路**：开放折线（V / Z / N / L / C / U / M）起笔换了就是另一条线，
   对它们做移位会让「乱涂」也命中模板。`DollarOne.Template.closed` 就是这道闸。
 - **180° 旋转对称的形状（Z / N / S）必须并二次比较**：反着画与正着画距离几乎一样，

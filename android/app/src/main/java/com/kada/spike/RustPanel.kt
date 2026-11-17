@@ -257,18 +257,25 @@ class RustPanel(private val activity: Activity) {
         for (entry in entries) names.add(entry.name.ifBlank { "#${entry.index}" })
 
         val bound = DrawStore.bindings()
+        val strokesById = DrawStore.custom().associate { it.id to it.strokeCount }
         for (symbol in DrawStore.allSymbols()) {
             val custom = symbol.id.startsWith("u:")
+            val strokeCount = strokesById[symbol.id] ?: 1
             val line = LinearLayout(activity).apply {
                 orientation = LinearLayout.HORIZONTAL
                 gravity = Gravity.CENTER_VERTICAL
             }
             line.addView(
                 TextView(activity).apply {
-                    text = "${symbol.glyph} ${symbol.label}"
+                    // 多笔画：把笔数标出来——「圆 + 竖」的笔数也是符号身份的一部分
+                    text = if (strokeCount > 1) {
+                        "${symbol.glyph} ${symbol.label}·${strokeCount}笔"
+                    } else {
+                        "${symbol.glyph} ${symbol.label}"
+                    }
                     textSize = 13f
                     setPadding(0, dp(6), dp(10), dp(6))
-                    width = dp(96)
+                    width = dp(110)
                 },
             )
             val options = ArrayList(names)
@@ -345,17 +352,20 @@ class RustPanel(private val activity: Activity) {
      * 与识别走同一条 [DrawStore.learn]（`drawLearn` 广播也调它），所以手指录的
      * 与 adb 喂的坐标串是同一份逻辑；`wrap_content` 对话框里不放 `weight`
      * （会塌成 0），画板边长按屏宽算一个确定值。
+     *
+     * P3 起可以是 1~3 笔：画板每次抬手都把**全部**笔画交回来，所以 `captured`
+     * 始终是完整的一份（「重画」清空即可，不需要逐笔撤销）。
      */
     private fun openLearnDialog() {
         val side = (activity.resources.displayMetrics.widthPixels * 0.6f).toInt()
             .coerceAtMost(dp(320))
             .coerceAtLeast(dp(200))
-        var captured: List<DollarOne.Pt> = emptyList()
+        var captured: List<List<DollarOne.Pt>> = emptyList()
 
         val pad = DrawPadView(activity).apply {
             layoutParams = LinearLayout.LayoutParams(side, side)
-            hintText = "在这里画一次要记的符号"
-            onStroke = { points -> captured = points }
+            hintText = "在这里画 1~3 笔要记的符号"
+            onStroke = { strokes -> captured = strokes }
         }
         val labelInput = android.widget.EditText(activity).apply {
             hint = "名字（可空，默认「自定义 N」）"
@@ -373,11 +383,16 @@ class RustPanel(private val activity: Activity) {
             .setTitle("录一个自定义符号")
             .setView(column)
             .setNegativeButton("取消", null)
+            .setNeutralButton("重画", null)
             .setPositiveButton("保存", null)
             .create()
         dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                pad.clear()
+                captured = emptyList()
+            }
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (captured.size < 2) {
+                if (captured.isEmpty()) {
                     Toast.makeText(activity, "先画一笔再保存", Toast.LENGTH_SHORT).show()
                     return@setOnClickListener
                 }

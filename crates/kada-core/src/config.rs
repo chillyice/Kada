@@ -1212,28 +1212,58 @@ impl Default for Settings {
 pub const DRAW_POINTS_SCALE: i16 = 1000;
 
 /// 一条自定义符号最多存多少个笔画点（手写 JSON 塞几万个点会让每次识别都卡一帧）。
-pub const DRAW_SYMBOL_MAX_POINTS: usize = 512;
+pub const DRAW_STROKE_MAX_POINTS: usize = 512;
+
+/// 一个自定义符号最多几笔：两笔能表达「圆 + 竖」这类复合符号，三笔已经是上限；
+/// 再多就不像「一个符号」了，也不该让识别每次都去比一长串笔画。
+pub const DRAW_SYMBOL_MAX_STROKES: usize = 3;
 
 /// 自定义符号最多几条（与安卓「录自定义」的上限一致；多过这个数就该用面板了）。
 pub const DRAW_SYMBOLS_MAX: usize = 24;
 
-/// 一条自定义画法（安卓 P2b 的「录自定义」）：模板就是用户当场画的那一笔。
+/// 一条自定义画法（安卓 P3 的「录自定义」）：模板就是用户当场画的那几笔。
 ///
-/// 与触摸板的形状模板不同，这里**不判方向**（随手画的形状旋转角本就不稳），
-/// `closed` 只影响识别器要不要做「循环移位」（开放折线移位后是另一条乱线）。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+/// 与触摸板的形状模板不同，这里**不判方向**（随手画的形状旋转角本就不稳）；
+/// 「闭合回路」也不落盘——由点自己算（起笔与收笔几乎重合），少一个可能与点矛盾的字段。
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Default)]
 pub struct DrawSymbol {
     /// 稳定标识（安卓侧是 `u:` + 时间戳 base36；桌面只透传，不改）。
     pub id: String,
     /// 显示名（列表与提示里用；空 = 只有符号首字）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// 起笔与收笔几乎重合 = 闭合回路（识别器据此做循环移位）。
-    #[serde(default)]
-    pub closed: bool,
-    /// 原始笔画：`[x, y]`，0~[`DRAW_POINTS_SCALE`]（屏幕坐标系，y 向下）。
-    #[serde(default)]
-    pub points: Vec<[i16; 2]>,
+    /// 笔画列表，**按画的先后顺序**：多笔画符号靠顺序区分（「圆 + 竖」≠「竖 + 圆」）。
+    /// 每笔是一串 `[x, y]`，0~[`DRAW_POINTS_SCALE`]（屏幕坐标系，y 向下）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub strokes: Vec<Vec<[i16; 2]>>,
+}
+
+/// 读：`strokes` 是 P3 起的形状；P2b（单笔画）写的是符号级的 `points` + `closed`，
+/// 读进来并成一条笔画——老配置不能因为格式换了就把符号悄悄丢掉（清洗会连带删绑定）。
+impl<'de> Deserialize<'de> for DrawSymbol {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            id: String,
+            #[serde(default)]
+            name: Option<String>,
+            #[serde(default)]
+            strokes: Vec<Vec<[i16; 2]>>,
+            #[serde(default)]
+            points: Vec<[i16; 2]>,
+        }
+        let raw = Raw::deserialize(d)?;
+        let mut strokes = raw.strokes;
+        if strokes.is_empty() && !raw.points.is_empty() {
+            strokes.push(raw.points);
+        }
+        Ok(DrawSymbol {
+            id: raw.id,
+            name: raw.name,
+            strokes,
+        })
+    }
 }
 
 /// 画符号（安卓 P2b）：自定义符号与「符号 → 快捷键」绑定。
