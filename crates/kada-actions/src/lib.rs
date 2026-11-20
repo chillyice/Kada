@@ -5138,7 +5138,9 @@ mod tests {
             "@echo off\r\nchcp 65001>nul\r\necho TRIGGER=%KADA_TRIGGER%\r\necho NAME=%KADA_NAME%\r\necho OS=%KADA_OS%\r\necho WORKDIR=%KADA_WORKDIR%\r\necho VARS=%KADA_VARS%\r\n"
                 .to_string()
         } else {
-            "echo TRIGGER=$KADA_TRIGGER\necho NAME=$KADA_NAME\necho OS=$KADA_OS\necho WORKDIR=$KADA_WORKDIR\necho VARS=$KADA_VARS\n".to_string()
+            // 无解释器时 run_script 直接 spawn 脚本本身：Unix 上必须有 shebang + 可执行位，
+            // 否则 spawn 报 Permission denied（CI 上就是这么红的）。
+            "#!/bin/sh\necho TRIGGER=$KADA_TRIGGER\necho NAME=$KADA_NAME\necho OS=$KADA_OS\necho WORKDIR=$KADA_WORKDIR\necho VARS=$KADA_VARS\n".to_string()
         };
         let probe = dir.join(if cfg!(target_os = "windows") {
             "probe.bat"
@@ -5146,6 +5148,11 @@ mod tests {
             "probe.sh"
         });
         fs::write(&probe, script_text).unwrap();
+        #[cfg(not(windows))]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&probe, fs::Permissions::from_mode(0o755)).unwrap();
+        }
         let out = run_script(
             None,
             &[],
@@ -5274,7 +5281,8 @@ mod tests {
         let fake = dir.join(if cfg!(target_os = "windows") {
             "kada_fake_prog.bat"
         } else {
-            "kada_fake_prog.sh"
+            // Unix 的 `try_dir` 不补扩展名（只认可执行位），文件名就得与查询名一致。
+            "kada_fake_prog"
         });
         #[cfg(windows)]
         fs::write(&fake, "@echo off\r\necho fake-prog-ok\r\n").unwrap();

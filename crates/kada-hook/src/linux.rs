@@ -266,14 +266,12 @@ fn touch_feed(st: &mut TouchState, ev: &InputEvent, mt: bool, scale: f64) -> Opt
                 }
             }
             c if c == AbsoluteAxisCode::ABS_X.0 => {
-                if let Some(p) = st.plain.as_mut() {
-                    p.0 = ev.value();
-                }
+                // `plain` 第一次见坐标时就要建起来：只在 `Some` 上赋值会让无 MT 协议的
+                // 老触摸板永远采不到点（`plain` 从默认值 None 再无别人初始化）。
+                st.plain.get_or_insert((0, 0)).0 = ev.value();
             }
             c if c == AbsoluteAxisCode::ABS_Y.0 => {
-                if let Some(p) = st.plain.as_mut() {
-                    p.1 = ev.value();
-                }
+                st.plain.get_or_insert((0, 0)).1 = ev.value();
             }
             _ => {}
         },
@@ -640,15 +638,13 @@ fn is_pointer(dev: &Device) -> bool {
             || props.contains(PropType::BUTTONPAD)
             || props.contains(PropType::SEMI_MT)
             || props.contains(PropType::TOPBUTTONPAD));
-    if touch_props
+    // 触摸类设备（触摸板 / 触摸屏 / 指点杆）一律不碰：抓了等于废掉它。
+    let touch_like = touch_props
         || props.contains(PropType::POINTING_STICK)
         || props.contains(PropType::ACCELEROMETER)
         || keys.contains(KeyCode::BTN_TOOL_FINGER)
-        || keys.contains(KeyCode::BTN_TOUCH)
-    {
-        return false;
-    }
-    true
+        || keys.contains(KeyCode::BTN_TOUCH);
+    !touch_like
 }
 
 /// 设备大类（设置页「设备是」下拉的分组依据）。`None` = 不是用户外设（手柄 / 传感器 /
@@ -1405,8 +1401,8 @@ fn run_error(cmd: &str, out: &std::process::Output) -> String {
     }
 }
 
-/// 输入注入：按键/组合键/文本（与 Windows 后端同接口）。
 pub mod simulate {
+    //! 输入注入：按键/组合键/文本（与 Windows 后端同接口）。
     //! 文本走剪贴板 + `Ctrl+V`（对中文等 Unicode 最稳，与 Windows 一致）；
     //! 副作用是短暂占用并恢复剪贴板。粘贴被吞的极端场景后续可加直发兜底。
 

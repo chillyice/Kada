@@ -159,6 +159,7 @@ fn registered_install_dir() -> Option<PathBuf> {
 
 /// 目录比较（本函数只服务 Windows 判定）：大小写不敏感、尾部分隔符可有可无。
 /// 不做 `canonicalize`——那要求目录存在，还要处理 `\\?\` 前缀。
+#[cfg(any(windows, test))]
 fn same_dir(a: &Path, b: &Path) -> bool {
     fn norm(p: &Path) -> String {
         p.to_string_lossy()
@@ -172,6 +173,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 /// 纯判定（便于单测）：exe 目录与注册表记录的安装目录一致才算安装版。
 /// 取不到自身目录或注册表没有记录时按免安装处理——**宁可只提示手动替换，
 /// 也不擅自跑安装器**。
+#[cfg(any(windows, test))]
 fn classify_install(exe_dir: Option<&Path>, registered: Option<&Path>) -> InstallKind {
     match (exe_dir, registered) {
         (Some(dir), Some(installed)) if same_dir(dir, installed) => InstallKind::Installed,

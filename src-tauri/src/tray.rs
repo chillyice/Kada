@@ -324,7 +324,7 @@ pub(crate) fn get_tray_menu_payload(state: tauri::State<'_, KadaState>) -> Optio
 }
 
 #[cfg(target_os = "linux")]
-use tauri::menu::MenuItem;
+use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 
 /// Linux 的原生托盘菜单（那边收不到托盘点击事件，自绘浮窗没有入口）。
 #[cfg(target_os = "linux")]

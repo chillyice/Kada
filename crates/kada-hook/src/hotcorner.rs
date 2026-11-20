@@ -109,8 +109,8 @@ pub fn on_move(pt: (i32, i32)) -> Option<Corner> {
         *active = None;
     }
     for (mi, rect) in cfg.monitors.iter().enumerate() {
-        for ci in 0..4 {
-            if !cfg.corners[ci] {
+        for (ci, on) in cfg.corners.iter().enumerate() {
+            if !*on {
                 continue;
             }
             if within_rect(*rect, Corner::from_index(ci), pt, SIZE) {

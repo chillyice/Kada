@@ -118,8 +118,8 @@ pub fn on_wheel(pt: (i32, i32)) -> Option<Edge> {
         *active = None;
     }
     for (mi, rect) in cfg.monitors.iter().enumerate() {
-        for ei in 0..4 {
-            if !cfg.edges[ei] {
+        for (ei, on) in cfg.edges.iter().enumerate() {
+            if !*on {
                 continue;
             }
             if within_rect(*rect, Edge::from_index(ei), pt, SIZE) {

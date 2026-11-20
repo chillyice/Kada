@@ -16,7 +16,11 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::menu::{CheckMenuItem, Menu};
+use tauri::menu::CheckMenuItem;
+// `Menu<Wry>` 只在非 Linux 那路的 `native_tray_menu` 类型标注里出现（Linux 走原生菜单，
+// 类型由 `build_tray_native_menu` 自己给）。
+#[cfg(not(target_os = "linux"))]
+use tauri::menu::Menu;
 use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
 
