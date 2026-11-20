@@ -48,6 +48,8 @@ const canonical = [
   { file: join(docsDir, "需求设计说明书.md"), name: "说明书", alias: ["需求设计说明书", "说明书"] },
   { file: join(docsDir, "架构设计.md"), name: "架构设计", alias: ["架构设计"] },
   { file: join(docsDir, "人工验证清单.md"), name: "人工验证清单", alias: ["人工验证清单", "验证清单"] },
+  // 安卓版规划是独立编号空间（§3 与说明书的 §3 不是一回事），代码地图里有 4 条指向它。
+  { file: join(docsDir, "安卓版规划.md"), name: "安卓版规划", alias: ["安卓版规划"] },
 ];
 const secIndex = new Map(); // "3.6" -> ["说明书", "架构设计"]
 const secOf = new Map(); // "说明书" -> Set("3.6")
@@ -62,9 +64,11 @@ for (const { file, name } of canonical) {
   secOf.set(name, set);
 }
 // 入口文档：AI 每次会话都从这里进，§ 引用必须带文档名（否则同名小节指错）
+// 路径统一成正斜杠再比：Windows 上 `rel()` 给的是 `docs\代码地图.md`，老写法会让
+// 这条门禁在开发机**静默失效**（本机绿、CI 红）。
 const ENTRY = new Set([
   "AGENTS.md",
-  "docs\\README.md",
+  "docs/README.md",
   "docs/代码地图.md",
 ]);
 for (const f of mdFiles) {
@@ -94,7 +98,7 @@ for (const f of mdFiles) {
     } else {
       const hits = secIndex.get(num);
       if (!hits) problems.push(`[sec-none] ${rel(f)} -> §${num} 在任何规范文档里都不存在`);
-      else if (hits.length > 1 && ENTRY.has(rel(f)))
+      else if (hits.length > 1 && ENTRY.has(rel(f).replace(/\\/g, "/")))
         problems.push(`[sec-ambig] ${rel(f)} -> §${num} 同时命中 ${hits.join(" / ")}（要写文档名）`);
     }
   }
