@@ -16,6 +16,7 @@ import {
   MOUSE_BUTTON_LABELS,
   MOUSE_OPS,
   OS_OPS,
+  PROXY_LOCAL_MODES,
   PROXY_MODES,
   SEMANTIC_OPS,
   SYSTEM_OPS,
@@ -1961,25 +1962,49 @@ export function actionFields(
         body.append(addrLine);
 
         const bypassLine = el("div", "action-line");
-        const bypass = el("input", "action-input") as HTMLInputElement;
-        bypass.type = "text";
+        const bypass = el("textarea", "action-textarea") as HTMLTextAreaElement;
+        bypass.rows = 2;
+        bypass.spellcheck = false;
         bypass.value = op.bypass ?? "";
-        bypass.placeholder = tr("localhost;127.*;*.local;192.168.*（可留空）");
+        bypass.placeholder = tr("localhost;127.0.0.1;*.local;192.168.*（可留空，一行一个也行）");
         bypass.addEventListener("input", () => {
           op.bypass = bypass.value;
         });
         bypassLine.append(
-          el("span", "unit-label", tr("排除项")),
+          el("span", "unit-label", tr("忽略的地址")),
           bypass,
           helpIcon(
-            tr("不走代理的地址 / 域名，用分号分隔（Windows 的 <local> 表示跳过本地地址）。留空 = 沿用系统里已有的排除项；关闭代理时不会改动它。"),
+            tr("不走代理的地址 / 域名：分号、逗号或换行分隔（Windows 的 <local> 表示跳过本地地址）。留空 = 沿用系统里已有的排除项；关闭代理时不会改动它。"),
           ),
         );
         body.append(bypassLine);
+
+        const localLine = el("div", "action-line");
+        const localSel = el("select", "action-input") as HTMLSelectElement;
+        for (const m of PROXY_LOCAL_MODES) {
+          const o = el("option") as HTMLOptionElement;
+          o.value = m.value;
+          o.textContent = m.label;
+          localSel.append(o);
+        }
+        localSel.value =
+          op.bypass_local === true ? "direct" : op.bypass_local === false ? "proxied" : "";
+        localSel.addEventListener("change", () => {
+          op.bypass_local =
+            localSel.value === "direct" ? true : localSel.value === "proxied" ? false : undefined;
+        });
+        localLine.append(
+          el("span", "unit-label", tr("本地地址")),
+          localSel,
+          helpIcon(
+            tr("就是 Windows 「请勿将代理服务器用于本地地址」那个勾。选「直连」时 Windows 写排除项里的 <local>（名字不带点的地址直接连）；macOS / Linux 没有 <local>，改用 localhost / 127.0.0.1 / ::1。「沿用系统设置」= 一个字节都不改系统里现有的选择。"),
+          ),
+        );
+        body.append(localLine);
       }
 
       body.append(
-        el("div", "unit-hint", tr("「切换」= 每次触发在开 / 关之间来回切。开启时把地址 / 排除项写进系统代理（留空则沿用系统现有设置）；关闭只关开关、不改地址与排除项。Windows 立即生效；macOS 修改系统代理需要管理员权限；Linux 只支持 GNOME 桌面。")),
+        el("div", "unit-hint", tr("「切换」= 每次触发在开 / 关之间来回切。开启时把地址 / 忽略的地址 / 本地地址写进系统代理（留空或「沿用」则用系统现有设置）；关闭只关开关、不改这些字段。Windows 立即生效；macOS 修改系统代理需要管理员权限；Linux 只支持 GNOME 桌面。")),
       );
     }
   } else if (a.type === "window") {

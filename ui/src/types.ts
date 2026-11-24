@@ -28,8 +28,10 @@ export type SystemOperation =
   /** 显示器亮度（原独立动作 `brightness`，入口并入操作系统）。 */
   | { op: "brightness"; operation: BrightnessOperation; step: number }
   /** 系统代理开关：开启 / 关闭 / 切换；`server` 空 = 沿用系统现有地址，
-   * `bypass` 是排除项（分号分隔，空 = 沿用系统已有的排除项；老配置里没有这个字段）。 */
-  | { op: "switch_proxy"; mode: ProxyMode; server: string; bypass?: string };
+   * `bypass` 是忽略的地址（分隔符见 `proxyBypassList`，空 = 沿用系统已有的排除项；
+   * 老配置里没有这些字段），`bypass_local` 是「本地地址走不走代理」三态：
+   * 缺省 = 不动系统设置，`true` = 本地地址直连，`false` = 本地地址也用代理。 */
+  | { op: "switch_proxy"; mode: ProxyMode; server: string; bypass?: string; bypass_local?: boolean };
 /** 当前窗口动作（类型 `window`，EXT-14）：作用对象是触发那一刻的前台窗口。 */
 export type WindowOperation = "maximize_restore" | "minimize" | "toggle_topmost" | "center" | "close" | "close_same_app";
 /** 剪贴板动作（类型 `clipboard`，EXT-15）：v1 只处理文本。 */

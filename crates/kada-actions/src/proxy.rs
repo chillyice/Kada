@@ -23,37 +23,70 @@ fn desired(mode: ProxyMode, current: bool) -> bool {
     }
 }
 
+/// 按「本地地址」三态调整排除项（纯函数）：`Some(true)` 确保标记都在、`Some(false)` 把标记
+/// 全去掉、`None` 一个字节都不动。标记由各平台给——Windows 是 `ProxyOverride` 里的 `<local>`，
+/// macOS / GNOME 没有这种通配令牌，只能用一组本地名字近似（见各自模块的 `LOCAL_MARKERS`）。
+///
+/// 比较忽略大小写（`<LOCAL>` 与 `<local>` 是同一个东西），返回是否有改动。
+fn apply_local(list: &mut Vec<String>, local: Option<bool>, markers: &[&str]) -> bool {
+    let is_marker = |item: &String| markers.iter().any(|m| item.eq_ignore_ascii_case(m));
+    match local {
+        None => false,
+        Some(true) => {
+            let mut changed = false;
+            for marker in markers {
+                if !list.iter().any(|item| item.eq_ignore_ascii_case(marker)) {
+                    list.push((*marker).to_string());
+                    changed = true;
+                }
+            }
+            changed
+        }
+        Some(false) => {
+            let before = list.len();
+            list.retain(|item| !is_marker(item));
+            list.len() != before
+        }
+    }
+}
+
 /// 开关系统代理，返回一句可进消息中心的结果说明。
 ///
-/// `bypass` 是排除项（已拆分去重，见 `kada_core::parse_proxy_bypass`）：**空列表 = 不动
-/// 系统里已有的排除项**（跟 `server` 留空沿用现有地址同理），避免一个「开 / 关」热键顺手
-/// 把用户手工配好的例外清掉。
+/// `bypass` 是排除项（已拆分去重，见 `kada_core::parse_proxy_bypass`）：**空列表 = 以系统里
+/// 已有的排除项为底**（跟 `server` 留空沿用现有地址同理），避免一个「开 / 关」热键顺手把
+/// 用户手工配好的例外清掉；`bypass_local` 三态在这个底子上加 / 减「本地地址」标记。
 pub(super) fn switch(
     mode: ProxyMode,
     server: Option<&ProxyServer>,
     bypass: &[String],
+    bypass_local: Option<bool>,
 ) -> Result<String, String> {
     #[cfg(windows)]
     {
-        windows::switch(mode, server, bypass)
+        windows::switch(mode, server, bypass, bypass_local)
     }
     #[cfg(target_os = "macos")]
     {
-        macos::switch(mode, server, bypass)
+        macos::switch(mode, server, bypass, bypass_local)
     }
     #[cfg(target_os = "linux")]
     {
-        linux::switch(mode, server, bypass)
+        linux::switch(mode, server, bypass, bypass_local)
     }
 }
 
-/// 结果说明：开启时带上地址（填了排除项再报一句项数），关闭时只报状态。
-fn enabled_message(server: &str, bypass: usize) -> String {
-    if bypass == 0 {
-        format!("系统代理已开启（{server}）")
-    } else {
-        format!("系统代理已开启（{server}，{bypass} 项排除）")
+/// 结果说明：开启时带上地址、排除项数、本地地址三态，关闭时只报状态。
+fn enabled_message(server: &str, bypass: usize, bypass_local: Option<bool>) -> String {
+    let mut detail = server.to_string();
+    if bypass > 0 {
+        detail.push_str(&format!("，{bypass} 项排除"));
     }
+    match bypass_local {
+        Some(true) => detail.push_str("，本地地址直连"),
+        Some(false) => detail.push_str("，本地地址也走代理"),
+        None => {}
+    }
+    format!("系统代理已开启（{detail}）")
 }
 
 fn disabled_message() -> String {
@@ -62,17 +95,22 @@ fn disabled_message() -> String {
 
 #[cfg(windows)]
 mod windows {
-    use super::{desired, disabled_message, enabled_message};
+    use super::{apply_local, desired, disabled_message, enabled_message};
     use kada_core::{ProxyMode, ProxyScheme, ProxyServer};
     use windows_registry::{Key, CURRENT_USER};
 
     /// WinINET 的当前用户代理设置（「设置 → 网络和 Internet → 代理」写的就是这里）。
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings";
 
+    /// 「请勿将代理服务器用于本地地址」在 `ProxyOverride` 里的标记：`<local>` = 地址里不带点的
+    /// 名字（intranet / 单标签主机名 / localhost）都直连。
+    const LOCAL_MARKERS: &[&str] = &["<local>"];
+
     pub(super) fn switch(
         mode: ProxyMode,
         server: Option<&ProxyServer>,
         bypass: &[String],
+        bypass_local: Option<bool>,
     ) -> Result<String, String> {
         let key = CURRENT_USER
             .create(KEY)
@@ -94,9 +132,16 @@ mod windows {
                         .into(),
                 );
             }
-            // 排除项留空就不碰系统里已有的 `ProxyOverride`（别把用户手工配好的例外清掉）。
-            if !bypass.is_empty() {
-                key.set_string("ProxyOverride", override_value(bypass))
+            // 排除项留空就以系统里已有的为底（别把用户手工配好的例外清掉），本地地址三态
+            // 在这个底子上加 / 减 `<local>`；两样都没给就一个字节都不碰 `ProxyOverride`。
+            if !bypass.is_empty() || bypass_local.is_some() {
+                let mut list = if bypass.is_empty() {
+                    current_override(&key)
+                } else {
+                    bypass.to_vec()
+                };
+                apply_local(&mut list, bypass_local, LOCAL_MARKERS);
+                key.set_string("ProxyOverride", override_value(&list))
                     .map_err(|e| format!("写入代理排除项失败: {e}"))?;
             }
         }
@@ -109,6 +154,7 @@ mod windows {
             enabled_message(
                 shown.as_deref().unwrap_or("沿用系统里已有的地址"),
                 bypass.len(),
+                bypass_local,
             )
         } else {
             disabled_message()
@@ -124,6 +170,19 @@ mod windows {
             .ok()
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
+    }
+
+    /// 系统里现有的排除项（`ProxyOverride` 是分号串）；读不到就当没有。
+    fn current_override(key: &Key) -> Vec<String> {
+        key.get_string("ProxyOverride")
+            .map(|raw| {
+                raw.split(';')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// 写进 `ProxyServer` 的字符串：HTTP 代理同时接管 http / https；SOCKS 只配 socks。
@@ -216,13 +275,38 @@ fn parse_networksetup_proxy(text: &str) -> (bool, String, String) {
     (enabled, server, port)
 }
 
+/// `networksetup -getproxybypassdomains <服务>` 的输出：一行一个排除域名。
+///
+/// 没有任何排除项时输出是一句 `There are no bypass domains set on <服务>.`；表头（以冒号结尾）
+/// 也跳过，其余整行原样收下（域名里不会有别的花样）。
+#[cfg(any(target_os = "macos", test))]
+fn parse_networksetup_bypass(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.ends_with(':') {
+            continue;
+        }
+        if line.to_ascii_lowercase().starts_with("there are no") {
+            continue;
+        }
+        out.push(line.to_string());
+    }
+    out
+}
+
 /// `networksetup -setproxybypassdomains <服务> <域名…>` 的参数串（纯函数，好单测）。
 ///
-/// 空列表不该走到这里（调用方先判空、不碰系统里已有的排除项）。
+/// 空列表不能直接走到 networksetup（它要求至少一个域名）：传一个空串表示清空排除项，
+/// 这是 `networksetup` 自己的口径。
 #[cfg(any(target_os = "macos", test))]
 fn bypass_args(service: &str, bypass: &[String]) -> Vec<String> {
     let mut args = vec!["-setproxybypassdomains".to_string(), service.to_string()];
-    args.extend(bypass.iter().cloned());
+    if bypass.is_empty() {
+        args.push(String::new());
+    } else {
+        args.extend(bypass.iter().cloned());
+    }
     args
 }
 
@@ -249,15 +333,60 @@ fn ignore_hosts_gvariant(bypass: &[String]) -> String {
     out
 }
 
+/// `gsettings get org.gnome.system.proxy ignore-hosts` 的输出（GVariant 字符串数组）拆回列表：
+/// `['localhost', '127.0.0.0/8']` → `["localhost", "127.0.0.0/8"]`。单引号里的逗号不算分隔符，
+/// 反斜杠转义按 GVariant 口径还原。
+#[cfg(any(target_os = "linux", test))]
+fn parse_ignore_hosts(text: &str) -> Vec<String> {
+    let inner = text
+        .trim()
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or("");
+    let mut out: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    let mut escaped = false;
+    for ch in inner.chars() {
+        if escaped {
+            cur.push(ch);
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if in_quote => escaped = true,
+            '\'' => in_quote = !in_quote,
+            ',' if !in_quote => {
+                let item = cur.trim();
+                if !item.is_empty() {
+                    out.push(item.to_string());
+                }
+                cur.clear();
+            }
+            _ => cur.push(ch),
+        }
+    }
+    let item = cur.trim();
+    if !item.is_empty() {
+        out.push(item.to_string());
+    }
+    out
+}
+
 #[cfg(target_os = "macos")]
 mod macos {
     use super::{
-        bypass_args, desired, disabled_message, enabled_message, parse_networksetup_proxy,
+        apply_local, bypass_args, desired, disabled_message, enabled_message,
+        parse_networksetup_bypass, parse_networksetup_proxy,
     };
     use kada_core::{ProxyMode, ProxyScheme, ProxyServer};
     use std::process::Command;
 
     const NETWORKSETUP: &str = "/usr/sbin/networksetup";
+
+    /// macOS 没有 Windows 的 `<local>` 通配令牌（GUI 那个「Exclude simple hostnames」在
+    /// networksetup 里没有参数），本地地址只能用一组常见名字近似。
+    const LOCAL_MARKERS: &[&str] = &["localhost", "127.0.0.1", "::1"];
 
     /// 三类代理的查询 / 设置 / 开关命令后缀（networksetup 的参数名）。
     const KINDS: [(&str, &str, &str); 3] = [
@@ -278,6 +407,7 @@ mod macos {
         mode: ProxyMode,
         server: Option<&ProxyServer>,
         bypass: &[String],
+        bypass_local: Option<bool>,
     ) -> Result<String, String> {
         let services = services()?;
         let current = services.iter().any(|service| {
@@ -291,9 +421,13 @@ mod macos {
             if let Some(server) = server {
                 for service in &services {
                     apply_server(service, server)?;
-                    apply_bypass(service, bypass)?;
+                    apply_bypass(service, bypass, bypass_local)?;
                 }
-                return Ok(enabled_message(&server.display(), bypass.len()));
+                return Ok(enabled_message(
+                    &server.display(),
+                    bypass.len(),
+                    bypass_local,
+                ));
             }
             // 没填地址：把系统里已经配好地址的那几类打开；一个都没有就明确报错。
             let mut any = false;
@@ -313,9 +447,13 @@ mod macos {
                 );
             }
             for service in &services {
-                apply_bypass(service, bypass)?;
+                apply_bypass(service, bypass, bypass_local)?;
             }
-            return Ok(enabled_message("沿用系统里已有的地址", bypass.len()));
+            return Ok(enabled_message(
+                "沿用系统里已有的地址",
+                bypass.len(),
+                bypass_local,
+            ));
         }
 
         for service in &services {
@@ -369,12 +507,23 @@ mod macos {
         Ok(())
     }
 
-    /// 写排除域名（`-setproxybypassdomains` 后面跟一串域名）。留空 = 不动系统里已有的排除项。
-    fn apply_bypass(service: &str, bypass: &[String]) -> Result<(), String> {
-        if bypass.is_empty() {
+    /// 写排除域名（`-setproxybypassdomains` 后面跟一串域名）。留空 = 以系统里已有的排除项为底；
+    /// 本地地址三态在底子上加 / 减 localhost / 127.0.0.1 / ::1。
+    fn apply_bypass(
+        service: &str,
+        bypass: &[String],
+        bypass_local: Option<bool>,
+    ) -> Result<(), String> {
+        if bypass.is_empty() && bypass_local.is_none() {
             return Ok(());
         }
-        let args = bypass_args(service, bypass);
+        let mut list = if bypass.is_empty() {
+            parse_networksetup_bypass(&run(&["-getproxybypassdomains", service])?)
+        } else {
+            bypass.to_vec()
+        };
+        apply_local(&mut list, bypass_local, LOCAL_MARKERS);
+        let args = bypass_args(service, &list);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
         run(&refs).map(|_| ())
     }
@@ -406,17 +555,24 @@ mod macos {
 
 #[cfg(target_os = "linux")]
 mod linux {
-    use super::{desired, disabled_message, enabled_message, ignore_hosts_gvariant};
+    use super::{
+        apply_local, desired, disabled_message, enabled_message, ignore_hosts_gvariant,
+        parse_ignore_hosts,
+    };
     use kada_core::{ProxyMode, ProxyScheme, ProxyServer};
     use std::process::Command;
 
     /// GNOME 的系统代理 schema（Cinnamon / MATE 等沿用 GNOME 接口的桌面也能读）。
     const SCHEMA: &str = "org.gnome.system.proxy";
 
+    /// GNOME 没有 Windows 的 `<local>` 通配令牌，本地地址只能用一组常见名字近似。
+    const LOCAL_MARKERS: &[&str] = &["localhost", "127.0.0.1", "::1"];
+
     pub(super) fn switch(
         mode: ProxyMode,
         server: Option<&ProxyServer>,
         bypass: &[String],
+        bypass_local: Option<bool>,
     ) -> Result<String, String> {
         let current = !matches!(get("mode")?.trim_matches('\''), "none");
         let want = desired(mode, current);
@@ -429,9 +585,13 @@ mod linux {
         match server {
             Some(server) => {
                 apply_server(server)?;
-                apply_bypass(bypass)?;
+                apply_bypass(bypass, bypass_local)?;
                 set("mode", "manual")?;
-                Ok(enabled_message(&server.display(), bypass.len()))
+                Ok(enabled_message(
+                    &server.display(),
+                    bypass.len(),
+                    bypass_local,
+                ))
             }
             None => {
                 if !has_configured_server()? {
@@ -440,19 +600,30 @@ mod linux {
                             .into(),
                     );
                 }
-                apply_bypass(bypass)?;
+                apply_bypass(bypass, bypass_local)?;
                 set("mode", "manual")?;
-                Ok(enabled_message("沿用系统里已有的地址", bypass.len()))
+                Ok(enabled_message(
+                    "沿用系统里已有的地址",
+                    bypass.len(),
+                    bypass_local,
+                ))
             }
         }
     }
 
-    /// 写排除项（`ignore-hosts` 字符串数组）。留空 = 不动系统里已有的排除项。
-    fn apply_bypass(bypass: &[String]) -> Result<(), String> {
-        if bypass.is_empty() {
+    /// 写排除项（`ignore-hosts` 字符串数组）。留空 = 以系统里已有的排除项为底；本地地址三态
+    /// 在底子上加 / 减 localhost / 127.0.0.1 / ::1。
+    fn apply_bypass(bypass: &[String], bypass_local: Option<bool>) -> Result<(), String> {
+        if bypass.is_empty() && bypass_local.is_none() {
             return Ok(());
         }
-        set("ignore-hosts", &ignore_hosts_gvariant(bypass))
+        let mut list = if bypass.is_empty() {
+            parse_ignore_hosts(&get("ignore-hosts")?)
+        } else {
+            bypass.to_vec()
+        };
+        apply_local(&mut list, bypass_local, LOCAL_MARKERS);
+        set("ignore-hosts", &ignore_hosts_gvariant(&list))
     }
 
     /// 写入地址：HTTP 代理同时接管 http / https，SOCKS5 只配 socks；另一类清空。
@@ -545,14 +716,54 @@ mod tests {
 
     #[test]
     fn messages_name_the_result() {
-        assert!(enabled_message("127.0.0.1:7890", 0).contains("127.0.0.1:7890"));
-        let with_bypass = enabled_message("127.0.0.1:7890", 3);
+        assert!(enabled_message("127.0.0.1:7890", 0, None).contains("127.0.0.1:7890"));
+        let with_bypass = enabled_message("127.0.0.1:7890", 3, None);
         assert!(with_bypass.contains("127.0.0.1:7890"), "{with_bypass}");
         assert!(with_bypass.contains('3'), "{with_bypass}");
+        assert!(
+            enabled_message("127.0.0.1:7890", 0, Some(true)).contains("本地地址直连"),
+            "三态要进结果说明"
+        );
         assert!(disabled_message().contains("已关闭"));
     }
 
-    /// macOS 的排除项参数串：一次调用带全部域名，空白项已在解析阶段丢掉。
+    /// 本地地址三态：确保存在 / 确保移除 / 不动；比较忽略大小写、不产生重复项。
+    #[test]
+    fn apply_local_adds_removes_or_leaves() {
+        let markers = &["<local>"];
+        let mut list = vec!["localhost".to_string()];
+        assert!(apply_local(&mut list, Some(true), markers));
+        assert_eq!(list, vec!["localhost", "<local>"]);
+        // 已经有了就不重复加（大小写不同也算同一个）。
+        let mut dup = vec!["<LOCAL>".to_string()];
+        assert!(!apply_local(&mut dup, Some(true), markers));
+        assert_eq!(dup, vec!["<LOCAL>"]);
+        // Some(false) 把标记去掉，别的项保留。
+        assert!(apply_local(&mut list, Some(false), markers));
+        assert_eq!(list, vec!["localhost"]);
+        // None 不动。
+        let mut same = vec!["localhost".to_string()];
+        assert!(!apply_local(&mut same, None, markers));
+        assert_eq!(same, vec!["localhost"]);
+
+        // macOS / GNOME 的近似标记是一组本地名字。
+        let mut local = vec!["192.168.*".to_string(), "LOCALHOST".to_string()];
+        assert!(apply_local(
+            &mut local,
+            Some(true),
+            &["localhost", "127.0.0.1", "::1"]
+        ));
+        assert_eq!(local, vec!["192.168.*", "LOCALHOST", "127.0.0.1", "::1"]);
+        assert!(apply_local(
+            &mut local,
+            Some(false),
+            &["localhost", "127.0.0.1", "::1"]
+        ));
+        assert_eq!(local, vec!["192.168.*"]);
+    }
+
+    /// macOS 的排除项参数串：一次调用带全部域名，空白项已在解析阶段丢掉；空列表传一个空串
+    /// 表示清空（networksetup 不接受零个域名）。
     #[test]
     fn bypass_args_carry_every_domain() {
         let args = bypass_args("Wi-Fi", &["localhost".into(), "*.local".into()]);
@@ -565,6 +776,28 @@ mod tests {
                 "*.local".to_string()
             ]
         );
+        assert_eq!(
+            bypass_args("Wi-Fi", &[]),
+            vec![
+                "-setproxybypassdomains".to_string(),
+                "Wi-Fi".to_string(),
+                String::new()
+            ],
+            "空列表要传空串（清空），不能零参数"
+        );
+    }
+
+    /// `networksetup -getproxybypassdomains` 的输出：一行一个域名，没有排除项时是一句话。
+    #[test]
+    fn parse_networksetup_bypass_domains() {
+        assert_eq!(
+            parse_networksetup_bypass("*.local\n192.168.0.0/16\n"),
+            vec!["*.local".to_string(), "192.168.0.0/16".to_string()]
+        );
+        assert!(
+            parse_networksetup_bypass("There are no bypass domains set on Wi-Fi.\n").is_empty()
+        );
+        assert!(parse_networksetup_bypass("Wi-Fi bypass domains:\n\nlocalhost\n").len() == 1);
     }
 
     /// GNOME 的 `ignore-hosts` 是 GVariant 字符串数组，单引号 / 反斜杠必须转义。
@@ -575,5 +808,37 @@ mod tests {
             "['localhost', '192.168.*']"
         );
         assert_eq!(ignore_hosts_gvariant(&["it's".into()]), "['it\\'s']");
+        assert_eq!(ignore_hosts_gvariant(&[]), "[]");
+    }
+
+    /// 读回来的 GVariant 数组要能拆回原样（含逗号 / 转义），拼 → 拆是恒等。
+    #[test]
+    fn parse_ignore_hosts_roundtrips() {
+        assert_eq!(
+            parse_ignore_hosts("['localhost', '127.0.0.0/8', '::1']"),
+            vec![
+                "localhost".to_string(),
+                "127.0.0.0/8".to_string(),
+                "::1".to_string()
+            ]
+        );
+        assert!(parse_ignore_hosts("[]").is_empty());
+        assert!(
+            parse_ignore_hosts("@as []").is_empty(),
+            "GVariant 类型标注也认"
+        );
+        assert_eq!(
+            parse_ignore_hosts("['it\\'s', 'a,b']"),
+            vec!["it's".to_string(), "a,b".to_string()],
+            "引号里的逗号不是分隔符"
+        );
+        for raw in ["['a', 'b']", "['it\\'s']", "[]"] {
+            let parsed = parse_ignore_hosts(raw);
+            assert_eq!(
+                parse_ignore_hosts(&ignore_hosts_gvariant(&parsed)),
+                parsed,
+                "拼 → 拆应当恒等: {raw}"
+            );
+        }
     }
 }

@@ -340,6 +340,13 @@ export const PROXY_MODES: { value: ProxyMode; label: string }[] = [
   { value: "off", label: tr("关闭系统代理") },
 ];
 
+/** 「本地地址走不走代理」三态（core 里是 `bypass_local: Option<bool>`）：空 = 不动系统设置。 */
+export const PROXY_LOCAL_MODES: { value: "" | "direct" | "proxied"; label: string }[] = [
+  { value: "", label: tr("沿用系统设置（不改）") },
+  { value: "direct", label: tr("不用代理（本地地址直连）") },
+  { value: "proxied", label: tr("本地地址也走代理") },
+];
+
 /** 排除项拆分：与 core 的 `parse_proxy_bypass` 同口径——中英文分号 / 逗号 / 换行分隔，
  * 去两端空白、完全重复的项只留一份；空串返回空列表（= 沿用系统已有的排除项）。 */
 export function proxyBypassList(raw: string | undefined): string[] {
@@ -852,16 +859,18 @@ export function systemSummary(o: SystemOperation): string {
             ? tr("关闭系统代理")
             : tr("切换系统代理");
       const server = o.server.trim();
-      // 关闭那条路不写排除项，摘要里也不报；排除项列表可能很长，只报项数。
+      // 关闭那条路不写排除项 / 本地地址，摘要里也不报；排除项列表可能很长，只报项数。
       const ignored = o.mode === "off" ? 0 : proxyBypassList(o.bypass).length;
-      const detail = server
-        ? ignored
-          ? trt`${server}，排除 ${ignored} 项`
-          : server
-        : ignored
-          ? trt`排除 ${ignored} 项`
-          : "";
-      return detail ? trt`${state}（${detail}）` : state;
+      const local =
+        o.mode === "off"
+          ? ""
+          : o.bypass_local === true
+            ? tr("本地地址直连")
+            : o.bypass_local === false
+              ? tr("本地地址也走代理")
+              : "";
+      const parts = [server, ignored ? trt`排除 ${ignored} 项` : "", local].filter(Boolean);
+      return parts.length ? trt`${state}（${parts.join("，")}）` : state;
     }
   }
   return "";

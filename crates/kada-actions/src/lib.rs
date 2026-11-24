@@ -1482,16 +1482,17 @@ fn system_body(op: &SystemOperation, vars: &Vars) -> String {
             mode,
             server,
             bypass,
-        } => proxy_body(*mode, server, bypass),
+            bypass_local,
+        } => proxy_body(*mode, server, bypass, *bypass_local),
     }
 }
 
-/// 系统代理开关摘要：`开启系统代理（127.0.0.1:7890，排除 3 项）` / `切换系统代理`。
+/// 系统代理开关摘要：`开启系统代理（127.0.0.1:7890，排除 3 项，本地地址直连）` / `切换系统代理`。
 #[cfg(all(
     any(target_os = "windows", target_os = "linux", target_os = "macos"),
     feature = "automation"
 ))]
-fn proxy_body(mode: ProxyMode, server: &str, bypass: &str) -> String {
+fn proxy_body(mode: ProxyMode, server: &str, bypass: &str, bypass_local: Option<bool>) -> String {
     let server = server.trim();
     // 关闭那条路不写排除项，摘要里也就不报（否则「关闭系统代理（排除 3 项）」看着像会动它）。
     let ignored = if matches!(mode, ProxyMode::Off) {
@@ -1499,11 +1500,26 @@ fn proxy_body(mode: ProxyMode, server: &str, bypass: &str) -> String {
     } else {
         parse_proxy_bypass(bypass).len()
     };
-    match (server.is_empty(), ignored) {
-        (true, 0) => format!("{}系统代理", mode.label()),
-        (false, 0) => format!("{}系统代理（{server}）", mode.label()),
-        (true, n) => format!("{}系统代理（排除 {n} 项）", mode.label()),
-        (false, n) => format!("{}系统代理（{server}，排除 {n} 项）", mode.label()),
+    let local = match bypass_local {
+        _ if matches!(mode, ProxyMode::Off) => None,
+        Some(true) => Some("本地地址直连"),
+        Some(false) => Some("本地地址也走代理"),
+        None => None,
+    };
+    let mut detail: Vec<String> = Vec::new();
+    if !server.is_empty() {
+        detail.push(server.to_string());
+    }
+    if ignored > 0 {
+        detail.push(format!("排除 {ignored} 项"));
+    }
+    if let Some(local) = local {
+        detail.push(local.to_string());
+    }
+    if detail.is_empty() {
+        format!("{}系统代理", mode.label())
+    } else {
+        format!("{}系统代理（{}）", mode.label(), detail.join("，"))
     }
 }
 
@@ -2426,6 +2442,7 @@ fn run_system(
             mode,
             server,
             bypass,
+            bypass_local,
         } => {
             let parsed = if server.trim().is_empty() {
                 None
@@ -2433,11 +2450,11 @@ fn run_system(
                 Some(parse_proxy_server(server).map_err(|e| format!("代理地址有误：{e}"))?)
             };
             let ignored = parse_proxy_bypass(bypass);
-            let msg = proxy::switch(*mode, parsed.as_ref(), &ignored)?;
+            let msg = proxy::switch(*mode, parsed.as_ref(), &ignored, *bypass_local)?;
             Ok(Some(CommandResult {
                 kind: "proxy".into(),
                 label: "系统代理".into(),
-                command: proxy_body(*mode, server, bypass),
+                command: proxy_body(*mode, server, bypass, *bypass_local),
                 stdout: msg,
                 stderr: String::new(),
                 exit_code: None,
@@ -5885,18 +5902,20 @@ mod tests {
     #[cfg(feature = "automation")]
     #[test]
     fn switch_proxy_summary_names_mode_and_server() {
-        let body = |mode, server: &str, bypass: &str| {
+        let body_local = |mode, server: &str, bypass: &str, bypass_local: Option<bool>| {
             let action = Action::System {
                 operation: SystemOperation::SwitchProxy {
                     mode,
                     server: server.into(),
                     bypass: bypass.into(),
+                    bypass_local,
                 },
                 description: None,
             };
             assert_eq!(super::action_kind(&action), "system", "该归操作系统动作");
             super::action_summary(&action, &BTreeMap::new())
         };
+        let body = |mode, server: &str, bypass: &str| body_local(mode, server, bypass, None);
         assert_eq!(body(ProxyMode::Toggle, "", ""), "切换系统代理");
         let on = body(ProxyMode::On, "127.0.0.1:7890", "");
         assert!(on.contains("开启") && on.contains("127.0.0.1:7890"), "{on}");
@@ -5910,6 +5929,16 @@ mod tests {
         assert!(with_bypass.contains("排除 2 项"), "{with_bypass}");
         let only_bypass = body(ProxyMode::Toggle, "", "localhost");
         assert!(only_bypass.contains("排除 1 项"), "{only_bypass}");
+        // 本地地址三态：只在摘要里说人话，关闭那条路不报（关闭不动排除项）。
+        let direct = body_local(ProxyMode::On, "", "", Some(true));
+        assert!(direct.contains("本地地址直连"), "{direct}");
+        let proxied = body_local(ProxyMode::On, "", "", Some(false));
+        assert!(proxied.contains("本地地址也走代理"), "{proxied}");
+        let off_local = body_local(ProxyMode::Off, "", "", Some(true));
+        assert!(
+            !off_local.contains("本地"),
+            "关闭时不该报本地地址: {off_local}"
+        );
     }
 
     /// 地址填错时在碰系统之前就报错（不会把半套设置写进去）。
@@ -5922,6 +5951,7 @@ mod tests {
                 mode: ProxyMode::On,
                 server: "127.0.0.1:abc".into(),
                 bypass: String::new(),
+                bypass_local: None,
             },
             description: None,
         };

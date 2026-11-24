@@ -254,8 +254,12 @@ pub enum SystemOperation {
     ///
     /// `server` 是开启时写入的地址（`host:port`，可带 `http://` / `socks5://` 前缀，见
     /// [`parse_proxy_server`]）；**留空 = 沿用系统里已经配好的地址**。关闭时不动地址。
-    /// `bypass` 是排除项（分号分隔，见 [`parse_proxy_bypass`]）：留空 = 沿用系统里已有的排除项，
-    /// 关闭时也不动。Windows 改注册表 `Internet Settings` 并广播设置变更；macOS 走 `networksetup`
+    /// `bypass` 是排除项（忽略的地址，分号 / 逗号 / 换行分隔，见 [`parse_proxy_bypass`]）：
+    /// 留空 = 沿用系统里已有的排除项，关闭时也不动。
+    /// `bypass_local` 是「本地地址走不走代理」的三态：`None` = 不动，`Some(true)` = 本地地址直连
+    /// （Windows 写 `ProxyOverride` 的 `<local>`，macOS / Linux 写 localhost / 127.0.0.1 / ::1），
+    /// `Some(false)` = 本地地址也用代理（把这几项从排除项里去掉）。
+    /// Windows 改注册表 `Internet Settings` 并广播设置变更；macOS 走 `networksetup`
     /// （需要管理员权限）；Linux 走 GNOME `gsettings`（其它桌面环境执行报错）。
     SwitchProxy {
         #[serde(default)]
@@ -264,6 +268,8 @@ pub enum SystemOperation {
         server: String,
         #[serde(default, skip_serializing_if = "String::is_empty")]
         bypass: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bypass_local: Option<bool>,
     },
 }
 
@@ -1952,11 +1958,12 @@ mod proxy_action_tests {
                         mode: ProxyMode::Toggle,
                         ref server,
                         ref bypass,
+                        ref bypass_local,
                     },
                     ..
-                } if server.is_empty() && bypass.is_empty()
+                } if server.is_empty() && bypass.is_empty() && bypass_local.is_none()
             ),
-            "缺省该是「切换」且地址 / 排除项为空: {bare:?}"
+            "缺省该是「切换」且地址 / 排除项为空、本地地址不动: {bare:?}"
         );
         assert!(bare.validate().is_ok(), "地址留空合法（沿用系统现有地址）");
 
@@ -1966,6 +1973,7 @@ mod proxy_action_tests {
                     mode,
                     server: String::new(),
                     bypass: String::new(),
+                    bypass_local: None,
                 },
                 description: None,
             }
@@ -2004,12 +2012,13 @@ mod proxy_action_tests {
         assert_eq!(ipv6.host, "::1");
         assert_eq!(ipv6.port, 1080);
 
-        // 落盘：非默认 mode 与地址 / 排除项都写出来，读回来等价。
+        // 落盘：非默认 mode 与地址 / 排除项 / 本地地址三态都写出来，读回来等价。
         let action = Action::System {
             operation: SystemOperation::SwitchProxy {
                 mode: ProxyMode::On,
                 server: "socks5://127.0.0.1:1080".into(),
                 bypass: "localhost;192.168.*".into(),
+                bypass_local: Some(true),
             },
             description: None,
         };
@@ -2021,6 +2030,7 @@ mod proxy_action_tests {
             "{json}"
         );
         assert!(json.contains(r#""bypass":"localhost;192.168.*""#), "{json}");
+        assert!(json.contains(r#""bypass_local":true"#), "{json}");
         assert_eq!(serde_json::from_str::<Action>(&json).unwrap(), action);
 
         let bad = Action::System {
@@ -2028,6 +2038,7 @@ mod proxy_action_tests {
                 mode: ProxyMode::On,
                 server: "127.0.0.1:abc".into(),
                 bypass: String::new(),
+                bypass_local: None,
             },
             description: None,
         };
