@@ -120,6 +120,10 @@ pub(crate) use main_window::show_main_window;
 
 /// 运行时状态与状态指示载荷（T-05 从 lib.rs 搬出）：KadaState / 状态快照 / 各浮窗载荷。
 mod state;
+
+/// 键盘诊断（规划 7.2-KD）：原始按键时间线 + 「Kada 怎么处置的」，设置页实时显示。
+/// 探针在 `kada-hook` 侧（只有 Windows 实现），这里只管缓冲、配对与命令入口。
+mod keydiag;
 pub(crate) use state::{
     build_status, EngineStatus, HintsState, KadaState, StatusPayload, ToastPayload,
 };
@@ -168,9 +172,9 @@ mod input {
     //! Windows：全局低层键盘钩子（kada-hook）。
     pub use kada_hook::win::{
         current_device, current_pointer_device, focus_window, foreground_fullscreen,
-        foreground_window, frontmost_context, hotkey_occupied, input_devices, process_running,
-        reinstall_count, set_mouse_enabled, set_mouse_recorder, set_wheel_enabled, simulate, start,
-        Action as HookAction, HookHandle, KeyEvent,
+        foreground_window, frontmost_context, hotkey_occupied, input_devices, key_health,
+        process_running, reinstall_count, set_key_probe, set_mouse_enabled, set_mouse_recorder,
+        set_wheel_enabled, simulate, start, Action as HookAction, HookHandle, KeyEvent, KeyProbe,
     };
 
     /// 提权窗口注入（规划 7.2-㉑a）：Windows 有整套实现（提权伴随进程 + 命名管道），
@@ -188,6 +192,11 @@ mod input {
 
     /// 本平台是否**做了**输入环境诊断。Windows 做了。
     pub fn input_env_supported() -> bool {
+        true
+    }
+
+    /// 键盘诊断（规划 7.2-KD）：只有 Windows 的钩子回调带探针，见 `kada_hook::win::KeyProbe`。
+    pub fn key_diag_supported() -> bool {
         true
     }
 }
@@ -252,6 +261,11 @@ mod input {
     pub fn input_env_supported() -> bool {
         true
     }
+
+    /// 键盘诊断（规划 7.2-KD）：探针目前只在 Windows 的钩子回调里实现，Linux 报不支持。
+    pub fn key_diag_supported() -> bool {
+        false
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -300,6 +314,11 @@ mod input {
     /// 三平台现在都做了。
     pub fn input_env_supported() -> bool {
         true
+    }
+
+    /// 键盘诊断（规划 7.2-KD）：探针目前只在 Windows 的钩子回调里实现，macOS 报不支持。
+    pub fn key_diag_supported() -> bool {
+        false
     }
 }
 
@@ -357,6 +376,11 @@ mod input {
 
     /// 无输入层实现：没做诊断。
     pub fn input_env_supported() -> bool {
+        false
+    }
+
+    /// 无输入层实现：没有键盘探针。
+    pub fn key_diag_supported() -> bool {
         false
     }
 }
@@ -478,7 +502,11 @@ pub fn run() {
             update::check_update,
             update::download_update,
             update::install_update,
-            update::take_update_dialog
+            update::take_update_dialog,
+            keydiag::key_diag_start,
+            keydiag::key_diag_stop,
+            keydiag::key_diag_clear,
+            keydiag::key_diag_poll
         ])
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
@@ -540,6 +568,12 @@ pub fn run() {
                 input::start(move |ev: input::KeyEvent| {
                     let raw = ev;
                     let ev = to_ev(&raw);
+                    // 键盘诊断（7.2-KD）：把「Kada 拿这个键怎么办」补给探针先记下的那一行
+                    // （按「同一个键 + 同一个方向」就近配对）。只往环形缓冲追加一条，
+                    // 诊断没开时 `note_key` 读一个原子旗标就返回。
+                    let note = |ev: &Ev, text: &str| {
+                        keydiag::note_key(ev.key(), matches!(ev, Ev::Down { .. }), text)
+                    };
                     // 录制中：所有事件进时间线、放行；快捷键/改键全暂停。
                     {
                         let mut g = r.lock().unwrap();
@@ -571,6 +605,7 @@ pub fn run() {
                     }
                     let guard = cfg.read().unwrap();
                     if pause_active(&pause) || guard.settings.paused {
+                        note(&ev, "录入暂停");
                         return input::HookAction::Allow;
                     }
                     // 前置状态机（tap-hold → 和弦 → 键序列）：被吞掉的键不进 decide。
@@ -594,12 +629,14 @@ pub fn run() {
                     // 全局排除列表（EXT-04）：命中的程序里所有触发一律不生效——不吞键、
                     // 不执行动作（含文本扩展）。判定在共享入口、每个事件最多查一次前台。
                     if when_ctx.app_excluded(&guard.settings.exclude_apps) {
+                        note(&ev, "命中的程序已排除");
                         return input::HookAction::Allow;
                     }
                     // 全局全屏暂停（EXT-05）：前台全屏程序里所有触发一律不生效——不吞键、
                     // 不执行动作（含文本扩展），退出全屏自动恢复。与手势自带的全屏让路
                     // 独立（那个恒生效、不看开关）。macOS / Linux 判定恒 false，待真机。
                     if guard.settings.ignore_fullscreen && input::foreground_fullscreen() {
+                        note(&ev, "前台全屏，触发放行");
                         return input::HookAction::Allow;
                     }
                     // 触摸板手势（7.2-MG）：触发键按下一瞬间 = 开始采集，这一下吞掉（它只是
@@ -681,6 +718,7 @@ pub fn run() {
                         &mut SimulatedInject,
                         &mut fire_hit,
                     ) else {
+                        note(&ev, "状态机等待凑齐（吞键）");
                         return input::HookAction::Block;
                     };
                     let layer = engine.lock().unwrap().active_layer().map(str::to_string);
@@ -690,6 +728,7 @@ pub fn run() {
                             trigger,
                             name,
                         } => {
+                            note(&ev, &format!("命中「{name}」"));
                             fire(
                                 app_handle.clone(),
                                 results.clone(),
@@ -705,13 +744,17 @@ pub fn run() {
                             );
                             input::HookAction::Block
                         }
-                        Outcome::Replace(to) => input::HookAction::Replace(to),
+                        Outcome::Replace(to) => {
+                            note(&ev, &format!("改键为 {}", key_name(to)));
+                            input::HookAction::Replace(to)
+                        }
                         Outcome::Pass => {
                             // 命中文本扩展：后缀键（空格/回车/Tab）吞掉，改由后台线程
                             // 回删触发词 + 注入替换文本 + 补回后缀（注入要上百毫秒，绝不能
                             // 跑在钩子回调里——回调超时会被系统摘掉钩子，之后全部功能失效）。
                             match engine.lock().unwrap().hotstring(&ev, &guard.expansions) {
                                 Some(hit) => {
+                                    note(&ev, "文本扩展命中");
                                     spawn_hotstring(
                                         app_handle.clone(),
                                         results.clone(),
@@ -721,7 +764,10 @@ pub fn run() {
                                     );
                                     input::HookAction::Block
                                 }
-                                None => input::HookAction::Allow,
+                                None => {
+                                    note(&ev, "放行（没有匹配）");
+                                    input::HookAction::Allow
+                                }
                             }
                         }
                     }

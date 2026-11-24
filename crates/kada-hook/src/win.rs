@@ -34,7 +34,7 @@ use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU32, AtomicU64, Ordering}
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{mpsc, LazyLock, Mutex};
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use windows::core::{w, BOOL, PWSTR};
 use windows::Win32::Foundation::{
@@ -605,12 +605,142 @@ fn watchdog_loop(stop: mpsc::Receiver<()>) {
     }
 }
 
+/// 一条**原始**键盘事件（设置页「键盘诊断」的数据源，规划 7.2-KD）。
+///
+/// 与 [`KeyEvent`] 的区别：这是「硬件/系统看到了什么」，**不经过任何判定**——包含 Kada
+/// 键表里没有的键（`key: None`，只留扫描码）、注入事件（`injected`）与到达延迟
+/// （`lag_ms` = 系统记下这条事件 → 钩子回调开始处理，即输入队列的排队时间）。
+pub struct KeyProbe {
+    /// 映射到的键；`None` = 这个扫描码 / 虚拟键码 Kada 不认识（诊断要显示它，而不是丢掉）。
+    pub key: Option<Key>,
+    /// 扫描码（`KBDLLHOOKSTRUCT.scanCode`）：同一 `Key` 在不同物理键上的分辨依据。
+    pub scan: u32,
+    /// 扩展键标记（小键盘与方向键扫描码相同，靠它区分）。
+    pub extended: bool,
+    /// 按下 vs 抬起。
+    pub down: bool,
+    /// 自动重复（该键仍按住时又来的 down），与 [`detect_repeat`] 同口径。
+    pub repeat: bool,
+    /// 由注入产生（Kada 自己或别的注入工具/厂商驱动）。注入事件不进 Kada 判定。
+    pub injected: bool,
+    /// 事件产生 → 钩子回调的延迟（毫秒）。**这是「迟滞」最直接的数字**：它变大说明
+    /// 输入队列被前面的钩子或系统自身堵住了。
+    pub lag_ms: u32,
+    /// 事件时刻（`GetTickCount` 毫秒，与 `lag_ms` 同一时钟基准）。
+    pub t_ms: u32,
+}
+
+/// 探针出口：只在「键盘诊断」开着时设置（`None` = 关）。**回调里只许追加到缓冲**，
+/// 不能做 IO / 建窗 / 等锁——它跑在钩子回调里，超时会被系统摘钩子（见模块文档）。
+pub type KeyProbeSink = std::sync::Arc<dyn Fn(&KeyProbe) + Send + Sync>;
+static KEY_PROBE: Mutex<Option<KeyProbeSink>> = Mutex::new(None);
+
+/// 设置键盘探针出口（`None` = 关闭诊断）。
+pub fn set_key_probe(sink: Option<KeyProbeSink>) {
+    *KEY_PROBE.lock().unwrap() = sink;
+}
+
+/// 回调停留耗时（微秒）：上一次 / 最大 / 超过 [`SLOW_DWELL_US`] 的次数。
+/// 低层钩子有自己的超时线（`LowLevelHooksTimeout`，默认 300ms）——超了系统直接跳过本次
+/// 回调、反复超时还会把钩子摘掉，症状就是「偶尔/之后按键全不响应」。
+static LAST_DWELL_US: AtomicU64 = AtomicU64::new(0);
+static MAX_DWELL_US: AtomicU64 = AtomicU64::new(0);
+static SLOW_CALLBACKS: AtomicU64 = AtomicU64::new(0);
+/// 「慢」的判定线：5ms。正常人感知不到，但已经是钩子回调里该警觉的量级。
+const SLOW_DWELL_US: u64 = 5_000;
+
+/// 钩子线程体检快照（设置页「键盘诊断」的顶部一行）。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyHealth {
+    /// 键盘钩子句柄存在（`false` = 钩子没装上 / 已被摘）。
+    pub installed: bool,
+    /// 距上一次钩子回调经过的毫秒（0 = 刚有按键；只反映「最近有没有按键」，不是存活证明）。
+    pub last_key_age_ms: u32,
+    /// 自愈重装累计次数（>0 = 曾经被系统摘掉并重建过）。
+    pub reinstalls: u64,
+    /// 最近一次回调停留耗时（微秒）。
+    pub last_dwell_us: u64,
+    /// 观测到的最大回调停留耗时（微秒）。
+    pub max_dwell_us: u64,
+    /// 回调停留超过 5ms 的次数。
+    pub slow_callbacks: u64,
+    /// 探针是否开着。
+    pub probing: bool,
+}
+
+/// 取钩子体检快照（只读原子量，任何线程可调）。
+pub fn key_health() -> KeyHealth {
+    let last = LAST_KEY_TICK.load(Ordering::Relaxed);
+    let now = unsafe { GetTickCount() };
+    KeyHealth {
+        installed: HOOK.load(Ordering::Relaxed) != 0,
+        last_key_age_ms: if last == 0 { 0 } else { now.wrapping_sub(last) },
+        reinstalls: reinstall_count(),
+        last_dwell_us: LAST_DWELL_US.load(Ordering::Relaxed),
+        max_dwell_us: MAX_DWELL_US.load(Ordering::Relaxed),
+        slow_callbacks: SLOW_CALLBACKS.load(Ordering::Relaxed),
+        probing: KEY_PROBE.lock().map(|g| g.is_some()).unwrap_or(false),
+    }
+}
+
+/// 把这一条原始事件交给探针（没开探针时只是一次加锁 + `None` 判断）。
+///
+/// 在**判定之前**调用：这样「Kada 到底有没有看见这个键」与「Kada 拿它怎么办」是两件事，
+/// 后者由壳层在判定后补上（见 `src-tauri/src/keydiag.rs`）。
+pub fn probe_key(kb: &KBDLLHOOKSTRUCT, wparam: u32) {
+    let sink = match KEY_PROBE.lock() {
+        Ok(g) => g.clone(),
+        Err(_) => None,
+    };
+    let Some(sink) = sink else {
+        return;
+    };
+    let extended = kb.flags.0 & LLKHF_EXTENDED.0 != 0;
+    let key = hook_key(kb, extended);
+    let down = matches!(wparam, WM_KEYDOWN | WM_SYSKEYDOWN);
+    // 与 `detect_repeat` 同口径，但**只读**：探针不能动 `HELD_KEYS`，否则真判定会被带歪。
+    let held = key.is_some_and(|k| HELD_KEYS.lock().map(|h| h.contains(&k)).unwrap_or(false));
+    let now = unsafe { GetTickCount() };
+    // `time` 与 `GetTickCount` 同一个 32 位毫秒基准（输入栈记事件时刻用的就是它）。
+    let lag_ms = now.wrapping_sub(kb.time);
+    sink(&KeyProbe {
+        key,
+        scan: kb.scanCode,
+        extended,
+        down,
+        repeat: down && held,
+        injected: kb.flags.0 & LLKHF_INJECTED.0 != 0,
+        lag_ms,
+        t_ms: now,
+    });
+}
+
+fn record_dwell(d: Duration) {
+    let us = d.as_micros() as u64;
+    LAST_DWELL_US.store(us, Ordering::Relaxed);
+    MAX_DWELL_US.fetch_max(us, Ordering::Relaxed);
+    if us >= SLOW_DWELL_US {
+        SLOW_CALLBACKS.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // 回调停留耗时：系统有自己的超时线，超了会跳过本次回调甚至摘钩子。量在这里
+    // （进 → 出整段，含 `CallNextHookEx`），才是系统的那个口径。
+    let t0 = Instant::now();
+    let r = unsafe { keyboard_proc_inner(code, wparam, lparam) };
+    record_dwell(t0.elapsed());
+    r
+}
+
+unsafe fn keyboard_proc_inner(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     // 心跳：键盘钩子被系统摘除后就再也不会被调用，看门狗靠这个时间戳判断它是否还活着。
     // `GetTickCount` 只读内核共享页，不算「回调里的耗时操作」。
     LAST_KEY_TICK.store(unsafe { GetTickCount() }, Ordering::Relaxed);
     if code >= 0 {
         let kb = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+        // 探针：判定之前先留一条原始记录（含 Kada 不认识的键 / 注入键）。
+        probe_key(kb, wparam.0 as u32);
         // 注入事件一律放行，防回环。
         if kb.flags.0 & LLKHF_INJECTED.0 == 0 && swallow(wparam.0 as u32, kb) {
             return LRESULT(1);
