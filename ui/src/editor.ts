@@ -15,8 +15,6 @@ import {
   renderListPane,
   shortcutLabel,
   spotLabel,
-  touchpadFeaturesEnabled,
-  touchpadOrderFront,
 } from "./list";
 import { KEY_OPTIONS, newAction } from "./options";
 import { syncSettings } from "./settings";
@@ -32,7 +30,7 @@ import {
   syncRailTab,
   switchSectionNow,
 } from "./main";
-import { endCapture, setCaptureCleanup, stopCapture } from "./input";
+import { stopCapture } from "./input";
 import {
   collapseAllActions,
   expansionTriggerError,
@@ -52,12 +50,11 @@ import type {
   Remap,
   ShortcutItem,
   TextExpansion,
-  TouchpadGesture,
   WheelEdgeRule,
   WheelEdgeSpot,
 } from "./types";
 
-// 编辑页 / 统一编辑页外壳 / 触摸板手势录入 / 改键与层下拉（U-03 从 main.ts 搬出）。
+// 编辑页 / 统一编辑页外壳 / 改键与层下拉（U-03 从 main.ts 搬出）。
 // 这里只负责「当前选中条目怎么填进表单、怎么从表单写回草稿、怎么保存」；动作列表的渲染在
 // 入口的动作列表段（等 form 批次搬走），左栏与入口的 render() 仍从 ./main 调用本模块的 renderDetail()。
 
@@ -130,7 +127,6 @@ function setEntryTitle() {
 export function currentActionsHost(): { actions: Action[] } | null {
   if (state.section === "shortcuts") return state.draft;
   if (state.section === "gestures") return state.gestureDraft;
-  if (state.section === "touchpads") return state.touchpadDraft;
   if (state.section === "hotcorners") return state.hotcornerDraft;
   if (state.section === "wheeledges") return state.wheeledgeDraft;
   return null;
@@ -392,114 +388,6 @@ export function openGesturePad(onDone: (pattern: string) => void) {
   document.body.append(mask);
 }
 
-// ---- 触摸板手势：触发键 + 「从触摸板录入」 ----
-// 触发键是独立的 `TouchpadGesture.trigger`（必填、只能键盘键）。录制由壳层临时开采集：
-// 按触发键 → 在触摸板上画一笔 → 松键后壳层把方向串 + 形状模板推回来，**不执行动作**。
-export type TrackpadRecordPayload = {
-  pattern: string;
-  template: [number, number][] | null;
-  points: number;
-  elapsed_ms: number;
-};
-
-/** 正在「录入」时接收壳层回传的回调（`null` = 没在录）。 */
-export let trackpadRecordSink: ((p: TrackpadRecordPayload) => void) | null = null;
-
-/** 触发键下拉：只有键盘键（鼠标键只走右键手势那条路）。 */
-export function fillTouchpadTriggerSelect() {
-  const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
-  if (!sel || sel.options.length > 0) return;
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = tr("选择触发键…");
-  sel.append(placeholder);
-  for (const k of KEY_OPTIONS) {
-    if (k.startsWith("Mouse") || k.startsWith("Wheel")) continue;
-    const o = document.createElement("option");
-    o.value = k;
-    o.textContent = k;
-    sel.append(o);
-  }
-}
-
-/** 触发键 / 模板变了之后，把「录入」「清除模板」与提示对齐。 */
-export function syncTouchpadUi() {
-  const key = state.touchpadDraft?.trigger ?? "";
-  document.getElementById("edit-touchpad-capture")?.classList.toggle("hidden", !key);
-  document
-    .getElementById("edit-touchpad-drop-template")
-    ?.classList.toggle("hidden", !state.touchpadDraft?.template);
-  const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
-  if (sel) {
-    sel.title = key
-      ? trt`按住 ${key} 在触摸板上画一笔（触摸板手势）`
-      : tr("先选一个触发键，再在触摸板上录入");
-  }
-}
-
-/** 「录入」：开一个只回填编辑器的采集会话（开闸 / 识别 / 收尾都在壳层）。 */
-export function openTrackpadRecord(key: string) {
-  const mask = el("div", "modal-mask gesture-pad-mask");
-  const modal = el("div", "gesture-pad");
-  const title = el("h3", "", tr("从触摸板录入"));
-  const hint = el(
-    "div",
-    "unit-hint",
-    trt`按住 ${key}，在触摸板上画一笔，松手后自动填入方向串与形状模板。Esc 作废这一笔。`,
-  );
-  const status = el("div", "gesture-pad-result", tr("等待按键…"));
-  const actions = el("div", "gesture-pad-actions");
-  const done = el("button", "ghost", tr("完成")) as HTMLButtonElement;
-  done.type = "button";
-  actions.append(done);
-  modal.append(title, hint, status, actions);
-  mask.append(modal);
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key !== "Escape") return;
-    // 采集中的 Esc 是「作废这一笔」，已被钩子吞掉、界面收不到；这里只负责关窗。
-    e.preventDefault();
-    stop();
-  };
-  function stop() {
-    endCapture(stop);
-    trackpadRecordSink = null;
-    window.removeEventListener("keydown", onKey, true);
-    mask.remove();
-    void invoke("stop_trackpad_record").catch(() => {});
-  }
-  // 窗口失焦 / 收进托盘 = 这次录入作废：不清会话的话触发键会一直被钩子吞掉，
-  // 而面板已经看不见了（与录入暂停同一口径，见 `stopCapture`）。
-  setCaptureCleanup(stop);
-  trackpadRecordSink = (p) => {
-    if (!state.touchpadDraft) return;
-    if (!p.pattern) {
-      status.textContent = tr("这一笔没识别出来（太短 / 涂鸦 / 已作废），再画一笔");
-      return;
-    }
-    state.touchpadDraft.pattern = p.pattern;
-    state.touchpadDraft.template = p.template ?? null;
-    state.touchpadDraft.trigger = key;
-    (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value = p.pattern;
-    renderActions(state.touchpadDraft, p.pattern);
-    syncTouchpadUi();
-    refreshDirty();
-    status.textContent = trt`已录入 ${p.pattern}（${p.points} 个点）`;
-    toast(trt`已录入方向串 ${p.pattern}，记得保存`);
-  };
-  done.addEventListener("click", stop);
-  mask.addEventListener("click", (e) => {
-    if (e.target === mask) stop();
-  });
-  window.addEventListener("keydown", onKey, true);
-  document.body.append(mask);
-  void invoke("start_trackpad_record", { key })
-    .catch((e) => {
-      // 平台不支持 / 输入层没起来：把后端的说法原样告诉用户，别留一个「等按键」的空壳。
-      stop();
-      toast(trt`没能开始录制：${String(e)}`);
-    });
-}
-
 function fillGestureEditor() {
   if (!state.gestureDraft) return;
   (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
@@ -515,34 +403,6 @@ function fillGestureEditor() {
     refreshDirty,
   );
   renderActions(state.gestureDraft, state.gestureDraft.pattern || tr("未设方向串"));
-  setEntryTitle();
-}
-
-function fillTouchpadEditor() {
-  if (!state.touchpadDraft) return;
-  (document.getElementById("edit-desc") as HTMLTextAreaElement).value =
-    state.touchpadDraft.description ?? "";
-  (document.getElementById("edit-touchpad-pattern") as HTMLInputElement).value =
-    state.touchpadDraft.pattern;
-  const triggerSel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement | null;
-  if (triggerSel) {
-    // 手改配置里塞了鼠标键 / 未知键名时，下拉没有这一项 → 回落到空值（显示「选择触发键…」），
-    // 但**不动草稿**：保存时后端清洗会照原样报错，别在界面上悄悄改用户配置。
-    triggerSel.value = state.touchpadDraft.trigger ?? "";
-  }
-  syncTouchpadUi();
-  renderWhenEditor(
-    document.getElementById("edit-when")!,
-    () => state.touchpadDraft?.when,
-    (c) => {
-      if (state.touchpadDraft) state.touchpadDraft.when = c;
-    },
-    refreshDirty,
-  );
-  renderActions(
-    state.touchpadDraft,
-    state.touchpadDraft.pattern || (state.touchpadDraft.template ? tr("仅形状") : tr("未设方向串")),
-  );
   setEntryTitle();
 }
 
@@ -678,18 +538,15 @@ function syncEntry() {
     "remap",
     "expansion",
     "gesture",
-    "touchpad",
     "hotcorner",
     "wheeledge",
   ] as ListKind[]) {
     const item = document.querySelector<HTMLElement>(`#mode-menu .mode-item[data-kind="${k}"]`);
     if (item) {
       item.classList.toggle("active", k === kind);
-      // 鼠标类 / 触摸板各有自己的开关：关着时这些项不出现（入口隐藏，配置留着）。
+      // 鼠标类各有总开关：关着时这些项不出现（入口隐藏，配置留着）。
       if (k === "gesture" || k === "hotcorner" || k === "wheeledge")
         item.classList.toggle("hidden", !mouseFeaturesEnabled());
-      else if (k === "touchpad")
-        item.classList.toggle("hidden", !touchpadFeaturesEnabled());
       // 已保存的条目不能改类型（改类型 = 换一个数组重存，草稿下标 / 删除路径都会错位）；
       // 新增态可以随意切，名称与描述由 switchDraftKind 带过去。
       item.classList.toggle("disabled", k !== kind && !state.draftNew);
@@ -703,22 +560,20 @@ function syncEntry() {
     document.getElementById(`key-${k}`)?.classList.toggle("hidden", k !== kind);
     document.getElementById(`layer-${k}`)?.classList.toggle("hidden", k !== kind);
   }
-  // 动作区：快捷键 / 鼠标类触发 / 触摸板手势共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
+  // 动作区：快捷键 / 鼠标类触发共用 `#work-shortcut`；改键 / 文本扩展各用自己的。
   document.getElementById("work-shortcut")!.classList.toggle(
     "hidden",
     kind !== "shortcut" &&
       kind !== "gesture" &&
-      kind !== "touchpad" &&
       kind !== "hotcorner" &&
       kind !== "wheeledge",
   );
   document.getElementById("work-remap")!.classList.toggle("hidden", kind !== "remap");
   document.getElementById("work-expansion")!.classList.toggle("hidden", kind !== "expansion");
   closeModeMenu(); // 切条目 / 重渲染时别让上一次开的菜单还挂在那
-  // 文本扩展没有「层」；手势 / 触摸板手势也没有 `layer` 字段（与鼠标操作同一口径），
+  // 文本扩展没有「层」；手势也没有 `layer` 字段（与鼠标操作同一口径），
   // 别显示一个空页签。快捷键 / 改键 / 角动作 / 边缘滚动能归属层。
-  const hasLayer =
-    kind !== "expansion" && kind !== "gesture" && kind !== "touchpad";
+  const hasLayer = kind !== "expansion" && kind !== "gesture";
   const hasWhen = kind !== "expansion";
   const hasDetail = true;
   document.getElementById("tab-layer")!.classList.toggle("hidden", !hasLayer);
@@ -823,13 +678,6 @@ export function deleteCurrentEntry() {
     void deleteDetailEntry(tr("鼠标操作"), g.name?.trim() || g.pattern || tr("未命名"), () => {
       if (state.selected !== null) (state.cfg.gestures ?? []).splice(state.selected, 1);
     });
-  } else if (kind === "touchpad") {
-    if (!state.touchpadDraft) return;
-    if (state.draftNew) return discardNewDraft();
-    const g = state.touchpadDraft;
-    void deleteDetailEntry(tr("触摸板手势"), g.name?.trim() || g.pattern || tr("未命名"), () => {
-      if (state.selected !== null) (state.cfg.touchpad_gestures ?? []).splice(state.selected, 1);
-    });
   } else if (kind === "hotcorner") {
     if (!state.hotcornerDraft) return;
     if (state.draftNew) return discardNewDraft();
@@ -895,7 +743,6 @@ export function openDetail(
   state.remapDraft = null;
   state.expansionDraft = null;
   state.gestureDraft = null;
-  state.touchpadDraft = null;
   state.hotcornerDraft = null;
   state.wheeledgeDraft = null;
   state.selected = i;
@@ -960,27 +807,6 @@ export function openDetail(
     }
     state.gestureDraft = draft;
     fillGestureEditor();
-  } else if (state.section === "touchpads") {
-    const existing = isNew ? null : (state.cfg.touchpad_gestures ?? [])[i];
-    if (!isNew && !existing) return;
-    const draft = existing
-      ? deepClone(existing)
-      : {
-          name: null,
-          description: null,
-          folder: folderId,
-          trigger: null,
-          pattern: "D",
-          template: null,
-          actions: [newAction("text")],
-          enabled: true,
-        };
-    if (isNew && seed) {
-      draft.name = seed.name ?? null;
-      if (seed.pattern) draft.pattern = seed.pattern;
-    }
-    state.touchpadDraft = draft;
-    fillTouchpadEditor();
   } else if (state.section === "hotcorners") {
     const existing = isNew ? null : (state.cfg.hot_corners ?? [])[i];
     if (!isNew && !existing) return;
@@ -1037,7 +863,6 @@ export function discardDraft() {
   state.remapDraft = null;
   state.expansionDraft = null;
   state.gestureDraft = null;
-  state.touchpadDraft = null;
   state.hotcornerDraft = null;
   state.wheeledgeDraft = null;
   state.draftBaseline = null;
@@ -1226,52 +1051,6 @@ async function saveGestureDetail(): Promise<boolean> {
   return ok;
 }
 
-// 触摸板手势保存：**触发键必填**；方向串与形状模板至少有一个（后端清洗会把两者都空的整条丢掉），
-// 只有模板 = 「纯形状」条目（方向串留空，靠模板兜底匹配）；动作可空（空 = 只留条目不做事）。
-async function saveTouchpadDetail(): Promise<boolean> {
-  if (state.section !== "touchpads" || !state.touchpadDraft) return false;
-  const trigger = domValue("edit-touchpad-trigger");
-  if (!trigger) {
-    const sel = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
-    showFieldError(sel, tr("请选择触发键"));
-    sel.focus();
-    toast(tr("请先选择一个键盘键作触发键"));
-    return false;
-  }
-  const pattern = domValue("edit-touchpad-pattern").trim().toUpperCase();
-  if (!pattern && !(state.touchpadDraft.template?.length ?? 0)) {
-    const input = document.getElementById("edit-touchpad-pattern") as HTMLInputElement;
-    showFieldError(input, tr("请填写方向串，或用「录入」画一笔形状"));
-    input.focus();
-    toast(tr("方向串可以留空（只认形状），但要先「录入」一笔留下形状模板"));
-    return false;
-  }
-  state.touchpadDraft.trigger = trigger;
-  state.touchpadDraft.pattern = pattern;
-  state.touchpadDraft.template = state.touchpadDraft.template?.length ? state.touchpadDraft.template : null;
-  state.touchpadDraft.description = domValue("edit-desc") || null;
-  const item = deepClone(state.touchpadDraft);
-  const list = state.cfg.touchpad_gestures ?? (state.cfg.touchpad_gestures = []);
-  if (state.draftNew) {
-    list.unshift(item);
-    touchpadOrderFront(item);
-  } else if (state.selected !== null) {
-    const prev = list[state.selected];
-    if (prev) {
-      item.enabled = prev.enabled;
-      list[state.selected] = item;
-    }
-  }
-  // 保存后留在编辑页（与快捷键同行为）。
-  state.draftNew = false;
-  const ok = await save();
-  state.selected = (state.cfg.touchpad_gestures ?? []).indexOf(item);
-  if (ok) state.draftBaseline = draftSignature();
-  render();
-  if (ok) flashRow(state.selected ?? -1, "touchpad");
-  return ok;
-}
-
 // 角动作 / 边缘滚动保存：位置必选（草稿默认就是一个合法位置），动作可空。
 async function saveHotCornerDetail(): Promise<boolean> {
   if (state.section !== "hotcorners" || !state.hotcornerDraft) return false;
@@ -1359,9 +1138,6 @@ export function revertDraft() {
   } else if (state.section === "gestures") {
     state.gestureDraft = JSON.parse(state.draftBaseline) as Gesture;
     fillGestureEditor();
-  } else if (state.section === "touchpads") {
-    state.touchpadDraft = JSON.parse(state.draftBaseline) as TouchpadGesture;
-    fillTouchpadEditor();
   } else if (state.section === "hotcorners") {
     state.hotcornerDraft = JSON.parse(state.draftBaseline) as HotCornerRule;
     fillHotCornerEditor();
@@ -1390,9 +1166,6 @@ function draftLabel(): string {
   }
   if (state.section === "gestures") {
     return trt`鼠标操作「${state.gestureDraft?.name?.trim() || state.gestureDraft?.pattern || tr("未命名")}」`;
-  }
-  if (state.section === "touchpads") {
-    return trt`触摸板手势「${state.touchpadDraft?.name?.trim() || state.touchpadDraft?.pattern || tr("未命名")}」`;
   }
   if (state.section === "hotcorners") {
     return trt`角动作「${state.hotcornerDraft?.name?.trim() || spotLabel(state.hotcornerDraft?.spot ?? "top_left")}」`;
@@ -1438,7 +1211,6 @@ export async function saveCurrentDraft(): Promise<boolean> {
   if (state.section === "remaps") return await saveRemapDetail();
   if (state.section === "expansions") return await saveExpansionDetail();
   if (state.section === "gestures") return await saveGestureDetail();
-  if (state.section === "touchpads") return await saveTouchpadDetail();
   if (state.section === "hotcorners") return await saveHotCornerDetail();
   if (state.section === "wheeledges") return await saveWheelEdgeDetail();
   return false;
@@ -1479,7 +1251,6 @@ export async function applyExternalConfig(next: Config) {
     state.remapDraft !== null ||
     state.expansionDraft !== null ||
     state.gestureDraft !== null ||
-    state.touchpadDraft !== null ||
     state.hotcornerDraft !== null ||
     state.wheeledgeDraft !== null;
   if (editing) {

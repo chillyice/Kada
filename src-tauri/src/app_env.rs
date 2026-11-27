@@ -143,7 +143,6 @@ pub(crate) fn platform_caps() -> kada_core::PlatformCaps {
             shell_actions: false,
             hot_corners: false,
             wheel_edges: false,
-            touchpad_gestures: false,
             brightness: false,
             semantic_actions: false,
             ..Default::default()

@@ -33,12 +33,11 @@ use kada_actions::{
 use kada_core::ClipboardMenu;
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
-    is_touchpad_trigger, parse_snippet_index, publish_payload, sanitize_config, scan_snippet,
-    snippet, snippet_title, touchpad_gesture_enabled, Action, ClipboardOperation, Config, Conflict,
-    IndexEntry, Key, Remap, Settings, Severity, Shortcut, ShortcutItem, SnippetMeta, SnippetPick,
-    SnippetScan, TextExpansion, TextInjectMode, TriggerContext, Vars,
-    DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL, DEFAULT_SNIPPET_PUBLISH_URL,
-    SYSTEM_SHORTCUTS,
+    parse_snippet_index, publish_payload, sanitize_config, scan_snippet, snippet, snippet_title,
+    Action, ClipboardOperation, Config, Conflict, IndexEntry, Key, Remap, Settings, Severity,
+    Shortcut, ShortcutItem, SnippetMeta, SnippetPick, SnippetScan, TextExpansion, TextInjectMode,
+    TriggerContext, Vars, DEFAULT_SNIPPET_COMMUNITY_INDEX_URL, DEFAULT_SNIPPET_INDEX_URL,
+    DEFAULT_SNIPPET_PUBLISH_URL, SYSTEM_SHORTCUTS,
 };
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt};
 
@@ -88,13 +87,13 @@ pub(crate) use commands::config::{
 mod overlays;
 use overlays::*;
 
-/// 手势（T-05 从 lib.rs 搬出）：鼠标手势 / 触摸板手势 / 角动作 / 边缘滚动的浮层与监听线程。
+/// 手势（T-05 从 lib.rs 搬出）：鼠标手势 / 角动作 / 边缘滚动的浮层与监听线程。
 mod gestures;
+pub(crate) use gestures::GESTURE_OVERLAY_READY;
 use gestures::{
     hide_gesture_overlay, spawn_gesture_listener, spawn_hot_corner_listener,
-    spawn_trackpad_listener, spawn_wheel_edge_listener, trackpad_recording_key,
+    spawn_wheel_edge_listener,
 };
-pub(crate) use gestures::{GESTURE_OVERLAY_READY, TRACKPAD_RECORD};
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 use engine::{Engine, HotstringHit, Inject};
@@ -468,8 +467,6 @@ pub fn run() {
             commands::record::stop_record,
             commands::record::start_mouse_record,
             commands::record::stop_mouse_record,
-            commands::record::start_trackpad_record,
-            commands::record::stop_trackpad_record,
             commands::results::get_command_results,
             commands::results::get_run_records,
             commands::results::get_unread,
@@ -639,62 +636,6 @@ pub fn run() {
                         note(&ev, "前台全屏，触发放行");
                         return input::HookAction::Allow;
                     }
-                    // 触摸板手势（7.2-MG）：触发键按下一瞬间 = 开始采集，这一下吞掉（它只是
-                    // 「进入采集」的开关，没有任何输出）；抬起 = 把轨迹交给出口，识别与执行在
-                    // 后台线程（钩子回调里不做识别）。放在三条让路判定**之后**，让路口径与
-                    // 快捷键完全一致；采集期间的按键自动重复也一并吞掉（不然长按会往应用里打字）。
-                    // 采集期间 Esc = 作废这一笔（右键手势靠「松开右键」取消，触摸板这边手指还
-                    // 在板上，需要一个中途退出的口）；连按下带抬起一起吞，免得应用收到孤立 Esc。
-                    // **Esc 自己就是触发键时不算撤销**：那一下要走「触发键」那条路（按下起笔、
-                    // 抬起收尾），否则按住 Esc 画一笔永远作废。
-                    if kada_hook::trackpad::armed()
-                        && !kada_hook::trackpad::armed_with(Key::Escape)
-                        && matches!(
-                            &ev,
-                            Ev::Down {
-                                key: Key::Escape,
-                                ..
-                            } | Ev::Up { key: Key::Escape }
-                        )
-                    {
-                        if matches!(&ev, Ev::Down { .. }) {
-                            kada_hook::trackpad::cancel();
-                            // 收起轨迹浮层要在后台线程（钩子回调里不碰窗口）。
-                            let app = app_handle.clone();
-                            std::thread::spawn(move || hide_gesture_overlay(&app));
-                        }
-                        return input::HookAction::Block;
-                    }
-                    if let Ev::Down { key, repeat, .. } = &ev {
-                        if *repeat {
-                            if kada_hook::trackpad::armed_with(*key) {
-                                return input::HookAction::Block;
-                            }
-                        } else if kada_hook::trackpad::supported()
-                            && (is_touchpad_trigger(&guard, *key)
-                                || trackpad_recording_key() == Some(*key))
-                            && kada_hook::trackpad::arm(*key)
-                        {
-                            return input::HookAction::Block;
-                        }
-                    }
-                    if let Ev::Up { key } = &ev {
-                        if kada_hook::trackpad::armed_with(*key) {
-                            let anchor = kada_hook::trackpad::anchor();
-                            kada_hook::trackpad::finish(*key);
-                            // 这一笔只在屏幕上「借道」：光标放回起笔位置，别把用户的鼠标留在别处。
-                            // 用户可以关掉（`touchpad_restore_cursor`）；平台做不到（Linux 没有
-                            // 客户端 warp）也直接跳过（`restores_cursor`），不假装复位。
-                            if guard.settings.touchpad_restore_cursor
-                                && kada_hook::trackpad::restores_cursor()
-                            {
-                                if let Some(pt) = anchor {
-                                    kada_hook::set_cursor_pos(pt);
-                                }
-                            }
-                            return input::HookAction::Block;
-                        }
-                    }
                     // 复制快捷菜单（双击 Ctrl+C）已删除：不再旁路观察，也不会再弹菜单。
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
@@ -824,17 +765,6 @@ pub fn run() {
             // 放在 `KadaState` 之前：`results` / `unread` / `runs` 三个 Arc 会被 state 拿走。
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             spawn_gesture_listener(
-                app.handle().clone(),
-                config.clone(),
-                results.clone(),
-                unread.clone(),
-                runs.clone(),
-            );
-
-            // 触摸板手势的轨迹出口（7.2-MG）：同样是钩子线程回调、壳层开线程识别。
-            // 开不开由定时器线程按配置推（总开关 + 有没有触摸板手势 + 平台是否接了鼠标移动）。
-            #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-            spawn_trackpad_listener(
                 app.handle().clone(),
                 config.clone(),
                 results.clone(),

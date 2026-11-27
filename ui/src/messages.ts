@@ -115,7 +115,7 @@ export function msgOutputField(k: string, text: string): HTMLElement {
 }
 
 // ---- 结果卡深链（CS-20）：从执行记录跳回动作编辑器 ----
-// 先按记录里的「名称 / 触发键」找到动作所在条目（快捷键 / 手势 / 触摸板 / 角动作 / 边缘滚动），
+// 先按记录里的「名称 / 触发键」找到动作所在条目（快捷键 / 手势 / 角动作 / 边缘滚动），
 // 再在条目里按动作标题或摘要定位到具体那一条。动作被删掉 / 改名时如实提示，不假装跳到了。
 function findRunOwner(run: { name?: string | null; trigger: string }): { section: Section; index: number } | null {
   const name = (run.name ?? "").trim();
@@ -130,7 +130,6 @@ function findRunOwner(run: { name?: string | null; trigger: string }): { section
     { name?: string | null; pattern?: string | null; edge?: string; spot?: string }[],
   ][] = [
     ["gestures", state.cfg.gestures ?? []],
-    ["touchpads", state.cfg.touchpad_gestures ?? []],
     ["hotcorners", state.cfg.hot_corners ?? []],
     ["wheeledges", state.cfg.wheel_edges ?? []],
   ];
@@ -152,8 +151,6 @@ function currentEditorActions(): Action[] | null {
       return state.draft?.actions ?? null;
     case "gestures":
       return state.gestureDraft?.actions ?? null;
-    case "touchpads":
-      return state.touchpadDraft?.actions ?? null;
     case "hotcorners":
       return state.hotcornerDraft?.actions ?? null;
     case "wheeledges":

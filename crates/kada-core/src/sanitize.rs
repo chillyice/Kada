@@ -421,7 +421,6 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         item.pattern = pattern.clone();
         // 兼容字段只由 `migrate` 读；清洗后一律清掉，别让老字段又被写回磁盘。
         item.trigger = None;
-        item.template = None;
         let mut kept_actions = Vec::new();
         for a in &item.actions {
             match a.validate() {
@@ -439,95 +438,6 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         }
         seen_gesture.push((pattern, item.when_key()));
         out.gestures.push(item);
-    }
-
-    // 触摸板手势：**触发键必填且只能是键盘键**（鼠标键 / 缺键 = 永远采集不到，整条忽略）。
-    // 方向串可以留空——那就是**只认形状**的条目（靠模板兜底匹配，见 §5.9）；方向串与模板
-    // 都为空 = 永远匹配不上，整条忽略。判重指纹：方向串非空时看「触发键 + 方向串 + `when`」
-    // （同一方向串配不同模板仍会互相遮蔽，只会触发先配置的那条）；**方向串为空时看模板**，
-    // 否则两条纯形状条目会被误判成重复。
-    type TouchpadFingerprint = (Key, String, WhenKey, Option<Vec<[i16; 2]>>);
-    let mut seen_touchpad: Vec<TouchpadFingerprint> = Vec::new();
-    for g in &cfg.touchpad_gestures {
-        let label = g.label();
-        let mut item = g.clone();
-        let Some(trigger) = item.trigger else {
-            ignored.push(format!("触摸板手势「{label}」已忽略：没有触发键"));
-            continue;
-        };
-        if trigger.is_mouse() {
-            ignored.push(format!(
-                "触摸板手势「{label}」已忽略：触发键「{}」是鼠标键，只能选键盘键",
-                key_name(trigger)
-            ));
-            continue;
-        }
-        if let Some(fid) = &item.folder {
-            if !valid_folder_ids.contains(fid) {
-                ignored.push(format!(
-                    "触摸板手势「{label}」所属文件夹已忽略：文件夹不存在"
-                ));
-                item.folder = None;
-            }
-        }
-        // 模板先校验（它是纯形状条目的唯一判据）：坏了就丢掉，不值得把整条手势也废掉。
-        if let Some(t) = &item.template {
-            let ok = t.len() == crate::gesture::TEMPLATE_POINTS
-                && t.iter()
-                    .all(|p| p[0] >= 0 && p[0] <= 1000 && p[1] >= 0 && p[1] <= 1000);
-            if !ok {
-                ignored.push(format!(
-                    "触摸板手势「{label}」的形状模板已忽略：点数或坐标不合法"
-                ));
-                item.template = None;
-            }
-        }
-        let pattern = normalize_pattern(&g.pattern);
-        if pattern.is_empty() && item.template.is_none() {
-            ignored.push(format!(
-                "触摸板手势「{label}」已忽略：方向串为空且没有形状模板"
-            ));
-            continue;
-        }
-        // 纯形状条目的指纹带上模板；有方向串时模板不参与（同方向串依然是重复）。
-        let fp_template = if pattern.is_empty() {
-            item.template.clone()
-        } else {
-            None
-        };
-        if seen_touchpad.iter().any(|(k, p, w, t)| {
-            *k == trigger && *p == pattern && *w == g.when_key() && *t == fp_template
-        }) {
-            let what = if pattern.is_empty() {
-                "形状模板完全相同".to_string()
-            } else {
-                format!("方向串「{pattern}」")
-            };
-            ignored.push(format!(
-                "触摸板手势「{label}」已忽略：触发键「{}」的{what}与前面的手势重复",
-                key_name(trigger)
-            ));
-            continue;
-        }
-        item.pattern = pattern.clone();
-
-        let mut kept_actions = Vec::new();
-        for a in &item.actions {
-            match a.validate() {
-                Ok(()) => kept_actions.push(a.clone()),
-                Err(e) => ignored.push(format!("触摸板手势「{label}」的某个动作已忽略：{e}")),
-            }
-        }
-        item.actions = kept_actions;
-        #[cfg(feature = "automation")]
-        if let Some(w) = &item.when {
-            if let Err(e) = w.validate() {
-                ignored.push(format!("触摸板手势「{label}」的触发条件已忽略：{e}"));
-                item.when = None;
-            }
-        }
-        seen_touchpad.push((trigger, pattern, item.when_key(), fp_template));
-        out.touchpad_gestures.push(item);
     }
 
     // 触发角（EXT-10）：动作逐个校验，坏动作单独摘掉（与手势同一口径），规则本身保留。
@@ -733,7 +643,6 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
             .collect::<Vec<_>>()
     };
     out.settings.gesture_exclude = clean_list(&out.settings.gesture_exclude);
-    out.settings.touchpad_exclude = clean_list(&out.settings.touchpad_exclude);
     out.settings.exclude_apps = clean_list(&out.settings.exclude_apps);
 
     // 手势视觉（EXT-02）：颜色只收 `#RGB` / `#RRGGBB`（非法回落默认，避免把任意字符串

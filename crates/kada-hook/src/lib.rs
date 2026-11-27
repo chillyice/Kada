@@ -26,9 +26,6 @@ pub mod macos;
 /// 鼠标手势的采集（规划 7.2-MG）：平台无关的状态机 + 轨迹出口，识别在壳层做。
 pub mod gesture;
 
-/// 触摸板手势的采集（规划 7.2-MG）：按住触发键、在触摸板上画，松键收尾。
-pub mod trackpad;
-
 /// 触发角（EXT-10）：平台无关的坐标状态机 + 出口，执行在壳层做。
 pub mod hotcorner;
 pub mod wheel_edge;
@@ -92,7 +89,7 @@ pub fn input_devices() -> Vec<kada_core::InputDevice> {
 /// 最近一次**指针**（鼠标 / 触摸板 / 数位板）输入的设备标识；`None` = 本平台取不到。
 ///
 /// 与键盘那条（各平台模块的 `current_device`）分开记：同一个触发配置里，快捷键是键盘按的
-/// 就用键盘设备、是鼠标键 / 手势 / 触摸板笔迹就取这一条——混着用会让「在鼠标上划一笔」
+/// 就用键盘设备、是鼠标键 / 手势 / 热角 / 边缘滚动就取这一条——混着用会让「在鼠标上划一笔」
 /// 被判定成「键盘 A 按的」。壳层按触发键类别选（见 `Key::is_mouse`）。
 pub fn current_pointer_device() -> Option<String> {
     #[cfg(windows)]
@@ -126,27 +123,6 @@ pub fn secure_input_enabled() -> bool {
     #[cfg(not(target_os = "macos"))]
     {
         false
-    }
-}
-
-/// 把光标挪到指定屏幕坐标（触摸板手势松键后复位：画的这一笔只在屏幕上「借道」，
-/// 不该把用户的鼠标留在别处）。
-///
-/// Windows / macOS 真做（`SetCursorPos` / `CGWarpMouseCursorPosition`）；Linux 是空实现
-/// （Wayland 禁止客户端 warp，且轨迹点是设备单位的折算值，跳回的落点对不上）——壳层
-/// 会先问 [`crate::trackpad::restores_cursor`] 再调这里，Linux 上根本不来。
-pub fn set_cursor_pos(pt: (i32, i32)) {
-    #[cfg(windows)]
-    {
-        win::set_cursor_pos(pt);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        macos::simulate::warp_cursor(pt);
-    }
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        let _ = pt;
     }
 }
 

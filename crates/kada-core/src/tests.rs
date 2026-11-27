@@ -191,7 +191,6 @@ mod config_tests {
             }],
             expansions: vec![],
             gestures: vec![],
-            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             draw: None,
@@ -941,7 +940,6 @@ mod os_and_sanitize_tests {
             ],
             expansions: vec![],
             gestures: vec![],
-            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             draw: None,
@@ -1865,7 +1863,6 @@ mod os_and_sanitize_tests {
                 ..Default::default()
             }],
             gestures: vec![],
-            touchpad_gestures: vec![],
             hot_corners: vec![],
             wheel_edges: vec![],
             draw: None,
@@ -4596,7 +4593,6 @@ mod platform_caps_tests {
 
     /// Linux 口径的 caps：前台条件不可用（Wayland / X11 都未接前台查询）。
     /// 不门控：`SendTo`（后台发送）在基础版也存在，它的平台冲突测试要用。
-    /// 触摸板手势已接（被动旁听 evdev），不再标 false。
     fn linux_caps() -> PlatformCaps {
         PlatformCaps {
             frontmost_conditions: false,
@@ -5672,139 +5668,6 @@ mod hot_corner_tests {
         // 总闸关掉 → 不装。
         cfg.settings.experimental = false;
         assert!(!config_needs_mouse_hook(&cfg));
-    }
-
-    /// 触摸板手势是**独立开关**：`experimental` 关着也照装鼠标钩子；自己的开关关掉就不装。
-    #[test]
-    fn touchpad_gesture_uses_its_own_switch() {
-        let mut cfg = Config::default();
-        cfg.touchpad_gestures.push(TouchpadGesture {
-            trigger: Some(Key::CapsLock),
-            pattern: "D".into(),
-            enabled: true,
-            ..Default::default()
-        });
-        cfg.settings.touchpad = true;
-        assert!(touchpad_gesture_enabled(&cfg));
-        assert!(config_needs_mouse_hook(&cfg));
-        // 鼠标操作总闸关着不影响触摸板。
-        cfg.settings.experimental = false;
-        assert!(config_needs_mouse_hook(&cfg));
-        // 触摸板开关关掉 → 不装（鼠标那枚开着也一样，这里没有鼠标类条目）。
-        cfg.settings.touchpad = false;
-        assert!(!config_needs_mouse_hook(&cfg));
-    }
-
-    /// 触摸板自己的两个参数：开关 / 起手距离原样往返，排除名单按 `clean_list` 清洗。
-    #[test]
-    fn touchpad_settings_roundtrip_and_clean_exclude() {
-        let mut cfg = Config::default();
-        cfg.settings.touchpad = true;
-        cfg.settings.touchpad_start_distance = 30;
-        cfg.settings.touchpad_exclude = vec![" a.exe ".into(), "  ".into()];
-        let (out, _) = sanitize_config(&cfg);
-        assert!(out.settings.touchpad);
-        assert_eq!(out.settings.touchpad_start_distance, 30);
-        assert_eq!(out.settings.touchpad_exclude, vec!["a.exe".to_string()]);
-        let back: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
-        assert!(back.settings.touchpad);
-        assert_eq!(back.settings.touchpad_start_distance, 30);
-    }
-
-    /// 纯形状条目：方向串留空 + 有模板 = 保留；两者都空 = 整条丢掉（永远匹配不上）。
-    #[test]
-    fn shape_only_touchpad_gesture_kept_by_sanitize() {
-        let mut cfg = Config::default();
-        cfg.touchpad_gestures.push(TouchpadGesture {
-            trigger: Some(Key::CapsLock),
-            pattern: String::new(),
-            template: Some(pad_template(0)),
-            actions: vec![text("shape")],
-            enabled: true,
-            ..Default::default()
-        });
-        cfg.touchpad_gestures.push(TouchpadGesture {
-            trigger: Some(Key::CapsLock),
-            pattern: "  ".into(),
-            template: None,
-            actions: vec![text("nothing")],
-            enabled: true,
-            ..Default::default()
-        });
-        let (out, ignored) = sanitize_config(&cfg);
-        assert_eq!(out.touchpad_gestures.len(), 1, "ignored: {ignored:?}");
-        assert!(out.touchpad_gestures[0].pattern.is_empty());
-        assert!(out.touchpad_gestures[0].template.is_some());
-        assert!(ignored
-            .iter()
-            .any(|m| m.contains("方向串为空且没有形状模板")));
-        // 纯形状条目也要能开采集 / 认触发键，否则它配了也永远不会被采集。
-        assert!(touchpad_gesture_enabled(&out));
-        assert!(is_touchpad_trigger(&out, Key::CapsLock));
-    }
-
-    /// 纯形状条目的判重看模板：模板不同 = 两条都留；模板相同 = 后一条被丢。
-    #[test]
-    fn shape_only_touchpad_gesture_dedup_by_template() {
-        let mut cfg = Config::default();
-        for shift in [0, 1] {
-            cfg.touchpad_gestures.push(TouchpadGesture {
-                trigger: Some(Key::CapsLock),
-                pattern: String::new(),
-                template: Some(pad_template(shift)),
-                actions: vec![text("x")],
-                enabled: true,
-                ..Default::default()
-            });
-        }
-        let (out, ignored) = sanitize_config(&cfg);
-        assert_eq!(out.touchpad_gestures.len(), 2, "ignored: {ignored:?}");
-        // 模板完全相同的第三条 → 判重丢掉。
-        cfg.touchpad_gestures.push(TouchpadGesture {
-            trigger: Some(Key::CapsLock),
-            pattern: String::new(),
-            template: Some(pad_template(0)),
-            actions: vec![text("dup")],
-            enabled: true,
-            ..Default::default()
-        });
-        let (out, ignored) = sanitize_config(&cfg);
-        assert_eq!(out.touchpad_gestures.len(), 2, "ignored: {ignored:?}");
-        assert!(ignored.iter().any(|m| m.contains("形状模板完全相同")));
-    }
-
-    /// 没接触摸板采集的平台给一条平台 Warn（不拦保存）。
-    #[test]
-    fn touchpad_flagged_where_unsupported() {
-        let mut cfg = Config::default();
-        cfg.touchpad_gestures.push(TouchpadGesture {
-            trigger: Some(Key::CapsLock),
-            pattern: "R".into(),
-            template: None,
-            actions: vec![text("a")],
-            enabled: true,
-            ..Default::default()
-        });
-        let hits = detect_conflicts(
-            &cfg,
-            &PlatformCaps {
-                touchpad_gestures: false,
-                ..Default::default()
-            },
-        );
-        assert!(hits
-            .iter()
-            .any(|c| c.platform && c.message.contains("触摸板手势在当前平台用不了")));
-        assert!(detect_conflicts(&cfg, &PlatformCaps::default())
-            .iter()
-            .all(|c| !c.message.contains("触摸板手势在当前平台用不了")));
-    }
-
-    /// 合法 24 点模板（坐标都在 `0..=1000`）；`shift` 用来造「不同形状」。
-    fn pad_template(shift: i16) -> Vec<[i16; 2]> {
-        (0..crate::gesture::TEMPLATE_POINTS as i16)
-            .map(|i| [((i * 40) % 1000) + shift, (i * 20) % 1000])
-            .collect()
     }
 
     /// 非 Windows 平台给一条平台 Warn，不拦保存。

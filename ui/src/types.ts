@@ -266,35 +266,8 @@ export type Settings = {
   /**
    * **鼠标操作总开关**（规划 7.2-MG）：关掉后鼠标类功能一律不可用（入口隐藏 +
    * 行为不生效），**配置保留**（重新打开即恢复）。缺字段按后端默认「**关**」。
-   * 触摸板手势**不受它管**（见下面的 `touchpad`）。
    */
   experimental?: boolean;
-  /**
-   * **触摸板手势总开关**：与 `experimental`（鼠标操作）互相独立，缺字段按后端默认「**关**」。
-   * 关掉后触摸板手势入口隐藏 + 不采集（触发键照常输出），**配置保留**。
-   */
-  touchpad?: boolean;
-  /**
-   * 触摸板手势的起手距离（像素）：这一笔至少移动这么远才算数（也是轨迹浮层亮出的阈值）。
-   * 缺字段按后端默认 22。
-   */
-  touchpad_start_distance?: number;
-  /**
-   * 触摸板手势的排除程序（每行一个进程名）：命中的程序里不执行触摸板手势
-   * （触发键已被吞、没有右键回放）。语义同 `gesture_exclude`：不区分大小写、
-   * `*`/`?` 通配、否则子串。缺字段 = 不排除。
-   */
-  touchpad_exclude?: string[];
-  /**
-   * 触摸板手势：松键后把光标放回起笔点。缺字段 = 开（后端 serde default 就是 true）——
-   * 画一笔是「借道」屏幕，不还原会打乱用户正在用的指针位置。
-   */
-  touchpad_restore_cursor?: boolean;
-  /**
-   * 触摸板手势：采集时显示轨迹浮层（预览 + 结果）。缺字段 = 开。
-   * 关掉只影响触摸板这条来源（右键手势没有单独开关），识别与气泡照旧。
-   */
-  touchpad_overlay?: boolean;
   /**
    * 鼠标手势的起手距离（像素）：光标累计移动超过它才算「开始画手势」。
    * 缺字段按后端默认 22。
@@ -405,7 +378,7 @@ export type WheelEdgeRule = {
 };
 /**
  * 一条**鼠标手势**（规划 7.2-MG）：按住右键画轨迹、按方向串匹配。
- * 后端模型见 `kada-core` 的 `Gesture`；触摸板手势是另一个类型 / 数组（见 `TouchpadGesture`）。
+ * 后端模型见 `kada-core` 的 `Gesture`。
  */
 export type Gesture = {
   name?: string | null;
@@ -422,27 +395,7 @@ export type Gesture = {
   /** 统一展示顺序（鼠标操作三类共用；只影响列表顺序）。 */
   order?: number;
 };
-/** 一条**触摸板手势**（后端 `TouchpadGesture`）：按住触发键、在触摸板上画一笔。 */
-export type TouchpadGesture = {
-  name?: string | null;
-  /** 简短描述（「详情」页签）。 */
-  description?: string | null;
-  /** 触发键：按住它进入采集；只能是键盘键（鼠标键由后端清洗掉）。 */
-  trigger?: string | null;
-  /** 方向串（同鼠标手势的写法）。 */
-  pattern: string;
-  /** 形状模板（24 点归一化；「录入」带上，只在方向串没命中时兜底）。 */
-  template?: [number, number][] | null;
-  enabled: boolean;
-  actions: Action[];
-  /** 触发侧条件门控（同快捷键）：条件不成立 = 这条不存在。 */
-  when?: Condition | null;
-  /** 归属文件夹（null / 缺省 = 根级）。 */
-  folder?: string | null;
-  /** 展示顺序：触摸板手势自成一组，与鼠标操作各自的序列互不干扰。 */
-  order?: number;
-};
-export type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; touchpad_gestures?: TouchpadGesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
+export type Config = { folders: Folder[]; layers: Layer[]; shortcuts: ShortcutItem[]; remaps: Remap[]; expansions: TextExpansion[]; gestures?: Gesture[]; hot_corners?: HotCornerRule[]; wheel_edges?: WheelEdgeRule[]; settings: Settings };
 /** 输入状态指示载荷（后端 `StatusPayload`）：当前激活层 + 注入中的修饰键，见规划 7.3-⑬。 */
 export type StatusPayload = {
   /** 激活层的显示名；缺省 = 基础层（没有层生效）。 */
@@ -552,7 +505,6 @@ export type Section =
   | "remaps"
   | "expansions"
   | "gestures"
-  | "touchpads"
   | "hotcorners"
   | "wheeledges"
   | "layers"
@@ -561,14 +513,12 @@ export type Section =
   | "settings"
   | "help";
 // 合并列表里的条目类型：列表栏只有一份（行首图标区分类型），编辑页/详情页仍按类分。
-// gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目；
-// touchpad = **触摸板手势**：按住一个键盘键、在触摸板上画一笔触发的条目（单独分类）。
+// gesture = **鼠标操作**（7.2-MG）：按住右键画轨迹触发的条目。
 export type ListKind =
   | "shortcut"
   | "remap"
   | "expansion"
   | "gesture"
-  | "touchpad"
   | "hotcorner"
   | "wheeledge";
 // 编辑页的四个页签：详情 / 动作·操作·展开文本（work）/ 层 / 条件。
@@ -627,7 +577,6 @@ export type DragPayload =
   | { kind: "remap"; idx: number }
   | { kind: "expansion"; idx: number }
   | { kind: "gesture"; idx: number }
-  | { kind: "touchpad"; idx: number }
   | { kind: "hotcorner"; idx: number }
   | { kind: "wheeledge"; idx: number };
 export type DropZone =
@@ -657,7 +606,6 @@ export type AnyEntry =
   | Remap
   | TextExpansion
   | Gesture
-  | TouchpadGesture
   | HotCornerRule
   | WheelEdgeRule;
 /** **有目录归属的**条目（鼠标类触发源没有目录：它们是全局触发源，不参与目录树）。 */

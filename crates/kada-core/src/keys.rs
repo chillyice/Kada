@@ -90,7 +90,6 @@ impl Key {
     }
 
     /// 是不是鼠标键（中键 / 侧键 / 滚轮）：它们走鼠标钩子，不是键盘钩子。
-    /// 触摸板手势的触发键只接受键盘键（见 `sanitize_config`）。
     pub fn is_mouse(self) -> bool {
         matches!(
             self,

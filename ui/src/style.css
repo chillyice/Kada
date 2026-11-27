@@ -562,18 +562,6 @@ body.is-mac .titlebar {
   white-space: nowrap;
 }
 
-/* 触摸板手势的触发键（`CapsLock · R` 里的 `CapsLock`）：比方向串弱一档，别喧宾夺主。 */
-.row-key-badge {
-  flex-shrink: 0;
-  padding: 0 4px;
-  border-radius: 3px;
-  background: var(--panel);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: var(--fs-xs);
-  line-height: 1.4;
-}
-
 .row-trigger-empty {
   color: var(--muted);
   font-family: inherit;
@@ -962,7 +950,7 @@ body.is-mac .titlebar {
 }
 
 /* 当前模式用强调色，和 Postman 里那个绿色 GET 一样：一眼看出选的是哪种。
-   min-width 按最长的「触摸板手势」定宽——七种模式切换时左边这段宽度不再跳。 */
+   min-width 留够最长的模式名——切换时左边这段宽度不再跳。 */
 #mode-label {
   display: inline-block;
   min-width: 5em;
@@ -978,7 +966,7 @@ body.is-mac .titlebar {
 }
 
 /* 模式菜单：从框底浮出，图标 + 中文名，鼠标悬停另有整句说明（title）。
-   定宽：七项（快捷键 / 鼠标操作 / 角动作 / 边缘滚动 / 触摸板手势 / 改键 / 文本扩展）排下来宽窄一致。 */
+   定宽：六项（快捷键 / 鼠标操作 / 角动作 / 边缘滚动 / 改键 / 文本扩展）排下来宽窄一致。 */
 .mode-menu {
   position: absolute;
   top: calc(100% + 6px);
@@ -1075,11 +1063,6 @@ body.is-mac .titlebar {
   border: none;
 }
 
-/* 触发方式下拉（鼠标操作 / 触摸板手势）：右键或某个键盘键，宽度按常见键名收窄。 */
-.key-view select.gesture-trigger {
-  flex-shrink: 0;
-  max-width: 150px;
-}
 
 /* 录键时的实时提示（「正在录：F9 J」），空时整条隐藏。 */
 .capture-status {

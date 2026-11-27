@@ -106,7 +106,6 @@
                   <li class="mode-item" data-kind="gesture" title="鼠标操作：按住右键画一条轨迹，按方向串触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">鼠标操作</span></li>
                   <li class="mode-item" data-kind="hotcorner" title="角动作：光标碰到屏幕四角时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">角动作</span></li>
                   <li class="mode-item" data-kind="wheeledge" title="边缘滚动：光标贴屏幕边缘滚动滚轮时触发一串动作（鼠标功能）"><span class="mi-icon"></span><span class="mi-label">边缘滚动</span></li>
-                  <li class="mode-item" data-kind="touchpad" title="触摸板手势：按住一个键盘键，在触摸板上画一笔，松键按方向串触发一串动作（独立分类，不占鼠标右键）"><span class="mi-icon"></span><span class="mi-label">触摸板手势</span></li>
                   <li class="mode-item" data-kind="remap" title="改键：把一个键改成另一个键（含长按、切层、单次、粘滞等形态）"><span class="mi-icon"></span><span class="mi-label">改键</span></li>
                   <li class="mode-item" data-kind="expansion" title="文本扩展：输入触发词自动展开成一段文本"><span class="mi-icon"></span><span class="mi-label">文本扩展</span></li>
                 </ul>
@@ -136,17 +135,10 @@
               <div class="key-view hidden" id="key-expansion">
                 <input id="edit-exp-trigger" type="text" autocomplete="off" spellcheck="false" placeholder="触发词（如 :addr、;sig，不含空格/回车/Tab）" />
               </div>
-              <!-- 鼠标操作：按住右键画轨迹，按方向串匹配（触摸板手势是另一个分类，见下面 `key-touchpad`） -->
+              <!-- 鼠标操作：按住右键画轨迹，按方向串匹配 -->
               <div class="key-view hidden" id="key-gesture">
                 <input id="edit-gesture-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号）" />
                 <button id="edit-gesture-record" class="ghost" type="button">录入</button>
-              </div>
-              <!-- 触摸板手势：先选触发键（只能键盘键），再给方向串；「录入」按住触发键在触摸板上画 -->
-              <div class="key-view hidden" id="key-touchpad">
-                <select id="edit-touchpad-trigger" class="gesture-trigger" title="先选一个触发键，再在触摸板上录入"></select>
-                <input id="edit-touchpad-pattern" type="text" autocomplete="off" spellcheck="false" placeholder="方向串：DR = 右下斜向，D,R = 先下再右（多段用逗号；留空 = 只认形状）" />
-                <button id="edit-touchpad-capture" class="ghost" type="button" title="按住触发键，在触摸板上画一笔，松手后自动填入方向串与形状模板">录入</button>
-                <button id="edit-touchpad-drop-template" class="ghost hidden" type="button" title="只保留方向串，删掉这一笔的形状模板">清除模板</button>
               </div>
               <!-- 角动作：模拟显示器，点一个角选中位置（同一位置可建多条，按列表顺序取第一条启用的） -->
               <div class="key-view hidden" id="key-hotcorner"></div>
@@ -485,8 +477,7 @@
               <!-- 鼠标操作（规划 7.2-MG）：鼠标类功能总开关。
                    默认**关**；关掉 → 入口隐藏（快捷键页不出现鼠标操作 / 角动作 / 边缘滚动）
                    + 行为不生效，配置保留（重新打开即恢复）。
-                   总开关开着才显示下面的参数设置块。**触摸板手势是另一个独立分类**，
-                   自己的开关与参数在下面 `touchpad-card`，不跟着这枚开关走。 -->
+                   总开关开着才显示下面的参数设置块。 -->
               <section class="set-card" id="experimental-card">
                 <div class="set-card-head"><span>鼠标操作</span></div>
                 <div class="set-rows">
@@ -538,55 +529,8 @@
                 <p class="hint">在快捷键页新增条目选「鼠标操作 / 角动作 / 边缘滚动」；方向串 U 上 D 下 L 左 R 右，多段用逗号分隔（如 D,R）。</p>
               </section>
 
-              <!-- 触摸板手势：**独立分类**——自己的开关 / 起手距离 / 排除名单，不跟着
-                   「鼠标操作」走（对「按住键盘键画一笔」而言右键那套参数本来就不适用）。
-                   只有轨迹浮层是同一块窗，颜色 / 宽度 / 字号仍与鼠标操作共用。 -->
-              <section class="set-card" id="touchpad-card">
-                <div class="set-card-head"><span>触摸板手势</span></div>
-                <div class="set-rows">
-                  <label class="set-row">
-                    <span class="set-main">
-                      <span class="set-name">启用触摸板手势</span>
-                      <span class="set-sub">默认关闭；关掉后不采集触摸板手势（触发键照常输出），配置保留</span>
-                    </span>
-                    <input type="checkbox" id="set-touchpad" class="toggle" />
-                  </label>
-                  <div id="touchpad-opts" class="set-rows-group hidden">
-                    <label class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">起手距离</span>
-                        <span class="set-sub">这一笔至少移动这么远才算数（像素，1~50）；也是轨迹浮层的亮出阈值，调大防手抖</span>
-                      </span>
-                      <input type="number" id="set-touchpad-start-distance" min="1" max="50" step="1" />
-                    </label>
-                    <label class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">松手后光标回到起笔点</span>
-                        <span class="set-sub">画一笔时光标会跟着在屏幕上走；关掉就不还原（松手后还要接着用指针时更方便）</span>
-                      </span>
-                      <input type="checkbox" id="set-touchpad-restore-cursor" class="toggle" />
-                    </label>
-                    <label class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">采集时显示轨迹浮层</span>
-                        <span class="set-sub">只影响触摸板这一条来源（右键手势不受它管）；关掉后未匹配仍会弹气泡报方向串</span>
-                      </span>
-                      <input type="checkbox" id="set-touchpad-overlay" class="toggle" />
-                    </label>
-                    <label class="set-row">
-                      <span class="set-main">
-                        <span class="set-name">排除程序</span>
-                        <span class="set-sub">这些程序里不执行触摸板手势（触发键已被吞，不会回放右键）；每行一个进程名，支持 <code>*</code> / <code>?</code> 通配，不区分大小写</span>
-                      </span>
-                      <textarea id="set-touchpad-exclude" rows="3" spellcheck="false" placeholder="photoshop.exe&#10;*blender*"></textarea>
-                    </label>
-                  </div>
-                </div>
-                <p class="hint">在快捷键页新增条目选「触摸板手势」→ 选触发键 → 点「录入」；它与鼠标操作各自一份列表、各自一套展示顺序。目前只接了 Windows 采集。</p>
-              </section>
-
-              <!-- 轨迹浮层：右键手势与触摸板手势共用**同一块窗**（壳层只建一个），所以外观
-                   单独一张卡片，两边都不独占；两枚开关都关着时整张卡片不显示。 -->
+              <!-- 轨迹浮层：右键手势与角动作 / 边缘滚动共用**同一块窗**（壳层只建一个），所以外观
+                   单独一张卡片，鼠标操作开关关着时整张卡片不显示。 -->
               <section class="set-card hidden" id="gesture-visual-card">
                 <div class="set-card-head"><span>轨迹浮层</span></div>
                 <div class="set-rows">
@@ -626,7 +570,7 @@
                     <input type="color" id="set-gesture-fail-color" />
                   </label>
                 </div>
-                <p class="hint">鼠标操作与触摸板手势共用同一块浮层，这里的外观两边都生效；两边的开关都关着时不显示这张卡片。</p>
+                <p class="hint">鼠标操作里的手势 / 角动作 / 边缘滚动共用同一块浮层，这里的外观都生效；总开关关着时不显示这张卡片。</p>
               </section>
 
               <!-- 复制快捷菜单（双击 Ctrl+C）已按要求删除：设置卡与运行时触发一并下线。 -->

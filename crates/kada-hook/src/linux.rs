@@ -23,13 +23,11 @@
 //!
 //! 已知天花板（升级路径）：
 //! - 触摸板 / 触摸屏 / 指点杆**不抓取**：多点与 ABS 协议原样转发做不到，抓了等于废掉；
-//!   它们的中键 / 侧键不能作触发键（键盘与真鼠标不受影响）。但触摸板 / 触屏会**被动
-//!   旁听**（不 grab，多方读不冲突）：报文喂触摸板手势采集（[`trackpad`]）；指点杆
-//!   没有 ABS 坐标、旁听不到，它的移动进不了采集。
+//!   它们的中键 / 侧键不能作触发键（键盘与真鼠标不受影响）。
 //! - 热插拔靠轮询 `/dev/input`（2 秒一次，见 [`rescan_devices`]）：拔插不必重启应用；
 //!   Wayland 上同一套代码可用。
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
@@ -124,7 +122,7 @@ pub fn current_device() -> Option<String> {
 /// 最近一次**指针**输入（鼠标键 / 触摸板 / 数位板笔迹）的设备名；`None` = 还没收到过。
 ///
 /// 触摸板 / 数位板是**被动旁听**的（不 grab，抓了等于废掉整个触摸板），它们的报文不进
-/// 键模型，但同样是「这一笔是哪块设备上画的」——壳层给手势 / 触摸板手势 / 热角 / 边缘
+/// 键模型，但同样是「这一笔是哪块设备上画的」——壳层给手势 / 热角 / 边缘
 /// 滚动做 `when` 门控时读这一条。
 pub fn current_pointer_device() -> Option<String> {
     LAST_POINTER_DEVICE.lock().unwrap().clone()
@@ -211,131 +209,9 @@ fn report_mouse_button(code: u16, value: i32) {
     report_mouse_trigger(MouseRecordKind::Click(button));
 }
 
-// ---- 触摸板手势采集（Linux 数据源，见 `trackpad` 模块头）----
-
-/// 被动旁听的触摸板 / 触屏 / 数位板：**不 `EVIOCGRAB`**（抓了等于废掉整个触摸板），
-/// 内核允许同一节点被多方读，合成器照常工作。Kada 只旁听它的绝对坐标报文喂手势采集。
-struct Pad {
-    path: PathBuf,
-    dev: Device,
-    /// 设备名（旁听到报文时刷「最近指针设备」，用于「设备是」）。
-    name: Option<String>,
-    /// 设备单位 → 近似像素的折算系数：轴分辨率（单位/mm）× 96dpi 假设。拿不到分辨率
-    /// 时 1.0（阈值口径略偏，识别本身尺度无关，不受影响）。
-    scale: f64,
-    /// 有 MT 协议就用槽位跟踪（多指可见），忽略普通 ABS_X/Y（那是单指兼容镜像）。
-    mt: bool,
-}
-
-/// 触摸板报文的解析状态（采集是全局唯一的，状态也全局一份）。
-#[derive(Default)]
-struct TouchState {
-    /// MT 槽位 → 该手指的最新位置（设备单位）。
-    slots: BTreeMap<i32, (i32, i32)>,
-    /// 当前 MT 槽位（`ABS_MT_SLOT` 之后的位置事件落在它头上）。
-    cur_slot: i32,
-    /// 无 MT 协议的设备：普通 `ABS_X/ABS_Y` 的最新值（`BTN_TOUCH` 按下才有意义）。
-    plain: Option<(i32, i32)>,
-    /// 触摸状态（无 MT 设备用；MT 设备看槽位表）。
-    down: bool,
-}
-
-static TOUCH: LazyLock<Mutex<TouchState>> = LazyLock::new(|| Mutex::new(TouchState::default()));
-
-/// 喂一个原始报文；`Some(位置)` 只在 `SYN_REPORT` 时给出（此时一批坐标才完整）。
-/// 坐标已经按 [`Pad::scale`] 折成近似像素。设备单位 → 像素是线性缩放，方向不变。
-fn touch_feed(st: &mut TouchState, ev: &InputEvent, mt: bool, scale: f64) -> Option<(i32, i32)> {
-    match ev.event_type() {
-        EventType::ABSOLUTE => match ev.code() {
-            c if c == AbsoluteAxisCode::ABS_MT_SLOT.0 => st.cur_slot = ev.value(),
-            c if c == AbsoluteAxisCode::ABS_MT_TRACKING_ID.0 => {
-                if ev.value() < 0 {
-                    st.slots.remove(&st.cur_slot);
-                } else {
-                    st.slots.entry(st.cur_slot).or_insert((0, 0));
-                }
-            }
-            c if c == AbsoluteAxisCode::ABS_MT_POSITION_X.0 => {
-                if let Some(p) = st.slots.get_mut(&st.cur_slot) {
-                    p.0 = ev.value();
-                }
-            }
-            c if c == AbsoluteAxisCode::ABS_MT_POSITION_Y.0 => {
-                if let Some(p) = st.slots.get_mut(&st.cur_slot) {
-                    p.1 = ev.value();
-                }
-            }
-            c if c == AbsoluteAxisCode::ABS_X.0 => {
-                // `plain` 第一次见坐标时就要建起来：只在 `Some` 上赋值会让无 MT 协议的
-                // 老触摸板永远采不到点（`plain` 从默认值 None 再无别人初始化）。
-                st.plain.get_or_insert((0, 0)).0 = ev.value();
-            }
-            c if c == AbsoluteAxisCode::ABS_Y.0 => {
-                st.plain.get_or_insert((0, 0)).1 = ev.value();
-            }
-            _ => {}
-        },
-        EventType::KEY => {
-            if ev.code() == KeyCode::BTN_TOUCH.0 {
-                st.down = ev.value() != 0;
-                if !st.down {
-                    // 手指全抬：槽位清空（下一笔从头开始），plain 位置留着无妨
-                    //（down=false 时不产出点）。
-                    st.slots.clear();
-                }
-            }
-        }
-        // 一批报文到此完整：产出这一拍的位置。双指及以上 = 放弃这次采集
-        // （与 Windows「滚轮 = 双指」同一口径：宁可不识别也不判错）。
-        EventType::SYNCHRONIZATION => {
-            if st.slots.len() > 1 {
-                crate::trackpad::cancel();
-                return None;
-            }
-            let pos = if mt {
-                st.slots.values().next().copied()
-            } else if st.down {
-                st.plain
-            } else {
-                None
-            };
-            return pos.map(|(x, y)| {
-                (
-                    (f64::from(x) * scale).round() as i32,
-                    (f64::from(y) * scale).round() as i32,
-                )
-            });
-        }
-        _ => {}
-    }
-    None
-}
-
-/// 设备单位 → 近似像素的折算系数（[`Pad::scale`]）。分辨率（单位/mm）从 X 轴拿，
-/// 没有（MT-only 的协议 A 设备）退 MT X 轴，再没有就 1.0 原样用设备单位。
-fn pad_scale(dev: &Device) -> f64 {
-    const PX_PER_MM: f64 = 96.0 / 25.4;
-    let res = dev
-        .get_absinfo()
-        .ok()
-        .and_then(|it| {
-            it.filter(|(c, _)| {
-                *c == AbsoluteAxisCode::ABS_X || *c == AbsoluteAxisCode::ABS_MT_POSITION_X
-            })
-            .map(|(_, info)| info.resolution())
-            .find(|r| *r > 0)
-        })
-        .unwrap_or(0);
-    if res > 0 {
-        PX_PER_MM / f64::from(res)
-    } else {
-        1.0
-    }
-}
-
 /// 是该**被动旁听**的触摸类设备（触摸板 / 触屏）：有触摸按键 + 至少一种绝对坐标轴。
-/// 与 [`is_pointer`] 的排除口径互补——那些「抓了会废」的设备正是这里要旁听的。
-/// 指点杆（REL 轴、无触摸键）暂不旁听：它的移动进不了采集（记在已知天花板里）。
+/// 与 [`is_pointer`] 的排除口径互补——那些「抓了会废」的设备正是这里的识别对象。
+/// 只用于设备大类识别（[`device_kind`]），不参与事件流。
 fn is_touchpad_node(dev: &Device) -> bool {
     let Some(keys) = dev.supported_keys() else {
         return false;
@@ -465,10 +341,9 @@ where
 {
     *HANDLER.lock().unwrap() = Some(Box::new(handler));
 
-    // 抓取键盘与鼠标设备；触摸板 / 触屏**不抓**，另开被动旁听（喂触摸板手势采集）。
+    // 抓取键盘与鼠标设备；触摸板 / 触屏不抓（抓了等于废掉它们）。
     // 能枚举到 = 打开成功（权限够）；抓取失败按 errno 分诊。
     let mut devices: Vec<Grabbed> = Vec::new();
-    let mut pads: Vec<Pad> = Vec::new();
     let mut saw_keyboard = false;
     let mut keyboard_busy = false;
     for (path, mut dev) in evdev::enumerate() {
@@ -495,22 +370,6 @@ where
                     keyboard: false,
                 }),
                 Err(e) => eprintln!("kada-hook: 鼠标抓取失败，跳过：{e}"),
-            }
-        } else if is_touchpad_node(&dev) {
-            let scale = pad_scale(&dev);
-            let name = dev.name().map(str::to_string);
-            let mt = dev
-                .supported_absolute_axes()
-                .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X));
-            match dev.set_nonblocking(true) {
-                Ok(()) => pads.push(Pad {
-                    path,
-                    dev,
-                    name,
-                    scale,
-                    mt,
-                }),
-                Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }
         }
     }
@@ -548,7 +407,7 @@ where
     let join = thread::Builder::new()
         .name("kada-hook".into())
         .spawn(move || {
-            if let Err(e) = poll_loop(&mut devices, &mut pads, &stop2) {
+            if let Err(e) = poll_loop(&mut devices, &stop2) {
                 eprintln!("kada-hook: {e}");
             }
         })?;
@@ -674,7 +533,7 @@ fn device_kind(dev: &Device) -> Option<DeviceKind> {
     None
 }
 
-fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool) -> io::Result<()> {
+fn poll_loop(devices: &mut Vec<Grabbed>, stop: &AtomicBool) -> io::Result<()> {
     let mut nodes = event_nodes(Path::new("/dev/input"));
     let mut last_scan = Instant::now();
     while !stop.load(Ordering::Relaxed) {
@@ -684,7 +543,7 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
             let now = event_nodes(Path::new("/dev/input"));
             if now != nodes {
                 nodes = now;
-                rescan_devices(devices, pads);
+                rescan_devices(devices);
             }
         }
         let mut i = 0;
@@ -709,14 +568,6 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                                 } else {
                                     *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
                                 }
-                                // 触摸板采集期间左右键吞掉（防误点，与 Windows 鼠标钩子
-                                // 同口径）；中键 / 侧键照常进键模型。
-                                if crate::trackpad::armed()
-                                    && (ev.code() == KeyCode::BTN_LEFT.0
-                                        || ev.code() == KeyCode::BTN_RIGHT.0)
-                                {
-                                    continue;
-                                }
                                 report_mouse_button(ev.code(), ev.value());
                                 handle_key(ev.code(), ev.value());
                             }
@@ -734,11 +585,6 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                                         // 滚轮也能绑成触发键：设备标识要与按键同口径刷新，
                                         // 否则滚轮触发的「设备是」会读到上一次按键的设备。
                                         *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
-                                        // 采集期间滚轮 = 双指 = 放弃这次采集（吞掉不转发）。
-                                        if crate::trackpad::armed() {
-                                            crate::trackpad::cancel();
-                                            continue;
-                                        }
                                         report_mouse_trigger(MouseRecordKind::Scroll {
                                             dx: 0,
                                             dy: ev.value(),
@@ -746,10 +592,6 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                                     }
                                     c if c == RelativeAxisCode::REL_HWHEEL.0 => {
                                         *LAST_POINTER_DEVICE.lock().unwrap() = dev_name.clone();
-                                        if crate::trackpad::armed() {
-                                            crate::trackpad::cancel();
-                                            continue;
-                                        }
                                         report_mouse_trigger(MouseRecordKind::Scroll {
                                             dx: ev.value(),
                                             dy: 0,
@@ -770,35 +612,6 @@ fn poll_loop(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>, stop: &AtomicBool)
                     devices.remove(i); // 设备拔出等
                     nodes.clear(); // 强制下一轮重扫：同一 eventN 号可能被重新插入的设备复用
                     on_device_lost();
-                }
-            }
-        }
-        // 触摸板 / 触屏 / 数位板的被动旁听：报文喂触摸板手势采集（`touch_feed` 在 SYN 时
-        // 产出一个点；没在采集时 `on_move` / `cancel` 自己会空转）。同时刷新「最近指针设备」
-        // ——这一笔是哪块板子 / 数位板上画的，「设备是」在触摸板手势上就靠它。拔出只摘旁听，
-        // 不动键盘状态（那不影按键，无需 `on_device_lost` 那套复位）。
-        let mut j = 0;
-        while j < pads.len() {
-            match pads[j].dev.fetch_events().map(|it| it.collect::<Vec<_>>()) {
-                Ok(events) => {
-                    let scale = pads[j].scale;
-                    let mt = pads[j].mt;
-                    if !events.is_empty() {
-                        *LAST_POINTER_DEVICE.lock().unwrap() = pads[j].name.clone();
-                    }
-                    let mut st = TOUCH.lock().unwrap();
-                    for ev in events {
-                        if let Some(pt) = touch_feed(&mut st, &ev, mt, scale) {
-                            crate::trackpad::on_move(pt);
-                        }
-                    }
-                    j += 1;
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => j += 1,
-                Err(_) => {
-                    pads.remove(j);
-                    nodes.clear();
-                    eprintln!("kada-hook: 触摸板旁听断开，等重扫接回");
                 }
             }
         }
@@ -825,14 +638,11 @@ fn event_nodes(dir: &Path) -> Vec<String> {
     names
 }
 
-/// 热插拔重扫：把新出现、尚未抓取的键盘 / 鼠标接进来（拔出的设备已在 poll_loop 里移除），
-/// 新出现的触摸板 / 触屏接进被动旁听。跳过自己的虚拟设备，避免注入事件被读回来。
-fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
+/// 热插拔重扫：把新出现、尚未抓取的键盘 / 鼠标接进来（拔出的设备已在 poll_loop 里移除）。
+/// 跳过自己的虚拟设备，避免注入事件被读回来。
+fn rescan_devices(devices: &mut Vec<Grabbed>) {
     for (path, mut dev) in evdev::enumerate() {
-        if devices.iter().any(|g| g.path == path)
-            || pads.iter().any(|p| p.path == path)
-            || dev.name() == Some(VDEV_NAME)
-        {
+        if devices.iter().any(|g| g.path == path) || dev.name() == Some(VDEV_NAME) {
             continue;
         }
         if is_keyboard(&dev) || is_pointer(&dev) {
@@ -855,29 +665,6 @@ fn rescan_devices(devices: &mut Vec<Grabbed>, pads: &mut Vec<Pad>) {
                 },
                 // 被其它工具独占：下次目录变化（重新插拔）再试，不重复刷日志。
                 Err(e) => eprintln!("kada-hook: 新设备抓取失败，跳过（{}）：{e}", path.display()),
-            }
-        } else if is_touchpad_node(&dev) {
-            let scale = pad_scale(&dev);
-            let name = dev.name().map(str::to_string);
-            let mt = dev
-                .supported_absolute_axes()
-                .is_some_and(|a| a.contains(AbsoluteAxisCode::ABS_MT_POSITION_X));
-            match dev.set_nonblocking(true) {
-                Ok(()) => {
-                    eprintln!(
-                        "kada-hook: 触摸板已旁听：{}（{}）",
-                        dev.name().unwrap_or("?"),
-                        path.display()
-                    );
-                    pads.push(Pad {
-                        path,
-                        dev,
-                        name,
-                        scale,
-                        mt,
-                    });
-                }
-                Err(e) => eprintln!("kada-hook: 触摸板旁听失败，跳过：{e}"),
             }
         }
     }
@@ -1737,112 +1524,5 @@ mod tests {
                 ..
             }
         ));
-    }
-
-    /// MT 协议 B 报文 → 触摸板采集的点：单指滑动每个 SYN 出一个点（按 scale 折算），
-    /// 双指 = 作废信号，手指抬起后不再出点。
-    #[test]
-    fn touch_feed_parses_mt_slots_and_voids_two_fingers() {
-        let abs = |code: u16, value: i32| InputEvent::new(EventType::ABSOLUTE.0, code, value);
-        let syn = || InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0);
-        let mut st = TouchState::default();
-        let feed = |st: &mut TouchState, ev: &InputEvent| touch_feed(st, ev, true, 1.0);
-
-        // 第一指落下（slot 0，tracking_id 5）→ 滑动 → 每个 SYN 一个点。
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 5)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 100)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_Y.0, 200)),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), Some((100, 200)));
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 300)),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), Some((300, 200)));
-
-        // 第二指落下 → 双指，flush 时作废（不产出点）。
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, 6)),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), None, "双指这一拍不给点");
-
-        // 第二指抬起回到单指 → 继续出点；第一指抬起（tracking_id -1）→ 槽位清空，无点。
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 1)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_SLOT.0, 0)),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_POSITION_X.0, 500)),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), Some((500, 200)));
-        assert_eq!(
-            feed(&mut st, &abs(AbsoluteAxisCode::ABS_MT_TRACKING_ID.0, -1)),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), None, "手指全抬后不再出点");
-    }
-
-    /// 无 MT 的老触摸板：普通 `ABS_X/ABS_Y` + `BTN_TOUCH`。抬起后不再出点；
-    /// scale 按 0.5 折算坐标（轴分辨率 > 96dpi 的设备，点比设备单位小）。
-    #[test]
-    fn touch_feed_plain_abs_needs_btn_touch() {
-        let abs = |code: u16, value: i32| InputEvent::new(EventType::ABSOLUTE.0, code, value);
-        let syn = || InputEvent::new(EventType::SYNCHRONIZATION.0, 0, 0);
-        let mut st = TouchState::default();
-        let feed = |st: &mut TouchState, ev: &InputEvent| touch_feed(st, ev, false, 0.5);
-
-        // 没按下时位置再多也不出点（悬停 / 抖动不算笔迹）。
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_X.0, 400)), None);
-        assert_eq!(feed(&mut st, &syn()), None);
-
-        assert_eq!(
-            feed(
-                &mut st,
-                &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 1)
-            ),
-            None
-        );
-        assert_eq!(
-            feed(&mut st, &syn()),
-            Some((200, 0)),
-            "按下后第一个 SYN 出点（scale 0.5）"
-        );
-        assert_eq!(feed(&mut st, &abs(AbsoluteAxisCode::ABS_Y.0, 80)), None);
-        assert_eq!(feed(&mut st, &syn()), Some((200, 40)));
-
-        assert_eq!(
-            feed(
-                &mut st,
-                &InputEvent::new(EventType::KEY.0, KeyCode::BTN_TOUCH.0, 0)
-            ),
-            None
-        );
-        assert_eq!(feed(&mut st, &syn()), None, "抬起后不再出点");
     }
 }

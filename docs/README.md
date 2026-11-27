@@ -26,8 +26,6 @@
 | `docs/归档/日更/` | **日常原始记录**：`YYYY-MM/YYYY-MM-DD.md`，每次开发完成追加一条（文件-改动表 + 决策 + 验证）；全量归档时从这里沉淀进正式文档 | 想知道「最近几天真改了什么」时先看它 |
 | `docs/变量提取与引用指南.md` | 变量怎么提取、怎么用占位符引用（含「移动硬盘盘符不定」实战） | 想用变量串联多个动作、做自动化时 |
 | `docs/竞品分析与优化规划.md` | 竞品横向对比 + 差距清单 + 分阶段优化路线图（P0~P3） | 规划下一步功能方向、排优先级时 |
-| `docs/触摸板手势可行性调研.md` | 规划 7.2-㊻ 的可行性调研：三平台（Linux libinput / macOS 私有 API / Windows Raw Input）能拿到什么手势事件、怎么接进现有 `Key` 模型、成本与落地顺序 | 评估「触摸板手势作触发源」是否立项 / 怎么落地时 |
-| `docs/触摸板手势开发计划.md` | 触摸板手势的**跨会话进度账本**：现状（已落地 / 已修 / 待办 TP-01~TP-14）、下一步（平台采集、多指离散手势）、已定格的设计决定、已知坑、每次会话收尾清单 | 继续做触摸板相关功能时**先读它**；接手别人的半成品时 |
 | `docs/鼠标侧键跨型号调研.md` | 规划 7.2-㊼ 的调研：标准侧键 MB4/MB5 跨型号一致、额外侧键无统一编号，结论是不扩键模型（用厂商软件重映射到 F13–F24 变通）；标准侧键「不出现」属厂商 divert，另见 `底层输入能力规划.md` 档位 C | 评估「支持更多鼠标侧键」时 |
 | `docs/鼠标手势与功能扩展规划.md` | 鼠标手势专项（现状 / 分级目标 / 数据模型 / 三平台接线 / 配置全链路 / 体积实测 / 验收 / 待决策 / 试验台）+ 功能扩展候选（触发源 / 行为开关 / 动作库）+ 可扩展项 `EXT-01~EXT-37` + 扩展后效果 + 设置界面落点 + **逐项状态与跨会话进度日志** | 评估「鼠标手势怎么取舍」或「下一步扩展什么」时；开工前定方案 |
 | `docs/代码拆分与质量加固计划.md` | 代码拆分（`ui/src/main.ts` / `crates/kada-core/src/lib.rs` / `src-tauri/src/lib.rs` 三个巨型文件）+ 质量基座（fmt / clippy / ESLint / tsc strict / `.gitattributes`）的**跨会话进度账本**：现状实测、铁律、Q/U/C/T/O 编号步骤、每步绿灯清单、风险与回滚、体积优化逐条结论 | 要拆文件、加检查、或评估「还能瘦身吗」时**先读它** |
@@ -52,7 +50,7 @@ crates/kada-core/           # 零重量纯逻辑：键模型、快捷键解析/�
   src/migrate.rs            # 配置 / 动作迁移：旧版动作归一化 + 设置越界值钳制（加载时只跑它、不跑清洗）
   src/sanitize.rs           # 配置清洗：保存 / 导入前剔掉不可用条目并给出忽略原因
   src/tests.rs              # 单元测试整块（C-01 从 lib.rs 搬出：顶层用例 + 18 个按主题分的子模块）
-  src/gesture.rs            # 鼠标手势 / 触摸板手势模型与识别（方向串量化 / 归一化 / 精确匹配 / 24 点模板，7.1-MG）
+  src/gesture.rs            # 鼠标手势模型与识别（方向串量化 / 归一化 / 精确匹配，7.1-MG）
   src/merge.rs              # 配置合并（导入的「合并」方式：只增不删、不造新冲突、设置保留本机）
   src/snippet.rs            # 配置卡带（分享用）：按「类别+下标」摘出条目 + 被引用的层；卡带市场的索引模型/解析，见 AGENTS「铁律」
   src/decide.rs             # 事件模型 Ev / 单条事件决定 decide / 快捷键与改键匹配（桌面壳与安卓壳共用，S1-a 从 src-tauri 搬来）
@@ -63,7 +61,6 @@ crates/kada-hook/           # 平台钩子引擎：全局键盘事件监听 + �
   src/win/agent.rs          # Windows: 提权伴随进程（命名管道 + 行协议 + DACL/双向身份校验 + runas 拉起 + 父进程守望）
   src/win/hidpp.rs          # Windows: 罗技 HID++ 客户端（枚举/握手/关 divert + 本会话保持，见 说明书 §4.8 / 底层输入能力规划 档位 C）
   src/gesture.rs            # 鼠标手势采集状态机（平台无关）+ 轨迹出口（识别在壳层做，7.1-MG）
-  src/trackpad.rs           # 触摸板手势采集状态机（按住触发键 → 记鼠标移动点 → 松键交轨迹，说明书 §5.9）
   src/linux.rs              # Linux: evdev + uinput 钩子 + 键码映射 + simulate
   src/macos.rs              # macOS: CGEventTap 钩子 + key↔虚拟键码 + AX 前台查询 + simulate（需「辅助功能」权限）
   src/lib.rs                # 平台中性入口：platform_input_env / elevated（提权窗口注入）/ hidpp（HID++ 解锁），非 Windows 为空实现
@@ -100,10 +97,10 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/commands/mod.rs       # 命令层（T-04 从 lib.rs 搬出）：按域分组的 #[tauri::command]
   src/commands/config.rs    # 配置读写命令（T-04）：get/set_config + 同步存档 / 导入导出 / 卡带索引与发布
   src/commands/devices.rs   # 平台 / 设备诊断命令：冲突 / 输入环境 / 输入设备 / HID++ / 提权通道
-  src/commands/record.rs    # 录制 / 暂停 / 手动执行命令：录入暂停租约 / 中止 / 宏与鼠标·触摸板录制
+  src/commands/record.rs    # 录制 / 暂停 / 手动执行命令：录入暂停租约 / 中止 / 宏与鼠标录制
   src/commands/results.rs   # 执行结果命令：消息中心 / 结果弹窗 / 命令日志 / 执行记录读取
   src/commands/windows.rs   # 浮窗回报命令：gesture_overlay_ready / hud_ready / get_status_payload / prompt_*
-  src/gestures.rs           # 手势（T-05 从 lib.rs 搬出）：鼠标手势浮层与识别 / 触摸板 / 角动作 / 边缘滚动 / 画圈转 Snipaste
+  src/gestures.rs           # 手势（T-05 从 lib.rs 搬出）：鼠标手势浮层与识别 / 角动作 / 边缘滚动 / 画圈转 Snipaste
   src/engine_host.rs        # 引擎接线（T-05 从 lib.rs 搬出）：状态机定时器 / 输入状态复位 / 配置监听 / 暂停重载 / fire 触发执行
   src/recorder.rs           # 录制器（T-05 从 lib.rs 搬出）：键盘宏事件 → 动作序列 / 鼠标触发 → Action::Mouse
   src/main_window.rs        # 主窗口（T-05 从 lib.rs 搬出）：按需建窗 / 拉到最前 / 界面外链交给系统浏览器
@@ -121,7 +118,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   src/market.ts             # 卡带市场 + 卡带发布 + 导出卡带：索引缓存 / 搜索标签筛选 / 安装预览 / 机审块 / 发布页
   src/settings.ts           # 设置页：卡片填充 / 开关绑定 / 输入层诊断 / 提权 / 罗技解锁 / 导入导出 / 同步存档 / 软件更新 / 更新对话框 / 复制快捷菜单只读编辑器
   src/list.ts               # 左侧列表：行与目录树渲染 / 搜索筛选 / 折叠 / 多选 / 行菜单 / 拖拽排序
-  src/editor.ts             # 条目编辑页：草稿填充与保存 / 未保存守卫 / 模式与页签 / 改键下拉 / 键位层 / 触摸板与鼠标手势录入
+  src/editor.ts             # 条目编辑页：草稿填充与保存 / 未保存守卫 / 模式与页签 / 改键下拉 / 键位层 / 鼠标手势录入
   src/form.ts               # 动作列表（流程管线）：动作类型与字段 / 嵌套 / 拖拽排序 / 内联校验 / 命令脚本字段 / 冲突气泡与列表
   src/events.ts             # 事件绑定：左栏切页 / 搜索筛选 / 新增与行菜单 / 编辑页录入与页签 / 动作字段 / 全局快捷键与确认框 / 鸣谢墙
   src/input.ts              # 组合键 / 序列 / 和弦录入捕获：键名映射 / 录入会话锁 / 失焦中断

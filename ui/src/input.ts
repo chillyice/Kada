@@ -3,7 +3,7 @@ import { tr, trt } from "./i18n";
 
 // 组合键 / 序列 / 和弦的录入捕获（U-04 从 main.ts 搬出）：捕获期间暂停快捷键，
 // 按键 / 鼠标侧键 / 滚轮都按键名提交；窗口失焦 / 隐藏 / 关详情时统一解除，别让
-// Rust 侧停在暂停态。编辑页的触摸板录入与本模块共用「同一时刻只有一个录入会话」的锁。
+// Rust 侧停在暂停态。本模块与壳层「同一时刻只有一个录入会话」的锁共用一套口径。
 // ---- 组合键录入 ----
 const CODE_TABLE: Record<string, string> = {
   Enter: "Enter", Escape: "Esc", Tab: "Tab", Space: "Space",

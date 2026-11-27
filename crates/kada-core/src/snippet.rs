@@ -103,8 +103,6 @@ pub enum PickKind {
     Remap,
     Expansion,
     Gesture,
-    /// 触摸板手势（`Config.touchpad_gestures`）。
-    Touchpad,
     Hotcorner,
     Wheeledge,
 }
@@ -155,14 +153,6 @@ pub fn snippet(cfg: &Config, picks: &[SnippetPick]) -> Config {
                 };
                 g.folder = None;
                 out.gestures.push(g);
-            }
-            PickKind::Touchpad => {
-                // 触摸板手势与鼠标手势分属两个数组（分类分开），摘取同样剥目录。
-                let Some(mut g) = cfg.touchpad_gestures.get(p.idx).cloned() else {
-                    continue;
-                };
-                g.folder = None;
-                out.touchpad_gestures.push(g);
             }
             PickKind::Hotcorner => {
                 let Some(mut r) = cfg.hot_corners.get(p.idx).cloned() else {
@@ -232,8 +222,6 @@ pub fn snippet_title(part: &Config) -> String {
         e.trigger.clone()
     } else if let Some(g) = part.gestures.first() {
         g.label()
-    } else if let Some(g) = part.touchpad_gestures.first() {
-        g.label()
     } else if let Some(c) = part.hot_corners.first() {
         c.label()
     } else if let Some(w) = part.wheel_edges.first() {
@@ -245,7 +233,6 @@ pub fn snippet_title(part: &Config) -> String {
         + part.remaps.len()
         + part.expansions.len()
         + part.gestures.len()
-        + part.touchpad_gestures.len()
         + part.hot_corners.len()
         + part.wheel_edges.len();
     if n <= 1 {
@@ -463,7 +450,6 @@ pub fn scan_snippet(text: &str) -> Result<SnippetScan, String> {
         "remaps",
         "expansions",
         "gestures",
-        "touchpad_gestures",
         "hot_corners",
         "wheel_edges",
     ] {
@@ -553,7 +539,6 @@ pub fn publish_payload(
         + part.remaps.len()
         + part.expansions.len()
         + part.gestures.len()
-        + part.touchpad_gestures.len()
         + part.hot_corners.len()
         + part.wheel_edges.len();
     if n == 0 {
@@ -721,30 +706,12 @@ mod tests {
             enabled: true,
             ..Default::default()
         }];
-        cfg.touchpad_gestures = vec![crate::TouchpadGesture {
-            name: Some("触摸板复制".into()),
-            trigger: Some(crate::Key::CapsLock),
-            pattern: "DR".into(),
-            enabled: true,
-            ..Default::default()
-        }];
-        let part = snippet(
-            &cfg,
-            &[pick(PickKind::Gesture, 0), pick(PickKind::Touchpad, 0)],
-        );
+        let part = snippet(&cfg, &[pick(PickKind::Gesture, 0)]);
         assert_eq!(part.gestures.len(), 1, "鼠标手势要能进卡带");
-        assert_eq!(part.touchpad_gestures.len(), 1, "触摸板手势要能进卡带");
-        assert_eq!(
-            part.touchpad_gestures[0].trigger,
-            Some(crate::Key::CapsLock)
-        );
-        assert_eq!(snippet_title(&part), "卡带（2 项）");
+        assert_eq!(snippet_title(&part), "复制");
         // 越界下标照旧跳过。
         assert!(snippet(&cfg, &[pick(PickKind::Gesture, 9)])
             .gestures
-            .is_empty());
-        assert!(snippet(&cfg, &[pick(PickKind::Touchpad, 9)])
-            .touchpad_gestures
             .is_empty());
     }
 

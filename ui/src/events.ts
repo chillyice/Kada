@@ -25,9 +25,7 @@ import {
   deleteCurrentEntry,
   addLayer,
   fillKeySelect,
-  fillTouchpadTriggerSelect,
   openGesturePad,
-  openTrackpadRecord,
   pickRemapKey,
   refreshDirty,
   renderKeyMenu,
@@ -40,7 +38,6 @@ import {
   saveCurrentDraft,
   switchDraftKind,
   syncRemapEditor,
-  syncTouchpadUi,
   unsavedPending,
 } from "./editor";
 import { expansionTriggerError, renderActions, renderConflictBubble, showFieldError } from "./form";
@@ -188,7 +185,7 @@ export function bind() {
 
   renderThanks();
 
-  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键、文本扩展、鼠标操作与触摸板手势不从这里进——
+  // 「＋ 新增」下拉：快捷键 / 目录 / 粘贴。改键、文本扩展、鼠标操作不从这里进——
   // 统一编辑页里新增态点左上角的模式下拉就能切过去（见 switchDraftKind），入口只留一处。
   document.getElementById("add-btn")!.addEventListener("click", (e) => {
     const items: MenuItem[] = [
@@ -294,38 +291,6 @@ export function bind() {
     if (!host) return;
     host.actions.push(newAction("cycle"));
     renderActions(host);
-  });
-
-  fillTouchpadTriggerSelect();
-  const touchpadTrigger = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
-  touchpadTrigger.addEventListener("change", () => {
-    if (state.section !== "touchpads" || !state.touchpadDraft) return;
-    state.touchpadDraft.trigger = touchpadTrigger.value || null;
-    // 换触发键 = 换了「哪只手 / 哪个键」录的那一笔：形状模板跟着作废（要留就重新录入）。
-    state.touchpadDraft.template = null;
-    syncTouchpadUi();
-    refreshDirty();
-  });
-  document.getElementById("edit-touchpad-capture")!.addEventListener("click", () => {
-    if (state.section !== "touchpads" || !state.touchpadDraft) return;
-    const key = state.touchpadDraft.trigger;
-    if (!key) {
-      toast(tr("先选一个键盘键作触发键，再用触摸板录入"));
-      return;
-    }
-    openTrackpadRecord(key);
-  });
-  document.getElementById("edit-touchpad-drop-template")!.addEventListener("click", () => {
-    if (!state.touchpadDraft?.template) return;
-    // 纯形状条目（方向串留空）只有模板这一个判据，清掉它这条就永远匹配不上了。
-    if (!state.touchpadDraft.pattern.trim()) {
-      toast(tr("方向串为空时不能清除形状模板（先填方向串）"));
-      return;
-    }
-    state.touchpadDraft.template = null;
-    syncTouchpadUi();
-    refreshDirty();
-    toast(tr("已清除形状模板，只保留方向串"));
   });
 
   document.getElementById("edit-gesture-record")!.addEventListener("click", () => {

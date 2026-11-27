@@ -324,12 +324,9 @@ fn tap_loop(ready: &mpsc::Sender<Result<(), String>>, stop: &AtomicBool) -> io::
 }
 
 /// tap 要看的几类事件：键盘按下/抬起、修饰键变化、鼠标「其它键」（中键 / 侧键），
-/// 鼠标操作录制需要的左/右键按下与滚轮，以及**触摸板手势采集**需要的移动事件与
-/// 左/右键抬起。
+/// 鼠标操作录制需要的左/右键按下与滚轮。
 ///
 /// 左/右键与滚轮**平时只为录制**而看：不进键模型，原样放行（拦它们只会让点击变哑）。
-/// 移动事件量大，但回调里只有一条「在采集吗」的原子判定，不采集时几乎零开销——
-/// 触摸板手势（`trackpad`）采集期间靠它喂轨迹（顺带让心跳跟着鼠标活跃起来，只有好处）。
 fn events_of_interest() -> Vec<CGEventType> {
     vec![
         CGEventType::KeyDown,
@@ -341,7 +338,6 @@ fn events_of_interest() -> Vec<CGEventType> {
         CGEventType::RightMouseDown,
         CGEventType::LeftMouseUp,
         CGEventType::RightMouseUp,
-        CGEventType::MouseMoved,
         CGEventType::ScrollWheel,
     ]
 }
@@ -383,27 +379,6 @@ fn tap_callback(_proxy: CGEventTapProxy, etype: CGEventType, event: &CGEvent) ->
         CGEventType::FlagsChanged => handle_flags_changed(event),
         CGEventType::OtherMouseDown => handle_mouse(event, true),
         CGEventType::OtherMouseUp => handle_mouse(event, false),
-        // 触摸板手势采集（`trackpad`）期间左右键与滚轮归采集：左/右键吞掉（不然画着画着
-        // 就点到了下面的东西），滚轮 = 双指 = 放弃这次采集。与 Windows 鼠标钩子的口径一致。
-        CGEventType::LeftMouseDown | CGEventType::RightMouseDown if crate::trackpad::armed() => {
-            CallbackResult::Drop
-        }
-        CGEventType::LeftMouseUp | CGEventType::RightMouseUp if crate::trackpad::armed() => {
-            CallbackResult::Drop
-        }
-        CGEventType::ScrollWheel if crate::trackpad::armed() => {
-            crate::trackpad::cancel();
-            CallbackResult::Drop
-        }
-        // 单指滑动 = 合成的鼠标移动：采集期间喂给轨迹状态机（点 = 光标的屏幕坐标）。
-        // 移动本身永远放行（光标照常跟手；Linux 之外的平台松键后由壳层 warp 回起笔点）。
-        CGEventType::MouseMoved => {
-            if crate::trackpad::armed() {
-                let p = event.location();
-                crate::trackpad::on_move((p.x as i32, p.y as i32));
-            }
-            CallbackResult::Keep
-        }
         // 左/右键与滚轮不进键模型，只为录制上报，一律放行。
         CGEventType::LeftMouseDown => {
             record_trigger(event, MouseRecordKind::Click(MouseButton::Left));
@@ -1541,8 +1516,6 @@ extern "C" {
     ) -> *mut c_void;
     fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
     fn CGEventPost(location: CGEventTapLocation, event: *mut c_void);
-    // 把光标挪到屏幕坐标（触摸板手势「松键回起笔点」用；失败静默——少一次复位不是故障）。
-    fn CGWarpMouseCursorPosition(point: CGPoint) -> i32;
     // 媒体键 tap（独立于主 tap，掩码只有 NX_SYSDEFINED）与它要用的字段读写。
     fn CGEventTapCreate(
         tap: CGEventTapLocation,
@@ -1651,7 +1624,6 @@ pub mod simulate {
         key_to_code, key_to_mouse_button, key_to_nx, modifier_flag, CFRelease, CGEventCreate,
         CGEventCreateMouseEvent, CGEventGetLocation, CGEventPost, CGEventSetFlags,
         CGEventSetIntegerValueField, CGEventSetType, CGEventSourceCreate, CGEventSourceFlagsState,
-        CGWarpMouseCursorPosition,
     };
 
     pub fn down(k: Key) {
@@ -1863,13 +1835,6 @@ pub mod simulate {
                 CFRelease(probe as *const c_void);
                 p
             }
-        }
-    }
-
-    /// 把光标挪到屏幕坐标（触摸板手势「松键回起笔点」）。失败静默：少一次复位不是故障。
-    pub(crate) fn warp_cursor(pt: (i32, i32)) {
-        unsafe {
-            let _ = CGWarpMouseCursorPosition(CGPoint::new(f64::from(pt.0), f64::from(pt.1)));
         }
     }
 

@@ -86,20 +86,6 @@ export function syncSettings() {
   // （新功能默认关——它带「全局抢右键」的副作用，替用户打开不合适）。
   (document.getElementById("set-experimental") as HTMLInputElement).checked =
     state.cfg.settings.experimental === true;
-  // 触摸板手势是**独立分类**：自己的开关与参数，跟上面那枚无关（缺字段 = 关 / 默认值）。
-  (document.getElementById("set-touchpad") as HTMLInputElement).checked =
-    state.cfg.settings.touchpad === true;
-  (document.getElementById("set-touchpad-start-distance") as HTMLInputElement).value = String(
-    state.cfg.settings.touchpad_start_distance ?? 22,
-  );
-  (document.getElementById("set-touchpad-exclude") as HTMLTextAreaElement).value = (
-    state.cfg.settings.touchpad_exclude ?? []
-  ).join("\n");
-  // 缺字段按「开」显示（后端 serde default 就是 true）。
-  (document.getElementById("set-touchpad-restore-cursor") as HTMLInputElement).checked =
-    state.cfg.settings.touchpad_restore_cursor !== false;
-  (document.getElementById("set-touchpad-overlay") as HTMLInputElement).checked =
-    state.cfg.settings.touchpad_overlay !== false;
   (document.getElementById("set-gesture-screenshot") as HTMLInputElement).checked =
     state.cfg.settings.gesture_screenshot !== false;
   (document.getElementById("set-gesture-exclude") as HTMLTextAreaElement).value =
@@ -144,7 +130,6 @@ export function syncSettings() {
   // 旧配置里残留的条目仍能只读渲染（没有宿主节点时函数直接返回），不再提供编辑入口。
   renderClipboardMenuEditor();
   syncMouseOpts();
-  syncTouchpadOpts();
 }
 
 /** 鼠标操作的参数设置块只在总开关打开时显示（关闭时配置仍保留）。 */
@@ -155,22 +140,11 @@ export function syncMouseOpts() {
   syncGestureVisual();
 }
 
-/** 触摸板手势的参数块只在自己的开关打开时显示（与「鼠标操作」那枚互不影响）。 */
-export function syncTouchpadOpts() {
-  document
-    .getElementById("touchpad-opts")
-    ?.classList.toggle("hidden", state.cfg.settings.touchpad !== true);
-  syncGestureVisual();
-}
-
 /** 轨迹浮层是两边共用的一块窗：任一边开着就显示，两边都关着才整张卡片收起。 */
 function syncGestureVisual() {
   document
     .getElementById("gesture-visual-card")
-    ?.classList.toggle(
-      "hidden",
-      state.cfg.settings.experimental !== true && state.cfg.settings.touchpad !== true,
-    );
+    ?.classList.toggle("hidden", state.cfg.settings.experimental !== true);
 }
 
 /**
@@ -491,49 +465,6 @@ export function bindSettings() {
     syncMouseOpts();
     // 改完重画列表：快捷键页里鼠标类条目的显隐由它决定。
     void save().then(() => render());
-  });
-  // 触摸板手势总开关：与「鼠标操作」完全分开——只影响触摸板条目与采集，
-  // 关掉时配置保留（入口隐藏 + 不采集，触发键照常输出）。
-  const touchpad = document.getElementById("set-touchpad") as HTMLInputElement;
-  touchpad.addEventListener("change", () => {
-    state.cfg.settings.touchpad = touchpad.checked;
-    syncTouchpadOpts();
-    void save().then(() => render());
-  });
-  // 触摸板手势的起手距离（像素）：这一笔至少移动这么远才算数，钳在 1~50。
-  const touchpadStart = document.getElementById(
-    "set-touchpad-start-distance",
-  ) as HTMLInputElement;
-  touchpadStart.addEventListener("change", () => {
-    const v = Math.min(50, Math.max(1, Math.floor(Number(touchpadStart.value) || 22)));
-    touchpadStart.value = String(v);
-    state.cfg.settings.touchpad_start_distance = v;
-    void save();
-  });
-  // 触摸板手势的排除程序：每行一个，与鼠标手势的 `gesture_exclude` 各自一份名单。
-  const touchpadExclude = document.getElementById(
-    "set-touchpad-exclude",
-  ) as HTMLTextAreaElement;
-  touchpadExclude.addEventListener("change", () => {
-    state.cfg.settings.touchpad_exclude = touchpadExclude.value
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    void save();
-  });
-  // 松手后光标回起笔点：关掉 = 光标留在这一笔走到的位置（有人还要接着用指针）。
-  const touchpadRestore = document.getElementById(
-    "set-touchpad-restore-cursor",
-  ) as HTMLInputElement;
-  touchpadRestore.addEventListener("change", () => {
-    state.cfg.settings.touchpad_restore_cursor = touchpadRestore.checked;
-    void save();
-  });
-  // 采集时显示轨迹浮层：只影响触摸板这条来源（右键手势没有单独开关）。
-  const touchpadOverlay = document.getElementById("set-touchpad-overlay") as HTMLInputElement;
-  touchpadOverlay.addEventListener("change", () => {
-    state.cfg.settings.touchpad_overlay = touchpadOverlay.checked;
-    void save();
   });
   const gestureScreenshot = document.getElementById(
     "set-gesture-screenshot",

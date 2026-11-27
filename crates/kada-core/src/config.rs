@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::gesture::{Gesture, TouchpadGesture};
+use crate::gesture::Gesture;
 use crate::keys::Key;
 use crate::snippet::DEFAULT_SNIPPET_INDEX_URL;
 use crate::trigger::{DEFAULT_CHORD_TIMEOUT_MS, DEFAULT_SEQUENCE_TIMEOUT_MS};
@@ -1056,32 +1056,6 @@ pub struct Settings {
     /// 手势未命中时的失败色（`#RRGGBB`）。
     #[serde(default = "default_gesture_fail_color")]
     pub gesture_fail_color: String,
-    /// **触摸板手势总开关**：与 `experimental`（鼠标操作）**各自独立**，同样缺字段 = 关。
-    /// 关掉 = 触摸板手势入口隐藏 + 不采集（触发键照常输出，不静默吞），**配置保留**。
-    #[serde(default)]
-    pub touchpad: bool,
-    /// 触摸板手势的**起手距离**（像素）：这一笔至少移动这么远才算数（同时也是轨迹浮层
-    /// 亮出的阈值）。与鼠标手势的 `gesture_start_distance` 分开：一个是「开始画」，
-    /// 一个是「画够长」，两种手感本来就不该共用一个值。
-    #[serde(default = "default_gesture_start_distance")]
-    pub touchpad_start_distance: i32,
-    /// 触摸板手势的**排除程序**（每行一个进程名）：命中的程序里不执行触摸板手势——触发键
-    /// 已经被吞掉（它是纯开关），所以这里只是「不执行」、没有右键要回放。语义同
-    /// `gesture_exclude`：不区分大小写、含 `*`/`?` 走通配、否则子串。空 = 不排除。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub touchpad_exclude: Vec<String>,
-    /// **松键后把光标放回起笔点**（触摸板手势）。缺字段 = 开。
-    ///
-    /// 触摸板画一笔是「借道」屏幕：光标会跟着手指在屏幕上走，不还原等于打乱用户正在用的
-    /// 鼠标位置。关掉的人是不希望「松手那一下光标突然跳回去」（比如同时要接着用指针）。
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub touchpad_restore_cursor: bool,
-    /// **采集期间显示轨迹浮层**（触摸板手势）。缺字段 = 开。
-    ///
-    /// 关掉只是不画预览 / 不弹结果浮层（未命中仍会出文字气泡报方向串），采集与识别照旧。
-    /// 与鼠标手势共用同一块窗，但开关各管各的（只影响触摸板这条采集来源）。
-    #[serde(default = "default_true", skip_serializing_if = "is_true")]
-    pub touchpad_overlay: bool,
     /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
     #[serde(default)]
     pub clipboard_menu: ClipboardMenu,
@@ -1192,11 +1166,6 @@ impl Default for Settings {
             gesture_label_font_size: default_gesture_label_font_size(),
             gesture_label_offset: default_gesture_label_offset(),
             gesture_fail_color: default_gesture_fail_color(),
-            touchpad: false,
-            touchpad_start_distance: default_gesture_start_distance(),
-            touchpad_exclude: Vec::new(),
-            touchpad_restore_cursor: true,
-            touchpad_overlay: true,
             clipboard_menu: ClipboardMenu::default(),
             hot_corners: HotCorners::default(),
             wheel_edges: WheelEdges::default(),
@@ -1204,7 +1173,7 @@ impl Default for Settings {
     }
 }
 
-/// 画符号点坐标的量化尺度：0~[`DRAW_POINTS_SCALE`] 覆盖画板长边（与触摸板模板同一口径）。
+/// 画符号点坐标的量化尺度：0~[`DRAW_POINTS_SCALE`] 覆盖画板长边。
 ///
 /// 存整数而不是浮点有两个原因：① 配置结构一路 `PartialEq + Eq`（浮点拿不到 `Eq`，
 /// 得把整条链改成只 `PartialEq`）；② 1/1000 的精度对「一笔几百点再重采样到 32 点」的
@@ -1223,7 +1192,7 @@ pub const DRAW_SYMBOLS_MAX: usize = 24;
 
 /// 一条自定义画法（安卓 P3 的「录自定义」）：模板就是用户当场画的那几笔。
 ///
-/// 与触摸板的形状模板不同，这里**不判方向**（随手画的形状旋转角本就不稳）；
+/// 这里**不判方向**（随手画的形状旋转角本就不稳）；
 /// 「闭合回路」也不落盘——由点自己算（起笔与收笔几乎重合），少一个可能与点矛盾的字段。
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Default)]
 pub struct DrawSymbol {
@@ -1300,10 +1269,6 @@ pub struct Config {
     /// 鼠标手势（规划 7.2-MG）：按住右键画轨迹、松手按方向串匹配。
     #[serde(default)]
     pub gestures: Vec<Gesture>,
-    /// 触摸板手势：按住一个**键盘键**、在触摸板上画一笔，松手按方向串（或形状模板）匹配。
-    /// 与鼠标手势是两个分类（触发方式、吞吐口径、列表分组都不同），别混着塞进 `gestures`。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub touchpad_gestures: Vec<TouchpadGesture>,
     /// 触发角（EXT-10）：光标碰到屏幕四角执行动作。同一位置可有多条，按顺序取第一条启用的。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hot_corners: Vec<HotCornerRule>,

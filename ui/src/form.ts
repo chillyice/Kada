@@ -4,7 +4,7 @@ import { el, helpIcon, intIn, onClickAsync, toast } from "./dom";
 import { state } from "./state";
 import { tr, trt } from "./i18n";
 import { refreshInputDevices } from "./api";
-import { collapsedActions, mouseFeaturesEnabled, touchpadFeaturesEnabled } from "./list";
+import { collapsedActions, mouseFeaturesEnabled } from "./list";
 import {
   ACTION_ICONS,
   APP_OPS,
@@ -41,7 +41,7 @@ import {
   unwrapAction,
 } from "./options";
 import { refreshDirty, requestOpenDetail, runActions } from "./editor";
-import { syncMouseOpts, syncTouchpadOpts } from "./settings";
+import { syncMouseOpts } from "./settings";
 import { isListSection, save, splitConflicts, switchSection } from "./main";
 import { startCapture } from "./input";
 import type {
@@ -962,7 +962,7 @@ function conditionFields(cond: Condition): HTMLElement {
       el(
         "div",
         "unit-hint unit-hint-wrap",
-        tr("按触发来自哪台设备区分：键盘按快捷键、鼠标键 / 手势 / 触摸板笔迹看指针设备（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
+        tr("按触发来自哪台设备区分：键盘按快捷键、鼠标键 / 手势看指针设备（Linux 用 evdev 设备名、Windows 用 HID 设备路径，均支持 * / ? 通配或子串匹配；macOS 取不到设备，恒走「否则」分支）。"),
       ),
     );
   } else {
@@ -2547,16 +2547,13 @@ async function pickDir(input: HTMLInputElement) {
 export function renderConflictBubble() {
   const box = document.getElementById("conflict-list")!;
   box.replaceChildren();
-  // 「配了但总开关关着」也各说一声：鼠标操作与触摸板手势是**两枚独立开关**，
-  // 关着时这些类**整类不显示**，用户在列表里看不到自己的条目，只会觉得「配了没反应」
-  // ——这里把原因分开摆出来（点哪条就开哪枚，别用一枚开关去猜另一类）。
+  // 「配了但总开关关着」也要说一声：鼠标操作默认关着，关着时这类条目**整类不显示**，
+  // 用户在列表里看不到自己的条目，只会觉得「配了没反应」——这里把原因摆出来（点一下就开）。
   const mouseOffCount = (state.cfg.gestures ?? []).length;
-  const touchpadOffCount = (state.cfg.touchpad_gestures ?? []).length;
   const inList = isListSection(state.section);
   const mouseOff = inList && mouseOffCount > 0 && !mouseFeaturesEnabled();
-  const touchpadOff = inList && touchpadOffCount > 0 && !touchpadFeaturesEnabled();
   const hasConflict = inList && state.conflicts.length > 0 && !state.conflictBubbleDismissed;
-  const show = hasConflict || mouseOff || touchpadOff;
+  const show = hasConflict || mouseOff;
   box.classList.toggle("hidden", !show);
   if (!show) return;
   if (mouseOff) {
@@ -2567,19 +2564,6 @@ export function renderConflictBubble() {
         "span",
         "conflict-bubble-text",
         trt`⚠ 已配置 ${mouseOffCount} 条鼠标操作条目，但「鼠标操作」总开关未开启 → 不会触发`,
-      ),
-      el("span", "conflict-bubble-hint", tr("点击开启")),
-    );
-    box.append(b);
-  }
-  if (touchpadOff) {
-    const b = el("div", "conflict-bubble");
-    b.addEventListener("click", () => void enableTouchpadFeatures());
-    b.append(
-      el(
-        "span",
-        "conflict-bubble-text",
-        trt`⚠ 已配置 ${touchpadOffCount} 条触摸板手势，但「触摸板手势」总开关未开启 → 不会触发`,
       ),
       el("span", "conflict-bubble-hint", tr("点击开启")),
     );
@@ -2616,15 +2600,6 @@ async function enableExperimentalFeatures() {
   const box = document.getElementById("set-experimental") as HTMLInputElement | null;
   if (box) box.checked = true;
   syncMouseOpts();
-  await save();
-}
-
-// 打开「触摸板手势」开关并立刻落盘（与上面那枚分开：两类各有自己的闸门）。
-async function enableTouchpadFeatures() {
-  state.cfg.settings.touchpad = true;
-  const box = document.getElementById("set-touchpad") as HTMLInputElement | null;
-  if (box) box.checked = true;
-  syncTouchpadOpts();
   await save();
 }
 

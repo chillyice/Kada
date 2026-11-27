@@ -36,8 +36,6 @@ pub(crate) fn spawn_engine_ticker(
         let mut last_wheel: Option<bool> = None;
         // 上一次「鼠标手势采集是否开着」（规划 7.2-MG）：变了才推给钩子层。
         let mut last_gesture: Option<bool> = None;
-        // 上一次「触摸板手势采集是否开着」：只有按住触发键期间才采集，同样是变了才推。
-        let mut last_trackpad: Option<bool> = None;
         // 触发角（EXT-10）/ 边缘滚动（EXT-11）：上一次推给钩子层的「总闸 + 四角/四边开关
         // + 显示器矩形」。显示器几何每 ~3 秒重取一次（热插拔 / 改分辨率），两者共用。
         type HotCornerPush = (bool, [bool; 4], Vec<(i32, i32, i32, i32)>);
@@ -70,11 +68,10 @@ pub(crate) fn spawn_engine_ticker(
             } else {
                 None
             });
-            // 输入复位 = 「与物理键盘断过一次线」：触摸板手势正在采的缓冲一起丢掉
-            // （不回放、不回调出口）。这里不持配置锁，锁序上只会拿采集状态。
+            // 输入复位 = 「与物理键盘断过一次线」：鼠标手势正在采的缓冲一起丢掉
+            // （不回放、不回调出口）。这里不持配置锁。
             // 轨迹浮层也得跟着收：复位没有出口回调，靠回调收浮层的那条路走不到。
             if reason.is_some() {
-                kada_hook::trackpad::reset();
                 hide_gesture_overlay(&app);
             }
             // 配置读锁在 `Engine` 锁**之前**取、并一路持有到 `tick`：等待窗取值就来自配置
@@ -88,7 +85,6 @@ pub(crate) fn spawn_engine_ticker(
                 user_paused,
                 elevated,
                 gesture_on,
-                trackpad_on,
                 toast_on,
             ) = {
                 let guard = cfg.read().unwrap();
@@ -117,22 +113,14 @@ pub(crate) fn spawn_engine_ticker(
                 (
                     build_status(&status, &guard),
                     guard.settings.show_status_hud,
-                    // 鼠标钩子：「录入触摸板手势」期间也必须挂着——新建第一条时配置里还没有
-                    // 启用的触摸板手势，光开 trackpad 闸门不够，普通鼠标移动进不来，一笔都记不到。
-                    config_needs_mouse_hook(&guard) || trackpad_recording_key().is_some(),
+                    // 鼠标钩子：配置用到鼠标键 / 有启用的鼠标类条目时才挂。
+                    config_needs_mouse_hook(&guard),
                     kada_core::config_uses_wheel(&guard),
                     guard.settings.paused,
                     guard.settings.elevated_inject,
                     // 手势采集的闸门：**新功能总开关**（规划 7.2-MG）关了、或没有启用的手势
                     // → 右键完全放行（回到系统行为，一个字节都不多吞）。
                     guard.settings.experimental && gesture_capture_enabled(&guard),
-                    // 触摸板手势的闸门：**它自己的总开关**（与鼠标操作的 `experimental` 分开）；
-                    // 没有触摸板手势 / 本平台没接鼠标移动采集时不 arm（触发键照常输出，不是静默吞掉）。
-                    // **「录一笔」期间强制开闸**：新建第一条时配置里还没有启用的条目。
-                    (guard.settings.touchpad
-                        && touchpad_gesture_enabled(&guard)
-                        && kada_hook::trackpad::supported())
-                        || trackpad_recording_key().is_some(),
                     guard.settings.trigger_toast,
                 )
             };
@@ -161,15 +149,6 @@ pub(crate) fn spawn_engine_ticker(
             if last_gesture != Some(gesture_on) {
                 kada_hook::gesture::set_enabled(gesture_on);
                 last_gesture = Some(gesture_on);
-            }
-            // 触摸板手势（7.2-MG）：只在按住触发键期间采集；关掉时钩子层清干净状态。
-            if last_trackpad != Some(trackpad_on) {
-                kada_hook::trackpad::set_enabled(trackpad_on);
-                if !trackpad_on {
-                    // 关闸时若正画到一半，采集状态已被清掉、出口不会再回调：自己收浮层。
-                    hide_gesture_overlay(&app);
-                }
-                last_trackpad = Some(trackpad_on);
             }
             // 触发角（EXT-10）/ 边缘滚动（EXT-11）：总闸 + 四角/四边开关 + 显示器矩形推给
             // 钩子层（回调里只做纯坐标判断）。两者共用同一份显示器几何，任一启用就按 ~3 秒
@@ -624,7 +603,7 @@ pub(crate) fn fire(
     );
     // 触发设备由**调用方在回调线程上**取好带下来：`current_device` / `current_pointer_device`
     // 都是「最近一次事件」，放到下面 spawn 的线程里读会晚一拍、可能已被别的设备覆盖。
-    // 键盘类触发带键盘设备、指针类（鼠标键 / 滚轮 / 手势 / 触摸板）带指针设备——混着用会把
+    // 键盘类触发带键盘设备、指针类（鼠标键 / 滚轮 / 手势 / 热角 / 边缘滚动）带指针设备——混着用会把
     // 「中键在鼠标 B 上按」判成「键盘 A 按的」（见 7.2-㊷ / 说明书 §3.4）。
     // 触发那一刻的前台窗口（EXT-14「当前窗口」动作的目标）：必须在**调用线程**上抓，
     // 放进下面 spawn 的线程就晚了一拍（动作链还没跑，但前台可能已经变了）。

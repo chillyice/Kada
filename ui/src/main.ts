@@ -25,9 +25,7 @@ import {
   discardDraft,
   renderDetail,
   renderLayers,
-  trackpadRecordSink,
 } from "./editor";
-import type { TrackpadRecordPayload } from "./editor";
 import {
   loadMarket,
   renderMarketPage,
@@ -64,7 +62,6 @@ import type {
   Section,
   ShortcutItem,
   TextExpansion,
-  TouchpadGesture,
   UpdateStatus,
   WheelEdgeRule,
 } from "./types";
@@ -85,7 +82,6 @@ export const KIND_SECTION: Record<ListKind, Section> = {
   remap: "remaps",
   expansion: "expansions",
   gesture: "gestures",
-  touchpad: "touchpads",
   hotcorner: "hotcorners",
   wheeledge: "wheeledges",
 };
@@ -95,7 +91,6 @@ export function isListSection(s: Section): boolean {
     s === "remaps" ||
     s === "expansions" ||
     s === "gestures" ||
-    s === "touchpads" ||
     s === "hotcorners" ||
     s === "wheeledges"
   );
@@ -108,20 +103,17 @@ export function currentKind(): ListKind {
       ? "expansion"
       : state.section === "gestures"
         ? "gesture"
-        : state.section === "touchpads"
-          ? "touchpad"
-          : state.section === "hotcorners"
-            ? "hotcorner"
-            : state.section === "wheeledges"
-              ? "wheeledge"
-              : "shortcut";
+        : state.section === "hotcorners"
+          ? "hotcorner"
+          : state.section === "wheeledges"
+            ? "wheeledge"
+            : "shortcut";
 }
 export function currentDraft():
   | ShortcutItem
   | Remap
   | TextExpansion
   | Gesture
-  | TouchpadGesture
   | HotCornerRule
   | WheelEdgeRule
   | null {
@@ -129,7 +121,6 @@ export function currentDraft():
   if (state.section === "remaps") return state.remapDraft;
   if (state.section === "expansions") return state.expansionDraft;
   if (state.section === "gestures") return state.gestureDraft;
-  if (state.section === "touchpads") return state.touchpadDraft;
   if (state.section === "hotcorners") return state.hotcornerDraft;
   if (state.section === "wheeledges") return state.wheeledgeDraft;
   return null;
@@ -159,7 +150,7 @@ export async function load() {
 // 失败还放行等于把用户的改动悄悄丢掉。
 export async function save(): Promise<boolean> {
   // 命令 / 脚本的空执行字段归一成缺省（空串 / 空数组 / null 不落盘）。
-  for (const key of ["shortcuts", "gestures", "touchpad_gestures", "hot_corners", "wheel_edges"] as const) {
+  for (const key of ["shortcuts", "gestures", "hot_corners", "wheel_edges"] as const) {
     const list = state.cfg[key] as unknown as { actions: Action[] }[] | undefined;
     if (Array.isArray(list)) {
       for (const item of list) {
@@ -171,13 +162,8 @@ export async function save(): Promise<boolean> {
     (s) => s.triggers.length > 0 || !!s.name || s.actions.some(actionHasContent),
   );
   state.cfg.expansions = state.cfg.expansions.filter((e) => e.trigger.trim().length > 0);
-  // 鼠标操作 / 触摸板手势：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
-  // 触摸板手势例外：方向串可以留空（纯形状条目，靠 `template` 兜底），两者都空才剔。
+  // 鼠标操作：方向串为空 = 这条永远匹配不上，后端清洗也会丢——先在前端剔掉。
   if (state.cfg.gestures) state.cfg.gestures = state.cfg.gestures.filter((g) => g.pattern.trim().length > 0);
-  if (state.cfg.touchpad_gestures)
-    state.cfg.touchpad_gestures = state.cfg.touchpad_gestures.filter(
-      (g) => g.pattern.trim().length > 0 || (g.template?.length ?? 0) > 0,
-    );
   let ignored: string[] = [];
   try {
     ignored = await saveConfig(state.cfg);
@@ -213,7 +199,7 @@ export async function save(): Promise<boolean> {
 
 // ---- 组合键录入（U-04 已搬到 ./input）----
 // 组合键 / 序列 / 和弦录入与「同一时刻只有一个录入会话」的锁都在 input.ts；
-// 录入按钮的事件绑定在 events.ts，编辑页的触摸板录入走同一组 start/stop 接口。
+// 录入按钮的事件绑定在 events.ts。
 
 
 // ---- 渲染 ----
@@ -296,7 +282,7 @@ export function isConfirmPending(): boolean {
   return confirmPending !== null;
 }
 
-// ---- 编辑页 / 触摸板录入 / 改键下拉（U-03 已搬到 ./editor）----
+// ---- 编辑页 / 改键下拉（U-03 已搬到 ./editor）----
 // 入口只保留 render() 里对 renderDetail() 的一行调用与全局事件绑定。
 // ---- 动作列表渲染 / 内联校验 / 命令脚本字段 / 冲突提示（U-03 已搬到 ./form）----
 // 入口只保留 render() 里的 renderConflictBubble()；所有字段 / 拖拽绑定都在 ./events。
@@ -363,12 +349,11 @@ export function startBrandLogoLoop() {
 // rail 有 6 个页签：改键 / 文本扩展没有自己的 rail 项，它们的列表行就长在「快捷键」这一页里
 // （合并列表），所以落到「快捷键」上高亮，不另造页签；「键位层」与「卡带市场」都是独立一级页。
 export function syncRailTab(tab: Section) {
-  // 改键 / 文本扩展 / 鼠标操作 / 触摸板手势都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
+  // 改键 / 文本扩展 / 鼠标操作都并进「快捷键」那一页（列表只有一份，行首图标区分类型）。
   const rail =
     tab === "remaps" ||
     tab === "expansions" ||
     tab === "gestures" ||
-    tab === "touchpads" ||
     tab === "hotcorners" ||
     tab === "wheeledges"
       ? "shortcuts"
@@ -463,10 +448,6 @@ async function initEvents() {
   // 主窗口刚被唤起时事件可能已落空：补取后端暂存的那一条（取走即清，不会反复弹）。
   const pendingDialog = await invoke<UpdateDialogPayload | null>("take_update_dialog").catch(() => null);
   if (pendingDialog) openUpdateDialog(pendingDialog);
-  // 触摸板「录入」的轨迹回传（壳层在松键后推一次）：交给当前打开的录制面板。
-  await listen<TrackpadRecordPayload>("trackpad-recorded", (e) =>
-    trackpadRecordSink?.(e.payload),
-  );
   // 配置文件被外部改动后由后端广播（见 applyExternalConfig）。
   await listen<Config>("config-changed", (event) => {
     void applyExternalConfig(event.payload);

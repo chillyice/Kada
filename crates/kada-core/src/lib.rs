@@ -26,13 +26,11 @@ pub use snippet::{
 /// 内置示例配置：设置页「载入示例配置」一键并入（合并语义，只增不删）。
 pub mod sample;
 
-/// 鼠标手势 / 触摸板手势（规划 7.2-MG）：方向串 + 形状模板。纯逻辑，识别在壳层做。
+/// 鼠标手势（规划 7.2-MG）：方向串 + 形状模板。纯逻辑，识别在壳层做。
 mod gesture;
 pub use gesture::{
-    app_excluded, find_gesture, find_touchpad, find_touchpad_by_template, gesture_capture_enabled,
-    gesture_enabled, is_touchpad_trigger, lasso_bbox, normalize_pattern, pattern_from_points,
-    pattern_from_stroke, template_distance, template_from_points, touchpad_gesture_enabled,
-    Gesture, TouchpadGesture, TEMPLATE_MAX_DISTANCE, TEMPLATE_POINTS,
+    app_excluded, find_gesture, gesture_capture_enabled, gesture_enabled, lasso_bbox,
+    normalize_pattern, pattern_from_points, Gesture,
 };
 
 /// 键模型（C-02 从 lib.rs 搬出）：修饰键 / 按键枚举 / 快捷键解析与匹配。

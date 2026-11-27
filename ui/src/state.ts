@@ -20,7 +20,6 @@ import type {
   Section,
   ShortcutItem,
   TextExpansion,
-  TouchpadGesture,
   WheelEdgeRule,
 } from "./types";
 
@@ -49,7 +48,6 @@ export const state = {
   remapDraft: null as Remap | null, // 改键编辑草稿
   expansionDraft: null as TextExpansion | null, // 文本扩展编辑草稿
   gestureDraft: null as Gesture | null, // 鼠标操作（右键手势）编辑草稿
-  touchpadDraft: null as TouchpadGesture | null, // 触摸板手势编辑草稿
   hotcornerDraft: null as HotCornerRule | null, // 角动作编辑草稿
   wheeledgeDraft: null as WheelEdgeRule | null, // 边缘滚动编辑草稿
   // 草稿基线：打开编辑页（或上次保存）那一刻的草稿签名。当前签名与之不等 = 有未保存改动。
@@ -135,15 +133,6 @@ export function draftSignature(): string | null {
       ...state.gestureDraft,
       description: domValue("edit-desc") || null,
       pattern: domValue("edit-gesture-pattern").trim().toUpperCase(),
-    });
-  }
-  if (state.section === "touchpads") {
-    if (!state.touchpadDraft) return null;
-    return JSON.stringify({
-      ...state.touchpadDraft,
-      description: domValue("edit-desc") || null,
-      trigger: domValue("edit-touchpad-trigger") || null,
-      pattern: domValue("edit-touchpad-pattern").trim().toUpperCase(),
     });
   }
   if (state.section === "hotcorners")

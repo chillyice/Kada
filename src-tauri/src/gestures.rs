@@ -1,4 +1,4 @@
-// 手势（T-05 从 lib.rs 搬出）：鼠标手势浮层与识别线程、触摸板手势、屏幕角动作、边缘滚动。
+// 手势（T-05 从 lib.rs 搬出）：鼠标手势浮层与识别线程、屏幕角动作、边缘滚动。
 // 识别都在壳层做（钩子回调只记点），手势不进 `Key` 模型、不进 `Engine::step`（见 说明书 §5.9）。
 
 use crate::*;
@@ -38,30 +38,6 @@ static GESTURE_VISUAL_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// 手势浮层前端是否已注册好 `gesture-preview` / `gesture-result` 监听器。
 pub(crate) static GESTURE_OVERLAY_READY: AtomicBool = AtomicBool::new(false);
-
-/// 触摸板手势的「录一笔」会话（设置页 → 鼠标操作编辑器）：`Some(触发键)` = 正在等一笔轨迹。
-///
-/// 它同时是一个**闸门覆盖**：新建第一条触摸板手势时，配置里还没有任何启用的条目，
-/// `touchpad_gesture_enabled` 为假、采集根本开不了，所以录制期间必须强制开闸
-/// （见 `spawn_engine_ticker` 里的 `trackpad_on` 与钩子入口的 `arm` 判定）。
-pub(crate) static TRACKPAD_RECORD: Mutex<Option<Key>> = Mutex::new(None);
-
-/// 正在录制的触发键（`None` = 没在录）。
-pub(crate) fn trackpad_recording_key() -> Option<Key> {
-    *TRACKPAD_RECORD.lock().unwrap()
-}
-
-/// 「录一笔」的结果：只回填编辑器，**不执行动作、不进执行记录**。
-#[derive(Clone, Serialize)]
-struct TrackpadRecordPayload {
-    /// 识别出的方向串；空 = 这一笔太短 / 涂鸦 / 已作废（Esc / 双指 / 停手太久）。
-    pattern: String,
-    /// 归一化形状模板（[`kada_core::template_from_points`]）；点太少时为 `None`。
-    template: Option<Vec<[i16; 2]>>,
-    /// 这一笔记了多少个点（界面据此提示采样密度）。
-    points: usize,
-    elapsed_ms: u64,
-}
 
 /// 手势浮层窗口名（`index.html#gesture`）。
 const GESTURE_WINDOW: &str = "gesture";
@@ -164,32 +140,6 @@ pub(crate) fn hide_gesture_overlay(app: &tauri::AppHandle) {
     }
 }
 
-/// 「录一笔」收尾：识别这一笔 → 收起浮层 → 推给设置页。**不执行动作、不弹未匹配提示**。
-///
-/// 走的是与正式手势同一套识别（`pattern_from_stroke` / `template_from_points`），
-/// 所以「录的时候是什么、跑的时候就是什么」——这也是录入界面唯一需要的保证。
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-fn emit_trackpad_record(
-    app: &tauri::AppHandle,
-    cfg: &Arc<RwLock<Config>>,
-    stroke: &kada_hook::gesture::Stroke,
-) {
-    let min_len = {
-        let g = cfg.read().unwrap();
-        // 与运行时（`handle_trackpad_stroke`）同一把尺子：触摸板用 `touchpad_start_distance`，
-        // 不是右键手势的 `gesture_start_distance`——否则「录出来的」和「跑出来的」会不一样。
-        g.settings.touchpad_start_distance as f64
-    };
-    let payload = TrackpadRecordPayload {
-        pattern: kada_core::pattern_from_stroke(&stroke.points, min_len),
-        template: kada_core::template_from_points(&stroke.points),
-        points: stroke.points.len(),
-        elapsed_ms: stroke.elapsed_ms,
-    };
-    hide_gesture_overlay(app);
-    let _ = app.emit("trackpad-recorded", payload);
-}
-
 /// 展示一次手势结果（命中 = 动作名；未命中 = 失败色）。窗口隐藏交给延时线程。
 fn show_gesture_result(
     app: &tauri::AppHandle,
@@ -247,10 +197,6 @@ fn show_gesture_result(
 ///
 /// 钩子回调里只记点，**不往这里推**（回调超会被系统摘钩子）；这里轮询快照，
 /// 只在点数变化时发事件（16ms 一帧，跟手不刷屏）。
-///
-/// **两条来源共用一个浮层**：右键手势（`kada_hook::gesture`）与触摸板手势
-/// （`kada_hook::trackpad`，按住触发键采集）。两者不会同时进行——前者要按住右键、
-/// 后者要按住触发键，所以按「先右键、后触摸板」取一个即可。
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
 fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
     std::thread::spawn(move || {
@@ -260,22 +206,14 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
         let mut last_len = usize::MAX;
         let mut preloaded = false;
         loop {
-            // 采集期间快轮询（跟手），空闲时慢轮询：触摸板手势也要算进来，
-            // 否则按住触发键画的时候只有 8 帧/秒，轨迹一顿一顿的。
-            let interval = if kada_hook::gesture::enabled() || kada_hook::trackpad::enabled() {
+            // 采集期间快轮询（跟手），空闲时慢轮询。
+            let interval = if kada_hook::gesture::enabled() {
                 16
             } else {
                 120
             };
             std::thread::sleep(Duration::from_millis(interval));
-            let (drawing, points, from_touchpad) = if kada_hook::gesture::drawing() {
-                (true, kada_hook::gesture::points(), false)
-            } else if kada_hook::trackpad::drawing() {
-                (true, kada_hook::trackpad::points(), true)
-            } else {
-                (false, Vec::new(), false)
-            };
-            if !drawing {
+            if !kada_hook::gesture::drawing() {
                 was_drawing = false;
                 shown = false;
                 suppressed = false;
@@ -285,12 +223,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !preloaded {
                     let on = {
                         let g = cfg.read().unwrap();
-                        (g.settings.experimental && gesture_capture_enabled(&g))
-                            || (g.settings.touchpad
-                                && g.settings.touchpad_overlay
-                                && touchpad_gesture_enabled(&g)
-                                && kada_hook::trackpad::supported())
-                            || trackpad_recording_key().is_some()
+                        g.settings.experimental && gesture_capture_enabled(&g)
                     };
                     if on {
                         preloaded = ensure_gesture_overlay(&app).is_some();
@@ -298,6 +231,7 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 }
                 continue;
             }
+            let points = kada_hook::gesture::points();
             if !was_drawing {
                 was_drawing = true;
                 shown = false;
@@ -310,43 +244,17 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
             if points.len() < 2 {
                 continue;
             }
-            let recording = trackpad_recording_key().is_some();
-            let (visual, start_distance, on, overlay, exclude, exclude_apps) = {
+            let (visual, start_distance, on, exclude, exclude_apps) = {
                 let g = cfg.read().unwrap();
                 (
                     gesture_visual_of(&g.settings),
-                    // 两条路的「够长才亮」各用自己那个值：右键手势是「起点之后开始画」，
-                    // 触摸板是「这一笔至少多长」。
-                    if from_touchpad {
-                        g.settings.touchpad_start_distance
-                    } else {
-                        g.settings.gesture_start_distance
-                    },
-                    (if from_touchpad {
-                        g.settings.touchpad
-                            && touchpad_gesture_enabled(&g)
-                            && kada_hook::trackpad::supported()
-                    } else {
-                        g.settings.experimental && gesture_capture_enabled(&g)
-                    }) || recording,
-                    // 浮层开关只影响触摸板这条来源（右键手势没有单独开关）。
-                    !from_touchpad || g.settings.touchpad_overlay,
-                    // 排除列表也按来源取：两条路各有自己的名单，别混用。
-                    if from_touchpad {
-                        g.settings.touchpad_exclude.clone()
-                    } else {
-                        g.settings.gesture_exclude.clone()
-                    },
+                    g.settings.gesture_start_distance,
+                    g.settings.experimental && gesture_capture_enabled(&g),
+                    g.settings.gesture_exclude.clone(),
                     g.settings.exclude_apps.clone(),
                 )
             };
             if !on {
-                suppressed = true;
-                continue;
-            }
-            // 关掉「显示轨迹浮层」就只做识别、不画预览；「录一笔」是设置页的录入工具，
-            // 要看见自己画的线，不受这枚开关管。
-            if !overlay && !recording {
                 suppressed = true;
                 continue;
             }
@@ -361,13 +269,11 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                     continue;
                 }
                 // 与 `handle_gesture` 同一口径：全屏 / 排除程序里不接管，也不画浮层。
-                // 「录一笔」例外：那是设置页里的录入工具，前台就是 Kada 自己，
-                // 命中排除列表也不该把预览藏掉。
-                if !recording && input::foreground_fullscreen() {
+                if input::foreground_fullscreen() {
                     suppressed = true;
                     continue;
                 }
-                if !recording && (!exclude.is_empty() || !exclude_apps.is_empty()) {
+                if !exclude.is_empty() || !exclude_apps.is_empty() {
                     let fetch = || input::frontmost_context();
                     let ctx = TriggerContext::lazy(&fetch, None);
                     if ctx.app_excluded(&exclude) || ctx.app_excluded(&exclude_apps) {
@@ -385,14 +291,11 @@ fn spawn_gesture_overlay(app: tauri::AppHandle, cfg: Arc<RwLock<Config>>) {
                 if !GESTURE_OVERLAY_READY.load(Ordering::Relaxed) {
                     wait_gesture_overlay_ready();
                 }
-                // 等前端就绪的这段时间里，这一笔可能已经结束（右键已抬起 / 触发键
-                // 已松开）：来源一换就别再往浮层上画了。
-                let still_drawing = if kada_hook::gesture::drawing() {
-                    true
-                } else {
-                    kada_hook::trackpad::drawing()
-                };
-                if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial || !still_drawing {
+                // 等前端就绪的这段时间里，这一笔可能已经结束（右键已抬起）：
+                // 就别再往浮层上画了。
+                if GESTURE_VISUAL_SERIAL.load(Ordering::Relaxed) != serial
+                    || !kada_hook::gesture::drawing()
+                {
                     continue;
                 }
             }
@@ -439,166 +342,6 @@ pub(crate) fn spawn_gesture_listener(
         std::thread::spawn(move || handle_gesture(app, cfg, results, unread, runs, stroke, device));
     })));
     spawn_gesture_overlay(overlay_app, overlay_cfg);
-}
-
-/// 触摸板手势（7.2-MG）：注册轨迹出口。与右键手势同一个口径——回调在钩子线程上跑，
-/// 这里只「拷贝数据 + 开线程」，识别与动作执行都在新线程里。
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-pub(crate) fn spawn_trackpad_listener(
-    app: tauri::AppHandle,
-    cfg: Arc<RwLock<Config>>,
-    results: Arc<Mutex<Vec<CommandResult>>>,
-    unread: Arc<AtomicBool>,
-    runs: Arc<Mutex<Vec<RunRecord>>>,
-) {
-    kada_hook::trackpad::set_sink(Some(Arc::new(move |key, stroke| {
-        let app = app.clone();
-        let cfg = cfg.clone();
-        // 这一笔是哪块触摸板 / 数位板画的（手势的 `when` 里「设备是」要用它）：与鼠标手势
-        // 同一口径，在回调线程上取一次带下去。
-        let device = input::current_pointer_device();
-        // 设置页的「录一笔」：只把识别结果推回界面，不执行任何动作（录制优先于正式匹配）。
-        if trackpad_recording_key().is_some() {
-            std::thread::spawn(move || emit_trackpad_record(&app, &cfg, &stroke));
-            return;
-        }
-        let results = results.clone();
-        let unread = unread.clone();
-        let runs = runs.clone();
-        std::thread::spawn(move || {
-            handle_trackpad_stroke(app, cfg, results, unread, runs, key, stroke, device)
-        });
-    })));
-}
-
-/// 一次触摸板手势的收尾：识别 → 命中就执行动作；**没命中什么都不用补**。
-///
-/// 与右键手势最大的不同：被吞掉的只有触发键本身（它只是「进入采集」的开关），
-/// 所以这里没有 `replay_right_click`（吞键铁律要求回放的是「本可以正常工作的输入」，
-/// 触发键不是）。
-#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
-#[allow(clippy::too_many_arguments)]
-fn handle_trackpad_stroke(
-    app: tauri::AppHandle,
-    cfg: Arc<RwLock<Config>>,
-    results: Arc<Mutex<Vec<CommandResult>>>,
-    unread: Arc<AtomicBool>,
-    runs: Arc<Mutex<Vec<RunRecord>>>,
-    trigger: Key,
-    stroke: kada_hook::gesture::Stroke,
-    device: Option<String>,
-) {
-    let (on, min_len, action_timeout, text_mode, exclude, exclude_apps, overlay) = {
-        let g = cfg.read().unwrap();
-        (
-            g.settings.touchpad && touchpad_gesture_enabled(&g),
-            g.settings.touchpad_start_distance as f64,
-            g.settings.action_timeout_ms,
-            g.settings.text_inject_mode,
-            g.settings.touchpad_exclude.clone(),
-            g.settings.exclude_apps.clone(),
-            g.settings.touchpad_overlay,
-        )
-    };
-    if !on {
-        hide_gesture_overlay(&app);
-        return;
-    }
-    // 让路：全屏程序、全局排除列表、手势排除列表。触发键已经被吞了（它没有输出），
-    // 所以这里只是「不执行」，不是「回放」。
-    if input::foreground_fullscreen() {
-        hide_gesture_overlay(&app);
-        return;
-    }
-    let fetch = || input::frontmost_context();
-    let ctx = TriggerContext::lazy(&fetch, device.as_deref());
-    if ctx.app_excluded(&exclude_apps) || ctx.app_excluded(&exclude) {
-        hide_gesture_overlay(&app);
-        return;
-    }
-    // 触摸板上画一笔本来就慢，`gesture_timeout_ms` 那套「画太久作废」不适用：
-    // 收尾时机是**松键**，不存在右键按住不放的副作用。
-    let pattern = kada_core::pattern_from_stroke(&stroke.points, min_len);
-    if pattern.is_empty() {
-        // 太短 / 涂鸦 / 作废（Esc、双指、停手太久）：不猜，并把轨迹浮层收起来
-        // （作废的那一笔靠这次回调收尾，否则浮层会一直挂着）。
-        hide_gesture_overlay(&app);
-        return;
-    }
-    let hit = {
-        let g = cfg.read().unwrap();
-        // 方向串是硬判据；**兜底模板只在没命中时用**（只加召回、不改判）。
-        kada_core::find_touchpad(&g, trigger, &pattern, &ctx)
-            .or_else(|| kada_core::find_touchpad_by_template(&g, &stroke.points, trigger, &ctx))
-            .map(|g| (g.label(), g.actions.clone()))
-    };
-    let Some((name, actions)) = hit else {
-        // 轨迹 + 失败色 + 方向串留在浮层上（约 900ms 自动收），另弹气泡说明怎么用。
-        // 关掉「显示轨迹浮层」时只剩气泡（方向串照样报出来）。
-        if overlay {
-            show_gesture_result(
-                &app,
-                &cfg,
-                &stroke.points,
-                false,
-                String::new(),
-                pattern.clone(),
-            );
-        } else {
-            hide_gesture_overlay(&app);
-        }
-        show_toast_note(
-            &app,
-            &format!("触摸板手势未匹配：{pattern}"),
-            "把这个方向串填进那条手势的「方向串」就能用了。",
-        );
-        return;
-    };
-    if actions.is_empty() {
-        if overlay {
-            show_gesture_result(
-                &app,
-                &cfg,
-                &stroke.points,
-                false,
-                name.clone(),
-                pattern.clone(),
-            );
-        } else {
-            hide_gesture_overlay(&app);
-        }
-        show_toast_note(
-            &app,
-            &format!("触摸板手势 {pattern} 没有动作"),
-            "给这条手势配上动作才会执行。",
-        );
-        return;
-    }
-    if overlay {
-        show_gesture_result(
-            &app,
-            &cfg,
-            &stroke.points,
-            true,
-            name.clone(),
-            pattern.clone(),
-        );
-    } else {
-        hide_gesture_overlay(&app);
-    }
-    fire(
-        app,
-        results,
-        unread,
-        runs,
-        actions,
-        format!("手势 {pattern}"),
-        name,
-        action_timeout,
-        text_mode,
-        device,
-        stroke.points.first().copied(),
-    );
 }
 
 /// 一次手势的收尾：识别 → 命中就执行动作；**没命中（或压根没画出轨迹）就把右键补回来**。

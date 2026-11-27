@@ -21,7 +21,6 @@ import type {
   Remap,
   ShortcutItem,
   TextExpansion,
-  TouchpadGesture,
   WheelEdgeRule,
 } from "./types";
 
@@ -118,7 +117,6 @@ type SnippetFetch = {
     remaps: Remap[];
     expansions: TextExpansion[];
     gestures?: Gesture[];
-    touchpad_gestures?: TouchpadGesture[];
     hot_corners?: HotCornerRule[];
     wheel_edges?: WheelEdgeRule[];
   };
@@ -362,7 +360,6 @@ async function previewSnippet(e: IndexEntry) {
       p.remaps.length +
       p.expansions.length +
       (p.gestures?.length ?? 0) +
-      (p.touchpad_gestures?.length ?? 0) +
       (p.hot_corners?.length ?? 0) +
       (p.wheel_edges?.length ?? 0);
     const level = riskLevel(r.scan.level);
@@ -389,16 +386,6 @@ async function previewSnippet(e: IndexEntry) {
           "li",
           undefined,
           trt`鼠标操作 ${g.pattern}${g.name ? ` · ${g.name}` : ""} → ${g.actions
-            .map(actionSummary)
-            .join(" → ")}`,
-        ),
-      );
-    for (const g of p.touchpad_gestures ?? [])
-      lines.push(
-        el(
-          "li",
-          undefined,
-          trt`触摸板手势 ${g.trigger ?? ""}·${g.pattern}${g.name ? ` · ${g.name}` : ""} → ${g.actions
             .map(actionSummary)
             .join(" → ")}`,
         ),
@@ -486,7 +473,6 @@ const PUBLISH_KINDS: ListKind[] = [
   "remap",
   "expansion",
   "gesture",
-  "touchpad",
   "hotcorner",
   "wheeledge",
 ];

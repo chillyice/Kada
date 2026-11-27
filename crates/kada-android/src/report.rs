@@ -28,7 +28,6 @@ fn android_caps() -> PlatformCaps {
         shell_actions: false,
         hot_corners: false,
         wheel_edges: false,
-        touchpad_gestures: false,
         brightness: false,
         // 语义动作是安卓的强项：无障碍的 ACTION_* / GLOBAL_ACTION_* 就在这台上。
         semantic_actions: true,
@@ -115,7 +114,6 @@ pub(crate) fn config_report(
             "layers": cfg.layers.len(),
             "expansions": cfg.expansions.len(),
             "gestures": cfg.gestures.len(),
-            "touchpad_gestures": cfg.touchpad_gestures.len(),
             "hot_corners": cfg.hot_corners.len(),
             "wheel_edges": cfg.wheel_edges.len(),
         },
@@ -130,7 +128,6 @@ pub(crate) fn config_report(
             "layer_shortcuts": layered_shortcuts,
             "expansions": cfg.expansions.len(),
             "gestures": cfg.gestures.len(),
-            "touchpad_gestures": cfg.touchpad_gestures.len(),
             "hot_corners": cfg.hot_corners.len(),
             "wheel_edges": cfg.wheel_edges.len(),
         },

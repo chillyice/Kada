@@ -255,7 +255,6 @@ pub(crate) fn bundled_examples() -> Result<Config, String> {
         cfg.remaps.extend(part.remaps);
         cfg.expansions.extend(part.expansions);
         cfg.gestures.extend(part.gestures);
-        cfg.touchpad_gestures.extend(part.touchpad_gestures);
     }
     Ok(cfg)
 }
@@ -285,11 +284,7 @@ pub(crate) fn export_fragment(
     picks: Vec<SnippetPick>,
 ) -> Result<usize, String> {
     let part = snippet(&state.config.read().unwrap(), &picks);
-    let n = part.shortcuts.len()
-        + part.remaps.len()
-        + part.expansions.len()
-        + part.gestures.len()
-        + part.touchpad_gestures.len();
+    let n = part.shortcuts.len() + part.remaps.len() + part.expansions.len() + part.gestures.len();
     if n == 0 {
         return Err("没有可导出的条目".into());
     }
@@ -395,7 +390,6 @@ pub(crate) struct SnippetPreview {
     pub(crate) remaps: Vec<Remap>,
     pub(crate) expansions: Vec<TextExpansion>,
     pub(crate) gestures: Vec<kada_core::Gesture>,
-    pub(crate) touchpad_gestures: Vec<kada_core::TouchpadGesture>,
     pub(crate) hot_corners: Vec<kada_core::HotCornerRule>,
     pub(crate) wheel_edges: Vec<kada_core::WheelEdgeRule>,
 }
@@ -413,7 +407,6 @@ pub(crate) async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
         && part.remaps.is_empty()
         && part.expansions.is_empty()
         && part.gestures.is_empty()
-        && part.touchpad_gestures.is_empty()
         && part.hot_corners.is_empty()
         && part.wheel_edges.is_empty()
     {
@@ -428,7 +421,6 @@ pub(crate) async fn fetch_snippet(url: String) -> Result<SnippetFetch, String> {
             remaps: part.remaps,
             expansions: part.expansions,
             gestures: part.gestures,
-            touchpad_gestures: part.touchpad_gestures,
             hot_corners: part.hot_corners,
             wheel_edges: part.wheel_edges,
         },

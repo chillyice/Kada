@@ -141,42 +141,20 @@ impl Config {
                 .map(migrate_action)
                 .collect();
         }
-        // 触摸板手势原本是 `gestures[]` 里带 `trigger` 的那些：搬到独立的
-        // `touchpad_gestures`，并清掉 `Gesture` 上的兼容字段（幂等）。搬过去之后右键手势
-        // 那一路不再有「来源」概念——识别 / 列表 / 卡带 / 合并都按数组分开。
+        // 触摸板手势已从产品中移除：老配置里混在 `gestures[]`、带 `trigger` 的条目
+        // **整条丢弃**（幂等）。不能留在右键手势里——那会让原本的触摸板笔迹变成
+        // 「右键画这个方向串就触发」，行为完全不同。模板同理，右键手势没有形状概念。
         let mut kept_gestures = Vec::with_capacity(self.gestures.len());
         for mut g in std::mem::take(&mut self.gestures) {
             g.actions = std::mem::take(&mut g.actions)
                 .into_iter()
                 .map(migrate_action)
                 .collect();
-            let Some(trigger) = g.trigger.take() else {
-                // 右键手势没有模板概念：老配置里混进来的模板直接丢掉（搬不走 = 用不上）。
-                g.template = None;
+            if g.trigger.take().is_none() {
                 kept_gestures.push(g);
-                continue;
-            };
-            self.touchpad_gestures.push(TouchpadGesture {
-                name: g.name,
-                description: g.description,
-                trigger: Some(trigger),
-                pattern: g.pattern,
-                template: g.template.take(),
-                folder: g.folder,
-                order: g.order,
-                actions: g.actions,
-                #[cfg(feature = "automation")]
-                when: g.when,
-                enabled: g.enabled,
-            });
+            }
         }
         self.gestures = kept_gestures;
-        for g in &mut self.touchpad_gestures {
-            g.actions = std::mem::take(&mut g.actions)
-                .into_iter()
-                .map(migrate_action)
-                .collect();
-        }
         for r in &mut self.hot_corners {
             r.actions = std::mem::take(&mut r.actions)
                 .into_iter()

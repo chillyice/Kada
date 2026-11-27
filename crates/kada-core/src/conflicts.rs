@@ -63,9 +63,6 @@ pub struct PlatformCaps {
     pub hot_corners: bool,
     /// 边缘滚动（[`WheelEdges`]）是否可用。目前只有 Windows 接了鼠标钩子。
     pub wheel_edges: bool,
-    /// 触摸板手势（`TouchpadGesture`）是否可用。采集靠「系统合成的鼠标移动」，
-    /// 目前只有 Windows 接了鼠标钩子；其它平台触发键照常输出、但不触发动作。
-    pub touchpad_gestures: bool,
     /// 显示器亮度（[`Action::Brightness`]）是否可用。目前只有 Windows 走 DDC/CI。
     pub brightness: bool,
     /// 语义动作（[`Action::Semantic`]）是否可用。只有安卓壳（无障碍 `ACTION_*` /
@@ -88,7 +85,6 @@ impl Default for PlatformCaps {
             shell_actions: true,
             hot_corners: true,
             wheel_edges: true,
-            touchpad_gestures: true,
             brightness: true,
             semantic_actions: true,
         }
@@ -109,7 +105,6 @@ impl PlatformCaps {
             && self.shell_actions
             && self.hot_corners
             && self.wheel_edges
-            && self.touchpad_gestures
             && self.brightness
             && self.semantic_actions
     }
@@ -515,10 +510,10 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     //    本身合法，只报 Warn 提示「在你这台机器上不会生效」。
     out.extend(platform_conflicts(cfg, caps));
 
-    // 7) 鼠标手势 / 触摸板手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串、
-    //    `when` 也相同 → 谁先谁后取决于配置顺序，用户会以为「我画了却触发了别的」。只报
+    // 7) 鼠标手势（规划 7.2-MG）：两条启用的手势归一化后是同一个方向串、`when`
+    //    也相同 → 谁先谁后取决于配置顺序，用户会以为「我画了却触发了别的」。只报
     //    Warn（不拦保存）：重复方向串可能是有意为之（同名不同动作），但多数是手滑复制。
-    //    不同 `when` 是按条件分流（同快捷键规则）；触摸板手势还要**触发键相同**才算重复。
+    //    不同 `when` 是按条件分流（同快捷键规则）。
     let mut seen: Vec<(String, WhenKey, String)> = Vec::new();
     for g in cfg.gestures.iter().filter(|g| g.enabled) {
         let pattern = normalize_pattern(&g.pattern);
@@ -541,52 +536,8 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             None => seen.push((pattern, g.when_key(), label)),
         }
     }
-    let mut seen_pad: Vec<(Key, String, WhenKey, String)> = Vec::new();
-    for g in cfg.touchpad_gestures.iter().filter(|g| g.enabled) {
-        let Some(trigger) = g.trigger else { continue };
-        let pattern = normalize_pattern(&g.pattern);
-        if pattern.is_empty() {
-            continue;
-        }
-        let label = g.label();
-        match seen_pad
-            .iter()
-            .find(|(k, p, w, _)| *k == trigger && *p == pattern && *w == g.when_key())
-        {
-            Some((_, _, _, first)) => out.push(Conflict {
-                severity: Severity::Warn,
-                platform: false,
-                message: format!(
-                    "触摸板手势「{label}」与「{first}」都绑在「{}」上画「{pattern}」：只会触发先配置的那条",
-                    key_name(trigger)
-                ),
-                name: label,
-            }),
-            None => seen_pad.push((trigger, pattern, g.when_key(), label)),
-        }
-    }
 
-    // 8) 触摸板手势的触发键同时用在快捷键 / 改键的触发侧：按住它会被手势**吞掉**，
-    //    那条快捷键 / 改键永远等不到按下。只报 Warn（配置合法，只是不会按用户预期工作）。
-    let mut reported: Vec<Key> = Vec::new();
-    for g in cfg.touchpad_gestures.iter().filter(|g| g.enabled) {
-        let Some(k) = g.trigger else { continue };
-        if reported.contains(&k) || !uses_key_as_trigger(cfg, |x| x == k) {
-            continue;
-        }
-        reported.push(k);
-        out.push(Conflict {
-            severity: Severity::Warn,
-            platform: false,
-            message: format!(
-                "「{}」既被触摸板手势当触发键、又出现在快捷键 / 改键的触发侧：按住它会被手势吞掉，那条快捷键不会触发",
-                key_name(k)
-            ),
-            name: format!("触摸板手势（{}）", key_name(k)),
-        });
-    }
-
-    // 9) 画符号（安卓 P2b）：绑定指向不存在 / 已停用的快捷键。手机上画出来只会提示
+    // 8) 画符号（安卓 P2b）：绑定指向不存在 / 已停用的快捷键。手机上画出来只会提示
     //    「已失效」、不执行任何动作——配置本身合法，故只报 Warn（桌面上也照报：
     //    这条多半是「桌面改了条目名 / 删了条目」，同步回去之后手机上就哑了）。
     if let Some(draw) = &cfg.draw {
@@ -626,19 +577,12 @@ pub fn detect_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     out
 }
 
-/// 手势 / 触摸板手势的动作列表（平台能力扫描共用一份口径）：两个数组都要扫，
-/// 否则同一套动作在「鼠标操作」里报了缺口、在「触摸板手势」里却静默。
+/// 手势的动作列表（平台能力扫描共用一份口径）。
 fn gesture_action_sets(cfg: &Config) -> impl Iterator<Item = (&[Action], String)> {
     cfg.gestures
         .iter()
         .filter(|g| g.enabled)
         .map(|g| (g.actions.as_slice(), g.label()))
-        .chain(
-            cfg.touchpad_gestures
-                .iter()
-                .filter(|g| g.enabled)
-                .map(|g| (g.actions.as_slice(), g.label())),
-        )
 }
 
 /// 平台能力缺失扫描（[`detect_conflicts`] 的第 6 段）。全支持（[`PlatformCaps::is_full`]）
@@ -810,7 +754,6 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
     }
 
     // 手势的动作同样要标平台缺口（手势与快捷键共用一套动作编辑，别在两处给出不同口径）。
-    // 鼠标手势与触摸板手势是两个数组，扫描口径共用 `gesture_action_sets`。
     #[cfg(feature = "automation")]
     if !caps.window_actions {
         for (actions, label) in gesture_action_sets(cfg) {
@@ -922,18 +865,6 @@ fn platform_conflicts(cfg: &Config, caps: &PlatformCaps) -> Vec<Conflict> {
             severity: Severity::Warn,
             platform: true,
             message: "边缘滚动在当前平台用不了（只有 Windows 接了鼠标钩子），配置保留但不会触发"
-                .into(),
-            name: String::new(),
-        });
-    }
-
-    // 触摸板手势：采集要能收到「系统合成的鼠标移动」，目前只有 Windows 接了鼠标钩子。
-    // 其它平台上触发键照常输出（不静默吞），但画一笔不会触发——按平台能力缺失给 Warn。
-    if !caps.touchpad_gestures && cfg.touchpad_gestures.iter().any(|g| g.enabled) {
-        out.push(Conflict {
-            severity: Severity::Warn,
-            platform: true,
-            message: "触摸板手势在当前平台用不了（目前只接了 Windows 采集），配置保留但不会触发"
                 .into(),
             name: String::new(),
         });
@@ -1153,8 +1084,8 @@ fn uses_key_as_trigger(cfg: &Config, hit: impl Fn(Key) -> bool) -> bool {
     })
 }
 
-/// **要不要挂鼠标钩子**：配置用到鼠标键（[`config_uses_mouse`]）**或**有启用的鼠标手势
-/// / 触摸板手势（规划 7.2-MG）时都要。
+/// **要不要挂鼠标钩子**：配置用到鼠标键（[`config_uses_mouse`]）**或**有启用的鼠标手势 /
+/// 触发角 / 边缘滚动（规划 7.2-MG）时都要。
 ///
 /// 与 [`config_uses_mouse`] 分开是刻意的：后者还兼着「输入层环境诊断要不要跑」的判断，
 /// 而厂商接管（Logi Options+ 等）拿的是**侧键**、与右键手势无关——把手势混进去会让
@@ -1165,7 +1096,6 @@ pub fn config_needs_mouse_hook(cfg: &Config) -> bool {
             && (gesture_capture_enabled(cfg)
                 || cfg.hot_corners.iter().any(|r| r.enabled)
                 || cfg.wheel_edges.iter().any(|r| r.enabled)))
-        || (cfg.settings.touchpad && touchpad_gesture_enabled(cfg))
 }
 
 /// 输入层环境诊断：把本机探测结果转成与「平台能力缺失」同一口径的软冲突

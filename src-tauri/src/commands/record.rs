@@ -1,5 +1,5 @@
-// 录制 / 暂停 / 手动执行命令（T-04 从 lib.rs 搬出）：录入暂停租约、中止、单条执行、宏与鼠标 /
-// 触摸板录制。会话状态留在 lib.rs（定时器线程也要读），这里只做命令入口（见 说明书 §5.1 / §5.2）。
+// 录制 / 暂停 / 手动执行命令（T-04 从 lib.rs 搬出）：录入暂停租约、中止、单条执行、宏与鼠标
+// 录制。会话状态留在 lib.rs（定时器线程也要读），这里只做命令入口（见 说明书 §5.1 / §5.2）。
 
 use crate::*;
 
@@ -134,33 +134,4 @@ pub(crate) fn stop_mouse_record(state: tauri::State<'_, KadaState>) -> Result<Ve
     };
     set_pause_lease(&state.paused_until, false);
     Ok(rec.into_actions())
-}
-
-/// 设置页「从触摸板录一笔」：开一个**只回填配置、不执行动作**的采集会话。
-///
-/// 与宏录制不同，这里**不能**暂停快捷键：采集本身就是靠钩子接住触发键的。
-/// 录制期间 `TRACKPAD_RECORD` 同时充当闸门覆盖（见定时器线程里的 `trackpad_on`）。
-#[tauri::command]
-pub(crate) fn start_trackpad_record(key: String) -> Result<(), String> {
-    let k: Key = key.parse().map_err(|_| format!("无法识别的键名：{key}"))?;
-    if k.is_mouse() {
-        return Err("触发键只能是键盘键：鼠标键已经是右键手势那条路了".into());
-    }
-    if !kada_hook::trackpad::supported() {
-        return Err("当前平台还不支持采集触摸板手势（目前只接了 Windows）".into());
-    }
-    *TRACKPAD_RECORD.lock().unwrap() = Some(k);
-    // 立刻开闸，不等定时器那一拍；下一拍也会按「录制中」把闸门维持住。
-    kada_hook::trackpad::set_enabled(true);
-    // 鼠标钩子同样要立刻挂上：新建第一条时配置里还没有启用的触摸板手势，
-    // 不临时挂钩子就收不到触摸板合成的鼠标移动（见定时器里的 `use_mouse`）。
-    input::set_mouse_enabled(true);
-    Ok(())
-}
-
-/// 结束「从触摸板录一笔」会话：清掉会话并复位采集状态（闸门由定时器按配置收回）。
-#[tauri::command]
-pub(crate) fn stop_trackpad_record() {
-    *TRACKPAD_RECORD.lock().unwrap() = None;
-    kada_hook::trackpad::reset();
 }
