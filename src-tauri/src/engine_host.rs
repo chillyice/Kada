@@ -733,6 +733,8 @@ pub(crate) fn injects_keys(actions: &[Action]) -> bool {
         // 算法动作只有勾了「直接注入结果」才走 SendInput；写变量那条不注入。
         Action::Transform { inject, .. } => *inject,
         Action::Group { actions, .. } => injects_keys(actions),
+        // 轮巡每次只挑一个成员上场，但成员里可能有注入类动作，静态按全组成员算。
+        Action::Cycle { actions, .. } => injects_keys(actions),
         // 切换虚拟桌面也是注入（`Win+Ctrl+←` 这类）：触发它的修饰键还按着的话，注入的组合键
         // 会被污染成 `Ctrl+Alt+Win+Ctrl+←`——切桌面就成了别的东西。
         #[cfg(feature = "automation")]

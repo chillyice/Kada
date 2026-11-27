@@ -113,6 +113,8 @@ export function normalizeCommandScriptFields(actions: Action[]): Action[] {
         };
       case "group":
         return { ...a, actions: normalizeCommandScriptFields(a.actions) };
+      case "cycle":
+        return { ...a, actions: normalizeCommandScriptFields(a.actions) };
       case "parallel":
         return { ...a, actions: normalizeCommandScriptFields(a.actions) };
       case "if":

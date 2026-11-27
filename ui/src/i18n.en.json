@@ -1126,5 +1126,10 @@
   "锁屏": "Lock screen",
   "截图": "Screenshot",
   "语义动作：{0}（仅安卓）": "Semantic action: {0} (Android only)",
-  "安卓无障碍的语义动作（复制 / 返回 / 通知栏…）：只在安卓版生效，桌面上执行会明确报错并在冲突里标出。需要光标在输入框里的：复制 / 剪切 / 粘贴 / 全选 / 提交输入；翻页需要可滚动区域。": "Android accessibility actions (copy / back / notifications…): they only work in the Android build. On desktop the step fails with an explicit error and is flagged in conflicts. Copy / cut / paste / select all / submit need the cursor in an input box; scrolling needs a scrollable area."
+  "安卓无障碍的语义动作（复制 / 返回 / 通知栏…）：只在安卓版生效，桌面上执行会明确报错并在冲突里标出。需要光标在输入框里的：复制 / 剪切 / 粘贴 / 全选 / 提交输入；翻页需要可滚动区域。": "Android accessibility actions (copy / back / notifications…): they only work in the Android build. On desktop the step fails with an explicit error and is flagged in conflicts. Copy / cut / paste / select all / submit need the cursor in an input box; scrolling needs a scrollable area.",
+  "＋ 添加轮巡": "+ Add round-robin",
+  "轮巡": "Round-robin",
+  "轮巡执行": "Round-robin",
+  "轮巡执行（{0} 个动作，每次触发执行一个）": "Round-robin ({0} actions, one per trigger)",
+  "🔁 轮巡执行（每次触发执行一个，依次轮换）": "🔁 Round-robin (one action per trigger, rotating in order)"
 }

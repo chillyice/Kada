@@ -371,6 +371,7 @@ fn action_kind(action: &Action) -> &'static str {
         Action::Clipboard { .. } => "clipboard",
         Action::Transform { .. } => "transform",
         Action::Group { .. } => "group",
+        Action::Cycle { .. } => "cycle",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "command",
         #[cfg(feature = "automation")]
@@ -521,12 +522,67 @@ fn has_key_lifecycle(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => has_key_lifecycle(actions),
+        Action::Cycle { actions, .. } => has_key_lifecycle(actions),
         Action::If {
             then, otherwise, ..
         } => has_key_lifecycle(then) || has_key_lifecycle(otherwise),
         Action::Parallel { actions, .. } => has_key_lifecycle(actions),
         _ => false,
     })
+}
+
+/// 轮巡动作的「下次该轮到谁」：进程内存表，键 = 触发身份（名称优先）+ 动作内容指纹。
+///
+/// 只记在本进程里（重启归零）：轮巡位置是「按到第几下」这种会话状态，落盘反而会让用户
+/// 改完配置、重开应用后从中间开始；动作内容改了指纹就变，等于按新动作重新计数。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+static CYCLE_POS: Mutex<Vec<(String, usize)>> = Mutex::new(Vec::new());
+
+/// 轮巡记账键（触发名优先，没有名称时用触发键；同一动作挂在不同快捷键下互不影响）。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn cycle_key(action: &Action, ctx: &Ctx) -> String {
+    let trigger = if ctx.t.name.trim().is_empty() {
+        ctx.t.trigger
+    } else {
+        ctx.t.name
+    };
+    let fingerprint = serde_json::to_string(action).unwrap_or_default();
+    format!("{trigger}\u{0}{fingerprint}")
+}
+
+/// 挑出本次轮到的成员：返回（成员在组里的真实下标、序号、有效成员总数）。
+///
+/// 被禁用的成员视为不存在（跳过它继续轮——「关掉开关 = 它不存在」）；空组 / 全被禁用
+/// 返回 `None`，这一下什么都不做。
+#[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
+fn cycle_advance(action: &Action, ctx: &Ctx, members: &[Action]) -> Option<(usize, usize, usize)> {
+    let enabled: Vec<usize> = members
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| !matches!(m, Action::Disabled { .. }))
+        .map(|(i, _)| i)
+        .collect();
+    let total = enabled.len();
+    if total == 0 {
+        return None;
+    }
+    let key = cycle_key(action, ctx);
+    let mut list = CYCLE_POS.lock().unwrap_or_else(|e| e.into_inner());
+    // 配置反复改会攒下旧指纹：轮巡位置丢了无所谓，截住无界增长。
+    if list.len() >= 256 {
+        list.clear();
+    }
+    let idx = match list.iter().position(|(k, _)| *k == key) {
+        Some(i) => i,
+        None => {
+            list.push((key, 0));
+            list.len() - 1
+        }
+    };
+    let pos = &mut list[idx].1;
+    let nth = *pos % total;
+    *pos = (nth + 1) % total;
+    Some((enabled[nth], nth, total))
 }
 
 /// 动作链的实际执行（`If` 分支递归时复用同一 [`Ctx`]：超时与中止代数整链共享）。
@@ -567,6 +623,18 @@ fn run_chain(
         if let Action::If { condition, .. } = action {
             step.branch = Some(condition.matches(vars, ctx.t.frontmost, ctx.t.device));
         }
+        // 轮巡：本次只有轮到的那个成员上场（其余留到后续触发）。先把「第几个 / 共几个」
+        // 写进标题，界面在执行中就能看出这一下轮到谁。
+        let mut cycle_pick: Option<(usize, usize, usize)> = None;
+        if let Action::Cycle {
+            actions: members, ..
+        } = action
+        {
+            cycle_pick = cycle_advance(action, ctx, members);
+            if let Some((_, nth, total)) = cycle_pick {
+                step.title = format!("{}（第 {}/{} 个）", step.title, nth + 1, total);
+            }
+        }
         // 先报一条「执行中」（CS-07）：长命令跑着的时候界面立刻能看到现在跑到哪；
         // 执行结束后用同一个 id 再报最终状态，壳层按 id upsert 覆盖。
         // （并形成员的记录在 `run_parallel` 里是本地收集、组汇合后才提交，成员的 running
@@ -578,6 +646,43 @@ fn run_chain(
         {
             let id = step.id;
             run_chain(rep, members, ctx, vars, last_copied, scope, Some(id), 0);
+            step.status = if abort::aborted(ctx.gen) {
+                "abort".into()
+            } else {
+                "ok".into()
+            };
+            step.end_ms = ctx.elapsed_ms();
+            rep.on_step(step);
+            // 成员链已因中止收尾并记过一条结果，别在外层再记一遍。
+            if abort::aborted(ctx.gen) {
+                release_scope(scope);
+                return;
+            }
+            continue;
+        }
+        if let Action::Cycle {
+            actions: members, ..
+        } = action
+        {
+            let id = step.id;
+            if let Some((idx, _, _)) = cycle_pick {
+                // 轮到的那个成员按一条子链执行（成员里的分组 / 条件判断 / 并行照常）。
+                if let Some(member) = members.get(idx) {
+                    run_chain(
+                        rep,
+                        std::slice::from_ref(member),
+                        ctx,
+                        vars,
+                        last_copied,
+                        scope,
+                        Some(id),
+                        0,
+                    );
+                }
+            } else {
+                step.stdout =
+                    "轮巡组里没有可执行的成员（空组或全部被禁用），本次没有执行任何动作。".into();
+            }
             step.status = if abort::aborted(ctx.gen) {
                 "abort".into()
             } else {
@@ -932,6 +1037,7 @@ fn action_label(action: &Action) -> &'static str {
         #[cfg(feature = "automation")]
         Action::Ask { .. } => "设置变量失败",
         Action::Group { .. } => "分组执行失败",
+        Action::Cycle { .. } => "轮巡执行失败",
         #[cfg(feature = "automation")]
         Action::Command { .. } | Action::Cmd { .. } | Action::Powershell { .. } => "命令失败",
         #[cfg(feature = "automation")]
@@ -1165,6 +1271,15 @@ fn action_body(action: &Action, vars: &Vars) -> String {
             ..
         } => transform_body(*operation, input, var, *inject, vars),
         Action::Group { actions, .. } => format!("分组 {} 个动作", actions.len()),
+        // 轮巡按「可执行成员」计数：被禁用的成员视同不存在（不参与轮换），
+        // 否则摘要里的「N 个」与标题里的「第 n/N 个」对不上。
+        Action::Cycle { actions, .. } => format!(
+            "轮巡 {} 个动作",
+            actions
+                .iter()
+                .filter(|a| !matches!(a, Action::Disabled { .. }))
+                .count()
+        ),
         // 禁用的动作执行不到（`run_chain` 直接跳过），摘要只给预览 / 老记录用。
         Action::Disabled { action } => format!("已禁用：{}", action_body(action, vars)),
         #[cfg(feature = "automation")]
@@ -1586,7 +1701,8 @@ fn action_description(action: &Action) -> Option<&str> {
         | Action::PauseMs { description, .. }
         | Action::Mouse { description, .. }
         | Action::Clipboard { description, .. }
-        | Action::Transform { description, .. } => description.as_deref(),
+        | Action::Transform { description, .. }
+        | Action::Cycle { description, .. } => description.as_deref(),
         #[cfg(feature = "automation")]
         Action::Ask { description, .. } => description.as_deref(),
         // 禁用的动作沿用被包住那条的说明。
@@ -1661,6 +1777,10 @@ fn run_action(
         Action::Group { .. } => {
             // 分组动作由 run_chain 递归处理（成员按顺序执行），不会到达这里。
             return Err("内部错误：分组动作应在运行器内处理".into());
+        }
+        Action::Cycle { .. } => {
+            // 轮巡动作由 run_chain 拦截处理（本次只挑一个成员），不会到达这里。
+            return Err("内部错误：轮巡动作应在运行器内处理".into());
         }
         // 禁用的动作在 run_chain 里就被跳过了，不会到达这里。
         Action::Disabled { .. } => return Ok(None),
@@ -4766,6 +4886,132 @@ mod tests {
         for s in &steps {
             assert_eq!(s.status, "ok", "{s:?}");
         }
+    }
+
+    /// 轮巡：每次触发只执行**一个**成员，按顺序轮换，到末尾回到第一个。
+    #[test]
+    fn cycle_runs_one_member_per_trigger_and_wraps() {
+        let _g = abort::test_lock();
+        let cycle = Action::Cycle {
+            actions: [1u64, 2, 3]
+                .iter()
+                .map(|ms| Action::PauseMs {
+                    ms: *ms,
+                    description: None,
+                })
+                .collect(),
+            description: None,
+        };
+        let mut seen: Vec<String> = Vec::new();
+        for round in 0..4 {
+            let (_, raw_steps, status) =
+                run_all(std::slice::from_ref(&cycle), &RunOptions::default());
+            assert_eq!(status, RunStatus::Finished);
+            let steps = dedupe_steps(raw_steps);
+            // 轮巡本身一条 + 轮到的那**一个**成员一条：其余成员不执行、也不留记录。
+            assert_eq!(steps.len(), 2, "第 {round} 次触发：{steps:?}");
+            let head = steps
+                .iter()
+                .find(|s| s.kind == "cycle")
+                .expect("轮巡容器要有记录");
+            assert_eq!(
+                head.title,
+                format!("轮巡 3 个动作（第 {}/3 个）", round % 3 + 1)
+            );
+            let child = steps
+                .iter()
+                .find(|s| s.parent == Some(head.id))
+                .expect("轮到的成员挂在轮巡这一步下面");
+            assert_eq!(child.lane, 0);
+            seen.push(child.title.clone());
+        }
+        // 1 → 2 → 3 → 回到 1。
+        assert_eq!(
+            seen,
+            vec!["暂停 1 毫秒", "暂停 2 毫秒", "暂停 3 毫秒", "暂停 1 毫秒"],
+            "{seen:?}"
+        );
+    }
+
+    /// 轮巡里被禁用的成员视同不存在（跳过它继续轮），不是「轮到它时什么也不做」。
+    #[test]
+    fn cycle_skips_disabled_members() {
+        let _g = abort::test_lock();
+        let cycle = Action::Cycle {
+            actions: vec![
+                Action::PauseMs {
+                    ms: 11,
+                    description: None,
+                },
+                Action::Disabled {
+                    action: Box::new(Action::PauseMs {
+                        ms: 12,
+                        description: None,
+                    }),
+                },
+                Action::PauseMs {
+                    ms: 13,
+                    description: None,
+                },
+            ],
+            description: None,
+        };
+        let mut seen: Vec<String> = Vec::new();
+        for _ in 0..4 {
+            let (_, raw_steps, _) = run_all(std::slice::from_ref(&cycle), &RunOptions::default());
+            let steps = dedupe_steps(raw_steps);
+            let head = steps
+                .iter()
+                .find(|s| s.kind == "cycle")
+                .expect("轮巡容器要有记录");
+            // 总数按「可执行成员」算：3 个里 1 个禁用 → 共 2 个。
+            assert!(
+                head.title.starts_with("轮巡 2 个动作（第 "),
+                "{:?}",
+                head.title
+            );
+            let child = steps
+                .iter()
+                .find(|s| s.parent == Some(head.id))
+                .expect("轮到的成员挂在轮巡这一步下面");
+            assert_ne!(child.title, "暂停 12 毫秒", "禁用的成员不该被轮到");
+            seen.push(child.title.clone());
+        }
+        assert_eq!(
+            seen,
+            vec![
+                "暂停 11 毫秒",
+                "暂停 13 毫秒",
+                "暂停 11 毫秒",
+                "暂停 13 毫秒"
+            ],
+            "{seen:?}"
+        );
+    }
+
+    /// 空轮巡 / 全部被禁用：不执行任何动作，但这一步要说明「为什么没反应」，不能静默成功。
+    #[test]
+    fn empty_cycle_reports_a_note_instead_of_silence() {
+        let _g = abort::test_lock();
+        let cycle = Action::Cycle {
+            actions: vec![Action::Disabled {
+                action: Box::new(Action::PauseMs {
+                    ms: 21,
+                    description: None,
+                }),
+            }],
+            description: Some("轮巡空组".into()),
+        };
+        let (_, raw_steps, status) = run_all(std::slice::from_ref(&cycle), &RunOptions::default());
+        assert_eq!(status, RunStatus::Finished);
+        let steps = dedupe_steps(raw_steps);
+        assert_eq!(steps.len(), 1, "只该有轮巡这一步：{steps:?}");
+        assert_eq!(steps[0].status, "ok");
+        assert!(
+            steps[0].stdout.contains("没有可执行的成员"),
+            "{:?}",
+            steps[0].stdout
+        );
     }
 
     /// 动作开始即上报 `running`（CS-07）：同一个 id 报两次，先 running 后最终态；

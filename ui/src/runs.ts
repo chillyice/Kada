@@ -265,7 +265,9 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
                 ? trt`并行 ${i + 1}`
                 : step.kind === "group"
                   ? tr("分组")
-                  : "",
+                  : step.kind === "cycle"
+                    ? tr("轮巡")
+                    : "",
           ),
         );
         lane.append(build(c));

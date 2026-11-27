@@ -172,6 +172,8 @@ function expandAllActions(actions: Action[]) {
       expandAllActions(act.otherwise);
     } else if (act.type === "parallel") {
       expandAllActions(act.actions);
+    } else if (act.type === "cycle") {
+      expandAllActions(act.actions);
     } else if (act.type === "group") {
       expandAllActions(act.actions);
     }

@@ -1260,6 +1260,9 @@ fn scan_actions_platform(
             Action::Group { actions, .. } => {
                 scan_actions_platform(actions, caps, bad_inject, bad_frontmost, bad_device);
             }
+            Action::Cycle { actions, .. } => {
+                scan_actions_platform(actions, caps, bad_inject, bad_frontmost, bad_device);
+            }
             _ => {}
         }
     }
@@ -1276,6 +1279,7 @@ pub(crate) fn uses_window_action(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_window_action(actions),
+        Action::Cycle { actions, .. } => uses_window_action(actions),
         Action::If {
             then, otherwise, ..
         } => uses_window_action(then) || uses_window_action(otherwise),
@@ -1294,6 +1298,7 @@ fn uses_window_wait(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_window_wait(actions),
+        Action::Cycle { actions, .. } => uses_window_wait(actions),
         Action::If {
             then, otherwise, ..
         } => uses_window_wait(then) || uses_window_wait(otherwise),
@@ -1310,6 +1315,7 @@ fn uses_absolute_move(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_absolute_move(actions),
+        Action::Cycle { actions, .. } => uses_absolute_move(actions),
         #[cfg(feature = "automation")]
         Action::If {
             then, otherwise, ..
@@ -1330,6 +1336,7 @@ pub(crate) fn uses_background_input(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_background_input(actions),
+        Action::Cycle { actions, .. } => uses_background_input(actions),
         #[cfg(feature = "automation")]
         Action::If {
             then, otherwise, ..
@@ -1357,6 +1364,7 @@ fn uses_shell_actions(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_shell_actions(actions),
+        Action::Cycle { actions, .. } => uses_shell_actions(actions),
         Action::If {
             then, otherwise, ..
         } => uses_shell_actions(then) || uses_shell_actions(otherwise),
@@ -1375,6 +1383,7 @@ pub(crate) fn uses_brightness(actions: &[Action]) -> bool {
             ..
         } => true,
         Action::Group { actions, .. } => uses_brightness(actions),
+        Action::Cycle { actions, .. } => uses_brightness(actions),
         Action::If {
             then, otherwise, ..
         } => uses_brightness(then) || uses_brightness(otherwise),
@@ -1390,6 +1399,7 @@ pub(crate) fn uses_semantic(actions: &[Action]) -> bool {
     actions.iter().any(|a| match a {
         Action::Semantic { .. } => true,
         Action::Group { actions, .. } => uses_semantic(actions),
+        Action::Cycle { actions, .. } => uses_semantic(actions),
         Action::If {
             then, otherwise, ..
         } => uses_semantic(then) || uses_semantic(otherwise),

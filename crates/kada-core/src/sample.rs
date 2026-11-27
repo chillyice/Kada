@@ -522,6 +522,36 @@ pub fn sample_config() -> Config {
         ));
     }
 
+    // ---- 轮巡：每次触发只执行组里的一个成员，依次轮换、到末尾回到第一个 ----
+    cfg.shortcuts.push(sc(
+        "轮巡演示",
+        "轮巡动作：每按一次打进下一个序号，第三个之后回到第一个（被禁用的成员会跳过）",
+        &["Ctrl+Alt+Shift+I"],
+        vec![Action::Cycle {
+            actions: vec![
+                Action::Text {
+                    text: "轮巡 ①".into(),
+                    mode: Default::default(),
+                    masked: false,
+                    description: None,
+                },
+                Action::Text {
+                    text: "轮巡 ②".into(),
+                    mode: Default::default(),
+                    masked: false,
+                    description: None,
+                },
+                Action::Text {
+                    text: "轮巡 ③".into(),
+                    mode: Default::default(),
+                    masked: false,
+                    description: None,
+                },
+            ],
+            description: None,
+        }],
+    ));
+
     cfg
 }
 

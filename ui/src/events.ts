@@ -288,6 +288,14 @@ export function bind() {
     renderActions(host);
   });
 
+  // 新建的轮巡组同样是空的、展开的：往里面加几个动作，每按一次执行下一个。
+  document.getElementById("add-cycle")!.addEventListener("click", () => {
+    const host = currentActionsHost();
+    if (!host) return;
+    host.actions.push(newAction("cycle"));
+    renderActions(host);
+  });
+
   fillTouchpadTriggerSelect();
   const touchpadTrigger = document.getElementById("edit-touchpad-trigger") as HTMLSelectElement;
   touchpadTrigger.addEventListener("change", () => {

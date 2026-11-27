@@ -11,7 +11,8 @@
 //! - `semantic`：语义动作（复制 / 返回 / 通知栏…），无障碍的 `ACTION_*` 与 `GLOBAL_ACTION_*`
 //!   ——这正是安卓强于桌面的地方，见 `kada_core::SemanticOperation`；
 //! - `pause_ms`：链内延迟；
-//! - `group` / `disabled`：容器（递归判定成员）；
+//! - `group` / `cycle` / `disabled`：容器（递归判定成员）；`cycle` 每次只执行一个成员，
+//!   成员全支持才能执行；
 //! - 其它（命令 / 脚本 / 按键注入 / 鼠标 / 应用 / 文件 / 系统 / 条件 / 变量 / 脚本…）
 //!   在无 root 档**整块不成立**：不执行、不占执行记录，但要在界面上标出来。
 
@@ -25,6 +26,7 @@ pub(crate) const SUPPORTED: &[&str] = &[
     "semantic",
     "pause_ms",
     "group",
+    "cycle",
     "disabled",
 ];
 
@@ -32,6 +34,7 @@ pub(crate) const SUPPORTED: &[&str] = &[
 pub(crate) fn kind(action: &Action) -> String {
     match action {
         Action::Group { .. } => "group".into(),
+        Action::Cycle { .. } => "cycle".into(),
         Action::Disabled { .. } => "disabled".into(),
         other => serde_json::to_value(other)
             .ok()
@@ -44,6 +47,7 @@ pub(crate) fn kind(action: &Action) -> String {
 pub(crate) fn is_supported(action: &Action) -> bool {
     match action {
         Action::Group { actions, .. } => actions.iter().all(is_supported),
+        Action::Cycle { actions, .. } => actions.iter().all(is_supported),
         Action::Disabled { action } => is_supported(action),
         _ => SUPPORTED.contains(&kind(action).as_str()),
     }
@@ -60,6 +64,7 @@ fn walk(actions: &[Action], out: &mut Vec<String>) {
     for action in actions {
         match action {
             Action::Group { actions, .. } => walk(actions, out),
+            Action::Cycle { actions, .. } => walk(actions, out),
             Action::Disabled { action } => walk(std::slice::from_ref(action), out),
             other => {
                 if !is_supported(other) {

@@ -1483,6 +1483,15 @@ pub enum Action {
         #[serde(default)]
         actions: Vec<Action>,
     },
+    /// 轮巡动作：每次触发**只执行组里的一个成员**，按顺序轮换、到末尾回到第一个。
+    /// 轮询位置只记在本进程内存里（重启归零，动作内容改了按新动作重新计数）；
+    /// 被禁用的成员视为不存在（跳过它继续轮），可嵌套（成员里还能放分组 / 条件判断 / 并行）。
+    Cycle {
+        #[serde(default)]
+        actions: Vec<Action>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+    },
     /// 禁用标记（编辑页每条动作右侧的「禁用」开关）：内容原样保留，执行时整条跳过、
     /// 不占一条执行记录。关掉开关即还原成被包住的那条动作。
     Disabled { action: Box<Action> },
@@ -1732,6 +1741,12 @@ impl Action {
                 MouseOp::MoveTo { .. } | MouseOp::MoveToOrigin | MouseOp::Click { .. } => Ok(()),
             },
             Action::Group { actions, .. } => {
+                for a in actions {
+                    a.validate()?;
+                }
+                Ok(())
+            }
+            Action::Cycle { actions, .. } => {
                 for a in actions {
                     a.validate()?;
                 }

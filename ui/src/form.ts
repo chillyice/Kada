@@ -107,6 +107,8 @@ export function collapseAllActions(actions: Action[]) {
       collapseAllActions(act.otherwise);
     } else if (act.type === "parallel") {
       collapseAllActions(act.actions);
+    } else if (act.type === "cycle") {
+      collapseAllActions(act.actions);
     } else if (act.type === "group") {
       collapseAllActions(act.actions);
     }
@@ -418,7 +420,7 @@ function nestedActionLists(a: Action): Action[][] {
       ...a.otherwise.flatMap(nestedActionLists),
     ];
   }
-  if (a.type === "parallel" || a.type === "group") {
+  if (a.type === "parallel" || a.type === "cycle" || a.type === "group") {
     return [a.actions, ...a.actions.flatMap(nestedActionLists)];
   }
   return [];
@@ -2193,6 +2195,19 @@ export function actionFields(
     // 成员列表就是一条可落列表（`data-action-list` + `_dropList` 由 renderActionList 统一挂上）。
     body.append(el("div", "branch-label parallel", tr("⇉ 同时执行（全部成员结束后继续下一步）")));
     const memberList = el("div", "action-branch branch-parallel");
+    (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
+    renderActionList(memberList, a.actions, rerender);
+    const addMember = el("button", "add-inline", tr("＋ 添加动作"));
+    addMember.addEventListener("click", () => {
+      a.actions.push(newAction("text"));
+      rerender();
+    });
+    body.append(memberList, addMember);
+  } else if (a.type === "cycle") {
+    body.append(
+      el("div", "branch-label cycle", tr("🔁 轮巡执行（每次触发执行一个，依次轮换）")),
+    );
+    const memberList = el("div", "action-branch branch-cycle");
     (memberList as unknown as { _dropList?: Action[] })._dropList = a.actions;
     renderActionList(memberList, a.actions, rerender);
     const addMember = el("button", "add-inline", tr("＋ 添加动作"));

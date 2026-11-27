@@ -44,6 +44,7 @@ export const ACTION_TYPES: { value: ActionBase["type"]; label: string }[] = [
   { value: "pause_ms", label: tr("延迟") },
   { value: "if", label: tr("条件判断") },
   { value: "parallel", label: tr("并行执行") },
+  { value: "cycle", label: tr("轮巡执行") },
   { value: "group", label: tr("动作分组") },
 ];
 
@@ -86,6 +87,7 @@ export const ACTION_ICONS: Record<ActionBase["type"], string> = {
   open_url: "🌐",
   if: "🔀",
   parallel: "⇉",
+  cycle: "🔁",
   group: "▣",
 };
 
@@ -151,8 +153,9 @@ export function actionVarWrites(a: Action): string[] {
         : [];
     case "transform":
       return a.var.trim() ? [a.var.trim()] : [];
-    // 分组只是容器：数据流标签按成员汇总（一眼看出整组写/读了什么）。
+    // 分组 / 轮巡只是容器：数据流标签按成员汇总（一眼看出整组写/读了什么）。
     case "group":
+    case "cycle":
       return [...new Set(a.actions.flatMap(actionVarWrites))];
     default:
       return [];
@@ -247,6 +250,7 @@ export function actionVarReads(a: Action): string[] {
       break;
     }
     case "group":
+    case "cycle":
       return [...new Set(a.actions.flatMap(actionVarReads))];
     default:
       break;
@@ -633,6 +637,8 @@ export function newAction(type: ActionBase["type"]): ActionBase {
       return { type: "if", condition: newCondition("exists"), then: [], otherwise: [] };
     case "parallel":
       return { type: "parallel", actions: [] };
+    case "cycle":
+      return { type: "cycle", actions: [] };
     case "group":
       return { type: "group", name: "", actions: [] };
   }
@@ -785,6 +791,8 @@ export function actionHasContent(a: Action): boolean {
     case "if":
       return condHasContent(a.condition) || a.then.length > 0 || a.otherwise.length > 0;
     case "parallel":
+      return a.actions.length > 0;
+    case "cycle":
       return a.actions.length > 0;
     case "group":
       return a.actions.length > 0;
@@ -1115,6 +1123,9 @@ export function actionSummary(a: Action): string {
       return trt`如果 ${condSummary(a.condition)}（${a.then.length} 个动作${a.otherwise.length ? trt`，否则 ${a.otherwise.length} 个` : ""}）`;
     case "parallel":
       return trt`并行执行（${a.actions.length} 个动作同时执行）`;
+    case "cycle":
+      // 被禁用的成员不参与轮换（视同不存在），这里的个数与执行记录里的「第 n/N 个」同口径。
+      return trt`轮巡执行（${a.actions.filter((m) => m.type !== "disabled").length} 个动作，每次触发执行一个）`;
     case "group":
       return trt`动作分组（${a.actions.length} 个动作，按顺序执行）`;
   }

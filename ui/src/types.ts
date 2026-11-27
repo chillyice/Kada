@@ -142,6 +142,7 @@ export type ActionBase =
   | { type: "open_url"; url: string; description?: string }
   | { type: "if"; condition: Condition; then: Action[]; otherwise: Action[]; description?: string }
   | { type: "parallel"; actions: Action[]; description?: string }
+  | { type: "cycle"; actions: Action[]; description?: string }
   | { type: "group"; name?: string; actions: Action[] }
   | { type: "script"; path: string; interpreter?: string | null; interpreter_args?: string[]; args?: string[]; working_dir?: string; timeout_ms?: number | null; ok_exit_codes?: number[]; show_output: ShowOutput; hide_window?: boolean; var: string; wait?: boolean; on_error?: "continue" | "stop"; if_running?: IfRunning; description?: string }
   | { type: "inline_script"; source: string; var: string; show_output?: boolean; description?: string }

@@ -121,6 +121,13 @@ pub fn migrate_action(a: Action) -> Action {
             name,
             actions: actions.into_iter().map(migrate_action).collect(),
         },
+        Action::Cycle {
+            actions,
+            description,
+        } => Action::Cycle {
+            actions: actions.into_iter().map(migrate_action).collect(),
+            description,
+        },
         other => other,
     }
 }

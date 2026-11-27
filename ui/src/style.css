@@ -1566,6 +1566,7 @@ body.is-mac .titlebar {
 .flow-step.type-open_url { --type-color: #e879b9; }
 .flow-step.type-if { --type-color: #ffd166; }
 .flow-step.type-parallel { --type-color: #5ec8c8; }
+.flow-step.type-cycle { --type-color: #c78ff0; }
 .flow-step.type-group { --type-color: #8fa3bf; }
 
 .flow-step,
@@ -2184,6 +2185,7 @@ select.action-type-name:focus-visible {
    节点效果）。纯 CSS 伪元素，不改 DOM 拓扑、不动拖拽判定；效果不好可整块删除回退。 */
 .flow-step.type-if .action-body,
 .flow-step.type-parallel .action-body,
+.flow-step.type-cycle .action-body,
 .flow-step.type-group .action-body {
   margin-top: 8px;
   padding: 10px 10px 10px 12px;
@@ -2194,6 +2196,7 @@ select.action-type-name:focus-visible {
 
 .flow-step.type-if .flow-dot,
 .flow-step.type-parallel .flow-dot,
+.flow-step.type-cycle .flow-dot,
 .flow-step.type-group .flow-dot {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--type-color) 22%, transparent);
 }
@@ -2206,6 +2209,10 @@ select.action-type-name:focus-visible {
   color: #8fa3bf;
 }
 
+.branch-label.cycle {
+  color: #c78ff0;
+}
+
 .action-branch.branch-parallel {
   --lane: rgba(94, 200, 200, 0.5);
   border-left-color: var(--lane);
@@ -2213,6 +2220,11 @@ select.action-type-name:focus-visible {
 
 .action-branch.branch-group {
   --lane: rgba(143, 163, 191, 0.5);
+  border-left-color: var(--lane);
+}
+
+.action-branch.branch-cycle {
+  --lane: rgba(199, 143, 240, 0.5);
   border-left-color: var(--lane);
 }
 
