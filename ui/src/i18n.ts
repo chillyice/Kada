@@ -38,10 +38,6 @@ export function savedLocale(): Locale | null {
   return v === "zh" || v === "en" ? v : null;
 }
 
-export function isEnglish(): boolean {
-  return locale === "en";
-}
-
 export function tr(zh: string): string {
   return locale === "zh" ? zh : (EN as Record<string, string>)[zh] ?? zh;
 }

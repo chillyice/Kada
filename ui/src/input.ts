@@ -75,13 +75,6 @@ export function setCaptureCleanup(fn: (() => void) | null) {
   activeCaptureCleanup = fn;
 }
 
-/** 当前捕获若是 `fn` 就解除登记；返回是否真的解除（避免后开的会话被先关的顶掉）。 */
-export function endCapture(fn: () => void): boolean {
-  if (activeCaptureCleanup !== fn) return false;
-  activeCaptureCleanup = null;
-  return true;
-}
-
 /** 中断当前录入捕获并解除暂停；无捕获时是空操作。 */
 export function stopCapture() {
   const cleanup = activeCaptureCleanup;
