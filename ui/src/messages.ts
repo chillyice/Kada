@@ -71,9 +71,14 @@ export function resultActions(r: { stdout: string; stderr: string; log_path?: st
   return row;
 }
 
+// stdout / stderr 输出块的展开态跨重绘保留：running 记录每落一步就整卡重画，纯 DOM 状态会被冲掉
+// （点开「展开」又自动收起）。按 key 记在本集合里，换选中的记录时清空（见 renderMessages）。
+const expandedOutputs = new Set<string>();
+
 // stdout / stderr 输出块（CS-21）：默认折叠 + 行内筛选。
 // 一条 npm install 的输出能有好几屏，展开态又有 200px 上限——先收起，需要时再展开 / 搜。
-export function msgOutputField(k: string, text: string): HTMLElement {
+// key = 输出块的身份（重绘前后指向同一块输出），给了才保留展开态；结果弹窗每次整卡重开，不给。
+export function msgOutputField(k: string, text: string, key?: string): HTMLElement {
   const row = el("div", "msg-field");
   row.append(el("span", "msg-k", k));
   const wrap = el("div", "msg-output");
@@ -86,8 +91,13 @@ export function msgOutputField(k: string, text: string): HTMLElement {
   const pre = el("pre", "msg-v msg-output-pre");
   const lineCount = text.split("\n").length;
   const long = lineCount > 8 || text.length > 800;
-  if (long) pre.classList.add("collapsed");
-  else toggle.classList.add("hidden");
+  const expanded = key !== undefined && expandedOutputs.has(key);
+  if (long) {
+    pre.classList.toggle("collapsed", !expanded);
+    toggle.textContent = expanded ? tr("收起") : tr("展开");
+  } else {
+    toggle.classList.add("hidden");
+  }
   const apply = (value: string) => {
     const q = value.trim();
     if (!q) {
@@ -106,6 +116,10 @@ export function msgOutputField(k: string, text: string): HTMLElement {
   toggle.addEventListener("click", () => {
     const collapsed = pre.classList.toggle("collapsed");
     toggle.textContent = collapsed ? tr("展开") : tr("收起");
+    if (key !== undefined) {
+      if (collapsed) expandedOutputs.delete(key);
+      else expandedOutputs.add(key);
+    }
   });
   apply("");
   tools.append(search, toggle);
@@ -321,7 +335,14 @@ export function renderMessages() {
   state.msgIndex = sel;
   const current = entries[sel];
   if (!current) return;
-  state.msgSelId = current.id;
+  // 只在真的换了记录时清选中与展开态：running 记录每落一步就推一次整卡、整卡重画，
+  // 用户点开的详情 / 输出展开不能被这些重绘冲掉（冲掉 = 点开又自动收起）。
+  if (state.msgSelId !== current.id) {
+    state.msgSelId = current.id;
+    state.msgSelStep = -1;
+    state.msgExpandedSteps.clear();
+    expandedOutputs.clear();
+  }
   entries.forEach((e, i) => {
     const st = runState(e.run);
     const t = el("button", `msg-tab ${st.cls}` + (i === state.msgIndex ? " active" : ""));

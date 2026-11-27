@@ -133,8 +133,8 @@ function stepDetail(run: RunRecord, step: ActionStep): HTMLElement {
       msgField(tr("状态"), tr("已启动，不等待完成；未捕获输出（「停止执行」也收不回它）")),
     );
   }
-  if (step.stdout) box.append(msgOutputField("stdout", step.stdout));
-  if (step.stderr) box.append(msgOutputField("stderr", step.stderr));
+  if (step.stdout) box.append(msgOutputField("stdout", step.stdout, `${run.id}:${step.id}:stdout`));
+  if (step.stderr) box.append(msgOutputField("stderr", step.stderr, `${run.id}:${step.id}:stderr`));
   if (step.exit_code !== null) box.append(msgField(tr("退出码"), String(step.exit_code)));
   const actions = resultActions(step);
   if (run.id !== 0) actions.prepend(locateStepButton(run, step));
@@ -235,13 +235,17 @@ for (const list of kids.values()) list.sort((a, b) => a.lane - b.lane || a.id - 
     block.append(head);
     const detail = stepDetail(run, step);
     detail.classList.add("pipe-detail");
-    detail.classList.add("hidden");
+    // 展开态记在 state.msgExpandedSteps 而不是只留在 DOM 上：running 记录每落一步就整卡重画，
+    // 纯 DOM 状态会让用户点开的详情总在下一步落地的瞬间自动收起。
+    detail.classList.toggle("hidden", !state.msgExpandedSteps.has(step.id));
     block.append(detail);
     // 只在块头（标题行）点开 / 收起：块体里有筛选框、「展开」、复制、打开日志、定位到动作等控件，
     // 整块绑 click 会让「点一下筛选框 / 展开」连带把刚展开的详情收回去。
     block.addEventListener("click", (e) => {
       if (!(e.target as Element | null)?.closest(".pipe-head")) return;
-      detail.classList.toggle("hidden");
+      const hidden = detail.classList.toggle("hidden");
+      if (hidden) state.msgExpandedSteps.delete(step.id);
+      else state.msgExpandedSteps.add(step.id);
     });
 
     const node = el("div", "pipe-node");

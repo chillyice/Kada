@@ -67,6 +67,9 @@ export const state = {
   msgSelId: "", // 当前选中的记录 id（跟着 tab 走，重绘不丢选中）
   msgMode: "pipeline" as "timeline" | "pipeline", // 记录卡片的两种展示方式
   msgSelStep: -1, // 时间线上选中的动作块（详情显示在下方）
+  // 流水线里就地展开的详情块（step id）。running 记录每落一步就整卡重画，展开态若留在 DOM 上
+  // 会被冲掉（点开又自动收起），所以跟着 msgSelStep 一样记在这；换选中的记录时清空。
+  msgExpandedSteps: new Set<number>(),
   unread: false, // 未读红点
   conflictBubbleDismissed: false, // 快捷键列表里的冲突气泡是否已被用户消除
   msgView: "results" as "results" | "conflicts", // 消息页标签：执行记录 / 冲突
