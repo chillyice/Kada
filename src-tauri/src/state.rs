@@ -198,18 +198,6 @@ pub(crate) struct KadaState {
     pub(crate) toast: Arc<Mutex<Option<ToastPayload>>>,
     /// 最近一次输入状态指示的载荷（懒创建状态指示窗时，供前端加载后兜底读取）。
     pub(crate) status: Arc<Mutex<Option<StatusPayload>>>,
-    /// 复制快捷菜单（EXT-13）是否处于「已请求 / 已显示」生命周期。
-    pub(crate) clipboard_menu_showing: Arc<AtomicBool>,
-    /// 钩子回调发现 Esc 时置位，菜单轮询线程消费后收回（回调里不碰窗口）。
-    pub(crate) clipboard_menu_hide: Arc<AtomicBool>,
-    /// 每次触发递增：旧的轮询线程据此让位（与 `GESTURE_VISUAL_SERIAL` 同一套路）。
-    pub(crate) clipboard_menu_serial: Arc<AtomicU64>,
-    /// 菜单锚点（物理像素，触发时的鼠标位置）。
-    pub(crate) clipboard_menu_anchor: Mutex<Option<(i32, i32)>>,
-    /// 触发那一刻的前台窗口：菜单开着时前台变了就收回，别把动作打进别的程序。
-    pub(crate) clipboard_menu_foreground: Mutex<Option<isize>>,
-    /// 最近一次菜单载荷（菜单窗懒创建后，前端加载时兜底渲染）。
-    pub(crate) clipboard_menu_payload: Mutex<Option<ClipboardMenuPayload>>,
     /// 最近一次「设置变量」输入框载荷（输入窗懒创建后，前端加载时兜底渲染）。
     pub(crate) prompt_payload: Mutex<Option<PromptPayload>>,
     /// 输入窗的回传通道：`Some(值)` = 确定、`None` = 取消 / 关窗。在 [`ui_prompt`] 里填。

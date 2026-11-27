@@ -39,7 +39,6 @@ import {
 } from "./settings";
 import type { UpdateDialogPayload } from "./settings";
 import {
-  bootstrapClipboardMenu,
   bootstrapGesture,
   bootstrapHints,
   bootstrapHud,
@@ -297,10 +296,6 @@ export function isConfirmPending(): boolean {
 // 手势的条目与编辑在「快捷键」页的「鼠标操作」分类里（与快捷键/改键/文本扩展并列），
 // 设置页只留一个「鼠标操作」总开关：关掉 = 鼠标类条目不显示、行为不生效，配置保留。
 
-// ---- 复制快捷菜单（EXT-13，已删除；只读编辑器已搬进 ./settings）----
-// 旧配置里残留的 clipboard_menu 仍要在设置页只读展示，函数跟着设置页走。
-
-
 // ---- 事件绑定（U-03 已搬到 ./events）----
 // 入口只保留 bind() 的调用点；所有 addEventListener 注册（含键盘快捷键、拖拽、录入按钮、
 // 动作字段、页签 / 模式菜单）都在 ./events，方便一处核对「哪些控件绑了没」。
@@ -506,13 +501,8 @@ if (location.hash === "#toast") {
   // 同 `#hud`：提示框也能纯浏览器直开预览样式（演示 IPC 给一份样例配置与状态）。
   installBrowserMock();
   void bootstrapHints();
-} else if (location.hash === "#clipboard-menu") {
-  // 同 `#hud`：纯浏览器直开时给一份样例菜单，方便调样式。
-  const preview = !("__TAURI_INTERNALS__" in window);
-  installBrowserMock();
-  void bootstrapClipboardMenu(preview);
 } else if (location.hash === "#tray-menu") {
-  // 同 `#clipboard-menu`：纯浏览器直开时给一份样例菜单，方便调样式。
+  // 同 `#hud`：纯浏览器直开时给一份样例菜单，方便调样式。
   const preview = !("__TAURI_INTERNALS__" in window);
   installBrowserMock();
   void bootstrapTrayMenu(preview);

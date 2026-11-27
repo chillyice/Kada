@@ -89,70 +89,6 @@ fn clean_layers(layers: &[Layer]) -> (Vec<Layer>, Vec<String>) {
     (out, ignored)
 }
 
-/// 清洗复制快捷菜单的条目：空标签、校验不过的动作、超深子菜单、空子菜单逐条丢弃，
-/// 其余原样保留（顺序不变）。`depth` 是当前层号，顶层为 1。
-fn clean_menu_items(
-    items: &[MenuEntry],
-    depth: usize,
-    ignored: &mut Vec<String>,
-) -> Vec<MenuEntry> {
-    let mut out = Vec::new();
-    for item in items {
-        match item {
-            MenuEntry::Separator => out.push(MenuEntry::Separator),
-            MenuEntry::Action {
-                label,
-                enabled,
-                action,
-            } => {
-                let label = label.trim();
-                if label.is_empty() {
-                    ignored.push("快捷菜单条目已忽略：标签为空".into());
-                    continue;
-                }
-                if let Err(e) = action.validate() {
-                    ignored.push(format!("快捷菜单「{label}」已忽略：{e}"));
-                    continue;
-                }
-                out.push(MenuEntry::Action {
-                    label: label.to_string(),
-                    enabled: *enabled,
-                    action: action.clone(),
-                });
-            }
-            MenuEntry::Submenu {
-                label,
-                enabled,
-                items,
-            } => {
-                let label = label.trim();
-                if label.is_empty() {
-                    ignored.push("快捷菜单子菜单已忽略：标签为空".into());
-                    continue;
-                }
-                if depth >= ClipboardMenu::MAX_DEPTH {
-                    ignored.push(format!(
-                        "快捷菜单「{label}」已忽略：子菜单最多嵌套 {} 层",
-                        ClipboardMenu::MAX_DEPTH
-                    ));
-                    continue;
-                }
-                let items = clean_menu_items(items, depth + 1, ignored);
-                if items.is_empty() {
-                    ignored.push(format!("快捷菜单「{label}」已忽略：子菜单为空"));
-                    continue;
-                }
-                out.push(MenuEntry::Submenu {
-                    label: label.to_string(),
-                    enabled: *enabled,
-                    items,
-                });
-            }
-        }
-    }
-    out
-}
-
 /// 清洗配置：先迁移旧版动作，再丢弃无法解析的触发键/动作/改键，返回可安全保存的
 /// 配置与每处被忽略内容的说明（供 UI 提示）。
 ///
@@ -176,8 +112,6 @@ pub fn sanitize_config(cfg: &Config) -> (Config, Vec<String>) {
         layers,
         ..Default::default()
     };
-    out.settings.clipboard_menu.items =
-        clean_menu_items(&cfg.settings.clipboard_menu.items, 1, &mut ignored);
 
     for s in &cfg.shortcuts {
         let label = s.name.clone().unwrap_or_else(|| "（未命名）".into());

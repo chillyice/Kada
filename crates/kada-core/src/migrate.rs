@@ -169,8 +169,6 @@ impl Config {
         }
         self.migrate_legacy_mouse_regions();
         self.settings.hints = std::mem::take(&mut self.settings.hints).normalized();
-        self.settings.clipboard_menu =
-            std::mem::take(&mut self.settings.clipboard_menu).normalized();
     }
 
     /// 旧版「触发角 / 边缘滚动」写在 `settings.hot_corners` / `settings.wheel_edges` 里，

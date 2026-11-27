@@ -484,54 +484,6 @@ pub fn default_hints_opacity() -> u8 {
     HintsWindow::DEFAULT_OPACITY
 }
 
-/// 复制快捷菜单（EXT-13）：选中文字后**双击 Ctrl+C** 在光标处弹出动作菜单。
-///
-/// 触发是**旁路观察**（不吞键，复制行为仍是系统 / 前台程序自己的），菜单本身只做展示；
-/// 每个条目内部是一段 [`Action`]，点击后走与快捷键相同的 `fire` 链路（注入锁 / 步骤上报 /
-/// 超时与中止全部继承）。缺字段 = 关闭。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClipboardMenu {
-    /// 是否启用。关掉只是不弹菜单，条目配置保留。
-    #[serde(default)]
-    pub enabled: bool,
-    /// 两次 Ctrl+C 的最大间隔（毫秒）。
-    #[serde(default = "default_double_copy_ms")]
-    pub double_copy_ms: u64,
-    /// 菜单条目（数组顺序即显示顺序，可嵌套子菜单）。
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub items: Vec<MenuEntry>,
-}
-
-impl ClipboardMenu {
-    /// 双击间隔上下限（毫秒）。
-    pub const DOUBLE_COPY_MS_RANGE: (u64, u64) = (150, 2000);
-    /// 子菜单最大嵌套层数（顶层算第 1 层）。
-    pub const MAX_DEPTH: usize = 3;
-
-    /// 归一化：间隔钳到合法区间（手改 JSON 写坏也不至于让菜单永远弹不出来）。
-    pub fn normalized(mut self) -> Self {
-        self.double_copy_ms = self
-            .double_copy_ms
-            .clamp(Self::DOUBLE_COPY_MS_RANGE.0, Self::DOUBLE_COPY_MS_RANGE.1);
-        self
-    }
-}
-
-impl Default for ClipboardMenu {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            double_copy_ms: default_double_copy_ms(),
-            items: Vec::new(),
-        }
-    }
-}
-
-/// 两次 Ctrl+C 最大间隔的缺省值（毫秒）。
-pub fn default_double_copy_ms() -> u64 {
-    500
-}
-
 /// 触发角（EXT-10）的一个角：是否启用、展示名、触发后执行的动作链。
 ///
 /// 与鼠标手势一样复用 [`Action`] 与壳层 `fire` 链路（步骤上报 / 执行记录 / 注入锁 /
@@ -832,31 +784,6 @@ impl WheelEdgeRule {
     }
 }
 
-/// 复制快捷菜单的一个条目：动作 / 子菜单 / 分割线。
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum MenuEntry {
-    /// 普通条目：点击执行 `action`。`label` 是菜单上显示的文字。
-    Action {
-        #[serde(default)]
-        label: String,
-        #[serde(default = "default_true", skip_serializing_if = "is_true")]
-        enabled: bool,
-        action: Action,
-    },
-    /// 子菜单：`items` 与顶层同构（可继续嵌套，见 [`ClipboardMenu::MAX_DEPTH`]）。
-    Submenu {
-        #[serde(default)]
-        label: String,
-        #[serde(default = "default_true", skip_serializing_if = "is_true")]
-        enabled: bool,
-        #[serde(default)]
-        items: Vec<MenuEntry>,
-    },
-    /// 分割线（纯展示，不可点击）。
-    Separator,
-}
-
 /// `serde` 的 `skip_serializing_if` 帮手：`true` 的布尔字段不落盘（`enabled` 缺省即 true）。
 pub(crate) fn is_true(v: &bool) -> bool {
     *v
@@ -1056,9 +983,6 @@ pub struct Settings {
     /// 手势未命中时的失败色（`#RRGGBB`）。
     #[serde(default = "default_gesture_fail_color")]
     pub gesture_fail_color: String,
-    /// 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单，见 [`ClipboardMenu`]。缺字段 = 关闭。
-    #[serde(default)]
-    pub clipboard_menu: ClipboardMenu,
     /// **旧版**触发角（EXT-10）四角配置：只在加载旧 JSON 时读，`migrate()` 会转成
     /// [`Config::hot_corners`] 后清空；新配置不再写这个键。
     #[serde(default, skip_serializing)]
@@ -1166,7 +1090,6 @@ impl Default for Settings {
             gesture_label_font_size: default_gesture_label_font_size(),
             gesture_label_offset: default_gesture_label_offset(),
             gesture_fail_color: default_gesture_fail_color(),
-            clipboard_menu: ClipboardMenu::default(),
             hot_corners: HotCorners::default(),
             wheel_edges: WheelEdges::default(),
         }

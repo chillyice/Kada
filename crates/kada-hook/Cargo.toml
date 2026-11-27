@@ -16,7 +16,9 @@ core-graphics = { version = "0.25", features = ["highsierra"] }
 libc = "0.2"
 
 [target.'cfg(any(windows, target_os = "linux", target_os = "macos"))'.dependencies]
-arboard = "3"
+# 只用文本剪贴板（文本注入的粘贴 / 恢复）。arboard 默认开 `image-data`，会把整个
+# `image` crate（含 png / bmp 编解码）编进包里；图片剪贴板随 EXT-20 截图动作下线后没人用了。
+arboard = { version = "3", default-features = false }
 
 # 只有 win.rs 用得到：按 `cfg(windows)` 声明，免得 Linux / macOS 也去编一个用不上的
 # Windows 绑定（它在非 Windows 目标上编不过）。

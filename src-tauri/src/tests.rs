@@ -1288,69 +1288,6 @@ fn wake_double_tap_window_expires_and_other_keys_reset() {
     assert!(last.is_none(), "自动重复也不该开始计时");
 }
 
-/// 复制快捷菜单（EXT-13）的双击判定：修饰键必须恰为 Ctrl、忽略 repeat 与抬起事件、
-/// 超窗只重新计时。菜单只在真机上弹，这条纯函数是唯一能自动验的部分。
-#[test]
-fn double_copy_requires_exact_ctrl_c_and_fresh_window() {
-    let menu = ClipboardMenu {
-        enabled: true,
-        double_copy_ms: 400,
-        items: Vec::new(),
-    };
-    let ctrl_c = Ev::Down {
-        key: Key::C,
-        mods: BTreeSet::from([Modifier::Ctrl]),
-        repeat: false,
-    };
-    let mut last = None;
-    assert!(
-        !double_copy_hit(&menu, &ctrl_c, &mut last),
-        "第一击只是单击"
-    );
-    assert!(
-        double_copy_hit(&menu, &ctrl_c, &mut last),
-        "窗口内第二击命中"
-    );
-    assert!(
-        !double_copy_hit(&menu, &ctrl_c, &mut last),
-        "命中后归零，第三击重新算单击"
-    );
-
-    // 修饰键不精确 / repeat / 别的键 / 抬起事件都不算，也不该开始计时。
-    for ev in [
-        Ev::Down {
-            key: Key::C,
-            mods: BTreeSet::from([Modifier::Ctrl, Modifier::Shift]),
-            repeat: false,
-        },
-        Ev::Down {
-            key: Key::C,
-            mods: BTreeSet::new(),
-            repeat: false,
-        },
-        Ev::Down {
-            key: Key::C,
-            mods: BTreeSet::from([Modifier::Ctrl]),
-            repeat: true,
-        },
-        Ev::Down {
-            key: Key::V,
-            mods: BTreeSet::from([Modifier::Ctrl]),
-            repeat: false,
-        },
-        Ev::Up { key: Key::C },
-    ] {
-        let mut last = None;
-        assert!(!double_copy_hit(&menu, &ev, &mut last), "不该命中: {ev:?}");
-        assert!(last.is_none(), "不该开始计时: {ev:?}");
-    }
-
-    // 超出窗口：这一击只算新的单击。
-    let mut last = Some(Instant::now() - Duration::from_millis(menu.double_copy_ms + 50));
-    assert!(!double_copy_hit(&menu, &ctrl_c, &mut last), "超窗不算双击");
-    assert!(last.is_some(), "超时后要重新计时");
-}
-
 #[test]
 fn wake_disabled_or_unparsable_key_never_wakes() {
     // 未设唤醒键 = 快速唤醒关闭：按多少次都不唤窗。

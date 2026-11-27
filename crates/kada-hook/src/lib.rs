@@ -254,17 +254,6 @@ pub fn platform_running_tools() -> Vec<String> {
     }
 }
 
-/// 一张抓到的图（RGBA8，行序从上到下）。
-#[derive(Clone, Debug, Default)]
-pub struct CapturedImage {
-    /// 宽度（像素）。
-    pub width: u32,
-    /// 高度（像素）。
-    pub height: u32,
-    /// `width * height * 4` 字节，RGBA 顺序。
-    pub rgba: Vec<u8>,
-}
-
 /// 亮度调节方向（EXT-22）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrightnessOp {
@@ -274,33 +263,6 @@ pub enum BrightnessOp {
     Down,
     /// 恢复本次运行里第一次调节前的原始值。
     Restore,
-}
-
-/// 圈选截图：按选区（屏幕物理坐标，左 / 上 / 右 / 下）裁出图。选区由钩子层的
-/// 「右键画圈 + 点左键」确认（见 [`gesture::on_left_down`]）。目前只有 Windows 用 GDI 实现。
-pub fn capture_rect(rect: (i32, i32, i32, i32)) -> Result<CapturedImage, String> {
-    #[cfg(windows)]
-    {
-        win_capture::capture_rect(rect)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = rect;
-        Err("「圈选截图」目前只支持 Windows".into())
-    }
-}
-
-/// 把截图写进系统图片剪贴板（圈选截图的唯一出口）。
-pub fn set_clipboard_image(img: &CapturedImage) -> Result<(), String> {
-    #[cfg(windows)]
-    {
-        win_capture::set_clipboard_image(img)
-    }
-    #[cfg(not(windows))]
-    {
-        let _ = img;
-        Err("「圈选截图」目前只支持 Windows".into())
-    }
 }
 
 /// 调主显示器亮度（EXT-22，Windows DDC/CI）。成功返回可展示的中文结果。

@@ -6,8 +6,8 @@ import { tr, trt } from "./i18n";
 import { applyTheme, loadTheme } from "./main";
 import type { Config, HintsState, ShortcutItem, StatusPayload } from "./types";
 
-// 独立窗口 + 自绘标题栏（U-04 从 main.ts 搬出）。五个窗口共用同一份 index.html：
-// #toast / #hud / #hints / #gesture / #prompt / #clipboard-menu / #tray-menu 各走一个 bootstrap，
+// 独立窗口 + 自绘标题栏（U-04 从 main.ts 搬出）。几个窗口共用同一份 index.html：
+// #toast / #hud / #hints / #gesture / #prompt / #tray-menu 各走一个 bootstrap，
 // 主窗口只多挂自绘标题栏。启动分发仍留在入口 main.ts，这里只导出各窗口的装配函数。
 // 右下角触发气泡窗口（独立隐藏窗口，加载 index.html#toast）：
 // 只渲染气泡，不听主界面逻辑。
@@ -467,105 +467,6 @@ export async function bootstrapGesture() {
   );
   // 监听器就绪后再告诉壳层：冷启动第一笔手势的轨迹事件不会白丢。
   await invoke("gesture_overlay_ready").catch(() => {});
-}
-
-// ---- 复制快捷菜单（独立窗口，加载 index.html#clipboard-menu，EXT-13）----
-// 壳层只推「展示树」，点击回传配置下标路径；动作执行在壳层（与快捷键同一条 fire 链路）。
-// 窗口不可激活、收不到失焦事件：Esc / 点外面 / 前台切换的收回全由壳层轮询线程负责。
-type MenuNodeView =
-  | { kind: "action"; label: string; enabled: boolean; path: number[] }
-  | { kind: "submenu"; label: string; enabled: boolean; items: MenuNodeView[] }
-  | { kind: "separator" };
-type ClipboardMenuPayload = { items: MenuNodeView[] };
-
-export async function bootstrapClipboardMenu(preview = false) {
-  for (const sel of [
-    ".layout",
-    "#result-modal",
-    "#save-status",
-    "#row-menu",
-    "#unsaved-modal",
-    "#import-modal",
-    "#import-result-modal",
-    "#snippet-modal",
-  ]) {
-    document.querySelector(sel)?.remove();
-  }
-  const panel = el("div", "clipboard-menu-panel");
-  panel.addEventListener("contextmenu", (e) => e.preventDefault());
-  document.body.append(panel);
-
-  // 内容变了（渲染 / 展开子菜单）就回报尺寸：壳层据此定位并钳进工作区。
-  const measure = () =>
-    requestAnimationFrame(() => {
-      const rect = panel.getBoundingClientRect();
-      void invoke("clipboard_menu_ready", {
-        width: Math.ceil(rect.width),
-        height: Math.ceil(rect.height),
-      }).catch(() => {});
-    });
-
-  const renderNode = (n: MenuNodeView): HTMLElement => {
-    if (n.kind === "separator") return el("div", "clipboard-menu-sep");
-    if (n.kind === "submenu") {
-      const group = el("div", "clipboard-menu-group");
-      const head = el("button", "clipboard-menu-item submenu") as HTMLButtonElement;
-      head.disabled = !n.enabled;
-      head.title = n.label;
-      head.append(
-        el("span", "clipboard-menu-label", n.label),
-        el("span", "clipboard-menu-caret", "▸"),
-      );
-      // 子菜单就地展开（不用独立飞出层：窗口尺寸由壳层按内容钳，飞出层会被窗口边界裁掉）。
-      head.addEventListener("click", () => {
-        group.classList.toggle("open");
-        measure();
-      });
-      const sub = el("div", "clipboard-menu-sub");
-      for (const c of n.items) sub.append(renderNode(c));
-      group.append(head, sub);
-      return group;
-    }
-    const b = el("button", "clipboard-menu-item") as HTMLButtonElement;
-    b.textContent = n.label;
-    b.disabled = !n.enabled;
-    b.addEventListener("click", () => {
-      if (!n.enabled) return;
-      void invoke("clipboard_menu_exec", { path: n.path }).catch(() => {});
-    });
-    return b;
-  };
-
-  const render = (p: ClipboardMenuPayload) => {
-    panel.replaceChildren(...p.items.map(renderNode));
-    measure();
-  };
-
-  await listen<ClipboardMenuPayload>("clipboard-menu", (e) => render(e.payload));
-  // 首次建窗时 emit 可能早于监听器注册（与 hud / toast 同一个套路）：拉一次兜底。
-  const pending = await invoke<ClipboardMenuPayload | null>("get_clipboard_menu_payload").catch(
-    () => null,
-  );
-  if (pending) {
-    render(pending);
-  } else if (preview) {
-    render({
-      items: [
-        { kind: "action", label: tr("粘贴为纯文本"), enabled: true, path: [0] },
-        { kind: "separator" },
-        { kind: "action", label: tr("搜索选中文字"), enabled: true, path: [2] },
-        {
-          kind: "submenu",
-          label: tr("转换"),
-          enabled: true,
-          items: [
-            { kind: "action", label: tr("转成大写"), enabled: true, path: [3, 0] },
-            { kind: "action", label: tr("转成小写"), enabled: false, path: [3, 1] },
-          ],
-        },
-      ],
-    });
-  }
 }
 
 // ---- 托盘菜单（独立窗口，加载 index.html#tray-menu）----

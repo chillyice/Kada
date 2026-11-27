@@ -28,9 +28,6 @@ use kada_actions::{
     abort as actions_abort, release_held_keys, run_actions, ActionStep, CommandResult, Reporter,
     RunOptions, RunRecord, RunStatus, TriggerCtx,
 };
-// 只有 Q-06 之后搬进 `cfg(test)` 的双击判定用得到。
-#[cfg(test)]
-use kada_core::ClipboardMenu;
 use kada_core::{
     config_needs_mouse_hook, detect_conflicts, diagnose_input_env, gesture_capture_enabled,
     parse_snippet_index, publish_payload, sanitize_config, scan_snippet, snippet, snippet_title,
@@ -83,7 +80,7 @@ pub(crate) use commands::config::{
     AUTOMATION_EXAMPLE_SNIPPETS, BASIC_EXAMPLE_SNIPPETS,
 };
 
-/// 复制快捷菜单 + 快捷键提示框（T-03 从 lib.rs 搬出）。
+/// 快捷键提示框浮窗（T-03 从 lib.rs 搬出）。
 mod overlays;
 use overlays::*;
 
@@ -472,9 +469,6 @@ pub fn run() {
             commands::results::get_unread,
             commands::results::get_toast_payload,
             commands::windows::get_status_payload,
-            overlays::get_clipboard_menu_payload,
-            overlays::clipboard_menu_ready,
-            overlays::clipboard_menu_exec,
             tray::get_tray_menu_payload,
             tray::tray_menu_ready,
             tray::tray_menu_exec,
@@ -537,11 +531,6 @@ pub fn run() {
             // 钩子接线：事件即时查表；（Windows / Linux / macOS 都有实现）
             #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]
             let engine = Arc::new(Mutex::new(Engine::new()));
-            // 复制快捷菜单（EXT-13）：钩子回调只做双击判定与置旗标；建窗 / 收窗在后台线程。
-            let clipboard_menu_showing = Arc::new(AtomicBool::new(false));
-            let clipboard_menu_hide = Arc::new(AtomicBool::new(false));
-            let clipboard_menu_serial = Arc::new(AtomicU64::new(0));
-
             // 鼠标钩子按需安装：启动即按当前配置决定要不要挂（配置里没有鼠标键触发、
             // 也没有启用的鼠标手势就不挂，缩小全局拦截面）。运行中配置变化由状态机
             // 定时器线程跟进（见 spawn_engine_ticker）。
@@ -559,8 +548,6 @@ pub fn run() {
                 let unread = unread.clone();
                 let runs = runs.clone();
                 let engine = engine.clone();
-                let menu_showing = clipboard_menu_showing.clone();
-                let menu_hide = clipboard_menu_hide.clone();
                 let mut last_tap: Option<Instant> = None;
                 input::start(move |ev: input::KeyEvent| {
                     let raw = ev;
@@ -578,18 +565,6 @@ pub fn run() {
                             recorder.push(&ev);
                             return input::HookAction::Allow;
                         }
-                    }
-                    // 复制快捷菜单开着时按 Esc：只置旗标（收回由菜单轮询线程做），按键本身照常放行。
-                    if menu_showing.load(Ordering::Relaxed)
-                        && matches!(
-                            &raw,
-                            input::KeyEvent::Down {
-                                key: Key::Escape,
-                                ..
-                            }
-                        )
-                    {
-                        menu_hide.store(true, Ordering::Relaxed);
                     }
                     // 快速唤醒：双击唤醒键唤出主窗口（被动检测，不拦截按键）。
                     // 判定留在回调里（只读配置 + 比时间，很快），**建窗口丢后台线程**：
@@ -636,7 +611,6 @@ pub fn run() {
                         note(&ev, "前台全屏，触发放行");
                         return input::HookAction::Allow;
                     }
-                    // 复制快捷菜单（双击 Ctrl+C）已删除：不再旁路观察，也不会再弹菜单。
                     let mut fire_hit = |actions: Vec<Action>, trigger: String, name: String| {
                         fire(
                             app_handle.clone(),
@@ -812,12 +786,6 @@ pub fn run() {
                 tray_unread: unread_icon,
                 toast: Arc::new(Mutex::new(None)),
                 status: Arc::new(Mutex::new(None)),
-                clipboard_menu_showing,
-                clipboard_menu_hide,
-                clipboard_menu_serial,
-                clipboard_menu_anchor: Mutex::new(None),
-                clipboard_menu_foreground: Mutex::new(None),
-                clipboard_menu_payload: Mutex::new(None),
                 prompt_payload: Mutex::new(None),
                 prompt_tx: Mutex::new(None),
                 hints_tray: Mutex::new(None),

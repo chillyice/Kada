@@ -1,14 +1,11 @@
-//! Windows 圈选截图 / 显示器亮度（EXT-22）。
+//! 显示器亮度（EXT-22，Windows DDC/CI）。
 //!
-//! 抓图只用 GDI：`BitBlt` 见屏幕；图片剪贴板用 `arboard`。圈选截图只负责**按选区裁剪**——
-//! 选区由钩子层的「右键画圈 + 点左键」确认（`kada_hook::gesture`），裁剪完写剪贴板，
-//! 标注 / 贴图交给 Snipaste（壳层触发它的粘贴热键）。
-//!
+//! 只走 VCP 0x10：读当前值 / 上限，写目标值，本次运行内记住第一次调节前的原始值供「恢复」。
 //! 全部函数都在动作执行线程上跑（不是钩子回调），可以阻塞做系统调用。
+//!
+//! 原「圈选截图」的 GDI 抓屏 / 裁剪 / 图片剪贴板已随 EXT-20 一起下线，圈选只负责给
+//! Snipaste 发 F1（见 说明书 §5.15）。
 
-use std::ffi::c_void;
-use std::mem::size_of;
-use std::ptr::null_mut;
 use std::sync::Mutex;
 
 use windows::Win32::Devices::Display::{
@@ -17,141 +14,9 @@ use windows::Win32::Devices::Display::{
     PHYSICAL_MONITOR,
 };
 use windows::Win32::Foundation::POINT;
-use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, MonitorFromPoint,
-    ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT, DIB_RGB_COLORS,
-    HGDIOBJ, MONITOR_DEFAULTTOPRIMARY, SRCCOPY,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-};
+use windows::Win32::Graphics::Gdi::{MonitorFromPoint, MONITOR_DEFAULTTOPRIMARY};
 
-use crate::{BrightnessOp, CapturedImage};
-
-/// 一张抓到的图（RGBA8，行序从上到下）。
-pub type Image = CapturedImage;
-
-/// 抓指定屏幕区域（虚拟屏坐标，可为负）。
-fn grab(x: i32, y: i32, w: i32, h: i32) -> Result<Image, String> {
-    if w <= 0 || h <= 0 {
-        return Err("要截取的区域是空的".into());
-    }
-    unsafe {
-        let screen = GetDC(None);
-        if screen.0.is_null() {
-            return Err("取不到屏幕 DC".into());
-        }
-        let mem = CreateCompatibleDC(Some(screen));
-        let bi = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: w,
-                biHeight: -h,
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let mut bits: *mut c_void = null_mut();
-        let dib = match CreateDIBSection(Some(mem), &bi, DIB_RGB_COLORS, &mut bits, None, 0) {
-            Ok(d) => d,
-            Err(e) => {
-                let _ = DeleteDC(mem);
-                ReleaseDC(None, screen);
-                return Err(format!("创建截图缓冲区失败：{e}"));
-            }
-        };
-        let old = SelectObject(mem, HGDIOBJ(dib.0));
-        let ok = BitBlt(mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY | CAPTUREBLT).is_ok();
-        SelectObject(mem, old);
-        // **先拷贝再删 DIB**：`DeleteObject` 之后 `bits` 指向的像素内存就没了，
-        // 在删除之后读等于读已释放内存（截图发黑 / 花屏）。
-        let rgba = if ok && !bits.is_null() {
-            let len = (w as usize) * (h as usize) * 4;
-            let bgra = std::slice::from_raw_parts(bits as *const u8, len);
-            let mut rgba = Vec::with_capacity(len);
-            for px in bgra.as_chunks::<4>().0 {
-                rgba.extend_from_slice(&[px[2], px[1], px[0], 255]);
-            }
-            Some(rgba)
-        } else {
-            None
-        };
-        let _ = DeleteObject(HGDIOBJ(dib.0));
-        let _ = DeleteDC(mem);
-        ReleaseDC(None, screen);
-        if !ok {
-            return Err("截取屏幕失败（BitBlt）".into());
-        }
-        let Some(rgba) = rgba else {
-            return Err("截图缓冲区为空".into());
-        };
-        Ok(Image {
-            width: w as u32,
-            height: h as u32,
-            rgba,
-        })
-    }
-}
-
-/// 抓整块虚拟屏幕（多显示器拼合，含负坐标）。
-pub fn capture_full_screen() -> Result<Image, String> {
-    unsafe {
-        let x = GetSystemMetrics(SM_XVIRTUALSCREEN);
-        let y = GetSystemMetrics(SM_YVIRTUALSCREEN);
-        let w = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-        let h = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-        grab(x, y, w, h)
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 圈选截图：按确认时定下的包围盒裁剪
-// ---------------------------------------------------------------------------
-
-/// 抓虚拟屏并按包围盒（屏幕物理坐标，左 / 上 / 右 / 下）裁出选区。
-///
-/// 选区在钩子层已经由「右键画圈 + 点左键」确认过了（见 `kada_hook::gesture::on_left_down`），
-/// 这里不再弹确认浮层：裁出来直接进剪贴板，标注 / 贴图交给 Snipaste（壳层 `run_lasso_capture`）。
-pub fn capture_rect(rect: (i32, i32, i32, i32)) -> Result<Image, String> {
-    let (l, t, r, b) = rect;
-    if r <= l || b <= t {
-        return Err("截图选区是空的".into());
-    }
-    let full = capture_full_screen()?;
-    let (vx, vy) = unsafe {
-        (
-            GetSystemMetrics(SM_XVIRTUALSCREEN),
-            GetSystemMetrics(SM_YVIRTUALSCREEN),
-        )
-    };
-    Ok(crop(&full, l - vx, t - vy, r - vx, b - vy))
-}
-
-fn crop(img: &Image, l: i32, t: i32, r: i32, b: i32) -> Image {
-    let l = l.max(0) as u32;
-    let t = t.max(0) as u32;
-    let r = (r.max(0) as u32).min(img.width);
-    let b = (b.max(0) as u32).min(img.height);
-    let w = r.saturating_sub(l);
-    let h = b.saturating_sub(t);
-    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
-    for row in t..b {
-        let start = ((row * img.width + l) * 4) as usize;
-        rgba.extend_from_slice(&img.rgba[start..start + (w * 4) as usize]);
-    }
-    Image {
-        width: w,
-        height: h,
-        rgba,
-    }
-}
-
-// ---------------------------------------------------------------------------
-// 显示器亮度（DDC/CI，VCP 0x10）
-// ---------------------------------------------------------------------------
+use crate::BrightnessOp;
 
 /// 第一次调节前的原始亮度（主显示器；进程内缓存，退出即丢）。
 static ORIGINAL_BRIGHTNESS: Mutex<Option<u32>> = Mutex::new(None);
@@ -256,19 +121,4 @@ pub fn brightness(op: BrightnessOp, step: i64) -> Result<String, String> {
     Ok(format!(
         "亮度 {current} → {target}（原始 {original}，上限 {max}）"
     ))
-}
-
-// ---------------------------------------------------------------------------
-// 输出：图片剪贴板
-// ---------------------------------------------------------------------------
-
-/// 把图片写进系统剪贴板（`arboard` 的图片剪贴板，不是只支持文本）。
-pub fn set_clipboard_image(img: &Image) -> Result<(), String> {
-    let mut cb = arboard::Clipboard::new().map_err(|e| format!("打开剪贴板失败：{e}"))?;
-    cb.set_image(arboard::ImageData {
-        width: img.width as usize,
-        height: img.height as usize,
-        bytes: std::borrow::Cow::Borrowed(&img.rgba),
-    })
-    .map_err(|e| format!("写入图片剪贴板失败：{e}"))
 }

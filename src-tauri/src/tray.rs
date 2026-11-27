@@ -126,7 +126,7 @@ pub(crate) fn tray_menu_action(app: &tauri::AppHandle, id: &str) {
     }
 }
 
-/// 按需创建托盘菜单窗。与 hints / clipboard-menu 同一类：**不可激活**
+/// 按需创建托盘菜单窗。与 hints 同一类：**不可激活**
 /// （`WS_EX_NOACTIVATE`）——一旦能激活，弹菜单这一下就把自己变成了前台窗口，前台条件
 /// （前台应用 / 窗口标题）全读成我们自己，`ResetWatch` 还会当成「切过前台」复位输入状态。
 ///

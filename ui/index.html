@@ -96,7 +96,7 @@
           <div id="detail-editor" class="detail-editor hidden">
             <!-- 第一行：模式选择（左，Postman 那种「当前模式 ▾」下拉）+ 按键框（右）——两者是同一个框体 -->
             <div class="key-box">
-              <div class="mode-group" id="mode-group">
+              <div class="mode-group">
                 <button id="mode-trigger" class="mode-trigger" type="button" title="选择模式">
                   <span id="mode-label">快捷键</span>
                   <svg class="mi-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
@@ -173,11 +173,11 @@
                 </div>
               </div>
               <div class="work-view hidden" id="work-remap">
-                <div class="editor-row" id="remap-oneshot-row">
+                <div class="editor-row">
                   <label>单次键（可选）</label>
                   <select id="remap-oneshot"></select>
                 </div>
-                <div class="editor-row" id="remap-sticky-row">
+                <div class="editor-row">
                   <label>粘滞键（可选）</label>
                   <select id="remap-sticky"></select>
                 </div>
@@ -478,7 +478,7 @@
                    默认**关**；关掉 → 入口隐藏（快捷键页不出现鼠标操作 / 角动作 / 边缘滚动）
                    + 行为不生效，配置保留（重新打开即恢复）。
                    总开关开着才显示下面的参数设置块。 -->
-              <section class="set-card" id="experimental-card">
+              <section class="set-card">
                 <div class="set-card-head"><span>鼠标操作</span></div>
                 <div class="set-rows">
                   <label class="set-row">
@@ -572,8 +572,6 @@
                 </div>
                 <p class="hint">鼠标操作里的手势 / 角动作 / 边缘滚动共用同一块浮层，这里的外观都生效；总开关关着时不显示这张卡片。</p>
               </section>
-
-              <!-- 复制快捷菜单（双击 Ctrl+C）已按要求删除：设置卡与运行时触发一并下线。 -->
 
               <!-- 输入层环境：厂商软件把按键 divert 走后，钩子看不到这次按下（规划 7.2-㊽）。
                    探测在后台 Rust 侧做（进程表 / 注册表），这里只显示结论 + 一个总开关。 -->

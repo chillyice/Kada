@@ -76,7 +76,7 @@
 
 ### 1.7 浮窗与界面外链（架构设计 §3.6 / §3.18 / §3.21）
 
-- 透明浮窗（`toast` / `hud` / `hints` / `clipboard-menu` / `tray-menu`）必须 `focusable(false)`（否则抢前台 → 误判复位）；**可交互的三个**不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**；复制菜单**不吞键**
+- 透明浮窗（`toast` / `hud` / `hints` / `tray-menu`）必须 `focusable(false)`（否则抢前台 → 误判复位）；**可交互的两个**（`hints` / `tray-menu`）不 `set_ignore_cursor_events`、`zoom_hotkeys_enabled(false)`、**一律 `shadow(false)`**
 - **提示框悬停让位**：进框即穿透 + 变淡，停满 2s 恢复。三条硬约束：**穿透后只能轮询全局光标**、**隐藏时必须真撤掉穿透标记**、状态广播 `hints-peek`（相位机与取舍见架构设计 §3.21）
 - **界面外链必须由壳层接住**（`.on_new_window`）：一律 `Deny`，只把 http(s) 交 `open_url` 用系统浏览器打开。**新增外链 / 改建窗别弄丢这段**（真机验收见人工验证清单 §21）
 

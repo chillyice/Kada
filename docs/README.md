@@ -93,7 +93,7 @@ src-tauri/                  # Tauri 2 桌面壳（crate "kada"）
   src/results.rs            # 执行记录表 + 消息中心（T-02 从 lib.rs 搬出）：RunRecord 增删改 / 命令完整日志 / 托盘红点
   src/windows.rs            # 浮窗（T-03 从 lib.rs 搬出）：触发气泡 / 状态悬浮窗 / 「设置变量」输入窗
   src/tray.rs               # 托盘（T-03 从 lib.rs 搬出）：自绘托盘菜单 / Linux 原生菜单 / 红点图标绘制
-  src/overlays.rs           # 复制快捷菜单（EXT-13）+ 快捷键提示框（7.3-㊳）：建窗 / 定位 / 悬停让位
+  src/overlays.rs           # 快捷键提示框（7.3-㊳，T-03 从 lib.rs 搬出）：建窗 / 定位 / 悬停让位
   src/commands/mod.rs       # 命令层（T-04 从 lib.rs 搬出）：按域分组的 #[tauri::command]
   src/commands/config.rs    # 配置读写命令（T-04）：get/set_config + 同步存档 / 导入导出 / 卡带索引与发布
   src/commands/devices.rs   # 平台 / 设备诊断命令：冲突 / 输入环境 / 输入设备 / HID++ / 提权通道
@@ -116,7 +116,7 @@ ui/                         # Vite + TypeScript 前端（kada-ui）
   src/runs.ts               # 执行记录 / 时间线 / 流水线：一条 RunRecord 怎么画（含步骤详情与状态）
   src/messages.ts           # 消息中心 + 结果卡深链：记录列表 / 结果卡 / 定位到动作
   src/market.ts             # 卡带市场 + 卡带发布 + 导出卡带：索引缓存 / 搜索标签筛选 / 安装预览 / 机审块 / 发布页
-  src/settings.ts           # 设置页：卡片填充 / 开关绑定 / 输入层诊断 / 提权 / 罗技解锁 / 导入导出 / 同步存档 / 软件更新 / 更新对话框 / 复制快捷菜单只读编辑器
+  src/settings.ts           # 设置页：卡片填充 / 开关绑定 / 输入层诊断 / 提权 / 罗技解锁 / 导入导出 / 同步存档 / 软件更新 / 更新对话框
   src/list.ts               # 左侧列表：行与目录树渲染 / 搜索筛选 / 折叠 / 多选 / 行菜单 / 拖拽排序
   src/editor.ts             # 条目编辑页：草稿填充与保存 / 未保存守卫 / 模式与页签 / 改键下拉 / 键位层 / 鼠标手势录入
   src/form.ts               # 动作列表（流程管线）：动作类型与字段 / 嵌套 / 拖拽排序 / 内联校验 / 命令脚本字段 / 冲突气泡与列表

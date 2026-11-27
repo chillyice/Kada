@@ -312,30 +312,17 @@ export type Settings = {
   gesture_label_font_size?: number;
   /** 手势结果标签相对末端的偏移（像素，0~200）。缺字段按后端默认 16。 */
   gesture_label_offset?: number;
-    /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
-    gesture_fail_color?: string;
-    /**
-     * 复制快捷菜单（EXT-13）：双击 Ctrl+C 弹出动作菜单。缺字段 = 关（后端
-     * `ClipboardMenu::default`）；`enabled` 缺省即 true（条目里的）。
-     */
-    clipboard_menu?: ClipboardMenu;
-    /**
-     * 旧版角动作配置（EXT-10）：只在老配置里出现，后端加载时迁移到根级 `hot_corners`。
-     */
-    hot_corners?: unknown;
-    /**
-     * 旧版边缘滚动配置（EXT-11）：同上，加载时迁移到根级 `wheel_edges`。
-     */
-    wheel_edges?: unknown;
-  };
-/**
- * 复制快捷菜单（EXT-13）：见后端 `ClipboardMenu`。条目数组顺序即显示顺序。
- */
-export type MenuEntry =
-  | { kind: "action"; label: string; enabled?: boolean; action: Action }
-  | { kind: "submenu"; label: string; enabled?: boolean; items: MenuEntry[] }
-  | { kind: "separator" };
-export type ClipboardMenu = { enabled: boolean; double_copy_ms: number; items: MenuEntry[] };
+  /** 手势未命中失败色（`#RRGGBB`）。缺字段按后端默认 `#ff5f56`。 */
+  gesture_fail_color?: string;
+  /**
+   * 旧版角动作配置（EXT-10）：只在老配置里出现，后端加载时迁移到根级 `hot_corners`。
+   */
+  hot_corners?: unknown;
+  /**
+   * 旧版边缘滚动配置（EXT-11）：同上，加载时迁移到根级 `wheel_edges`。
+   */
+  wheel_edges?: unknown;
+};
 /** 角动作位置（后端 `HotCornerSpot`）。 */
 export type HotCornerSpot = "top_left" | "top_right" | "bottom_left" | "bottom_right";
 /** 一条角动作规则（后端 `HotCornerRule`）：同位置可有多条，取第一条启用的。 */
